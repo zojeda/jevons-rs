@@ -1,0 +1,11 @@
+{
+  "prior_comparison_sha256": "7e375b080b09cdb4700a3b18191debe45cdc1879adf29d33f15c3626b6260389",
+  "prior_report": "benchmarks/cubecl/results-expert-tune-2026-09-21/comparison.json",
+  "fixed_confirmation_variant": "tile_1_2_2_planes2",
+  "primary_token_counts": [
+    8,
+    32
+  ],
+  "reason": "Lowest median explicit FP16 latency in the initial paired sweep at both primary sizes. Confirm without reselecting from the next run.",
+  "cmma_variants": "Six configurations are a new exploratory sweep, not preselected winners."
+}

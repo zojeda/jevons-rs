@@ -1,0 +1,200 @@
+{
+  "timing_kind": "Synchronized host wall time around each launch, NOT GPU event/counter timing",
+  "limitations": "HIP profiling adds per-launch synchronization; exclude from unprofiled latency comparison. Includes launch/sync costs; cannot isolate pure device execution or instruction stalls.",
+  "warmups_excluded_per_variant": 3,
+  "rounds": 2,
+  "cases": [
+    {
+      "case": "routed_balanced_128",
+      "variant": "grouped_q4k_tokens4_waves4",
+      "median_ms": {
+        "full_kernel": 0.23483900000000002,
+        "group_ids": 0.20345449999999998,
+        "make_jobs": 0.141581,
+        "grouped_product": 37.9463085
+      },
+      "samples": [
+        {
+          "full_kernel": 0.212126,
+          "group_ids": 0.255671,
+          "make_jobs": 0.108643,
+          "grouped_product": 39.226311
+        },
+        {
+          "full_kernel": 0.257552,
+          "group_ids": 0.151238,
+          "make_jobs": 0.174519,
+          "grouped_product": 36.666306
+        }
+      ]
+    },
+    {
+      "case": "routed_balanced_128",
+      "variant": "grouped_q4k_tokens8_waves4",
+      "median_ms": {
+        "full_kernel": 0.21859,
+        "group_ids": 0.2470925,
+        "make_jobs": 0.2105475,
+        "grouped_product": 31.813106500000004
+      },
+      "samples": [
+        {
+          "full_kernel": 0.185361,
+          "group_ids": 0.293576,
+          "make_jobs": 0.260393,
+          "grouped_product": 31.679608
+        },
+        {
+          "full_kernel": 0.251819,
+          "group_ids": 0.200609,
+          "make_jobs": 0.160702,
+          "grouped_product": 31.946605
+        }
+      ]
+    },
+    {
+      "case": "routed_skewed_128",
+      "variant": "grouped_q4k_tokens4_waves4",
+      "median_ms": {
+        "full_kernel": 0.15614899999999998,
+        "group_ids": 0.11725350000000001,
+        "make_jobs": 0.135561,
+        "grouped_product": 29.776377500000002
+      },
+      "samples": [
+        {
+          "full_kernel": 0.155674,
+          "group_ids": 0.133447,
+          "make_jobs": 0.11121800000000001,
+          "grouped_product": 30.722258
+        },
+        {
+          "full_kernel": 0.15662399999999999,
+          "group_ids": 0.10106000000000001,
+          "make_jobs": 0.159904,
+          "grouped_product": 28.830497
+        }
+      ]
+    },
+    {
+      "case": "routed_skewed_128",
+      "variant": "grouped_q4k_tokens8_waves4",
+      "median_ms": {
+        "full_kernel": 0.22927950000000002,
+        "group_ids": 0.18330200000000002,
+        "make_jobs": 0.2370465,
+        "grouped_product": 30.533248
+      },
+      "samples": [
+        {
+          "full_kernel": 0.182827,
+          "group_ids": 0.128592,
+          "make_jobs": 0.19528500000000001,
+          "grouped_product": 28.943655
+        },
+        {
+          "full_kernel": 0.27573200000000003,
+          "group_ids": 0.238012,
+          "make_jobs": 0.278808,
+          "grouped_product": 32.122841
+        }
+      ]
+    },
+    {
+      "case": "routed_balanced_512",
+      "variant": "grouped_q4k_tokens4_waves4",
+      "median_ms": {
+        "full_kernel": 0.26182,
+        "group_ids": 0.1589615,
+        "make_jobs": 0.12087450000000002,
+        "grouped_product": 133.14527800000002
+      },
+      "samples": [
+        {
+          "full_kernel": 0.28263099999999997,
+          "group_ids": 0.122205,
+          "make_jobs": 0.11129000000000001,
+          "grouped_product": 131.654854
+        },
+        {
+          "full_kernel": 0.241009,
+          "group_ids": 0.195718,
+          "make_jobs": 0.13045900000000002,
+          "grouped_product": 134.635702
+        }
+      ]
+    },
+    {
+      "case": "routed_balanced_512",
+      "variant": "grouped_q4k_tokens8_waves4",
+      "median_ms": {
+        "full_kernel": 0.1802565,
+        "group_ids": 0.13128,
+        "make_jobs": 0.1085735,
+        "grouped_product": 122.4311625
+      },
+      "samples": [
+        {
+          "full_kernel": 0.174738,
+          "group_ids": 0.141433,
+          "make_jobs": 0.1217,
+          "grouped_product": 106.663514
+        },
+        {
+          "full_kernel": 0.185775,
+          "group_ids": 0.121127,
+          "make_jobs": 0.095447,
+          "grouped_product": 138.198811
+        }
+      ]
+    },
+    {
+      "case": "routed_skewed_512",
+      "variant": "grouped_q4k_tokens4_waves4",
+      "median_ms": {
+        "full_kernel": 0.18027150000000003,
+        "group_ids": 0.143467,
+        "make_jobs": 0.183455,
+        "grouped_product": 134.9584405
+      },
+      "samples": [
+        {
+          "full_kernel": 0.20644800000000002,
+          "group_ids": 0.158979,
+          "make_jobs": 0.216218,
+          "grouped_product": 136.786222
+        },
+        {
+          "full_kernel": 0.154095,
+          "group_ids": 0.127955,
+          "make_jobs": 0.15069200000000002,
+          "grouped_product": 133.130659
+        }
+      ]
+    },
+    {
+      "case": "routed_skewed_512",
+      "variant": "grouped_q4k_tokens8_waves4",
+      "median_ms": {
+        "full_kernel": 0.25647600000000004,
+        "group_ids": 0.12632900000000002,
+        "make_jobs": 0.1399155,
+        "grouped_product": 120.063559
+      },
+      "samples": [
+        {
+          "full_kernel": 0.23042200000000002,
+          "group_ids": 0.122037,
+          "make_jobs": 0.105155,
+          "grouped_product": 121.833276
+        },
+        {
+          "full_kernel": 0.28253,
+          "group_ids": 0.13062100000000001,
+          "make_jobs": 0.174676,
+          "grouped_product": 118.293842
+        }
+      ]
+    }
+  ]
+}

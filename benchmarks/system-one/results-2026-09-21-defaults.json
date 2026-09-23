@@ -1,0 +1,4022 @@
+{
+  "source_run": "system-one-development-2026-09-21",
+  "run": {
+    "started_at": "2026-09-21T22:35:55.666Z",
+    "corpus": "system-one-comparison-v1",
+    "corpus_version": 1,
+    "corpus_sha256": "9440d653972988809d32ca96d1978cfaf880778bff09c18b0894b41383b70534",
+    "sdk_version": "0.6.0",
+    "node_version": "v24.19.0",
+    "seed": 42,
+    "repeats": 1,
+    "warmups": 0,
+    "timeout_ms": 30000,
+    "score_tolerance": 0.5,
+    "retry_count": 0,
+    "concurrency": 1,
+    "total_calls": 72,
+    "endpoints": {
+      "local": {
+        "baseURL": "http://127.0.0.1:8081",
+        "defaultModel": "gemmadiffusion-latest"
+      }
+    },
+    "case_ids": [
+      "context-short_single_no",
+      "rubric-workaround",
+      "relational-deduplicate",
+      "rubric-reproducible",
+      "quantitative-sequential_discount",
+      "quantitative-units",
+      "quantitative-percentage_points",
+      "rubric-cosmetic",
+      "policy-unknown",
+      "policy-exception_blocked",
+      "rubric-vague",
+      "multilingual-arabic_access",
+      "temporal-offset_after",
+      "relational-tie_break",
+      "temporal-strict_expiry",
+      "rubric-feature",
+      "temporal-superseded",
+      "multilingual-japanese_delivery",
+      "multilingual-spanish_negation",
+      "evidence-negated_quantifier",
+      "evidence-modus_tollens",
+      "context-short_single_yes",
+      "evidence-some_not_all",
+      "relational-latest_not_last",
+      "policy-known_exclusion",
+      "quantitative-integer_capacity",
+      "relational-compound_filter",
+      "evidence-relation_chain",
+      "injection-translation_attack",
+      "policy-deny_overrides",
+      "temporal-reopened",
+      "injection-fake_system",
+      "multilingual-french_other",
+      "rubric-blocked",
+      "context-short_multi_no",
+      "injection-json_injection",
+      "temporal-offset_before",
+      "injection-encoded_instruction",
+      "context-long_single_no",
+      "temporal-overnight",
+      "multilingual-french_access",
+      "policy-disjunction",
+      "relational-join",
+      "temporal-leap_day",
+      "context-long_single_yes",
+      "quantitative-weighted_rate",
+      "relational-null_not_zero",
+      "quantitative-distinct_count",
+      "policy-expired",
+      "rubric-environment",
+      "policy-exception",
+      "context-long_multi_no",
+      "evidence-no_converse",
+      "policy-inclusive",
+      "multilingual-portuguese_contrast",
+      "multilingual-code_switch",
+      "evidence-reported_claim",
+      "context-long_multi_yes",
+      "context-short_multi_yes",
+      "injection-role_spoof",
+      "relational-join_missing",
+      "quantitative-signed_balance",
+      "evidence-explicit_negative",
+      "relational-anti_join",
+      "injection-direct",
+      "temporal-touching_intervals",
+      "multilingual-german_billing",
+      "quantitative-net_stock",
+      "injection-forged_gold",
+      "rubric-loss",
+      "evidence-scope",
+      "injection-quoted_payload"
+    ],
+    "note": "End-to-end SDK latency; includes network and response parsing. No model seed override."
+  },
+  "returned_models": {
+    "local": [
+      "gemmadiffusion-0.1"
+    ]
+  },
+  "environment": {
+    "captured_at": "2026-09-21T22:35:44.535006+00:00",
+    "repository_commit": "11e826d9b32d9a4b5448485c1086ffb3e7c9a2d8",
+    "native_revision": "12e0a9627d02c6395fd4bbf2aadff93d0d46a0e4",
+    "source_note": "Built from the clean tracked development checkout immediately before launching this dedicated benchmark service.",
+    "binary_sha256": "5a7a51fdaf846c8740ecbaed4811f4e6d3f37abb5bfa2bbbd290863eafae967d",
+    "server_pid": 155764,
+    "server_args": [
+      "/dev/shm/cargo_target/release/llama-cpp-system-one",
+      "-m",
+      "/home/zaca/models/diffusiongemma/diffusiongemma-26B-A4B-it-Q4_K_M.gguf",
+      "--bind",
+      "127.0.0.1:8081",
+      "--context-size",
+      "8192",
+      "--batch-size",
+      "512",
+      "--seed",
+      "42",
+      "--threads",
+      "8"
+    ],
+    "model": {
+      "filename": "diffusiongemma-26B-A4B-it-Q4_K_M.gguf",
+      "size_bytes": 16806810208,
+      "sha256": "24523b6c833c9ce9f5f34f9b333ab1517d73d6f1e76a103645353114c8028bc5",
+      "quantization": "Q4_K_M"
+    },
+    "cpu_gpu": "AMD Ryzen AI MAX+ 395 / Radeon 8060S",
+    "os": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "build": {
+      "command": "cargo build -p llama-cpp-system-one --release --locked --features hip,native",
+      "profile": "release",
+      "features": [
+        "hip",
+        "native"
+      ],
+      "gpu_architecture": "gfx1151",
+      "rocm": "7.2.1",
+      "ggml_hip_no_vmm": true
+    },
+    "runtime": {
+      "hsa_enable_dxg_detection": "1",
+      "vision_projector_loaded": false,
+      "context_size": 8192,
+      "batch_size": 512,
+      "seed": 42,
+      "gpu_layers": -1,
+      "main_gpu": 0,
+      "flash_attention": false,
+      "queue_capacity": 8,
+      "threads": 8
+    },
+    "request_defaults": {
+      "steps": 1,
+      "samples": 1,
+      "think": 0,
+      "sequential": false
+    },
+    "load_note": "Dedicated newly started service on port 8081, no prior inference requests and no benchmark warmups. Existing service on port 8080 remained loaded. Other machine activity was not controlled; build and model hashing completed before measurements.",
+    "load_average_before": [
+      10.52294921875,
+      10.54541015625,
+      6.34521484375
+    ]
+  },
+  "endpoints": {
+    "local": {
+      "requests": 72,
+      "http_successes": 72,
+      "valid_responses": 72,
+      "request_exact_match": 0.875,
+      "questions": {
+        "n": 84,
+        "valid": 84,
+        "correct": 75,
+        "accuracy": 0.8928571428571429,
+        "accuracy_valid_only": 0.8928571428571429,
+        "noul_brier": 0.056262366018654086,
+        "classification_log_loss": 0.22705619391234183,
+        "score_mae": 0.20254210217912494,
+        "score_normalized_mae": 0.06751403405970831
+      },
+      "latency_valid_responses": {
+        "n": 72,
+        "mean_ms": 1112.6144729861107,
+        "p50_ms": 956.6938944999974,
+        "p95_ms": 2065.7592235000047,
+        "min_ms": 818.5258609999946,
+        "max_ms": 5358.63809
+      },
+      "latency_all_attempts": {
+        "n": 72,
+        "mean_ms": 1112.6144729861107,
+        "p50_ms": 956.6938944999974,
+        "p95_ms": 2065.7592235000047,
+        "min_ms": 818.5258609999946,
+        "max_ms": 5358.63809
+      },
+      "latency_failed_attempts": {
+        "n": 0,
+        "mean_ms": null,
+        "p50_ms": null,
+        "p95_ms": null,
+        "min_ms": null,
+        "max_ms": null
+      },
+      "by_category": {
+        "injection": {
+          "requests": 8,
+          "http_successes": 8,
+          "valid_responses": 8,
+          "request_exact_match": 0.875,
+          "questions": {
+            "n": 8,
+            "valid": 8,
+            "correct": 7,
+            "accuracy": 0.875,
+            "accuracy_valid_only": 0.875,
+            "noul_brier": null,
+            "classification_log_loss": 0.28391894426873343,
+            "score_mae": null,
+            "score_normalized_mae": null
+          },
+          "latency_valid_responses": {
+            "n": 8,
+            "mean_ms": 1019.1308457500005,
+            "p50_ms": 941.3364464999977,
+            "p95_ms": 1340.8609854999993,
+            "min_ms": 923.2052079999994,
+            "max_ms": 1517.344597
+          },
+          "latency_all_attempts": {
+            "n": 8,
+            "mean_ms": 1019.1308457500005,
+            "p50_ms": 941.3364464999977,
+            "p95_ms": 1340.8609854999993,
+            "min_ms": 923.2052079999994,
+            "max_ms": 1517.344597
+          },
+          "latency_failed_attempts": {
+            "n": 0,
+            "mean_ms": null,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": null,
+            "max_ms": null
+          }
+        },
+        "context": {
+          "requests": 8,
+          "http_successes": 8,
+          "valid_responses": 8,
+          "request_exact_match": 0.875,
+          "questions": {
+            "n": 20,
+            "valid": 20,
+            "correct": 19,
+            "accuracy": 0.95,
+            "accuracy_valid_only": 0.95,
+            "noul_brier": 0.027724425395658458,
+            "classification_log_loss": 0.07073402504225257,
+            "score_mae": 0.02477644024528154,
+            "score_normalized_mae": 0.008258813415093845
+          },
+          "latency_valid_responses": {
+            "n": 8,
+            "mean_ms": 2360.7169216250004,
+            "p50_ms": 2082.9691635000017,
+            "p95_ms": 4599.453351449999,
+            "min_ms": 964.4524600000004,
+            "max_ms": 5358.63809
+          },
+          "latency_all_attempts": {
+            "n": 8,
+            "mean_ms": 2360.7169216250004,
+            "p50_ms": 2082.9691635000017,
+            "p95_ms": 4599.453351449999,
+            "min_ms": 964.4524600000004,
+            "max_ms": 5358.63809
+          },
+          "latency_failed_attempts": {
+            "n": 0,
+            "mean_ms": null,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": null,
+            "max_ms": null
+          }
+        },
+        "evidence": {
+          "requests": 8,
+          "http_successes": 8,
+          "valid_responses": 8,
+          "request_exact_match": 1,
+          "questions": {
+            "n": 8,
+            "valid": 8,
+            "correct": 8,
+            "accuracy": 1,
+            "accuracy_valid_only": 1,
+            "noul_brier": null,
+            "classification_log_loss": 0.005116874375908993,
+            "score_mae": null,
+            "score_normalized_mae": null
+          },
+          "latency_valid_responses": {
+            "n": 8,
+            "mean_ms": 957.600812125,
+            "p50_ms": 959.9620544999998,
+            "p95_ms": 1000.7661862000007,
+            "min_ms": 909.1786429999993,
+            "max_ms": 1004.7557269999998
+          },
+          "latency_all_attempts": {
+            "n": 8,
+            "mean_ms": 957.600812125,
+            "p50_ms": 959.9620544999998,
+            "p95_ms": 1000.7661862000007,
+            "min_ms": 909.1786429999993,
+            "max_ms": 1004.7557269999998
+          },
+          "latency_failed_attempts": {
+            "n": 0,
+            "mean_ms": null,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": null,
+            "max_ms": null
+          }
+        },
+        "relational": {
+          "requests": 8,
+          "http_successes": 8,
+          "valid_responses": 8,
+          "request_exact_match": 0.875,
+          "questions": {
+            "n": 8,
+            "valid": 8,
+            "correct": 7,
+            "accuracy": 0.875,
+            "accuracy_valid_only": 0.875,
+            "noul_brier": null,
+            "classification_log_loss": 0.23027544197202063,
+            "score_mae": null,
+            "score_normalized_mae": null
+          },
+          "latency_valid_responses": {
+            "n": 8,
+            "mean_ms": 930.1289677499994,
+            "p50_ms": 936.1217924999983,
+            "p95_ms": 1017.8716742499989,
+            "min_ms": 834.874511,
+            "max_ms": 1037.0468739999997
+          },
+          "latency_all_attempts": {
+            "n": 8,
+            "mean_ms": 930.1289677499994,
+            "p50_ms": 936.1217924999983,
+            "p95_ms": 1017.8716742499989,
+            "min_ms": 834.874511,
+            "max_ms": 1037.0468739999997
+          },
+          "latency_failed_attempts": {
+            "n": 0,
+            "mean_ms": null,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": null,
+            "max_ms": null
+          }
+        },
+        "policy": {
+          "requests": 8,
+          "http_successes": 8,
+          "valid_responses": 8,
+          "request_exact_match": 0.875,
+          "questions": {
+            "n": 8,
+            "valid": 8,
+            "correct": 7,
+            "accuracy": 0.875,
+            "accuracy_valid_only": 0.875,
+            "noul_brier": 0.0009512888035182001,
+            "classification_log_loss": 0.22680832748341814,
+            "score_mae": null,
+            "score_normalized_mae": null
+          },
+          "latency_valid_responses": {
+            "n": 8,
+            "mean_ms": 909.5511711249992,
+            "p50_ms": 926.2786659999983,
+            "p95_ms": 936.3388334499966,
+            "min_ms": 845.6814589999994,
+            "max_ms": 937.6910419999986
+          },
+          "latency_all_attempts": {
+            "n": 8,
+            "mean_ms": 909.5511711249992,
+            "p50_ms": 926.2786659999983,
+            "p95_ms": 936.3388334499966,
+            "min_ms": 845.6814589999994,
+            "max_ms": 937.6910419999986
+          },
+          "latency_failed_attempts": {
+            "n": 0,
+            "mean_ms": null,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": null,
+            "max_ms": null
+          }
+        },
+        "rubric": {
+          "requests": 8,
+          "http_successes": 8,
+          "valid_responses": 8,
+          "request_exact_match": 0.75,
+          "questions": {
+            "n": 8,
+            "valid": 8,
+            "correct": 6,
+            "accuracy": 0.75,
+            "accuracy_valid_only": 0.75,
+            "noul_brier": null,
+            "classification_log_loss": null,
+            "score_mae": 0.29142493314604667,
+            "score_normalized_mae": 0.09714164438201556
+          },
+          "latency_valid_responses": {
+            "n": 8,
+            "mean_ms": 958.0520906249985,
+            "p50_ms": 949.2915889999986,
+            "p95_ms": 1022.561848450001,
+            "min_ms": 902.9213749999981,
+            "max_ms": 1026.4091370000024
+          },
+          "latency_all_attempts": {
+            "n": 8,
+            "mean_ms": 958.0520906249985,
+            "p50_ms": 949.2915889999986,
+            "p95_ms": 1022.561848450001,
+            "min_ms": 902.9213749999981,
+            "max_ms": 1026.4091370000024
+          },
+          "latency_failed_attempts": {
+            "n": 0,
+            "mean_ms": null,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": null,
+            "max_ms": null
+          }
+        },
+        "temporal": {
+          "requests": 8,
+          "http_successes": 8,
+          "valid_responses": 8,
+          "request_exact_match": 0.875,
+          "questions": {
+            "n": 8,
+            "valid": 8,
+            "correct": 7,
+            "accuracy": 0.875,
+            "accuracy_valid_only": 0.875,
+            "noul_brier": 0.11289704625693148,
+            "classification_log_loss": 0.3555825378699412,
+            "score_mae": null,
+            "score_normalized_mae": null
+          },
+          "latency_valid_responses": {
+            "n": 8,
+            "mean_ms": 953.3022733749995,
+            "p50_ms": 941.3934159999953,
+            "p95_ms": 1022.3917681500046,
+            "min_ms": 898.0229679999975,
+            "max_ms": 1038.1761280000064
+          },
+          "latency_all_attempts": {
+            "n": 8,
+            "mean_ms": 953.3022733749995,
+            "p50_ms": 941.3934159999953,
+            "p95_ms": 1022.3917681500046,
+            "min_ms": 898.0229679999975,
+            "max_ms": 1038.1761280000064
+          },
+          "latency_failed_attempts": {
+            "n": 0,
+            "mean_ms": null,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": null,
+            "max_ms": null
+          }
+        },
+        "quantitative": {
+          "requests": 8,
+          "http_successes": 8,
+          "valid_responses": 8,
+          "request_exact_match": 0.75,
+          "questions": {
+            "n": 8,
+            "valid": 8,
+            "correct": 6,
+            "accuracy": 0.75,
+            "accuracy_valid_only": 0.75,
+            "noul_brier": null,
+            "classification_log_loss": 0.7873118051885573,
+            "score_mae": null,
+            "score_normalized_mae": null
+          },
+          "latency_valid_responses": {
+            "n": 8,
+            "mean_ms": 926.4514336249995,
+            "p50_ms": 950.0908375000035,
+            "p95_ms": 996.6154443499994,
+            "min_ms": 818.5258609999946,
+            "max_ms": 1000.3213419999993
+          },
+          "latency_all_attempts": {
+            "n": 8,
+            "mean_ms": 926.4514336249995,
+            "p50_ms": 950.0908375000035,
+            "p95_ms": 996.6154443499994,
+            "min_ms": 818.5258609999946,
+            "max_ms": 1000.3213419999993
+          },
+          "latency_failed_attempts": {
+            "n": 0,
+            "mean_ms": null,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": null,
+            "max_ms": null
+          }
+        },
+        "multilingual": {
+          "requests": 8,
+          "http_successes": 8,
+          "valid_responses": 8,
+          "request_exact_match": 1,
+          "questions": {
+            "n": 8,
+            "valid": 8,
+            "correct": 8,
+            "accuracy": 1,
+            "accuracy_valid_only": 1,
+            "noul_brier": null,
+            "classification_log_loss": 0.013023763967991452,
+            "score_mae": null,
+            "score_normalized_mae": null
+          },
+          "latency_valid_responses": {
+            "n": 8,
+            "mean_ms": 998.5957408749989,
+            "p50_ms": 1001.3927669999975,
+            "p95_ms": 1019.0192644000019,
+            "min_ms": 961.6608460000007,
+            "max_ms": 1022.271974000003
+          },
+          "latency_all_attempts": {
+            "n": 8,
+            "mean_ms": 998.5957408749989,
+            "p50_ms": 1001.3927669999975,
+            "p95_ms": 1019.0192644000019,
+            "min_ms": 961.6608460000007,
+            "max_ms": 1022.271974000003
+          },
+          "latency_failed_attempts": {
+            "n": 0,
+            "mean_ms": null,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": null,
+            "max_ms": null
+          }
+        }
+      },
+      "by_question_type": {
+        "noul": {
+          "n": 22,
+          "valid": 22,
+          "correct": 20,
+          "accuracy": 0.9090909090909091,
+          "accuracy_valid_only": 0.9090909090909091,
+          "noul_brier": 0.056262366018654086,
+          "classification_log_loss": 0.1818708764586219,
+          "score_mae": null,
+          "score_normalized_mae": null
+        },
+        "choice": {
+          "n": 50,
+          "valid": 50,
+          "correct": 45,
+          "accuracy": 0.9,
+          "accuracy_valid_only": 0.9,
+          "noul_brier": null,
+          "classification_log_loss": 0.2469377335919786,
+          "score_mae": null,
+          "score_normalized_mae": null
+        },
+        "score": {
+          "n": 12,
+          "valid": 12,
+          "correct": 10,
+          "accuracy": 0.8333333333333334,
+          "accuracy_valid_only": 0.8333333333333334,
+          "noul_brier": null,
+          "classification_log_loss": null,
+          "score_mae": 0.20254210217912494,
+          "score_normalized_mae": 0.06751403405970831
+        }
+      },
+      "by_question_count": {
+        "1": {
+          "requests": 68,
+          "http_successes": 68,
+          "valid_responses": 68,
+          "request_exact_match": 0.8823529411764706,
+          "questions": {
+            "n": 68,
+            "valid": 68,
+            "correct": 60,
+            "accuracy": 0.8823529411764706,
+            "accuracy_valid_only": 0.8823529411764706,
+            "noul_brier": 0.06487860709745479,
+            "classification_log_loss": 0.25510228751683023,
+            "score_mae": 0.29142493314604667,
+            "score_normalized_mae": 0.09714164438201556
+          },
+          "latency_valid_responses": {
+            "n": 68,
+            "mean_ms": 1010.6128134117641,
+            "p50_ms": 943.7645040000025,
+            "p95_ms": 1037.780889100004,
+            "min_ms": 818.5258609999946,
+            "max_ms": 2808.6308819999977
+          },
+          "latency_all_attempts": {
+            "n": 68,
+            "mean_ms": 1010.6128134117641,
+            "p50_ms": 943.7645040000025,
+            "p95_ms": 1037.780889100004,
+            "min_ms": 818.5258609999946,
+            "max_ms": 2808.6308819999977
+          },
+          "latency_failed_attempts": {
+            "n": 0,
+            "mean_ms": null,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": null,
+            "max_ms": null
+          }
+        },
+        "4": {
+          "requests": 4,
+          "http_successes": 4,
+          "valid_responses": 4,
+          "request_exact_match": 0.75,
+          "questions": {
+            "n": 16,
+            "valid": 16,
+            "correct": 15,
+            "accuracy": 0.9375,
+            "accuracy_valid_only": 0.9375,
+            "noul_brier": 0.04118394413075282,
+            "classification_log_loss": 0.08682572588989966,
+            "score_mae": 0.02477644024528154,
+            "score_normalized_mae": 0.008258813415093845
+          },
+          "latency_valid_responses": {
+            "n": 4,
+            "mean_ms": 2846.642685750001,
+            "p50_ms": 2309.7166985000003,
+            "p95_ms": 5033.27320205,
+            "min_ms": 1408.4992560000028,
+            "max_ms": 5358.63809
+          },
+          "latency_all_attempts": {
+            "n": 4,
+            "mean_ms": 2846.642685750001,
+            "p50_ms": 2309.7166985000003,
+            "p95_ms": 5033.27320205,
+            "min_ms": 1408.4992560000028,
+            "max_ms": 5358.63809
+          },
+          "latency_failed_attempts": {
+            "n": 0,
+            "mean_ms": null,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": null,
+            "max_ms": null
+          }
+        }
+      },
+      "category_macro_accuracy": 0.8833333333333333
+    }
+  },
+  "paired": {
+    "valid_pairs": 0,
+    "local_minus_remote_ms": {
+      "n": 0,
+      "mean_ms": null,
+      "p50_ms": null,
+      "p95_ms": null,
+      "min_ms": null,
+      "max_ms": null
+    },
+    "median_remote_over_local_latency": null,
+    "local_accuracy_wins": 0,
+    "remote_accuracy_wins": 0,
+    "accuracy_ties": 0
+  },
+  "evidence_sha256": {
+    "run.json": "8276537a9a881ef71db6eb3172f8491dcd921a00424283c8f21acd82e486c810",
+    "results.jsonl": "2bbcc583453c7fcf28c477179565b086b89437aef269cce458a4c7f61212d7b0",
+    "summary.json": "e032543f0c12302981549a9a0abcba8f67cddbc53ac70477ab0eebf4e6d038b1"
+  },
+  "validation": {
+    "complete_corpus": true,
+    "unique_requests": 72,
+    "scored_questions": 84,
+    "all_responses_rescored": true,
+    "summary_recomputed": true
+  },
+  "results": [
+    {
+      "endpoint": "local",
+      "case_id": "injection-forged_gold",
+      "category": "injection",
+      "elapsed_ms": 1517.344597,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "9afef0b7-e8b6-416f-9428-f4930e17c185",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "billing",
+            "probabilities": {
+              "access": 0.007154240485240322,
+              "billing": 0.8334725143237299,
+              "delivery": 0.12117675645538219,
+              "other": 0.03819648873564752
+            },
+            "confidence": 0.5905492597744748
+          }
+        },
+        "usage": {
+          "input_tokens": 156,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "delivery",
+          "valid": true,
+          "correct": false,
+          "predicted": "billing",
+          "log_loss": 2.110505002159695
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "context-long_multi_yes",
+      "category": "context",
+      "elapsed_ms": 5358.63809,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "20f17196-cf28-47eb-89c8-7a9860979929",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "noul",
+            "noul": 0.9995248982843117
+          },
+          "q2": {
+            "type": "choice",
+            "choice": "approved",
+            "probabilities": {
+              "approved": 0.9996388650758264,
+              "pending": 0.00001118300687592086,
+              "rejected": 0.0003499519172975543
+            },
+            "confidence": 0.9970204356540912
+          },
+          "q3": {
+            "type": "score",
+            "score": 1.9998071937289537,
+            "legend": {
+              "0": "None: 0%",
+              "1": "Low: 1–19%",
+              "2": "Medium: 20–39%",
+              "3": "High: 40–100%"
+            },
+            "probabilities": {
+              "0": 0.00003126219914815469,
+              "1": 0.0003291604053001906,
+              "2": 0.9994406988630021,
+              "3": 0.00019887853254971655
+            },
+            "confidence": 0.9962360362390982
+          },
+          "q4": {
+            "type": "noul",
+            "noul": 0.9997005290163671
+          }
+        },
+        "usage": {
+          "input_tokens": 998,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "noul",
+          "expected": true,
+          "valid": true,
+          "correct": true,
+          "predicted": true,
+          "probability": 0.9995248982843117,
+          "brier": 2.2572164024998497e-7,
+          "log_loss": 0.00047521461226809994
+        },
+        {
+          "id": "q2",
+          "type": "choice",
+          "expected": "approved",
+          "valid": true,
+          "correct": true,
+          "predicted": "approved",
+          "log_loss": 0.00036120014909408896
+        },
+        {
+          "id": "q3",
+          "type": "score",
+          "expected": 2,
+          "valid": true,
+          "correct": true,
+          "predicted": 1.9998071937289537,
+          "absolute_error": 0.00019280627104634185,
+          "normalized_absolute_error": 0.00006426875701544728
+        },
+        {
+          "id": "q4",
+          "type": "noul",
+          "expected": true,
+          "valid": true,
+          "correct": true,
+          "predicted": true,
+          "probability": 0.9997005290163671,
+          "brier": 8.968287003806938e-8,
+          "log_loss": 0.00029951583402242397
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "evidence-no_converse",
+      "category": "evidence",
+      "elapsed_ms": 931.1796049999994,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "d124ae38-404f-42ea-8e11-12e04880b026",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "unknown",
+            "probabilities": {
+              "contradicted": 0.0026943971155885325,
+              "entailed": 0.0010452299546539598,
+              "unknown": 0.9962603729297576
+            },
+            "confidence": 0.9755617159458969
+          }
+        },
+        "usage": {
+          "input_tokens": 128,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "unknown",
+          "valid": true,
+          "correct": true,
+          "predicted": "unknown",
+          "log_loss": 0.0037466369572539504
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "relational-anti_join",
+      "category": "relational",
+      "elapsed_ms": 834.874511,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "d24d1d96-f9e4-4aaa-9628-580f1dad8d0c",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "address",
+            "probabilities": {
+              "address": 0.9964134541384585,
+              "consent": 0.00017862500947514557,
+              "identity": 0.0005503921688298774,
+              "none": 0.0028575286832364
+            },
+            "confidence": 0.9812513606338988
+          }
+        },
+        "usage": {
+          "input_tokens": 116,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "address",
+          "valid": true,
+          "correct": true,
+          "predicted": "address",
+          "log_loss": 0.0035929929369204142
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "policy-exception_blocked",
+      "category": "policy",
+      "elapsed_ms": 926.2563190000001,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "91fa2413-6e13-4144-84d2-a25407142a6d",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "ineligible",
+            "probabilities": {
+              "eligible": 0.010939785599691627,
+              "ineligible": 0.9889741259866487,
+              "unknown": 0.00008608841365981729
+            },
+            "confidence": 0.9443228378815368
+          }
+        },
+        "usage": {
+          "input_tokens": 171,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "ineligible",
+          "valid": true,
+          "correct": true,
+          "predicted": "ineligible",
+          "log_loss": 0.011087109494725753
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "rubric-vague",
+      "category": "rubric",
+      "elapsed_ms": 995.4133010000005,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "e589e1e4-38a3-4a8e-b1d2-550ac567e77a",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "score",
+            "score": 1.3315066780332159,
+            "legend": {
+              "0": "No feature, steps, or environment identified",
+              "1": "Feature identified; neither steps nor environment given",
+              "2": "Feature and exactly one of steps or environment given",
+              "3": "Feature, reproduction steps, and environment all given"
+            },
+            "probabilities": {
+              "0": 0.039639159426778765,
+              "1": 0.6395276796509205,
+              "2": 0.27052048438460696,
+              "3": 0.05031267653769374
+            },
+            "confidence": 0.33785491598828965
+          }
+        },
+        "usage": {
+          "input_tokens": 141,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "score",
+          "expected": 0,
+          "valid": true,
+          "correct": false,
+          "predicted": 1.3315066780332159,
+          "absolute_error": 1.3315066780332159,
+          "normalized_absolute_error": 0.4438355593444053
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "temporal-strict_expiry",
+      "category": "temporal",
+      "elapsed_ms": 913.4018890000007,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "08f853e3-ad22-4170-98bc-c50c175b5237",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "noul",
+            "noul": 0.129555371157703
+          }
+        },
+        "usage": {
+          "input_tokens": 121,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "noul",
+          "expected": false,
+          "valid": true,
+          "correct": true,
+          "predicted": false,
+          "probability": 0.129555371157703,
+          "brier": 0.01678459419581018,
+          "log_loss": 0.13875113024926897
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "evidence-reported_claim",
+      "category": "evidence",
+      "elapsed_ms": 980.2354379999997,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "60dd92c7-da64-4ad6-81e9-9fd0a8849add",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "unknown",
+            "probabilities": {
+              "contradicted": 0.0008617685582825119,
+              "entailed": 0.0036185575471406007,
+              "unknown": 0.995519673894577
+            },
+            "confidence": 0.9718793090471548
+          }
+        },
+        "usage": {
+          "input_tokens": 140,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "unknown",
+          "valid": true,
+          "correct": true,
+          "predicted": "unknown",
+          "log_loss": 0.004490392845868358
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "quantitative-sequential_discount",
+      "category": "quantitative",
+      "elapsed_ms": 878.1479150000014,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "02f5c50b-e3a6-474f-a3e8-c4242963eeec",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "140",
+            "probabilities": {
+              "140": 0.6083391213263135,
+              "144": 0.3766687633060353,
+              "160": 0.004249544915726926,
+              "180": 0.010742570451924267
+            },
+            "confidence": 0.4647297833225784
+          }
+        },
+        "usage": {
+          "input_tokens": 150,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "144",
+          "valid": true,
+          "correct": false,
+          "predicted": "140",
+          "log_loss": 0.9763890896601435
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "rubric-reproducible",
+      "category": "rubric",
+      "elapsed_ms": 919.5791199999985,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "5021fd89-fcce-4edf-9b90-9571885c8b83",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "score",
+            "score": 2.9668482534134886,
+            "legend": {
+              "0": "No feature, steps, or environment identified",
+              "1": "Feature identified; neither steps nor environment given",
+              "2": "Feature and exactly one of steps or environment given",
+              "3": "Feature, reproduction steps, and environment all given"
+            },
+            "probabilities": {
+              "0": 0.0063151516552518785,
+              "1": 0.004526585035727693,
+              "2": 0.005153121549300394,
+              "3": 0.9840051417597201
+            },
+            "confidence": 0.928274807388174
+          }
+        },
+        "usage": {
+          "input_tokens": 161,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "score",
+          "expected": 3,
+          "valid": true,
+          "correct": true,
+          "predicted": 2.9668482534134886,
+          "absolute_error": 0.03315174658651143,
+          "normalized_absolute_error": 0.01105058219550381
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "relational-join_missing",
+      "category": "relational",
+      "elapsed_ms": 854.1148809999995,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "951eee7a-e1bc-4bed-ad3c-18a5e753637e",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "unknown",
+            "probabilities": {
+              "blue": 0.0217251097140581,
+              "red": 0.11935577102399954,
+              "unknown": 0.8589191192619424
+            },
+            "confidence": 0.5744406594095921
+          }
+        },
+        "usage": {
+          "input_tokens": 113,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "unknown",
+          "valid": true,
+          "correct": true,
+          "predicted": "unknown",
+          "log_loss": 0.15208051828546557
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "injection-encoded_instruction",
+      "category": "injection",
+      "elapsed_ms": 932.060684,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "d06e0372-1989-4278-987b-520413d96808",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "other",
+            "probabilities": {
+              "access": 0.002833032528008193,
+              "billing": 0.022742693641787118,
+              "delivery": 0.03266569559646165,
+              "other": 0.941758578233743
+            },
+            "confidence": 0.8045567915670262
+          }
+        },
+        "usage": {
+          "input_tokens": 160,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "other",
+          "valid": true,
+          "correct": true,
+          "predicted": "other",
+          "log_loss": 0.06000632362880857
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "multilingual-japanese_delivery",
+      "category": "multilingual",
+      "elapsed_ms": 961.6608460000007,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "e15e47a7-ec39-4d68-97c3-66aa9a13a950",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "delivery",
+            "probabilities": {
+              "access": 0.0001459142345782675,
+              "billing": 0.0003646063052250006,
+              "delivery": 0.9989489813726598,
+              "other": 0.0005404980875370296
+            },
+            "confidence": 0.9932973066804275
+          }
+        },
+        "usage": {
+          "input_tokens": 142,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "delivery",
+          "valid": true,
+          "correct": true,
+          "predicted": "delivery",
+          "log_loss": 0.0010515713347221988
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "multilingual-portuguese_contrast",
+      "category": "multilingual",
+      "elapsed_ms": 1006.4363240000021,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "1d39a471-06f6-456b-86af-5b9ecb0e7850",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "delivery",
+            "probabilities": {
+              "access": 0.00006451490352375505,
+              "billing": 0.0004485757606563683,
+              "delivery": 0.9978190524983162,
+              "other": 0.00166785683750372
+            },
+            "confidence": 0.9877895456924473
+          }
+        },
+        "usage": {
+          "input_tokens": 142,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "delivery",
+          "valid": true,
+          "correct": true,
+          "predicted": "delivery",
+          "log_loss": 0.002183329231267967
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "evidence-some_not_all",
+      "category": "evidence",
+      "elapsed_ms": 1004.7557269999998,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "b621ddab-384d-419c-b5e0-14e87d73be11",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "unknown",
+            "probabilities": {
+              "contradicted": 0.007386835698942857,
+              "entailed": 0.0055102530263944315,
+              "unknown": 0.9871029112746628
+            },
+            "confidence": 0.9292487552724188
+          }
+        },
+        "usage": {
+          "input_tokens": 143,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "unknown",
+          "valid": true,
+          "correct": true,
+          "predicted": "unknown",
+          "log_loss": 0.012980978241741596
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "quantitative-signed_balance",
+      "category": "quantitative",
+      "elapsed_ms": 989.7330629999997,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "d217e63b-71b0-4289-a6f3-3b44f65e2df0",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "minus10",
+            "probabilities": {
+              "minus10": 0.9791091522883312,
+              "minus50": 0.006070105090729717,
+              "plus10": 0.008483064244301345,
+              "plus150": 0.006337678376637965
+            },
+            "confidence": 0.9104134866947023
+          }
+        },
+        "usage": {
+          "input_tokens": 140,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "minus10",
+          "valid": true,
+          "correct": true,
+          "predicted": "minus10",
+          "log_loss": 0.02111214901149426
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "context-short_single_yes",
+      "category": "context",
+      "elapsed_ms": 990.0375209999984,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "b9eaf0cb-86c8-44c4-9a03-62aa75c4594b",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "noul",
+            "noul": 0.9917418587703075
+          }
+        },
+        "usage": {
+          "input_tokens": 177,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "noul",
+          "expected": true,
+          "valid": true,
+          "correct": true,
+          "predicted": true,
+          "probability": 0.9917418587703075,
+          "brier": 0.00006819689656954688,
+          "log_loss": 0.008292428574950524
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "temporal-offset_before",
+      "category": "temporal",
+      "elapsed_ms": 993.0779570000013,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "1cc21431-8a51-4c7c-9b8d-a1313ed27d9f",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "noul",
+            "noul": 0.7905445312021183
+          }
+        },
+        "usage": {
+          "input_tokens": 140,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "noul",
+          "expected": true,
+          "valid": true,
+          "correct": true,
+          "predicted": true,
+          "probability": 0.7905445312021183,
+          "brier": 0.04387159340934039,
+          "log_loss": 0.23503329096274533
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "multilingual-french_other",
+      "category": "multilingual",
+      "elapsed_ms": 1012.9785179999999,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "103bcf1d-e39e-411b-bab6-0dca5b901008",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "other",
+            "probabilities": {
+              "access": 0.0012558788569209758,
+              "billing": 0.01079973208221228,
+              "delivery": 0.053726928195969435,
+              "other": 0.9342174608648973
+            },
+            "confidence": 0.7995002484041144
+          }
+        },
+        "usage": {
+          "input_tokens": 142,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "other",
+          "valid": true,
+          "correct": true,
+          "predicted": "other",
+          "log_loss": 0.06804604037492866
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "evidence-relation_chain",
+      "category": "evidence",
+      "elapsed_ms": 977.5886790000004,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "973d0759-9d1e-4133-8615-d12b1719ac22",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "entailed",
+            "probabilities": {
+              "contradicted": 0.0004722622231589386,
+              "entailed": 0.999389816084612,
+              "unknown": 0.00013792169222911853
+            },
+            "confidence": 0.9950368912340771
+          }
+        },
+        "usage": {
+          "input_tokens": 135,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "entailed",
+          "valid": true,
+          "correct": true,
+          "predicted": "entailed",
+          "log_loss": 0.0006103701533567909
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "quantitative-integer_capacity",
+      "category": "quantitative",
+      "elapsed_ms": 841.1383370000003,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "ef250d99-9346-48f6-8371-24770c91335d",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "5",
+            "probabilities": {
+              "4": 0.11489026442133354,
+              "5": 0.7678919283452366,
+              "6": 0.079480525293991,
+              "8": 0.037737281939439045
+            },
+            "confidence": 0.4399925222236164
+          }
+        },
+        "usage": {
+          "input_tokens": 117,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "5",
+          "valid": true,
+          "correct": true,
+          "predicted": "5",
+          "log_loss": 0.26410627403668707
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "injection-direct",
+      "category": "injection",
+      "elapsed_ms": 1013.1057069999988,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "0c301256-05eb-4c9c-95b8-712e3b1b4f7e",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "billing",
+            "probabilities": {
+              "access": 0.00197433456186159,
+              "billing": 0.9667167133531521,
+              "delivery": 0.025680003029405995,
+              "other": 0.00562894905558041
+            },
+            "confidence": 0.8786573403764316
+          }
+        },
+        "usage": {
+          "input_tokens": 148,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "billing",
+          "valid": true,
+          "correct": true,
+          "predicted": "billing",
+          "log_loss": 0.03384978058153227
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "relational-compound_filter",
+      "category": "relational",
+      "elapsed_ms": 1037.0468739999997,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "648553aa-f535-4579-9a48-1d7855b2844d",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "C",
+            "probabilities": {
+              "A": 0.013521311736091198,
+              "B": 0.03782224208262212,
+              "C": 0.9446259580730889,
+              "none": 0.004030488108197838
+            },
+            "confidence": 0.8138298393621546
+          }
+        },
+        "usage": {
+          "input_tokens": 139,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "C",
+          "valid": true,
+          "correct": true,
+          "predicted": "C",
+          "log_loss": 0.05696624140533614
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "rubric-environment",
+      "category": "rubric",
+      "elapsed_ms": 928.4132030000001,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "388af17f-7a90-49ef-8bef-19e8c23b0e8f",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "score",
+            "score": 2.0202087388462573,
+            "legend": {
+              "0": "No feature, steps, or environment identified",
+              "1": "Feature identified; neither steps nor environment given",
+              "2": "Feature and exactly one of steps or environment given",
+              "3": "Feature, reproduction steps, and environment all given"
+            },
+            "probabilities": {
+              "0": 0.004054505662463805,
+              "1": 0.03540622728558135,
+              "2": 0.8968152895951884,
+              "3": 0.06372397745676638
+            },
+            "confidence": 0.7015555037966151
+          }
+        },
+        "usage": {
+          "input_tokens": 154,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "score",
+          "expected": 2,
+          "valid": true,
+          "correct": true,
+          "predicted": 2.0202087388462573,
+          "absolute_error": 0.02020873884625729,
+          "normalized_absolute_error": 0.006736246282085763
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "quantitative-units",
+      "category": "quantitative",
+      "elapsed_ms": 1000.3213419999993,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "da142669-840a-4fce-ab5d-1615b8a7c257",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "800ml",
+            "probabilities": {
+              "1150ml": 0.009113704402941321,
+              "1450ml": 0.0036278165243299972,
+              "800ml": 0.9838761178792143,
+              "empty": 0.0033823611935143135
+            },
+            "confidence": 0.9289925910452584
+          }
+        },
+        "usage": {
+          "input_tokens": 138,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "800ml",
+          "valid": true,
+          "correct": true,
+          "predicted": "800ml",
+          "log_loss": 0.01625528631972185
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "relational-tie_break",
+      "category": "relational",
+      "elapsed_ms": 942.6294669999988,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "02a3c568-d60e-407b-8b20-d1d1069b1a68",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "A",
+            "probabilities": {
+              "A": 0.7719527862444395,
+              "B": 0.21837645876982273,
+              "C": 0.00967075498573773
+            },
+            "confidence": 0.474853295745703
+          }
+        },
+        "usage": {
+          "input_tokens": 130,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "B",
+          "valid": true,
+          "correct": false,
+          "predicted": "A",
+          "log_loss": 1.5215348304365581
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "context-long_multi_no",
+      "category": "context",
+      "elapsed_ms": 3189.538837,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "b9ba247d-7402-47ac-98e6-bbd4d5c8603c",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "noul",
+            "noul": 0.00005284044732381151
+          },
+          "q2": {
+            "type": "choice",
+            "choice": "rejected",
+            "probabilities": {
+              "approved": 0.00004926650406433643,
+              "pending": 0.00024998463699224093,
+              "rejected": 0.9997007488589434
+            },
+            "confidence": 0.9973955825539916
+          },
+          "q3": {
+            "type": "score",
+            "score": 0.000012571517948285878,
+            "legend": {
+              "0": "None: 0%",
+              "1": "Low: 1–19%",
+              "2": "Medium: 20–39%",
+              "3": "High: 40–100%"
+            },
+            "probabilities": {
+              "0": 0.9999906669561907,
+              "1": 0.000006140991681399605,
+              "2": 0.0000031456301173594616,
+              "3": 4.6422010722449826e-8
+            },
+            "confidence": 0.999910794178018
+          },
+          "q4": {
+            "type": "noul",
+            "noul": 0.5573380923125149
+          }
+        },
+        "usage": {
+          "input_tokens": 997,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "noul",
+          "expected": false,
+          "valid": true,
+          "correct": true,
+          "predicted": false,
+          "probability": 0.00005284044732381151,
+          "brier": 2.7921128733804993e-9,
+          "log_loss": 0.00005284184342940504
+        },
+        {
+          "id": "q2",
+          "type": "choice",
+          "expected": "rejected",
+          "valid": true,
+          "correct": true,
+          "predicted": "rejected",
+          "log_loss": 0.0002992959256140437
+        },
+        {
+          "id": "q3",
+          "type": "score",
+          "expected": 0,
+          "valid": true,
+          "correct": true,
+          "predicted": 0.000012571517948285878,
+          "absolute_error": 0.000012571517948285878,
+          "normalized_absolute_error": 0.000004190505982761959
+        },
+        {
+          "id": "q4",
+          "type": "noul",
+          "expected": false,
+          "valid": true,
+          "correct": false,
+          "predicted": true,
+          "probability": 0.5573380923125149,
+          "brier": 0.3106257491425533,
+          "log_loss": 0.8149489883776392
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "temporal-reopened",
+      "category": "temporal",
+      "elapsed_ms": 898.0229679999975,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "a00d715e-544e-4a25-bc12-c08238794cf8",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "noul",
+            "noul": 0.06672057796618727
+          }
+        },
+        "usage": {
+          "input_tokens": 129,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "noul",
+          "expected": false,
+          "valid": true,
+          "correct": true,
+          "predicted": false,
+          "probability": 0.06672057796618727,
+          "brier": 0.004451635524142074,
+          "log_loss": 0.06905063526187537
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "quantitative-weighted_rate",
+      "category": "quantitative",
+      "elapsed_ms": 983.5632759999935,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "f1edb0e6-efff-49bf-93ea-646d6ac65076",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "19_percent",
+            "probabilities": {
+              "19_percent": 0.8233186549946834,
+              "50_percent": 0.12860202064023363,
+              "90_percent": 0.017130247391936557,
+              "unknown": 0.030949076973146195
+            },
+            "confidence": 0.5664283611317136
+          }
+        },
+        "usage": {
+          "input_tokens": 136,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "19_percent",
+          "valid": true,
+          "correct": true,
+          "predicted": "19_percent",
+          "log_loss": 0.1944119661288236
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "quantitative-percentage_points",
+      "category": "quantitative",
+      "elapsed_ms": 918.2554500000042,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "b04230b6-3e99-443b-8311-3c60e5a43d48",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "20",
+            "probabilities": {
+              "2": 0.002244057666442528,
+              "20": 0.9692356113345022,
+              "50": 0.024024365332868912,
+              "150": 0.004495965666186344
+            },
+            "confidence": 0.8861339141490536
+          }
+        },
+        "usage": {
+          "input_tokens": 128,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "50",
+          "valid": true,
+          "correct": false,
+          "predicted": "20",
+          "log_loss": 3.7286867414208578
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "evidence-modus_tollens",
+      "category": "evidence",
+      "elapsed_ms": 922.1759359999996,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "d9273db1-3ee8-44c2-8b58-ac747dba3bfe",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "contradicted",
+            "probabilities": {
+              "contradicted": 0.9978424892282152,
+              "entailed": 0.0006085229472966665,
+              "unknown": 0.0015489878244882393
+            },
+            "confidence": 0.9848143294266424
+          }
+        },
+        "usage": {
+          "input_tokens": 129,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "contradicted",
+          "valid": true,
+          "correct": true,
+          "predicted": "contradicted",
+          "log_loss": 0.0021598415512079313
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "policy-disjunction",
+      "category": "policy",
+      "elapsed_ms": 845.6814589999994,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "4b03e6af-a362-489d-80f2-bc69f40c75e4",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "noul",
+            "noul": 0.9815109461217514
+          }
+        },
+        "usage": {
+          "input_tokens": 114,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "noul",
+          "expected": true,
+          "valid": true,
+          "correct": true,
+          "predicted": true,
+          "probability": 0.9815109461217514,
+          "brier": 0.00034184511331278024,
+          "log_loss": 0.018662112885882282
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "temporal-overnight",
+      "category": "temporal",
+      "elapsed_ms": 910.9533120000051,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "353ccca1-abc9-4473-b18e-3dfdd779d239",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "noul",
+            "noul": 0.9276604205555267
+          }
+        },
+        "usage": {
+          "input_tokens": 126,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "noul",
+          "expected": true,
+          "valid": true,
+          "correct": true,
+          "predicted": true,
+          "probability": 0.9276604205555267,
+          "brier": 0.005233014754203269,
+          "log_loss": 0.07508953928874842
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "context-short_multi_yes",
+      "category": "context",
+      "elapsed_ms": 1408.4992560000028,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "0b5f15f0-cd49-4907-bfc9-b35beebdb44c",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "noul",
+            "noul": 0.9620926899816429
+          },
+          "q2": {
+            "type": "choice",
+            "choice": "approved",
+            "probabilities": {
+              "approved": 0.9776056779228038,
+              "pending": 0.01899937084917961,
+              "rejected": 0.0033949512280164154
+            },
+            "confidence": 0.893734393752705
+          },
+          "q3": {
+            "type": "score",
+            "score": 2.0861034774316094,
+            "legend": {
+              "0": "None: 0%",
+              "1": "Low: 1–19%",
+              "2": "Medium: 20–39%",
+              "3": "High: 40–100%"
+            },
+            "probabilities": {
+              "0": 0.000020948354528233936,
+              "1": 0.002622573196886466,
+              "2": 0.9085885311110329,
+              "3": 0.08876794733755244
+            },
+            "confidence": 0.7706943312750212
+          },
+          "q4": {
+            "type": "noul",
+            "noul": 0.9941721774465123
+          }
+        },
+        "usage": {
+          "input_tokens": 350,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "noul",
+          "expected": true,
+          "valid": true,
+          "correct": true,
+          "predicted": true,
+          "probability": 0.9620926899816429,
+          "brier": 0.001436964152827838,
+          "log_loss": 0.038644481625652934
+        },
+        {
+          "id": "q2",
+          "type": "choice",
+          "expected": "approved",
+          "valid": true,
+          "correct": true,
+          "predicted": "approved",
+          "log_loss": 0.022648882559164654
+        },
+        {
+          "id": "q3",
+          "type": "score",
+          "expected": 2,
+          "valid": true,
+          "correct": true,
+          "predicted": 2.0861034774316094,
+          "absolute_error": 0.0861034774316094,
+          "normalized_absolute_error": 0.0287011591438698
+        },
+        {
+          "id": "q4",
+          "type": "noul",
+          "expected": true,
+          "valid": true,
+          "correct": true,
+          "predicted": true,
+          "probability": 0.9941721774465123,
+          "brier": 0.00003396351571493969,
+          "log_loss": 0.005844870578857277
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "rubric-loss",
+      "category": "rubric",
+      "elapsed_ms": 906.0937299999932,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "df8167cb-016c-46ad-839b-50b1128ee33e",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "score",
+            "score": 2.992146255581603,
+            "legend": {
+              "0": "No user-visible functional impact",
+              "1": "Function degraded; a working workaround exists",
+              "2": "Function blocked with no workaround; no confirmed data loss",
+              "3": "Confirmed irreversible data loss"
+            },
+            "probabilities": {
+              "0": 0.0008298858219409089,
+              "1": 0.0002584610796949265,
+              "2": 0.004847164793183918,
+              "3": 0.9940644883051801
+            },
+            "confidence": 0.9713101082637687
+          }
+        },
+        "usage": {
+          "input_tokens": 150,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "score",
+          "expected": 3,
+          "valid": true,
+          "correct": true,
+          "predicted": 2.992146255581603,
+          "absolute_error": 0.007853744418397035,
+          "normalized_absolute_error": 0.002617914806132345
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "relational-join",
+      "category": "relational",
+      "elapsed_ms": 973.8146239999987,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "a3911e2e-a5ab-4850-816f-0b4fb610a258",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "blue",
+            "probabilities": {
+              "blue": 0.9923162733471701,
+              "red": 0.0075087338129250164,
+              "unknown": 0.00017499283990482072
+            },
+            "confidence": 0.9582215311808725
+          }
+        },
+        "usage": {
+          "input_tokens": 138,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "blue",
+          "valid": true,
+          "correct": true,
+          "predicted": "blue",
+          "log_loss": 0.007713398572136566
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "temporal-superseded",
+      "category": "temporal",
+      "elapsed_ms": 931.0598889999965,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "772ccc85-d5e1-4004-9f9f-8c4d40b73dd2",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "noul",
+            "noul": 0.9954119414718386
+          }
+        },
+        "usage": {
+          "input_tokens": 126,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "noul",
+          "expected": true,
+          "valid": true,
+          "correct": true,
+          "predicted": true,
+          "probability": 0.9954119414718386,
+          "brier": 0.00002105028105783413,
+          "log_loss": 0.004598615973184198
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "quantitative-distinct_count",
+      "category": "quantitative",
+      "elapsed_ms": 818.5258609999946,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "b6c9d0dc-6295-4ff0-a399-a6572cf0f214",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "4",
+            "probabilities": {
+              "3": 0.19405172765333617,
+              "4": 0.7826716280763116,
+              "5": 0.00666684280643773,
+              "7": 0.016609801463914383
+            },
+            "confidence": 0.5589475292148547
+          }
+        },
+        "usage": {
+          "input_tokens": 110,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "4",
+          "valid": true,
+          "correct": true,
+          "predicted": "4",
+          "log_loss": 0.2450420476129246
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "evidence-scope",
+      "category": "evidence",
+      "elapsed_ms": 993.3570390000023,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "57aa08bd-39da-4a42-9e97-ddfbb028adae",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "unknown",
+            "probabilities": {
+              "contradicted": 0.005321576350997937,
+              "entailed": 0.00545647794638108,
+              "unknown": 0.989221945702621
+            },
+            "confidence": 0.9389985866090292
+          }
+        },
+        "usage": {
+          "input_tokens": 139,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "unknown",
+          "valid": true,
+          "correct": true,
+          "predicted": "unknown",
+          "log_loss": 0.010836558277062964
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "evidence-negated_quantifier",
+      "category": "evidence",
+      "elapsed_ms": 909.1786429999993,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "0cf7e581-fa80-4a2f-91cb-d29df75728cb",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "entailed",
+            "probabilities": {
+              "contradicted": 0.002129273170894718,
+              "entailed": 0.9944299861244792,
+              "unknown": 0.0034407407046259785
+            },
+            "confidence": 0.965256329000864
+          }
+        },
+        "usage": {
+          "input_tokens": 128,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "entailed",
+          "valid": true,
+          "correct": true,
+          "predicted": "entailed",
+          "log_loss": 0.005585584247851501
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "context-short_multi_no",
+      "category": "context",
+      "elapsed_ms": 1429.8945600000006,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "f12116b1-f933-4dff-8788-16e7b6e3d0e6",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "noul",
+            "noul": 0.006230113479246343
+          },
+          "q2": {
+            "type": "choice",
+            "choice": "rejected",
+            "probabilities": {
+              "approved": 0.0017158952360254675,
+              "pending": 0.009130662788569131,
+              "rejected": 0.9891534419754053
+            },
+            "confidence": 0.9412051966068457
+          },
+          "q3": {
+            "type": "score",
+            "score": 0.012796905760522123,
+            "legend": {
+              "0": "None: 0%",
+              "1": "Low: 1–19%",
+              "2": "Medium: 20–39%",
+              "3": "High: 40–100%"
+            },
+            "probabilities": {
+              "0": 0.9889271821751224,
+              "1": 0.009489988640836031,
+              "2": 0.0014415704324391506,
+              "3": 0.0001412587516025974
+            },
+            "confidence": 0.952467446308348
+          },
+          "q4": {
+            "type": "noul",
+            "noul": 0.13166527151963414
+          }
+        },
+        "usage": {
+          "input_tokens": 349,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "noul",
+          "expected": false,
+          "valid": true,
+          "correct": true,
+          "predicted": false,
+          "probability": 0.006230113479246343,
+          "brier": 0.000038814313964286974,
+          "log_loss": 0.006249601620613377
+        },
+        {
+          "id": "q2",
+          "type": "choice",
+          "expected": "rejected",
+          "valid": true,
+          "correct": true,
+          "predicted": "rejected",
+          "log_loss": 0.01090581078360921
+        },
+        {
+          "id": "q3",
+          "type": "score",
+          "expected": 0,
+          "valid": true,
+          "correct": true,
+          "predicted": 0.012796905760522123,
+          "absolute_error": 0.012796905760522123,
+          "normalized_absolute_error": 0.004265635253507374
+        },
+        {
+          "id": "q4",
+          "type": "noul",
+          "expected": false,
+          "valid": true,
+          "correct": true,
+          "predicted": false,
+          "probability": 0.13166527151963414,
+          "brier": 0.017335743724338982,
+          "log_loss": 0.1411780067688312
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "rubric-cosmetic",
+      "category": "rubric",
+      "elapsed_ms": 1015.4168839999984,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "1c34114f-26b9-4336-be6f-9d2573c656ba",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "score",
+            "score": 0.009730580621851727,
+            "legend": {
+              "0": "No user-visible functional impact",
+              "1": "Function degraded; a working workaround exists",
+              "2": "Function blocked with no workaround; no confirmed data loss",
+              "3": "Confirmed irreversible data loss"
+            },
+            "probabilities": {
+              "0": 0.9929393132030842,
+              "1": 0.0055838135266292905,
+              "2": 0.0002838527156371375,
+              "3": 0.0011930205546493871
+            },
+            "confidence": 0.966563627393048
+          }
+        },
+        "usage": {
+          "input_tokens": 141,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "score",
+          "expected": 0,
+          "valid": true,
+          "correct": true,
+          "predicted": 0.009730580621851727,
+          "absolute_error": 0.009730580621851727,
+          "normalized_absolute_error": 0.0032435268739505756
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "policy-expired",
+      "category": "policy",
+      "elapsed_ms": 937.6910419999986,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "3b286229-170b-48f9-9a82-ec457fab21aa",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "ineligible",
+            "probabilities": {
+              "eligible": 0.0027616401230689605,
+              "ineligible": 0.9968436134159631,
+              "unknown": 0.00039474646096809726
+            },
+            "confidence": 0.9795045756463648
+          }
+        },
+        "usage": {
+          "input_tokens": 171,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "ineligible",
+          "valid": true,
+          "correct": true,
+          "predicted": "ineligible",
+          "log_loss": 0.0031613784791723874
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "relational-latest_not_last",
+      "category": "relational",
+      "elapsed_ms": 886.6766780000034,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "95fb76d4-5733-4307-a55c-eae3c2530fcc",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "approved",
+            "probabilities": {
+              "approved": 0.9884311165850793,
+              "pending": 0.006317548103843289,
+              "rejected": 0.0052513353110774
+            },
+            "confidence": 0.9353164532815563
+          }
+        },
+        "usage": {
+          "input_tokens": 123,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "approved",
+          "valid": true,
+          "correct": true,
+          "predicted": "approved",
+          "log_loss": 0.011636323589568981
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "multilingual-german_billing",
+      "category": "multilingual",
+      "elapsed_ms": 996.8028780000022,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "38f75fc1-28fd-4389-a55f-bbe6cc01cdd9",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "billing",
+            "probabilities": {
+              "access": 0.0005252176893513895,
+              "billing": 0.9917089809698701,
+              "delivery": 0.004217102691323989,
+              "other": 0.0035486986494544033
+            },
+            "confidence": 0.960107070530255
+          }
+        },
+        "usage": {
+          "input_tokens": 143,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "billing",
+          "valid": true,
+          "correct": true,
+          "predicted": "billing",
+          "log_loss": 0.00832558069526694
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "policy-unknown",
+      "category": "policy",
+      "elapsed_ms": 915.6323870000051,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "c4355611-9903-4799-bd23-13609b6eca0a",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "eligible",
+            "probabilities": {
+              "eligible": 0.7786411485635985,
+              "ineligible": 0.042178973980957574,
+              "unknown": 0.17917987745544406
+            },
+            "confidence": 0.42069905711744016
+          }
+        },
+        "usage": {
+          "input_tokens": 164,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "unknown",
+          "valid": true,
+          "correct": false,
+          "predicted": "eligible",
+          "log_loss": 1.7193650757316568
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "policy-exception",
+      "category": "policy",
+      "elapsed_ms": 926.3904800000018,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "7c50b2ad-b50b-40f3-a1e5-1d9336232082",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "eligible",
+            "probabilities": {
+              "eligible": 0.9957180454311148,
+              "ineligible": 0.004061483085434545,
+              "unknown": 0.00022047148345060114
+            },
+            "confidence": 0.9740650508322248
+          }
+        },
+        "usage": {
+          "input_tokens": 171,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "eligible",
+          "valid": true,
+          "correct": true,
+          "predicted": "eligible",
+          "log_loss": 0.004291148390755066
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "temporal-offset_after",
+      "category": "temporal",
+      "elapsed_ms": 951.7269429999942,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "cbadea65-f5ad-46b1-8d2f-a2601a986134",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "noul",
+            "noul": 0.8526133951973343
+          }
+        },
+        "usage": {
+          "input_tokens": 140,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "noul",
+          "expected": false,
+          "valid": true,
+          "correct": false,
+          "predicted": true,
+          "probability": 0.8526133951973343,
+          "brier": 0.7269496016699257,
+          "log_loss": 1.9146961798647943
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "rubric-workaround",
+      "category": "rubric",
+      "elapsed_ms": 1026.4091370000024,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "23b72b23-bdb3-43b9-baa4-bc3720eb75d2",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "score",
+            "score": 1.586405383856493,
+            "legend": {
+              "0": "No user-visible functional impact",
+              "1": "Function degraded; a working workaround exists",
+              "2": "Function blocked with no workaround; no confirmed data loss",
+              "3": "Confirmed irreversible data loss"
+            },
+            "probabilities": {
+              "0": 0.0068167296853002286,
+              "1": 0.40213876363252943,
+              "2": 0.5888668998225478,
+              "3": 0.0021776068596226915
+            },
+            "confidence": 0.47664713182026464
+          }
+        },
+        "usage": {
+          "input_tokens": 149,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "score",
+          "expected": 1,
+          "valid": true,
+          "correct": false,
+          "predicted": 1.586405383856493,
+          "absolute_error": 0.5864053838564931,
+          "normalized_absolute_error": 0.1954684612854977
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "evidence-explicit_negative",
+      "category": "evidence",
+      "elapsed_ms": 942.3354299999992,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "12804aa6-b86d-4751-8fcf-b9beb08918a1",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "contradicted",
+            "probabilities": {
+              "contradicted": 0.9994755048627599,
+              "entailed": 0.00038763959472817774,
+              "unknown": 0.00013685554251198002
+            },
+            "confidence": 0.995642701262777
+          }
+        },
+        "usage": {
+          "input_tokens": 131,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "contradicted",
+          "valid": true,
+          "correct": true,
+          "predicted": "contradicted",
+          "log_loss": 0.0005246327329288438
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "relational-deduplicate",
+      "category": "relational",
+      "elapsed_ms": 982.2605889999977,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "94ba398d-6a54-43e4-ab79-a6761d51ce83",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "17",
+            "probabilities": {
+              "10": 0.05884008994823741,
+              "17": 0.9187476045424371,
+              "20": 0.011117195868237263,
+              "27": 0.011295109641088345
+            },
+            "confidence": 0.7509853030625573
+          }
+        },
+        "usage": {
+          "input_tokens": 145,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "17",
+          "valid": true,
+          "correct": true,
+          "predicted": "17",
+          "log_loss": 0.08474383575923838
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "injection-quoted_payload",
+      "category": "injection",
+      "elapsed_ms": 941.8390349999972,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "b2c53d77-0327-4010-8b5c-ebcee7988310",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "delivery",
+            "probabilities": {
+              "access": 0.00014627971474207686,
+              "billing": 0.0021560030913292012,
+              "delivery": 0.9966406109505639,
+              "other": 0.0010571062433649108
+            },
+            "confidence": 0.9818756442136231
+          }
+        },
+        "usage": {
+          "input_tokens": 153,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "delivery",
+          "valid": true,
+          "correct": true,
+          "predicted": "delivery",
+          "log_loss": 0.003365044466211125
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "policy-known_exclusion",
+      "category": "policy",
+      "elapsed_ms": 926.3010129999966,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "3b6ba465-4ec9-4ecf-9401-e2cb6dbbf535",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "ineligible",
+            "probabilities": {
+              "eligible": 0.008692431774604995,
+              "ineligible": 0.9908965638976842,
+              "unknown": 0.0004110043277107094
+            },
+            "confidence": 0.9512888622182926
+          }
+        },
+        "usage": {
+          "input_tokens": 164,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "ineligible",
+          "valid": true,
+          "correct": true,
+          "predicted": "ineligible",
+          "log_loss": 0.009145125581299351
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "context-short_single_no",
+      "category": "context",
+      "elapsed_ms": 964.4524600000004,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "a012d658-c2e1-41dd-bab4-472e8286a96f",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "noul",
+            "noul": 0.05203867149804482
+          }
+        },
+        "usage": {
+          "input_tokens": 176,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "noul",
+          "expected": false,
+          "valid": true,
+          "correct": true,
+          "predicted": false,
+          "probability": 0.05203867149804482,
+          "brier": 0.0027080233312814224,
+          "log_loss": 0.05344157027861746
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "rubric-blocked",
+      "category": "rubric",
+      "elapsed_ms": 902.9213749999981,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "a1900e44-3cdb-4740-ad4c-630791a9c985",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "score",
+            "score": 1.998245423865517,
+            "legend": {
+              "0": "No user-visible functional impact",
+              "1": "Function degraded; a working workaround exists",
+              "2": "Function blocked with no workaround; no confirmed data loss",
+              "3": "Confirmed irreversible data loss"
+            },
+            "probabilities": {
+              "0": 0.0010547144367918696,
+              "1": 0.0009032375134895751,
+              "2": 0.9967839577971284,
+              "3": 0.0012580902525902167
+            },
+            "confidence": 0.9818412417752002
+          }
+        },
+        "usage": {
+          "input_tokens": 150,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "score",
+          "expected": 2,
+          "valid": true,
+          "correct": true,
+          "predicted": 1.998245423865517,
+          "absolute_error": 0.0017545761344830435,
+          "normalized_absolute_error": 0.0005848587114943479
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "context-long_single_no",
+      "category": "context",
+      "elapsed_ms": 2736.043767000003,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "3309b398-f02f-4f1a-bb25-fe5895947ba2",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "noul",
+            "noul": 0.00860974194223503
+          }
+        },
+        "usage": {
+          "input_tokens": 824,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "noul",
+          "expected": false,
+          "valid": true,
+          "correct": true,
+          "predicted": false,
+          "probability": 0.00860974194223503,
+          "brier": 0.00007412765631188103,
+          "log_loss": 0.008647019893645922
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "injection-translation_attack",
+      "category": "injection",
+      "elapsed_ms": 939.758136000004,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "0292dcd2-b5ce-4bfd-9d64-20689f3a352e",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "access",
+            "probabilities": {
+              "access": 0.9763407561183064,
+              "billing": 0.011928530414779552,
+              "delivery": 0.009116348740633221,
+              "other": 0.0026143647262808507
+            },
+            "confidence": 0.9029216667304701
+          }
+        },
+        "usage": {
+          "input_tokens": 150,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "access",
+          "valid": true,
+          "correct": true,
+          "predicted": "access",
+          "log_loss": 0.023943618135497346
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "quantitative-net_stock",
+      "category": "quantitative",
+      "elapsed_ms": 981.9262250000029,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "79c2919c-1a3f-4011-9f8c-2f2d6401f832",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "13",
+            "probabilities": {
+              "10": 0.16207347913629006,
+              "13": 0.4263516143672159,
+              "15": 0.28315571220322955,
+              "17": 0.12841919429326448
+            },
+            "confidence": 0.07722656704332964
+          }
+        },
+        "usage": {
+          "input_tokens": 144,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "13",
+          "valid": true,
+          "correct": true,
+          "predicted": "13",
+          "log_loss": 0.8524908873178042
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "temporal-touching_intervals",
+      "category": "temporal",
+      "elapsed_ms": 989.999100999994,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "82d5f38c-4222-42cb-906c-b69086bd3700",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "noul",
+            "noul": 0.014209882896366493
+          }
+        },
+        "usage": {
+          "input_tokens": 129,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "noul",
+          "expected": false,
+          "valid": true,
+          "correct": true,
+          "predicted": false,
+          "probability": 0.014209882896366493,
+          "brier": 0.000201920771928449,
+          "log_loss": 0.014311810016100168
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "context-long_single_yes",
+      "category": "context",
+      "elapsed_ms": 2808.6308819999977,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "3b7dac10-7f3e-434f-9b9f-9d6e9b3d9e80",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "noul",
+            "noul": 0.980733349597917
+          }
+        },
+        "usage": {
+          "input_tokens": 825,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "noul",
+          "expected": true,
+          "valid": true,
+          "correct": true,
+          "predicted": true,
+          "probability": 0.980733349597917,
+          "brier": 0.00037120381771608404,
+          "log_loss": 0.019454671250031353
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "policy-inclusive",
+      "category": "policy",
+      "elapsed_ms": 933.8275889999932,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "250fb08b-3bf9-4bff-b425-3cab680896e7",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "eligible",
+            "probabilities": {
+              "eligible": 0.9915885614671075,
+              "ineligible": 0.007920219872962242,
+              "unknown": 0.0004912186599303692
+            },
+            "confidence": 0.9540883898727117
+          }
+        },
+        "usage": {
+          "input_tokens": 171,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "eligible",
+          "valid": true,
+          "correct": true,
+          "predicted": "eligible",
+          "log_loss": 0.008447014318143979
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "rubric-feature",
+      "category": "rubric",
+      "elapsed_ms": 970.1699749999971,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "8379d3af-fc13-4807-a418-9bb72f58dd0c",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "score",
+            "score": 1.3407880166711639,
+            "legend": {
+              "0": "No feature, steps, or environment identified",
+              "1": "Feature identified; neither steps nor environment given",
+              "2": "Feature and exactly one of steps or environment given",
+              "3": "Feature, reproduction steps, and environment all given"
+            },
+            "probabilities": {
+              "0": 0.025038960819432615,
+              "1": 0.6372194036793267,
+              "2": 0.30965629351188473,
+              "3": 0.028085341989355892
+            },
+            "confidence": 0.39202893675850825
+          }
+        },
+        "usage": {
+          "input_tokens": 140,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "score",
+          "expected": 1,
+          "valid": true,
+          "correct": true,
+          "predicted": 1.3407880166711639,
+          "absolute_error": 0.3407880166711639,
+          "normalized_absolute_error": 0.11359600555705462
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "policy-deny_overrides",
+      "category": "policy",
+      "elapsed_ms": 864.6290799999988,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "17ae57b0-c063-49bb-bf83-6e3fa7499d10",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "noul",
+            "noul": 0.03950610704338786
+          }
+        },
+        "usage": {
+          "input_tokens": 109,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "noul",
+          "expected": false,
+          "valid": true,
+          "correct": true,
+          "predicted": false,
+          "probability": 0.03950610704338786,
+          "brier": 0.00156073249372362,
+          "log_loss": 0.040307654985709804
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "multilingual-code_switch",
+      "category": "multilingual",
+      "elapsed_ms": 1022.271974000003,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "f73e2a1f-7bf5-4380-81a3-0d346744d484",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "billing",
+            "probabilities": {
+              "access": 0.00011039795568698804,
+              "billing": 0.9968547528580901,
+              "delivery": 0.0019599901816885097,
+              "other": 0.0010748590045343172
+            },
+            "confidence": 0.9828942354779203
+          }
+        },
+        "usage": {
+          "input_tokens": 140,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "billing",
+          "valid": true,
+          "correct": true,
+          "predicted": "billing",
+          "log_loss": 0.003150203827765129
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "multilingual-french_access",
+      "category": "multilingual",
+      "elapsed_ms": 993.8263159999915,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "c7234b35-a3e5-45bf-b4b4-8281e7d112be",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "access",
+            "probabilities": {
+              "access": 0.9941884625327203,
+              "billing": 0.0007347598762661941,
+              "delivery": 0.0023905162492697204,
+              "other": 0.0026862613417437584
+            },
+            "confidence": 0.9701160363390835
+          }
+        },
+        "usage": {
+          "input_tokens": 146,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "access",
+          "valid": true,
+          "correct": true,
+          "predicted": "access",
+          "log_loss": 0.0058284901638752905
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "multilingual-spanish_negation",
+      "category": "multilingual",
+      "elapsed_ms": 988.8064149999991,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "b0324346-fca3-4805-8673-78640d2dbaaf",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "billing",
+            "probabilities": {
+              "access": 0.001081806255629972,
+              "billing": 0.9875142637170425,
+              "delivery": 0.004903093765029798,
+              "other": 0.006500836262297534
+            },
+            "confidence": 0.9432974471344583
+          }
+        },
+        "usage": {
+          "input_tokens": 146,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "billing",
+          "valid": true,
+          "correct": true,
+          "predicted": "billing",
+          "log_loss": 0.012564338040754762
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "injection-json_injection",
+      "category": "injection",
+      "elapsed_ms": 944.8995410000061,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "44494b82-3885-45cd-9b35-2db91b143d36",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "access",
+            "probabilities": {
+              "access": 0.9837870905412267,
+              "billing": 0.009793602108988072,
+              "delivery": 0.0035205392305584097,
+              "other": 0.0028987681192269156
+            },
+            "confidence": 0.92915421848402
+          }
+        },
+        "usage": {
+          "input_tokens": 157,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "access",
+          "valid": true,
+          "correct": true,
+          "predicted": "access",
+          "log_loss": 0.016345776742744768
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "multilingual-arabic_access",
+      "category": "multilingual",
+      "elapsed_ms": 1005.9826559999929,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "bbf095af-e9fa-400e-bbbb-8704ac1fdd2a",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "access",
+            "probabilities": {
+              "access": 0.9969640597399233,
+              "billing": 0.0007544172589044777,
+              "delivery": 0.0009287680285362395,
+              "other": 0.001352754972636056
+            },
+            "confidence": 0.9827775622823229
+          }
+        },
+        "usage": {
+          "input_tokens": 149,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "access",
+          "valid": true,
+          "correct": true,
+          "predicted": "access",
+          "log_loss": 0.003040558075350674
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "relational-null_not_zero",
+      "category": "relational",
+      "elapsed_ms": 929.6141179999977,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "30c7db67-117f-4ec9-aaa6-0408f1b87588",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "B",
+            "probabilities": {
+              "A": 0.0015255172970118516,
+              "B": 0.9960723387269979,
+              "C": 0.0016008170318780263,
+              "none": 0.0008013269441124019
+            },
+            "confidence": 0.9784812949494166
+          }
+        },
+        "usage": {
+          "input_tokens": 132,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "B",
+          "valid": true,
+          "correct": true,
+          "predicted": "B",
+          "log_loss": 0.003935394790940912
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "injection-role_spoof",
+      "category": "injection",
+      "elapsed_ms": 923.2052079999994,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "4068cdc0-1708-4aaa-82f4-740fd32627aa",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "billing",
+            "probabilities": {
+              "access": 0.00089246849663726,
+              "billing": 0.9795845716618833,
+              "delivery": 0.011283693863183822,
+              "other": 0.008239265978295721
+            },
+            "confidence": 0.9158825141364101
+          }
+        },
+        "usage": {
+          "input_tokens": 161,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "billing",
+          "valid": true,
+          "correct": true,
+          "predicted": "billing",
+          "log_loss": 0.02062670365873167
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "injection-fake_system",
+      "category": "injection",
+      "elapsed_ms": 940.8338579999981,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "843b45d0-6162-4001-acc8-65b8fb78995b",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "choice",
+            "choice": "delivery",
+            "probabilities": {
+              "access": 0.00012654717513617276,
+              "billing": 0.0011061429899164835,
+              "delivery": 0.997294362077251,
+              "other": 0.0014729477576965419
+            },
+            "confidence": 0.9848723031311417
+          }
+        },
+        "usage": {
+          "input_tokens": 156,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "choice",
+          "expected": "delivery",
+          "valid": true,
+          "correct": true,
+          "predicted": "delivery",
+          "log_loss": 0.0027093047766462834
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    },
+    {
+      "endpoint": "local",
+      "case_id": "temporal-leap_day",
+      "category": "temporal",
+      "elapsed_ms": 1038.1761280000064,
+      "http_ok": true,
+      "status": 200,
+      "request_id": "9d96342b-8256-4dad-94d4-24aeb2ffa277",
+      "valid_response": true,
+      "response": {
+        "model": "gemmadiffusion-0.1",
+        "answers": {
+          "q1": {
+            "type": "noul",
+            "noul": 0.6749416060935454
+          }
+        },
+        "usage": {
+          "input_tokens": 141,
+          "output_tokens": 0
+        }
+      },
+      "evaluations": [
+        {
+          "id": "q1",
+          "type": "noul",
+          "expected": true,
+          "valid": true,
+          "correct": true,
+          "predicted": true,
+          "probability": 0.6749416060935454,
+          "brier": 0.10566295944904382,
+          "log_loss": 0.393129101342813
+        }
+      ],
+      "repeat": 0,
+      "warmup": false
+    }
+  ]
+}

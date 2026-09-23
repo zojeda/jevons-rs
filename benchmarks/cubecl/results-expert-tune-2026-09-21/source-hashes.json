@@ -1,0 +1,7 @@
+{
+  "crates/diffusion-cubecl/src/expert.rs": "40928f51c8afe7062498be2fdb80dc1bdd68a1eab5d01bab553d103cf14b890b",
+  "crates/diffusion-cubecl/src/q4k.rs": "bcc33e1648a1a1d2a7e59f8103ac234bf9937b05db4016e84c7a1fe181b84745",
+  "crates/diffusion-cubecl/examples/expert_tune.rs": "49fdd9cbea54d6710a7b111863156f4035e58b281be2d89504fa09204321d017",
+  "Cargo.lock": "708ddee790a18964da794a950df88ecffd77ecf2d85a6ec19fd43a35f005d8fd",
+  "benchmarks/cubecl/native_matmul.cpp": "4d1ee56a932525b76c8a14c8668abf237d9fd7214254f6653bbe0fac37a34e1d"
+}

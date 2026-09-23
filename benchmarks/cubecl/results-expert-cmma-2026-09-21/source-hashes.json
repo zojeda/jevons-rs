@@ -1,0 +1,9 @@
+{
+  "crates/diffusion-cubecl/src/expert.rs": "975005ef0df5af68a355b2b5ff4e4edf4268cecc8c12c68ebae9f43b405ff14b",
+  "crates/diffusion-cubecl/src/q4k.rs": "bcc33e1648a1a1d2a7e59f8103ac234bf9937b05db4016e84c7a1fe181b84745",
+  "crates/diffusion-cubecl/examples/expert_tune.rs": "ae22ed3552c70a9ee3ffd81daf7204084e2859304b7533a9112d8794c9f208a3",
+  "Cargo.lock": "708ddee790a18964da794a950df88ecffd77ecf2d85a6ec19fd43a35f005d8fd",
+  "benchmarks/cubecl/native_matmul.cpp": "4d1ee56a932525b76c8a14c8668abf237d9fd7214254f6653bbe0fac37a34e1d",
+  "benchmarks/cubecl/run_matmul.py": "ca6f3a92ab6cb41c4cec76c12fc86d97a64217ac7a130c2144b1c1a8092379c7",
+  "benchmarks/cubecl/compare_matmul.py": "0aa1b1e30a86b0f5705e835c274fd62fbc0697ebd14d0e9a861cc35eae148873"
+}

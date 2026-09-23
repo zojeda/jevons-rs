@@ -1,0 +1,19 @@
+{
+  "order": [
+    "native-a",
+    "cubecl-a",
+    "cubecl-b",
+    "native-b"
+  ],
+  "rounds": 50,
+  "fixture_manifest_sha256": "3fa76d083e50d977057caca18ea05ea7c2e06f94d52672117f3acdd81d42fffd",
+  "binaries": {
+    "native": "db139cb755047e07f700f57d635c5b3403cf4e995b4a46e8330602b57652c9fe",
+    "cubecl": "44c02f38b96395cee7ba53331d874978bec79f8a4bea4f6de069c7e3b91cc228"
+  },
+  "environment": {
+    "ROCM_PATH": "/opt/rocm-7.2.1",
+    "HIP_PATH": "/opt/rocm-7.2.1",
+    "HSA_ENABLE_DXG_DETECTION": "1"
+  }
+}

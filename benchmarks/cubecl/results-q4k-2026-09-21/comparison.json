@@ -1,0 +1,276 @@
+{
+  "model_sha256": "24523b6c833c9ce9f5f34f9b333ab1517d73d6f1e76a103645353114c8028bc5",
+  "order": [
+    "native-a",
+    "cubecl-a",
+    "cubecl-b",
+    "native-b"
+  ],
+  "cases": [
+    {
+      "case": "attention_q_128",
+      "shape_mkn": [
+        128,
+        2816,
+        4096
+      ],
+      "samples_per_variant": 100,
+      "native_p50_ms": 0.7578845,
+      "native_p95_ms": 1.147025,
+      "native_max_relative_rmse": 0.011756125134744728,
+      "packed_bytes": 6488064,
+      "cubecl_prepared_bytes": 8650752,
+      "cached_f16_bytes": 23068672,
+      "cached_f32_bytes": 46137344,
+      "variants": [
+        {
+          "variant": "dequant_each_matmul",
+          "p50_ms": 4.3538755,
+          "p95_ms": 5.343172999999999,
+          "speedup_vs_native": 0.17407123837142333,
+          "paired_run_speedups": [
+            0.09095780650997644,
+            0.26596420940836496
+          ],
+          "max_relative_rmse": 9.511652082471517e-07,
+          "max_normalized_error": 1.1759826419082142e-06
+        },
+        {
+          "variant": "cached_f32_matmul",
+          "p50_ms": 3.2476665000000002,
+          "p95_ms": 3.5055020000000003,
+          "speedup_vs_native": 0.23336278524903956,
+          "paired_run_speedups": [
+            0.13144643543207807,
+            0.31977088062830905
+          ],
+          "max_relative_rmse": 9.511652082471517e-07,
+          "max_normalized_error": 1.1759826419082142e-06
+        },
+        {
+          "variant": "dequant_each_f16_matmul",
+          "p50_ms": 3.0137764999999996,
+          "p95_ms": 3.566798,
+          "speedup_vs_native": 0.2514733590895012,
+          "paired_run_speedups": [
+            0.14235938982993435,
+            0.33818970587769326
+          ],
+          "max_relative_rmse": 0.0003593793928617122,
+          "max_normalized_error": 0.00039946660367319646
+        },
+        {
+          "variant": "cached_f16_matmul",
+          "p50_ms": 1.130837,
+          "p95_ms": 1.4397870000000002,
+          "speedup_vs_native": 0.6701978269193526,
+          "paired_run_speedups": [
+            0.3920620696583819,
+            0.8947127390164916
+          ],
+          "max_relative_rmse": 0.0003593793928617122,
+          "max_normalized_error": 0.00039946660367319646
+        }
+      ]
+    },
+    {
+      "case": "attention_q_512",
+      "shape_mkn": [
+        512,
+        2816,
+        4096
+      ],
+      "samples_per_variant": 100,
+      "native_p50_ms": 3.0629065000000004,
+      "native_p95_ms": 3.24772,
+      "native_max_relative_rmse": 0.012715875632739996,
+      "packed_bytes": 6488064,
+      "cubecl_prepared_bytes": 8650752,
+      "cached_f16_bytes": 23068672,
+      "cached_f32_bytes": 46137344,
+      "variants": [
+        {
+          "variant": "dequant_each_matmul",
+          "p50_ms": 13.077128000000002,
+          "p95_ms": 16.165608000000002,
+          "speedup_vs_native": 0.23421859142160267,
+          "paired_run_speedups": [
+            0.23246904317259287,
+            0.23366247741703924
+          ],
+          "max_relative_rmse": 9.501652518352732e-07,
+          "max_normalized_error": 1.1168806684486126e-06
+        },
+        {
+          "variant": "cached_f32_matmul",
+          "p50_ms": 11.721689999999999,
+          "p95_ms": 14.209981,
+          "speedup_vs_native": 0.26130246577072086,
+          "paired_run_speedups": [
+            0.26080032107682827,
+            0.26218381210145064
+          ],
+          "max_relative_rmse": 9.501652518352732e-07,
+          "max_normalized_error": 1.1168806684486126e-06
+        },
+        {
+          "variant": "dequant_each_f16_matmul",
+          "p50_ms": 4.376170999999999,
+          "p95_ms": 5.031701,
+          "speedup_vs_native": 0.6999055795580202,
+          "paired_run_speedups": [
+            0.6683849242064854,
+            0.7197749500742783
+          ],
+          "max_relative_rmse": 0.00035932890374541256,
+          "max_normalized_error": 0.00035818363037147007
+        },
+        {
+          "variant": "cached_f16_matmul",
+          "p50_ms": 2.3650295,
+          "p95_ms": 2.714878,
+          "speedup_vs_native": 1.2950817315386554,
+          "paired_run_speedups": [
+            1.2638260783695863,
+            1.3073407962609032
+          ],
+          "max_relative_rmse": 0.00035932890374541256,
+          "max_normalized_error": 0.00035818363037147007
+        }
+      ]
+    },
+    {
+      "case": "expert_gate_up_32",
+      "shape_mkn": [
+        32,
+        2816,
+        1408
+      ],
+      "samples_per_variant": 100,
+      "native_p50_ms": 0.327369,
+      "native_p95_ms": 0.444058,
+      "native_max_relative_rmse": 0.013556519046108948,
+      "packed_bytes": 2230272,
+      "cubecl_prepared_bytes": 2973696,
+      "cached_f16_bytes": 7929856,
+      "cached_f32_bytes": 15859712,
+      "variants": [
+        {
+          "variant": "dequant_each_matmul",
+          "p50_ms": 2.717022,
+          "p95_ms": 3.2781949999999997,
+          "speedup_vs_native": 0.12048816682382403,
+          "paired_run_speedups": [
+            0.13164125832304555,
+            0.11221107542464503
+          ],
+          "max_relative_rmse": 9.64232034459741e-07,
+          "max_normalized_error": 2.0430715976199677e-06
+        },
+        {
+          "variant": "cached_f32_matmul",
+          "p50_ms": 1.456457,
+          "p95_ms": 1.877339,
+          "speedup_vs_native": 0.2247707965288368,
+          "paired_run_speedups": [
+            0.2458499501805622,
+            0.20192504159252372
+          ],
+          "max_relative_rmse": 9.64232034459741e-07,
+          "max_normalized_error": 2.0430715976199677e-06
+        },
+        {
+          "variant": "dequant_each_f16_matmul",
+          "p50_ms": 1.3693994999999999,
+          "p95_ms": 1.743576,
+          "speedup_vs_native": 0.23906025962474797,
+          "paired_run_speedups": [
+            0.2606800752925426,
+            0.22240398100954742
+          ],
+          "max_relative_rmse": 0.00035921763244882074,
+          "max_normalized_error": 0.00041291936324754986
+        },
+        {
+          "variant": "cached_f16_matmul",
+          "p50_ms": 0.5082375,
+          "p95_ms": 0.7349709999999999,
+          "speedup_vs_native": 0.6441260237585774,
+          "paired_run_speedups": [
+            0.6900162323895535,
+            0.598391197020721
+          ],
+          "max_relative_rmse": 0.00035921763244882074,
+          "max_normalized_error": 0.00041291936324754986
+        }
+      ]
+    },
+    {
+      "case": "expert_gate_up_128",
+      "shape_mkn": [
+        128,
+        2816,
+        1408
+      ],
+      "samples_per_variant": 100,
+      "native_p50_ms": 0.6092335,
+      "native_p95_ms": 0.755924,
+      "native_max_relative_rmse": 0.011739544421058753,
+      "packed_bytes": 2230272,
+      "cubecl_prepared_bytes": 2973696,
+      "cached_f16_bytes": 7929856,
+      "cached_f32_bytes": 15859712,
+      "variants": [
+        {
+          "variant": "dequant_each_matmul",
+          "p50_ms": 2.4030415,
+          "p95_ms": 2.849915,
+          "speedup_vs_native": 0.25352600027922945,
+          "paired_run_speedups": [
+            0.2615688935232817,
+            0.23341588955571962
+          ],
+          "max_relative_rmse": 9.455050326999096e-07,
+          "max_normalized_error": 1.7860243780420773e-06
+        },
+        {
+          "variant": "cached_f32_matmul",
+          "p50_ms": 1.7035325,
+          "p95_ms": 2.1059680000000003,
+          "speedup_vs_native": 0.35762951396583276,
+          "paired_run_speedups": [
+            0.3768151281266913,
+            0.3163114578663932
+          ],
+          "max_relative_rmse": 9.455050326999096e-07,
+          "max_normalized_error": 1.7860243780420773e-06
+        },
+        {
+          "variant": "dequant_each_f16_matmul",
+          "p50_ms": 1.3528225,
+          "p95_ms": 1.66467,
+          "speedup_vs_native": 0.45034252461058266,
+          "paired_run_speedups": [
+            0.46875768406632,
+            0.40274130095297245
+          ],
+          "max_relative_rmse": 0.00035873305217374554,
+          "max_normalized_error": 0.0004290845233843545
+        },
+        {
+          "variant": "cached_f16_matmul",
+          "p50_ms": 0.6223995,
+          "p95_ms": 0.86068,
+          "speedup_vs_native": 0.9788463840346915,
+          "paired_run_speedups": [
+            1.0598579168697035,
+            0.8367247675512821
+          ],
+          "max_relative_rmse": 0.00035873305217374554,
+          "max_normalized_error": 0.0004290845233843545
+        }
+      ]
+    }
+  ],
+  "scope": "Operator comparison only; full CubeCL prefill/request timing is unavailable."
+}

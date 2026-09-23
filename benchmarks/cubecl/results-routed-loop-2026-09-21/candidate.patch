@@ -1,0 +1,61 @@
+--- a/crates/diffusion-cubecl/src/expert/routed.rs
++++ b/crates/diffusion-cubecl/src/expert/routed.rs
+@@ -71,31 +71,45 @@
+     let row = CUBE_POS_X as usize * CUBE_DIM_Y as usize + UNIT_POS_Y as usize;
+     let lane = UNIT_POS_X as usize;
+     let mut acc = Array::<f32>::new(tokens);
++    let mut assignments = Array::<u32>::new(tokens);
++    let mut input_offsets = Array::<u32>::new(tokens);
++    let count = counts[expert] as usize;
++    // Resolve routing once per tile rather than inside every reduction step.
++    // Inactive tail entries read the valid first input row; their sums are never
++    // scattered. This keeps the reduction free of per-token routing branches.
+     #[unroll]
+     for t in 0..tokens {
+         acc[t] = 0.0;
++        assignments[t] = 0;
++        input_offsets[t] = 0;
++        if first + t < count {
++            let assignment = slots[expert * m + first + t];
++            assignments[t] = assignment;
++            input_offsets[t] = (assignment / top_k as u32) * k as u32;
++        }
+     }
+     if row < n {
+-        for group in 0..k / 32 {
+-            let block = (expert * n + row) * (k / 256) + group / 8;
+-            let sub = group % 8;
+-            let byte = u32::cast_from(quants[block * 128 + (sub / 2) * 32 + lane]);
+-            let q = (byte >> ((sub % 2) * 4) as u32) & 15;
+-            let w = f32::cast_from(q) * scales[block * 8 + sub] - minima[block * 8 + sub];
++        // Unroll the eight subgroups in a Q4_K block, exposing independent
++        // loads and constant nibble offsets while keeping the K loop bounded.
++        for block_k in 0..k / 256 {
+             #[unroll]
+-            for t in 0..tokens {
+-                if first + t < counts[expert] as usize {
+-                    let assignment = slots[expert * m + first + t] as usize;
+-                    let token = assignment / top_k;
+-                    acc[t] += w * input[token * k + group * 32 + lane];
++            for sub in 0usize..8 {
++                let group = block_k * 8 + sub;
++                let block = (expert * n + row) * (k / 256) + block_k;
++                let byte = u32::cast_from(quants[block * 128 + (sub / 2) * 32 + lane]);
++                let q = (byte >> ((sub % 2) * 4) as u32) & 15;
++                let w = f32::cast_from(q) * scales[block * 8 + sub] - minima[block * 8 + sub];
++                #[unroll]
++                for t in 0..tokens {
++                    acc[t] += w * input[input_offsets[t] as usize + group * 32 + lane];
+                 }
+             }
+         }
+         #[unroll]
+         for t in 0..tokens {
+             let sum = plane_sum(acc[t]);
+-            if lane == 0 && first + t < counts[expert] as usize {
+-                let assignment = slots[expert * m + first + t] as usize;
++            if lane == 0 && first + t < count {
++                let assignment = assignments[t] as usize;
+                 output[assignment * n + row] = sum;
+             }
+         }

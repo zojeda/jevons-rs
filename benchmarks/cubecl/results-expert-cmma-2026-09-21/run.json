@@ -1,0 +1,20 @@
+{
+  "order": [
+    "native-a",
+    "cubecl-a",
+    "cubecl-b",
+    "native-b"
+  ],
+  "rounds": 50,
+  "fixture_manifest_sha256": "68d4a440164a40303fc111dfc60fd81d83f8e80f7e56430f3a58fa2c2bf4476e",
+  "variants": "cached_f16_matmul,tile_1_2_2_planes2,tile_1_2_4_planes4,fused_cmma_k32_waves2,fused_cmma_k32_waves4,fused_cmma_k32_waves8,fused_cmma_k64_waves2,fused_cmma_k64_waves4,fused_cmma_k64_waves8",
+  "binaries": {
+    "native": "51043f9e24f924ce00c0ac3b9085ce5838c0728b0ade51dee4f372b9390b4330",
+    "cubecl": "e98c5e3c25340766fbd93babe68e2d01b92642de33024d8aa1b2cb839289a9d2"
+  },
+  "environment": {
+    "ROCM_PATH": "/opt/rocm-7.2.1",
+    "HIP_PATH": "/opt/rocm-7.2.1",
+    "HSA_ENABLE_DXG_DETECTION": "1"
+  }
+}

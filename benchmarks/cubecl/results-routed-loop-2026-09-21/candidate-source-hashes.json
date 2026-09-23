@@ -1,0 +1,11 @@
+{
+  "crates/diffusion-cubecl/src/expert.rs": "30d77fcb58da278905ba2c904608d3548668cf0342124e9649806e597d7e02c4",
+  "crates/diffusion-cubecl/src/expert/routed.rs": "cf375acab1878dcc3366b25d1b6a71e68b93ff34912937fa165e41212401128a",
+  "crates/diffusion-cubecl/examples/routed_bench.rs": "98a586702757cd8dd03cd6193dd16493bdf8371acc003b74daed8f536f2883d3",
+  "Cargo.lock": "708ddee790a18964da794a950df88ecffd77ecf2d85a6ec19fd43a35f005d8fd",
+  "benchmarks/cubecl/native_matmul.cpp": "3485d9aad5c1f07c853d9eb460bdd8a9ce84327bc446ae380b5d8812a47549d4",
+  "benchmarks/cubecl/export_routed.py": "84d20089489681bb42d2534cffcdd8df1de5b7f60fcc9230217b5ad3fcd7a167",
+  "benchmarks/cubecl/run_matmul.py": "937cce2f5664ba363016385ca3775d5add25262a77c38db01e597e25da01aae4",
+  "benchmarks/cubecl/compare_matmul.py": "fa78a6ee1fb5b2f70afa19f34e9bd7c542b8afe0ffadbdf0934fbffe7482b7b5",
+  "benchmarks/cubecl/summarize_routed_profile.py": "224c8356c4d56f63932a6031dd11aa259a2de64e99cd3502f0b3797dc40205c4"
+}

@@ -1,0 +1,32 @@
+{
+  "model": "gemmadiffusion-latest",
+  "state": "Ground granulated blast furnace slag is used in concrete.",
+  "questions": {
+    "is_scm": {
+      "type": "noul",
+      "instructions": "Is the material a supplementary cementitious material (SCM)?"
+    },
+    "material_family": {
+      "type": "choice",
+      "instructions": "Which family best describes this material?",
+      "criteria": {
+        "scm": "Supplementary cementitious material",
+        "aggregate": "An inert aggregate such as sand or gravel",
+        "reinforcement": "Structural reinforcement such as steel bars"
+      }
+    },
+    "cement_replacement": {
+      "type": "score",
+      "instructions": "How suitable is this material for use as a partial replacement for Portland cement?",
+      "criteria": [
+        "Not suitable",
+        "Possibly suitable",
+        "Commonly used for this purpose"
+      ]
+    }
+  },
+  "steps": 3,
+  "samples": 2,
+  "think": 128,
+  "sequential": true
+}

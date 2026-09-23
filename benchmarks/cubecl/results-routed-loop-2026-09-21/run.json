@@ -1,0 +1,23 @@
+{
+  "order": [
+    "native-a",
+    "before-a",
+    "cubecl-a",
+    "cubecl-b",
+    "before-b",
+    "native-b"
+  ],
+  "rounds": 50,
+  "fixture_manifest_sha256": "6ce79b2ddb7dc733c22620ed9707c7748be5b9fe1f74f11848ae189a6eb3a5da",
+  "variants": null,
+  "binaries": {
+    "native": "abad9828fa201e1ebe59088d47fb8201575420dd7a5f05aa764ed7c416cd2724",
+    "cubecl": "41704cbbdd63af85375b5aa887cee3fd6c9fc8fc365c1718110d8bb5ee6fd5e5",
+    "before": "9522a10f327af9e682954a3487b419494a721606a1d4a59b725b2b8ac5f09bac"
+  },
+  "environment": {
+    "ROCM_PATH": "/opt/rocm-7.2.1",
+    "HIP_PATH": "/opt/rocm-7.2.1",
+    "HSA_ENABLE_DXG_DETECTION": "1"
+  }
+}

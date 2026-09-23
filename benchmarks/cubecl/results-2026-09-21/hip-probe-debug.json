@@ -1,0 +1,151 @@
+{
+  "backend": "Burn 0.21.0 ROCm / CubeCL 0.10.0",
+  "device_index": 0,
+  "dtype": "f32",
+  "rounds": 5,
+  "initialization_ms": 907.124478,
+  "elementwise_and_reduction_passed": true,
+  "cases": [
+    {
+      "shape_mkn": [
+        3,
+        7,
+        5
+      ],
+      "first_matmul_ms": 564.597499,
+      "samples": [
+        {
+          "matmul_ms": 1.207036,
+          "checked_entries": 15,
+          "max_abs_error": 0.0
+        },
+        {
+          "matmul_ms": 0.7122069999999999,
+          "checked_entries": 15,
+          "max_abs_error": 0.0
+        },
+        {
+          "matmul_ms": 0.9580040000000001,
+          "checked_entries": 15,
+          "max_abs_error": 0.0
+        },
+        {
+          "matmul_ms": 0.7501559999999999,
+          "checked_entries": 15,
+          "max_abs_error": 0.0
+        },
+        {
+          "matmul_ms": 0.71566,
+          "checked_entries": 15,
+          "max_abs_error": 0.0
+        }
+      ]
+    },
+    {
+      "shape_mkn": [
+        128,
+        2816,
+        4096
+      ],
+      "first_matmul_ms": 4111.653363,
+      "samples": [
+        {
+          "matmul_ms": 4.081754,
+          "checked_entries": 64,
+          "max_abs_error": 0.0
+        },
+        {
+          "matmul_ms": 3.481201,
+          "checked_entries": 64,
+          "max_abs_error": 0.0
+        },
+        {
+          "matmul_ms": 3.215425,
+          "checked_entries": 64,
+          "max_abs_error": 0.0
+        },
+        {
+          "matmul_ms": 3.117879,
+          "checked_entries": 64,
+          "max_abs_error": 0.0
+        },
+        {
+          "matmul_ms": 3.444404,
+          "checked_entries": 64,
+          "max_abs_error": 0.0
+        }
+      ]
+    },
+    {
+      "shape_mkn": [
+        512,
+        2816,
+        4096
+      ],
+      "first_matmul_ms": 3630.848363,
+      "samples": [
+        {
+          "matmul_ms": 12.984789,
+          "checked_entries": 64,
+          "max_abs_error": 0.0
+        },
+        {
+          "matmul_ms": 11.900507,
+          "checked_entries": 64,
+          "max_abs_error": 0.0
+        },
+        {
+          "matmul_ms": 10.684512,
+          "checked_entries": 64,
+          "max_abs_error": 0.0
+        },
+        {
+          "matmul_ms": 9.364351,
+          "checked_entries": 64,
+          "max_abs_error": 0.0
+        },
+        {
+          "matmul_ms": 8.500843,
+          "checked_entries": 64,
+          "max_abs_error": 0.0
+        }
+      ]
+    },
+    {
+      "shape_mkn": [
+        128,
+        2816,
+        704
+      ],
+      "first_matmul_ms": 668.1353049999999,
+      "samples": [
+        {
+          "matmul_ms": 1.506774,
+          "checked_entries": 64,
+          "max_abs_error": 0.0
+        },
+        {
+          "matmul_ms": 1.735502,
+          "checked_entries": 64,
+          "max_abs_error": 0.0
+        },
+        {
+          "matmul_ms": 1.599121,
+          "checked_entries": 64,
+          "max_abs_error": 0.0
+        },
+        {
+          "matmul_ms": 1.79737,
+          "checked_entries": 64,
+          "max_abs_error": 0.0
+        },
+        {
+          "matmul_ms": 1.901702,
+          "checked_entries": 64,
+          "max_abs_error": 0.0
+        }
+      ]
+    }
+  ],
+  "scope": "Float compute feasibility only; no GGUF, quantized matmul, or model inference. Synchronized host matmul time excludes upload and readback."
+}

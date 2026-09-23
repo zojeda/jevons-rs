@@ -1,0 +1,244 @@
+{
+  "backend": "CubeCL grouped Q4_K",
+  "rounds": 2,
+  "model_sha256": "24523b6c833c9ce9f5f34f9b333ab1517d73d6f1e76a103645353114c8028bc5",
+  "cases": [
+    {
+      "name": "routed_balanced_128",
+      "shape_mkn": [
+        128,
+        2816,
+        1408
+      ],
+      "experts": 128,
+      "top_k": 8,
+      "packed_bytes": 285474816,
+      "prepared_payload_bytes": 380633088,
+      "expanded_f16_weight_bytes": null,
+      "variants": [
+        {
+          "variant": "grouped_q4k_tokens4_waves4",
+          "warmup_ms": 1341.126649,
+          "samples": [
+            {
+              "elapsed_ms": 41.518298,
+              "error": {
+                "relative_rmse": 1.813168995052648e-7,
+                "normalized_max_error": 2.0235757365714503e-7,
+                "max_abs_error": 2.86102294921875e-6
+              }
+            },
+            {
+              "elapsed_ms": 38.629298,
+              "error": {
+                "relative_rmse": 1.813168995052648e-7,
+                "normalized_max_error": 2.0235757365714503e-7,
+                "max_abs_error": 2.86102294921875e-6
+              }
+            }
+          ]
+        },
+        {
+          "variant": "grouped_q4k_tokens8_waves4",
+          "warmup_ms": 771.675036,
+          "samples": [
+            {
+              "elapsed_ms": 33.888290000000005,
+              "error": {
+                "relative_rmse": 1.813168995052648e-7,
+                "normalized_max_error": 2.0235757365714503e-7,
+                "max_abs_error": 2.86102294921875e-6
+              }
+            },
+            {
+              "elapsed_ms": 34.245356,
+              "error": {
+                "relative_rmse": 1.813168995052648e-7,
+                "normalized_max_error": 2.0235757365714503e-7,
+                "max_abs_error": 2.86102294921875e-6
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "routed_skewed_128",
+      "shape_mkn": [
+        128,
+        2816,
+        1408
+      ],
+      "experts": 128,
+      "top_k": 8,
+      "packed_bytes": 285474816,
+      "prepared_payload_bytes": 380633088,
+      "expanded_f16_weight_bytes": null,
+      "variants": [
+        {
+          "variant": "grouped_q4k_tokens4_waves4",
+          "warmup_ms": 186.108239,
+          "samples": [
+            {
+              "elapsed_ms": 32.366783000000005,
+              "error": {
+                "relative_rmse": 1.8142332910371815e-7,
+                "normalized_max_error": 2.04146809646737e-7,
+                "max_abs_error": 2.384185791015625e-6
+              }
+            },
+            {
+              "elapsed_ms": 30.467238000000002,
+              "error": {
+                "relative_rmse": 1.8142332910371815e-7,
+                "normalized_max_error": 2.04146809646737e-7,
+                "max_abs_error": 2.384185791015625e-6
+              }
+            }
+          ]
+        },
+        {
+          "variant": "grouped_q4k_tokens8_waves4",
+          "warmup_ms": 107.63947399999999,
+          "samples": [
+            {
+              "elapsed_ms": 30.724418,
+              "error": {
+                "relative_rmse": 1.8142332910371815e-7,
+                "normalized_max_error": 2.04146809646737e-7,
+                "max_abs_error": 2.384185791015625e-6
+              }
+            },
+            {
+              "elapsed_ms": 34.568121,
+              "error": {
+                "relative_rmse": 1.8142332910371815e-7,
+                "normalized_max_error": 2.04146809646737e-7,
+                "max_abs_error": 2.384185791015625e-6
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "routed_balanced_512",
+      "shape_mkn": [
+        512,
+        2816,
+        1408
+      ],
+      "experts": 128,
+      "top_k": 8,
+      "packed_bytes": 285474816,
+      "prepared_payload_bytes": 380633088,
+      "expanded_f16_weight_bytes": null,
+      "variants": [
+        {
+          "variant": "grouped_q4k_tokens4_waves4",
+          "warmup_ms": 1347.893251,
+          "samples": [
+            {
+              "elapsed_ms": 133.683725,
+              "error": {
+                "relative_rmse": 1.815465562062717e-7,
+                "normalized_max_error": 1.598257095664822e-7,
+                "max_abs_error": 2.682209014892578e-6
+              }
+            },
+            {
+              "elapsed_ms": 136.654829,
+              "error": {
+                "relative_rmse": 1.815465562062717e-7,
+                "normalized_max_error": 1.598257095664822e-7,
+                "max_abs_error": 2.682209014892578e-6
+              }
+            }
+          ]
+        },
+        {
+          "variant": "grouped_q4k_tokens8_waves4",
+          "warmup_ms": 886.525504,
+          "samples": [
+            {
+              "elapsed_ms": 108.493467,
+              "error": {
+                "relative_rmse": 1.815465562062717e-7,
+                "normalized_max_error": 1.598257095664822e-7,
+                "max_abs_error": 2.682209014892578e-6
+              }
+            },
+            {
+              "elapsed_ms": 139.890715,
+              "error": {
+                "relative_rmse": 1.815465562062717e-7,
+                "normalized_max_error": 1.598257095664822e-7,
+                "max_abs_error": 2.682209014892578e-6
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "routed_skewed_512",
+      "shape_mkn": [
+        512,
+        2816,
+        1408
+      ],
+      "experts": 128,
+      "top_k": 8,
+      "packed_bytes": 285474816,
+      "prepared_payload_bytes": 380633088,
+      "expanded_f16_weight_bytes": null,
+      "variants": [
+        {
+          "variant": "grouped_q4k_tokens4_waves4",
+          "warmup_ms": 611.612807,
+          "samples": [
+            {
+              "elapsed_ms": 138.766523,
+              "error": {
+                "relative_rmse": 1.816540531370325e-7,
+                "normalized_max_error": 2.490662506264016e-7,
+                "max_abs_error": 3.814697265625e-6
+              }
+            },
+            {
+              "elapsed_ms": 135.194643,
+              "error": {
+                "relative_rmse": 1.816540531370325e-7,
+                "normalized_max_error": 2.490662506264016e-7,
+                "max_abs_error": 3.814697265625e-6
+              }
+            }
+          ]
+        },
+        {
+          "variant": "grouped_q4k_tokens8_waves4",
+          "warmup_ms": 452.879219,
+          "samples": [
+            {
+              "elapsed_ms": 124.03987099999999,
+              "error": {
+                "relative_rmse": 1.816540531370325e-7,
+                "normalized_max_error": 2.490662506264016e-7,
+                "max_abs_error": 3.814697265625e-6
+              }
+            },
+            {
+              "elapsed_ms": 120.449629,
+              "error": {
+                "relative_rmse": 1.816540531370325e-7,
+                "normalized_max_error": 2.490662506264016e-7,
+                "max_abs_error": 3.814697265625e-6
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "scope": "All 128 gate/up experts with resident top-8 IDs; includes GPU grouping and output scatter, excludes router logits/top-k selection, expert activation/down projection and combine"
+}

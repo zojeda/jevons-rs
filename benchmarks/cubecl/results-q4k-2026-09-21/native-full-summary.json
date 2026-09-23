@@ -1,0 +1,21 @@
+{
+  "requests": 160,
+  "rounds": 20,
+  "warmup_requests": 8,
+  "exact_repeat_checks_passed": true,
+  "load_ms": 25255.623599,
+  "phases": {
+    "total": {
+      "p50_ms": 1402.558555,
+      "p95_ms": 1532.433709
+    },
+    "prefill": {
+      "p50_ms": 1271.369348,
+      "p95_ms": 1388.5649199999998
+    },
+    "canvas": {
+      "p50_ms": 125.720925,
+      "p95_ms": 139.776603
+    }
+  }
+}

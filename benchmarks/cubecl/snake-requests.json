@@ -1,0 +1,402 @@
+[
+  {
+    "model": "gemmadiffusion-latest",
+    "state": {
+      "board": [
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "......ToH.......",
+        "................",
+        ".F..............",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................"
+      ],
+      "legend": "H = snake head, o = snake body, T = snake tail, F = food, . = empty. Row 0 is the top row, column 0 is the leftmost column. Leaving the grid hits a wall.",
+      "head": {
+        "row": 8,
+        "col": 8
+      },
+      "food": {
+        "row": 10,
+        "col": 1
+      },
+      "heading": "right",
+      "snakeLength": 3,
+      "gridSize": {
+        "rows": 16,
+        "cols": 16
+      },
+      "foodIsAdjacent": false
+    },
+    "questions": {
+      "move": {
+        "type": "choice",
+        "instructions": "You are playing the game Snake. Choose the direction the snake's head moves on the next step. Every listed direction is safe for this single step; the facts next to each direction were computed by code and are exact. A move marked DEAD END almost always loses the game a few steps later. The snake grows by one when it eats the food, and the game ends when the head hits a wall or its own body. Player strategy: Stay alive above all. Prefer the move that keeps the most empty cells reachable, never enter a dead end, and only go for the food when that does not shrink your room. Make no mistakes.",
+        "criteria": {
+          "up": "left turn, head moves to row 7 col 8; food is 10 steps away after this move; 253 of 253 empty cells stay reachable; can still follow its own tail out",
+          "right": "straight, head moves to row 8 col 9; food is 10 steps away after this move; 253 of 253 empty cells stay reachable; can still follow its own tail out",
+          "down": "right turn, head moves to row 9 col 8; food is 8 steps away after this move; 253 of 253 empty cells stay reachable; can still follow its own tail out"
+        }
+      }
+    }
+  },
+  {
+    "model": "gemmadiffusion-latest",
+    "state": {
+      "board": [
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "......ToH.......",
+        "................",
+        "................",
+        "............F...",
+        "................",
+        "................",
+        "................",
+        "................"
+      ],
+      "legend": "H = snake head, o = snake body, T = snake tail, F = food, . = empty. Row 0 is the top row, column 0 is the leftmost column. Leaving the grid hits a wall.",
+      "head": {
+        "row": 8,
+        "col": 8
+      },
+      "food": {
+        "row": 11,
+        "col": 12
+      },
+      "heading": "right",
+      "snakeLength": 3,
+      "gridSize": {
+        "rows": 16,
+        "cols": 16
+      },
+      "foodIsAdjacent": false
+    },
+    "questions": {
+      "move": {
+        "type": "choice",
+        "instructions": "You are playing the game Snake. Choose the direction the snake's head moves on the next step. Every listed direction is safe for this single step; the facts next to each direction were computed by code and are exact. A move marked DEAD END almost always loses the game a few steps later. The snake grows by one when it eats the food, and the game ends when the head hits a wall or its own body. Player strategy: Stay alive above all. Prefer the move that keeps the most empty cells reachable, never enter a dead end, and only go for the food when that does not shrink your room. Make no mistakes.",
+        "criteria": {
+          "up": "left turn, head moves to row 7 col 8; food is 8 steps away after this move; 253 of 253 empty cells stay reachable; can still follow its own tail out",
+          "right": "straight, head moves to row 8 col 9; food is 6 steps away after this move; 253 of 253 empty cells stay reachable; can still follow its own tail out",
+          "down": "right turn, head moves to row 9 col 8; food is 6 steps away after this move; 253 of 253 empty cells stay reachable; can still follow its own tail out"
+        }
+      }
+    }
+  },
+  {
+    "model": "gemmadiffusion-latest",
+    "state": {
+      "board": [
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "......ToH.......",
+        "................",
+        "................",
+        ".........F......",
+        "................",
+        "................",
+        "................",
+        "................"
+      ],
+      "legend": "H = snake head, o = snake body, T = snake tail, F = food, . = empty. Row 0 is the top row, column 0 is the leftmost column. Leaving the grid hits a wall.",
+      "head": {
+        "row": 8,
+        "col": 8
+      },
+      "food": {
+        "row": 11,
+        "col": 9
+      },
+      "heading": "right",
+      "snakeLength": 3,
+      "gridSize": {
+        "rows": 16,
+        "cols": 16
+      },
+      "foodIsAdjacent": false
+    },
+    "questions": {
+      "move": {
+        "type": "choice",
+        "instructions": "You are playing the game Snake. Choose the direction the snake's head moves on the next step. Every listed direction is safe for this single step; the facts next to each direction were computed by code and are exact. A move marked DEAD END almost always loses the game a few steps later. The snake grows by one when it eats the food, and the game ends when the head hits a wall or its own body. Player strategy: Stay alive above all. Prefer the move that keeps the most empty cells reachable, never enter a dead end, and only go for the food when that does not shrink your room. Make no mistakes.",
+        "criteria": {
+          "up": "left turn, head moves to row 7 col 8; food is 5 steps away after this move; 253 of 253 empty cells stay reachable; can still follow its own tail out",
+          "right": "straight, head moves to row 8 col 9; food is 3 steps away after this move; 253 of 253 empty cells stay reachable; can still follow its own tail out",
+          "down": "right turn, head moves to row 9 col 8; food is 3 steps away after this move; 253 of 253 empty cells stay reachable; can still follow its own tail out"
+        }
+      }
+    }
+  },
+  {
+    "model": "gemmadiffusion-latest",
+    "state": {
+      "board": [
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "......ToH.......",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "............F...",
+        "................"
+      ],
+      "legend": "H = snake head, o = snake body, T = snake tail, F = food, . = empty. Row 0 is the top row, column 0 is the leftmost column. Leaving the grid hits a wall.",
+      "head": {
+        "row": 8,
+        "col": 8
+      },
+      "food": {
+        "row": 14,
+        "col": 12
+      },
+      "heading": "right",
+      "snakeLength": 3,
+      "gridSize": {
+        "rows": 16,
+        "cols": 16
+      },
+      "foodIsAdjacent": false
+    },
+    "questions": {
+      "move": {
+        "type": "choice",
+        "instructions": "You are playing the game Snake. Choose the direction the snake's head moves on the next step. Every listed direction is safe for this single step; the facts next to each direction were computed by code and are exact. A move marked DEAD END almost always loses the game a few steps later. The snake grows by one when it eats the food, and the game ends when the head hits a wall or its own body. Player strategy: Stay alive above all. Prefer the move that keeps the most empty cells reachable, never enter a dead end, and only go for the food when that does not shrink your room. Make no mistakes.",
+        "criteria": {
+          "up": "left turn, head moves to row 7 col 8; food is 11 steps away after this move; 253 of 253 empty cells stay reachable; can still follow its own tail out",
+          "right": "straight, head moves to row 8 col 9; food is 9 steps away after this move; 253 of 253 empty cells stay reachable; can still follow its own tail out",
+          "down": "right turn, head moves to row 9 col 8; food is 9 steps away after this move; 253 of 253 empty cells stay reachable; can still follow its own tail out"
+        }
+      }
+    }
+  },
+  {
+    "model": "gemmadiffusion-latest",
+    "state": {
+      "board": [
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "......ToH.......",
+        "................",
+        "................",
+        ".F..............",
+        "................",
+        "................",
+        "................",
+        "................"
+      ],
+      "legend": "H = snake head, o = snake body, T = snake tail, F = food, . = empty. Row 0 is the top row, column 0 is the leftmost column. Leaving the grid hits a wall.",
+      "head": {
+        "row": 8,
+        "col": 8
+      },
+      "food": {
+        "row": 11,
+        "col": 1
+      },
+      "heading": "right",
+      "snakeLength": 3,
+      "gridSize": {
+        "rows": 16,
+        "cols": 16
+      },
+      "foodIsAdjacent": false
+    },
+    "questions": {
+      "move": {
+        "type": "choice",
+        "instructions": "You are playing the game Snake. Choose the direction the snake's head moves on the next step. Every listed direction is safe for this single step; the facts next to each direction were computed by code and are exact. A move marked DEAD END almost always loses the game a few steps later. The snake grows by one when it eats the food, and the game ends when the head hits a wall or its own body. Player strategy: Stay alive above all. Prefer the move that keeps the most empty cells reachable, never enter a dead end, and only go for the food when that does not shrink your room. Make no mistakes.",
+        "criteria": {
+          "up": "left turn, head moves to row 7 col 8; food is 11 steps away after this move; 253 of 253 empty cells stay reachable; can still follow its own tail out",
+          "right": "straight, head moves to row 8 col 9; food is 11 steps away after this move; 253 of 253 empty cells stay reachable; can still follow its own tail out",
+          "down": "right turn, head moves to row 9 col 8; food is 9 steps away after this move; 253 of 253 empty cells stay reachable; can still follow its own tail out"
+        }
+      }
+    }
+  },
+  {
+    "model": "gemmadiffusion-latest",
+    "state": {
+      "board": [
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        ".....FToH.......",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................"
+      ],
+      "legend": "H = snake head, o = snake body, T = snake tail, F = food, . = empty. Row 0 is the top row, column 0 is the leftmost column. Leaving the grid hits a wall.",
+      "head": {
+        "row": 8,
+        "col": 8
+      },
+      "food": {
+        "row": 8,
+        "col": 5
+      },
+      "heading": "right",
+      "snakeLength": 3,
+      "gridSize": {
+        "rows": 16,
+        "cols": 16
+      },
+      "foodIsAdjacent": false
+    },
+    "questions": {
+      "move": {
+        "type": "choice",
+        "instructions": "You are playing the game Snake. Choose the direction the snake's head moves on the next step. Every listed direction is safe for this single step; the facts next to each direction were computed by code and are exact. A move marked DEAD END almost always loses the game a few steps later. The snake grows by one when it eats the food, and the game ends when the head hits a wall or its own body. Player strategy: Stay alive above all. Prefer the move that keeps the most empty cells reachable, never enter a dead end, and only go for the food when that does not shrink your room. Make no mistakes.",
+        "criteria": {
+          "up": "left turn, head moves to row 7 col 8; food is 4 steps away after this move; 253 of 253 empty cells stay reachable; can still follow its own tail out",
+          "right": "straight, head moves to row 8 col 9; food is 4 steps away after this move; 253 of 253 empty cells stay reachable; can still follow its own tail out",
+          "down": "right turn, head moves to row 9 col 8; food is 4 steps away after this move; 253 of 253 empty cells stay reachable; can still follow its own tail out"
+        }
+      }
+    }
+  },
+  {
+    "model": "gemmadiffusion-latest",
+    "state": {
+      "board": [
+        "..F.............",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "......ToH.......",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................"
+      ],
+      "legend": "H = snake head, o = snake body, T = snake tail, F = food, . = empty. Row 0 is the top row, column 0 is the leftmost column. Leaving the grid hits a wall.",
+      "head": {
+        "row": 8,
+        "col": 8
+      },
+      "food": {
+        "row": 0,
+        "col": 2
+      },
+      "heading": "right",
+      "snakeLength": 3,
+      "gridSize": {
+        "rows": 16,
+        "cols": 16
+      },
+      "foodIsAdjacent": false
+    },
+    "questions": {
+      "move": {
+        "type": "choice",
+        "instructions": "You are playing the game Snake. Choose the direction the snake's head moves on the next step. Every listed direction is safe for this single step; the facts next to each direction were computed by code and are exact. A move marked DEAD END almost always loses the game a few steps later. The snake grows by one when it eats the food, and the game ends when the head hits a wall or its own body. Player strategy: Stay alive above all. Prefer the move that keeps the most empty cells reachable, never enter a dead end, and only go for the food when that does not shrink your room. Make no mistakes.",
+        "criteria": {
+          "up": "left turn, head moves to row 7 col 8; food is 13 steps away after this move; 253 of 253 empty cells stay reachable; can still follow its own tail out",
+          "right": "straight, head moves to row 8 col 9; food is 15 steps away after this move; 253 of 253 empty cells stay reachable; can still follow its own tail out",
+          "down": "right turn, head moves to row 9 col 8; food is 15 steps away after this move; 253 of 253 empty cells stay reachable; can still follow its own tail out"
+        }
+      }
+    }
+  },
+  {
+    "model": "gemmadiffusion-latest",
+    "state": {
+      "board": [
+        "................",
+        "................",
+        ".......F........",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "......ToH.......",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................"
+      ],
+      "legend": "H = snake head, o = snake body, T = snake tail, F = food, . = empty. Row 0 is the top row, column 0 is the leftmost column. Leaving the grid hits a wall.",
+      "head": {
+        "row": 8,
+        "col": 8
+      },
+      "food": {
+        "row": 2,
+        "col": 7
+      },
+      "heading": "right",
+      "snakeLength": 3,
+      "gridSize": {
+        "rows": 16,
+        "cols": 16
+      },
+      "foodIsAdjacent": false
+    },
+    "questions": {
+      "move": {
+        "type": "choice",
+        "instructions": "You are playing the game Snake. Choose the direction the snake's head moves on the next step. Every listed direction is safe for this single step; the facts next to each direction were computed by code and are exact. A move marked DEAD END almost always loses the game a few steps later. The snake grows by one when it eats the food, and the game ends when the head hits a wall or its own body. Player strategy: Stay alive above all. Prefer the move that keeps the most empty cells reachable, never enter a dead end, and only go for the food when that does not shrink your room. Make no mistakes.",
+        "criteria": {
+          "up": "left turn, head moves to row 7 col 8; food is 6 steps away after this move; 253 of 253 empty cells stay reachable; can still follow its own tail out",
+          "right": "straight, head moves to row 8 col 9; food is 8 steps away after this move; 253 of 253 empty cells stay reachable; can still follow its own tail out",
+          "down": "right turn, head moves to row 9 col 8; food is 8 steps away after this move; 253 of 253 empty cells stay reachable; can still follow its own tail out"
+        }
+      }
+    }
+  }
+]

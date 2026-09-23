@@ -1,0 +1,63 @@
+{
+  "model_sha256": "24523b6c833c9ce9f5f34f9b333ab1517d73d6f1e76a103645353114c8028bc5",
+  "seed": 42,
+  "format": "GGML Q4_K, 144 bytes/256 elements",
+  "reference": "Pinned GGUF dequantization, CPU NumPy f64 matmul, stored as f32",
+  "max_relative_rmse": 0.02,
+  "max_normalized_error": 0.05,
+  "scope": "Isolated matrix products, not a model or routed MoE layer",
+  "cases": [
+    {
+      "name": "attention_q_128",
+      "m": 128,
+      "k": 2816,
+      "n": 4096,
+      "tensor": "blk.0.attn_q.weight",
+      "expert": null,
+      "packed": "attention_q.q4k",
+      "weights_f32": "attention_q.f32",
+      "input": "attention_q_128.input.f32",
+      "expected": "attention_q_128.expected.f32",
+      "packed_sha256": "8c1e0e4431d73c32c1bfb748f8e8f2b5e783911bf99f017838b224563666a503"
+    },
+    {
+      "name": "attention_q_512",
+      "m": 512,
+      "k": 2816,
+      "n": 4096,
+      "tensor": "blk.0.attn_q.weight",
+      "expert": null,
+      "packed": "attention_q.q4k",
+      "weights_f32": "attention_q.f32",
+      "input": "attention_q_512.input.f32",
+      "expected": "attention_q_512.expected.f32",
+      "packed_sha256": "8c1e0e4431d73c32c1bfb748f8e8f2b5e783911bf99f017838b224563666a503"
+    },
+    {
+      "name": "expert_gate_up_32",
+      "m": 32,
+      "k": 2816,
+      "n": 1408,
+      "tensor": "blk.0.ffn_gate_up_exps.weight",
+      "expert": 0,
+      "packed": "expert_gate_up.q4k",
+      "weights_f32": "expert_gate_up.f32",
+      "input": "expert_gate_up_32.input.f32",
+      "expected": "expert_gate_up_32.expected.f32",
+      "packed_sha256": "776e45f30165f3f3b1542d678a5445ee47b7f3867545068928dcb36bc704b699"
+    },
+    {
+      "name": "expert_gate_up_128",
+      "m": 128,
+      "k": 2816,
+      "n": 1408,
+      "tensor": "blk.0.ffn_gate_up_exps.weight",
+      "expert": 0,
+      "packed": "expert_gate_up.q4k",
+      "weights_f32": "expert_gate_up.f32",
+      "input": "expert_gate_up_128.input.f32",
+      "expected": "expert_gate_up_128.expected.f32",
+      "packed_sha256": "776e45f30165f3f3b1542d678a5445ee47b7f3867545068928dcb36bc704b699"
+    }
+  ]
+}
