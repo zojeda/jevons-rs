@@ -1,5 +1,9 @@
 # Routed expert comparison
 
+> Historical record. The scripts and examples these commands use (llama.cpp matmul builds,
+> `export_*.py`, `run_matmul.py`, `q4k_bench`, `routed_bench`) were removed with the llama.cpp
+> backend; reproducing needs a checkout from before 2026-09-24.
+
 See the [initial comparison](results-routed-2026-09-21/README.md) and the
 [profile-guided loop optimization](results-routed-loop-2026-09-21/README.md).
 

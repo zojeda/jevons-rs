@@ -2,7 +2,7 @@
 
 use crate::error::ApiError;
 use axum::http::StatusCode;
-use jevons_engine::{Engine, Error, ModelConfig};
+use jevons_engine::{Engine, Error, ModelConfig, ModelInfo};
 use jevons_system_one::{Request, Response, ValidationError};
 use std::thread::JoinHandle;
 use tokio::sync::{mpsc, oneshot};
@@ -40,7 +40,7 @@ pub async fn start(
     model_id: String,
     seed: u64,
     capacity: usize,
-) -> Result<(Client, JoinHandle<()>), Box<dyn std::error::Error>> {
+) -> Result<(Client, JoinHandle<()>, ModelInfo), Box<dyn std::error::Error>> {
     if capacity == 0 {
         return Err("Queue capacity must be positive".into());
     }
@@ -56,7 +56,7 @@ pub async fn start(
                     return;
                 }
             };
-            if ready_sender.send(Ok(())).is_err() {
+            if ready_sender.send(Ok(engine.model_info().clone())).is_err() {
                 return;
             }
             while let Some(job) = receiver.blocking_recv() {
@@ -67,8 +67,8 @@ pub async fn start(
                 let _ = job.reply.send(result);
             }
         })?;
-    ready_receiver.await??;
-    Ok((Client { sender }, thread))
+    let info = ready_receiver.await??;
+    Ok((Client { sender }, thread, info))
 }
 
 fn evaluate(

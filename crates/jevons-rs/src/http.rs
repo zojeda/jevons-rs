@@ -16,6 +16,10 @@ pub const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 pub struct AppState {
     pub worker: worker::Client,
     pub model_id: String,
+    /// Routing aliases accepted in place of `model_id`.
+    pub aliases: Arc<[String]>,
+    /// Model listing description.
+    pub description: String,
     pub api_key: Option<Arc<str>>,
 }
 
@@ -59,6 +63,8 @@ mod tests {
             router(AppState {
                 worker: worker::Client { sender },
                 model_id: "local".into(),
+                aliases: ["jev-latest".to_string()].into(),
+                description: "Local test model.".into(),
                 api_key: key.map(Arc::from),
             }),
             receiver,

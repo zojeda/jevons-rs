@@ -1,5 +1,19 @@
 # JevBench public results
 
+## Nemotron-Labs-Diffusion-VLM-8B (2026-09-24)
+
+The same harness against Nemotron-Labs-Diffusion (`-m <checkpoint dir> --model-id nemotron-diffusion-8b`) completed all **231 public cases**: **146/231 correct (63.2%)**, **231/231 valid responses**, median latency **0.839 s** (p95 7.16 s), Brier 0.504. A rerun later the same day, back to back with DiffusionGemma, gave the same 146/231 at 0.644 s median (p95 7.93 s); see the [two-model report](../two-models-2026-09-24/README.md). Easy and standard single-skill groups (intent, fact, extraction, tool selection) were all correct; the losses concentrate in the original routing and ordinal groups and in the hard tier.
+
+These answers are the model's own: on a failing routing case ("Compute the least common multiple of 12 and 18", expected `math`), the official Python implementation's `generate` also answers the `coding_agent` code, with and without thinking, and its masked-token distribution matches this runtime's (0.949 for that code). The run used `scripts/jevbench-local.py --model-id nemotron-diffusion-8b`; raw evidence is under the gitignored `benchmarks/results/jevbench-2026-09-24T13-06-18Z-nemotron`.
+
+## CubeCL 0.11 / Burn 0.22 stack (2026-09-24)
+
+A rerun later the same day, back to back with Nemotron, reproduced **189/231** with median latency 0.400 s (p95 3.696 s); see the [two-model report](../two-models-2026-09-24/README.md).
+
+After moving the DiffusionGemma kernels to CubeCL 0.11 (the runtime shared with the Burn 0.22 models), the service completed all **231 public cases**: **189/231 correct (81.8%)**, **231/231 valid responses**, median latency **0.413 s** (p95 3.596 s). The CubeCL 0.10 run below scored 190/231 at 0.424 s (p95 4.401 s). Calibration improved slightly: Brier 0.2721 (was 0.2741).
+
+One case changed: `hard-opus-c-probability-03` is no longer correct. It is one of the borderline hard cases that already flipped between llama.cpp and CubeCL 0.10; the new code generator's arithmetic differs by about one f16 ulp in some kernels, which is within that noise. The other 230 cases kept the same correctness. The run used the same wrapper, harness commit, excluded warmup, and 120-second timeout; raw evidence is under the gitignored `benchmarks/results/jevbench-2026-09-24T10-13-59Z-cubecl011`.
+
 ## CubeCL default backend (2026-09-23)
 
 With the [CubeCL backend](../../docs/cubecl.md) as the default, the service completed all **231 public cases**: **190/231 correct (82.3%)**, with **231/231 valid responses**. Median latency was **0.424 s**, versus 0.912 s for llama.cpp on 2026-09-21. The [snapshot](results-2026-09-23-cubecl.json) contains per-case predictions, probabilities, latency, usage, and provenance hashes.

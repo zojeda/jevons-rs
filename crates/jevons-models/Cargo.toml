@@ -1,0 +1,23 @@
+[package]
+name = "jevons-models"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = ["gemma4", "nemotron"]
+# DiffusionGemma on the CubeCL/HIP runtime.
+gemma4 = ["dep:jevons-gemma4-diffusion"]
+# Nemotron-Labs-Diffusion on Burn (HIP).
+nemotron = ["dep:jevons-nemotron-diffusion"]
+
+[dependencies]
+jevons-core.workspace = true
+jevons-formats.workspace = true
+jevons-gemma4-diffusion = { workspace = true, optional = true }
+jevons-nemotron-diffusion = { workspace = true, optional = true }
+serde_json.workspace = true
+
+[lints]
+workspace = true

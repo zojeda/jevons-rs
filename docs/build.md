@@ -2,7 +2,7 @@
 
 [Back to README](../README.md)
 
-Run these commands from the repository root. Install Rust 1.92+ and the ROCm/HIP SDK, and supply your own DiffusionGemma GGUF model. No C/C++ toolchain, CMake or git submodule is needed: the service runs DiffusionGemma with the Rust [CubeCL backend](cubecl.md), whose kernels compile at runtime through HIP.
+Run these commands from the repository root. Install Rust 1.95+ and the ROCm/HIP SDK, and supply your own DiffusionGemma GGUF model. No C/C++ toolchain, CMake or git submodule is needed: the service runs DiffusionGemma with the Rust [CubeCL backend](cubecl.md), whose kernels compile at runtime through HIP.
 
 ```bash
 cargo build --workspace --locked
@@ -36,12 +36,15 @@ Both inference binaries accept these options:
 
 | Option | Default | Purpose |
 | --- | --- | --- |
+| `-m`, `--model` | `DIFFUSION_MODEL` | Model GGUF file or Hugging Face checkpoint directory. |
+| `--arch` | `auto` (`JEVONS_ARCH`) | Architecture: `auto`, `gemma4-diffusion` or `nemotron-diffusion`. `auto` detects it from the files; an explicit value must match them. |
 | `--main-gpu` | `0` | Select the HIP device. |
 | `--context-size` | `8192` | Limit prompt, thought framing/budget, and canvas tokens. |
 | `--batch-size` | `512` | Limit each prefill chunk and the full canvas (at most 1024). |
 | `--seed` | `42` | Seed the initial answer-slot noise. |
 | `--no-prompt-cache` | Off | Recompute every prompt instead of reusing its cached prefix. |
-| `--mmproj` | None | Vision projector GGUF for image input (server only). |
+| `--mmproj` | None | DiffusionGemma vision projector GGUF for image input (server only). |
+| `--model-id` | Per architecture | Served model ID (server only), such as `gemmadiffusion-0.1`. |
 
 ## Image input
 

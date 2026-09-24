@@ -1,5 +1,9 @@
 # Q4_K operator comparison
 
+> Historical record. The scripts and examples these commands use (llama.cpp matmul builds,
+> `export_*.py`, `run_matmul.py`, `q4k_bench`, `routed_bench`) were removed with the llama.cpp
+> backend; reproducing needs a checkout from before 2026-09-24.
+
 This compares real local GGUF weights through pinned GGML/HIP and a new safe Rust
 Burn/CubeCL implementation. It measures matrix products needed during prefill;
 the CubeCL implementation does not yet run a complete DiffusionGemma forward.

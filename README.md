@@ -1,6 +1,6 @@
 # jevons-rs
 
-A Rust implementation of [TypeSafe AI's System One API](https://docs.typesafe.ai/introduction): typed, probabilistic answers (yes/no, choice, rubric scores) from DiffusionGemma, running on AMD GPUs through [CubeCL](https://github.com/tracel-ai/cubecl) kernels with no llama.cpp or C++ build. It includes a Gemma 4 vision encoder, exact prompt-prefix caching and per-GPU autotuning.
+A Rust implementation of [TypeSafe AI's System One API](https://docs.typesafe.ai/introduction): typed, probabilistic answers (yes/no, choice, rubric scores) from diffusion language models (DiffusionGemma and NVIDIA Nemotron-Labs-Diffusion, both with image input), running on AMD GPUs through [CubeCL](https://github.com/tracel-ai/cubecl) and [Burn](https://github.com/tracel-ai/burn) with no llama.cpp or C++ build. It includes a Gemma 4 vision encoder, exact prompt-prefix caching and per-GPU autotuning.
 
 jevons-rs serves the System One API. You send a state and questions, and get probability distributions over yes/no answers, choices or rubric scores. Behind it, DiffusionGemma reads fixed answer slots on a masked canvas in a single pass.
 
@@ -38,7 +38,7 @@ DiffusionGemma's full text generator refines a noisy canvas over multiple denois
 
 ## Run
 
-You need Rust 1.92+, ROCm/HIP, an AMD RDNA3-class GPU with about 20 GB of free GPU memory, and a DiffusionGemma GGUF model. Obtain the model yourself. Configure ROCm/HIP with the [build guide](docs/build.md#rocmhip).
+You need Rust 1.95+, ROCm/HIP, an AMD RDNA3-class GPU with about 20 GB of free GPU memory, and a DiffusionGemma GGUF model. Obtain the model yourself. Configure ROCm/HIP with the [build guide](docs/build.md#rocmhip).
 
 ```bash
 export DIFFUSION_MODEL="$HOME/models/diffusiongemma/diffusiongemma-26B-A4B-it-Q4_K_M.gguf"
@@ -46,6 +46,16 @@ cargo run --release --locked -p jevons-rs -- --bind 127.0.0.1:8080
 ```
 
 The first start on a new GPU measures launch plans and compiles kernel variants, which took a few minutes on the test machine. Later starts reuse the results from `~/.cache/diffusion-cubecl` and load the weights in about 35 s. NVIDIA GPUs and CPU inference are not supported.
+
+### Nemotron-Labs-Diffusion
+
+Point `-m` at a [Nemotron-Labs-Diffusion](https://huggingface.co/nvidia/Nemotron-Labs-Diffusion-VLM-8B) checkpoint directory (BF16 safetensors, about 18 GB); the architecture is detected from its `config.json`, or set it with `--arch nemotron-diffusion`:
+
+```bash
+cargo run --release --locked -p jevons-rs -- -m "$HOME/models/nemotron-labs-diffusion-vlm-8b"
+```
+
+It runs on the Burn runtime and serves `nemotron-diffusion-8b` (alias `nemotron-diffusion-latest`). The first start compiles and autotunes kernels for several minutes; results are cached in `~/.cache/jevons-burn`. Image questions work without extra files: the checkpoint contains its Pixtral vision tower (no `--mmproj`). Check the model's license (the VLM card names the NVIDIA Source Code License) before any use beyond evaluation.
 
 ## Text example
 
@@ -160,9 +170,24 @@ Use [JavaScript SDK examples](examples/javascript/README.md) for application cod
 
 ## Benchmarks
 
-All local results use DiffusionGemma Q4_K_M on an AMD Ryzen AI MAX+ 395 / Radeon 8060S (ROCm 7.2.1, WSL2), a release build, and the default request settings: `steps=1`, `samples=1`, `think=0`, seed 42, and an 8,192-token context.
+Local results use an AMD Ryzen AI MAX+ 395 / Radeon 8060S (ROCm 7.2.1, WSL2), a release build, and the default request settings: `steps=1`, `samples=1`, `think=0`, seed 42, and an 8,192-token context.
 
-### CubeCL and the former llama.cpp backend
+### Both models (2026-09-24)
+
+Measured back to back on the current stack (CubeCL 0.11 / Burn 0.22), one model process at a time. See the [two-model report](benchmarks/two-models-2026-09-24/README.md) for per-case files and notes.
+
+| Benchmark | DiffusionGemma Q4_K_M | Nemotron-Labs-Diffusion 8B |
+| --- | ---: | ---: |
+| JevBench public cases, correct | **189/231 (81.8%)** | 146/231 (63.2%) |
+| JevBench p50 / p95 latency | **0.400 / 3.696 s** | 0.644 / 7.934 s |
+| System One corpus, questions correct | **75/84 (89.3%)** | 68/84 (81.0%) |
+| System One p50 / p95 latency | **365.4 / 1,440.1 ms** | 572.9 / 1,990.2 ms |
+| Snake prompt prefill p50 (~470 tokens) | **688 ms** | 1,030 ms |
+| Snake canvas forward p50 | **57 ms** | 239 ms |
+
+Against the CubeCL 0.10 build of 2026-09-23 (the table below), DiffusionGemma's JevBench and corpus scores each moved by one near-tie case, while JevBench latency and calibration improved. In an interleaved A/B on one day, the new build prefilled 15–25% faster than the old one. The corpus p95 includes two requests that paid one-time kernel compilation on a freshly started service. Nemotron activates all 8B parameters per forward, while DiffusionGemma's MoE activates about 4B; Nemotron's lower accuracy matches the official Python implementation's answers.
+
+### DiffusionGemma: CubeCL and the former llama.cpp backend (2026-09-23)
 
 | Benchmark | llama.cpp HIP | CubeCL |
 | --- | ---: | ---: |
@@ -178,7 +203,7 @@ CubeCL service results are from 2026-09-23 and llama.cpp service results from 20
 
 ### JevBench public cases
 
-On 2026-09-23, the service on CubeCL answered **190/231 public JevBench cases correctly (82.3%)**, with **231/231 valid responses**. The median latency was 0.424 s. On 2026-09-21, llama.cpp scored 189/231 (81.8%) with a median of 0.912 s. See the [per-case CubeCL results](benchmarks/jevbench/results-2026-09-23-cubecl.json).
+On 2026-09-24, DiffusionGemma answered **189/231** and Nemotron-Labs-Diffusion **146/231** public cases correctly, both with 231/231 valid responses. On 2026-09-23, the service on CubeCL 0.10 answered **190/231 public JevBench cases correctly (82.3%)**, with **231/231 valid responses**. The median latency was 0.424 s. On 2026-09-21, llama.cpp scored 189/231 (81.8%) with a median of 0.912 s. See the [per-case CubeCL results](benchmarks/jevbench/results-2026-09-23-cubecl.json).
 
 The earlier llama.cpp `think=1024` run scored **189/231 (81.8%)**, with **231/231 valid responses**; it was not rerun on CubeCL. See the [thinking comparison](benchmarks/jevbench/think1024-defaults-2026-09-21.md) and [per-case results](benchmarks/jevbench/results-2026-09-21-defaults-think1024.json).
 
@@ -190,7 +215,9 @@ All local runs sent one HTTP request at a time over loopback, after one excluded
 | djev (Maisa, diffusion-gemma) | 194/231 | 84.0% | 0.239 s | 0.354 s |
 | OpenJev (DiffusionGemma 26B-A4B NVFP4, razorback16) | 189/231 | 81.8% | 0.246 s | 0.459 s |
 | SemIf, formerly OpenJev (Qwen3.5-4B, TheoLeeCJ) | 187/231 | 81.0% | 0.194 s | 0.538 s |
-| **Local Q4_K_M, CubeCL** | **190/231** | **82.3%** | **0.424 s** | **4.401 s** |
+| **Local DiffusionGemma Q4_K_M, CubeCL 0.11 (Sep 24)** | **189/231** | **81.8%** | **0.400 s** | **3.696 s** |
+| Local DiffusionGemma Q4_K_M, CubeCL 0.10 (Sep 23) | 190/231 | 82.3% | 0.424 s | 4.401 s |
+| Local Nemotron-Labs-Diffusion 8B (Sep 24) | 146/231 | 63.2% | 0.644 s | 7.934 s |
 | Local Q4_K_M, llama.cpp | 189/231 | 81.8% | 0.912 s | 8.124 s |
 | Local Q4_K_M, llama.cpp, `think=1024` | 189/231 | 81.8% | 18.325 s | 37.483 s |
 
@@ -202,15 +229,15 @@ These 231 public cases omit 303 decisions from the full benchmark. They do not e
 
 On 2026-09-23, the service on CubeCL scored **76/84 (90.5%)**, with **72/72 valid responses** and a 338.2 ms median latency. Each run used the same 72 requests and 84 questions, one round, concurrency one, and no benchmark warmups or retries. Hosted TypeSafe was last measured on September 19.
 
-| Metric | Local CubeCL, Sep 23 | Local llama.cpp, Sep 21 | Local llama.cpp, Sep 19 | Hosted `jev-1.13.0`, Sep 19 |
-| --- | --- | --- | --- | --- |
-| Question accuracy | **76/84 (90.5%)** | 75/84 (89.3%) | 65/84 (77.4%) | 80/84 (95.2%) |
-| Valid responses | 72/72 | 72/72 | 72/72 | 71/72 |
-| p50 latency, valid responses | **338.2 ms** | 956.7 ms | 588.4 ms | 339.9 ms |
-| p95 latency, valid responses | **862.3 ms** | 2,065.8 ms | 1,314.6 ms | 881.0 ms |
-| Mean latency, all attempts | **484.4 ms** | 1,112.6 ms | 683.6 ms | 838.4 ms |
+| Metric | Gemma CubeCL 0.11, Sep 24 | Nemotron, Sep 24 | Gemma CubeCL 0.10, Sep 23 | Local llama.cpp, Sep 21 | Local llama.cpp, Sep 19 | Hosted `jev-1.13.0`, Sep 19 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Question accuracy | 75/84 (89.3%) | 68/84 (81.0%) | **76/84 (90.5%)** | 75/84 (89.3%) | 65/84 (77.4%) | 80/84 (95.2%) |
+| Valid responses | 72/72 | 72/72 | 72/72 | 72/72 | 72/72 | 71/72 |
+| p50 latency, valid responses | 365.4 ms | 572.9 ms | **338.2 ms** | 956.7 ms | 588.4 ms | 339.9 ms |
+| p95 latency, valid responses | 1,440.1 ms | 1,990.2 ms | **862.3 ms** | 2,065.8 ms | 1,314.6 ms | 881.0 ms |
+| Mean latency, all attempts | 648.4 ms | 812.3 ms | **484.4 ms** | 1,112.6 ms | 683.6 ms | 838.4 ms |
 
-Local p50 latency now matches hosted TypeSafe's September 19 figure, though hardware and network paths differ. The CubeCL mean includes one 7.3 s request that paid a one-time kernel compilation; see the [CubeCL corpus run](benchmarks/system-one/README.md#recorded-cubecl-results-2026-09-23). Between September 19 and 21, the llama.cpp score improved by 10 questions (11.9 percentage points). These are exploratory measurements on a small synthetic corpus. The September 21 run used a newly started service without inference warmups; another local service remained loaded and machine activity was not controlled. September 19 lacks hardware and quantization provenance, so the timings do not isolate the effect of the inference changes. The historical hosted timeout counts as incorrect and contributes to its all-attempt mean. See [results and methodology](benchmarks/system-one/README.md) and the per-request snapshots for [CubeCL](benchmarks/system-one/results-2026-09-23-cubecl.json) and [llama.cpp](benchmarks/system-one/results-2026-09-21-defaults.json).
+The September 24 runs each started from a freshly started service; DiffusionGemma's p95 and mean include two requests (7.7 s and 6.9 s) that paid one-time kernel compilation, and its one lost question (`relational-join_missing`) was a near-tie already at 0.48 on September 23. Local p50 latency matches hosted TypeSafe's September 19 figure, though hardware and network paths differ. The CubeCL mean includes one 7.3 s request that paid a one-time kernel compilation; see the [CubeCL corpus run](benchmarks/system-one/README.md#recorded-cubecl-results-2026-09-23). Between September 19 and 21, the llama.cpp score improved by 10 questions (11.9 percentage points). These are exploratory measurements on a small synthetic corpus. The September 21 run used a newly started service without inference warmups; another local service remained loaded and machine activity was not controlled. September 19 lacks hardware and quantization provenance, so the timings do not isolate the effect of the inference changes. The historical hosted timeout counts as incorrect and contributes to its all-attempt mean. See [results and methodology](benchmarks/system-one/README.md) and the per-request snapshots for [CubeCL](benchmarks/system-one/results-2026-09-23-cubecl.json) and [llama.cpp](benchmarks/system-one/results-2026-09-21-defaults.json).
 
 ## Documentation
 

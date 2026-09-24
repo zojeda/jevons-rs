@@ -8,6 +8,23 @@ tokenizes with a Rust port of the model's Gemma 4 tokenizer, and encodes images 
 port of the Gemma 4 vision tower. Earlier versions of this project ran llama.cpp; that backend
 was removed after CubeCL matched its answers (see [Performance](#performance)).
 
+The kernels live in `crates/jevons-gemma4-diffusion` and run on CubeCL 0.11, the same runtime and
+device memory pool as the Burn 0.22 models (Nemotron-Labs-Diffusion). They are the project's
+tuned kernels: quantized GEMM/GEMV, MoE routing and grouping, visibility-aware flash attention
+and fused norms. Moving them from CubeCL 0.10 changed only the kernel API (slice arguments,
+`Shared` memory, vector `extract`/`insert`); code generation still goes through hiprtc C++ with
+the same flags. Generated arithmetic differs from CubeCL 0.10 by about one f16 ulp in some
+kernels, so outputs are not bitwise identical to earlier releases, while prompt-prefix reuse
+stays bitwise exact within a build.
+
+In interleaved A/B runs on the Radeon 8060S (Snake requests, 466 prompt tokens, uncached; and
+the synthetic cached set), the CubeCL 0.11 build was as fast or faster than the CubeCL 0.10
+build: prefill p50 688 vs 802 ms and request p50 750 vs 877 ms in one run, 1377 vs 1767 ms and
+1548 vs 1982 ms in another taken while the machine was throttled; cached requests 354 vs 470 ms
+and 788 vs 967 ms. JevBench accuracy was 189/231 vs 190/231 (one borderline case), with lower
+latency. The shared GEMM also serves Nemotron-Labs-Diffusion through a Burn backend extension
+(`jevons-kernels`, `jevons-burn::kernels`).
+
 ## Status
 
 | Area | Status |
@@ -21,7 +38,7 @@ was removed after CubeCL matched its answers (see [Performance](#performance)).
 ## Build and run
 
 Install ROCm/HIP and set the [ROCm/WSL environment](build.md#rocmhip). Building needs
-Rust 1.92+.
+Rust 1.95+.
 
 ```bash
 export DIFFUSION_MODEL="$HOME/models/diffusiongemma/diffusiongemma-26B-A4B-it-Q4_K_M.gguf"
@@ -71,7 +88,7 @@ Tuning cannot change a prompt's results: prompt plans only vary tile shapes, and
 row is accumulated in the same order for every tile shape. The kernel tests check this bitwise.
 On the 8060S, whose heuristics were hand-tuned, tuned plans perform the same as the heuristics
 on 466-token prompts and are 3-4% faster on 1000-token prompts with a 256-token canvas
-(`examples/tune_ab.rs`, interleaved in one process).
+(interleaved in one process).
 
 On APUs such as Strix Halo, GPU memory is system memory: the model, caches and a concurrent
 build share the same RAM. Keep build directories on disk rather than in `/dev/shm` and avoid
@@ -142,9 +159,8 @@ llama.cpp running parts of its vision graph in FP16. Encoding a 77-token image t
   image is reused exactly.
 
 - **No int8 matrix path.** llama.cpp quantizes activations to 8 bits and uses integer dot
-  products. CubeCL 0.10's HIP backend exposes only FP16/BF16 WMMA on RDNA3, and its `dot`
-  compiles to scalar multiplies: LLVM does not form `v_dot4` from them
-  (`examples/dot4_probe.rs`). An int8 path would need changes to CubeCL itself.
+  products. CubeCL's HIP backend exposes only FP16/BF16 WMMA on RDNA3, and its `dot`
+  compiles to scalar multiplies: LLVM does not form `v_dot4` from them. An int8 path would need changes to CubeCL itself.
 
 The practical ceilings measured on the 8060S under WSL are about 20 TFLOP/s for FP16 WMMA,
 6 TFLOP/s for FP32 vector math and 190 GB/s of memory bandwidth. Prefill is now dominated by
@@ -154,7 +170,7 @@ the routed-expert products, which are limited by dequantization throughput.
 
 ```bash
 # Kernel tests against CPU references (GPU required)
-cargo test --locked --release -p jevons-cubecl --features hip --lib -- --include-ignored
+cargo test --locked --release -p jevons-gemma4-diffusion --lib -- --include-ignored
 # Engine model tests: one process per test (each loads the 17.7 GB model)
 for t in model_reads_preserve_reproducibility_across_requests \
          model_extensions_average_refine_think_and_chunk \
@@ -166,7 +182,6 @@ done
 The image test also needs `DIFFUSION_MMPROJ`. `tokenizer_matches_llama_reference` compares against
 a llama.cpp tokenizer dump (`TOKENIZER_REFERENCE`); see its doc comment.
 
-`crates/jevons-cubecl/examples/prefix_check.rs` compares reused-prefix results with fresh
-prefills bitwise; `gemm_bench`, `moe_bench` and `bandwidth` measure kernels in isolation;
-`tune_ab` compares tuned and heuristic plans on the full model; `vision_check` compares image
-embeddings with reference dumps.
+`crates/jevons-gemma4-diffusion/examples/prefix_check.rs` compares reused-prefix results with fresh
+prefills bitwise; `vision_check` compares image embeddings with reference dumps; `golden_dump`
+writes per-layer traces for regression comparisons.

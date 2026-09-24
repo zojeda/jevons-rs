@@ -37,6 +37,8 @@ def main():
     assert any(model["name"] == "jev-latest" for model in models["models"])
     example = Path(__file__).resolve().parents[1] / "examples/system-one.json"
     request = json.loads(example.read_text())
+    # The generic alias is served by every architecture.
+    request["model"] = "jev-latest"
     status, response = call("/v1/systemone", request)
     assert status == 200, response
     assert set(response["answers"]) == set(request["questions"])

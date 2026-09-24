@@ -1,0 +1,17 @@
+[package]
+name = "jevons-tokenizer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+jevons-core.workspace = true
+jevons-formats.workspace = true
+serde_json.workspace = true
+# No default features: `onig` and `esaxx_fast` would add a C/C++ build.
+tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-regex"] }
+thiserror.workspace = true
+
+[lints]
+workspace = true

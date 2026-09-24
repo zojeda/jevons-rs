@@ -3,8 +3,8 @@
 > Update 2026-09-23: the full model, including the vision encoder, now runs on CubeCL, and the
 > llama.cpp backend and submodule have been removed. See the [backend guide](../../docs/cubecl.md)
 > and the [end-to-end report](results-model-2026-09-23/README.md). The sections below document the
-> earlier feasibility slices; commands that build llama.cpp or `llama-diffusion-sys` need a
-> checkout from before the removal.
+> earlier feasibility slices; commands that build llama.cpp or `llama-diffusion-sys`, and the
+> Python helper scripts, need a checkout from before the removal.
 
 This is the first implementation slice of the [migration plan](../../docs/cubecl-migration-plan.md).
 The service still uses llama.cpp. The new `jevons-cubecl` crate runs a real HIP

@@ -47,7 +47,7 @@ See [probability math](inference.md#from-logits-to-answers) for score and confid
 
 ## Models and clients
 
-The served model ID defaults to `gemmadiffusion-0.1`; change it with `--model-id`. The server accepts `gemmadiffusion-latest`, `openjev-latest`, and `jev-latest` as routing aliases and reports the local model ID in responses. Those aliases do not identify Codiv's hosted model.
+The served model ID depends on the architecture: `gemmadiffusion-0.1` for DiffusionGemma and `nemotron-diffusion-8b` for Nemotron-Labs-Diffusion. Change it with `--model-id`. The server accepts the architecture's alias (`gemmadiffusion-latest` or `nemotron-diffusion-latest`), `openjev-latest`, and `jev-latest` as routing aliases and reports the local model ID in responses. Those aliases do not identify Codiv's hosted model.
 
 For a TypeSafe client, set `TYPESAFE_BASE_URL=http://127.0.0.1:8080` and use a listed model or `jev-latest`. The server runs without a TypeSafe SDK or a connection to Codiv's infrastructure.
 

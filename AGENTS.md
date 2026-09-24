@@ -2,19 +2,24 @@
 
 ## Project Structure & Module Organization
 
-This Rust 2024 workspace requires Rust 1.92 or newer. Source lives under `crates/`:
+This Rust 2024 workspace requires Rust 1.95 or newer (Burn 0.22 and CubeCL 0.11). Source lives under `crates/`:
 
-- `jevons-core`: shared read types, errors, and prefill diagnostics.
-- `jevons-cubecl`: GGUF reader, Gemma 4 tokenizer, and the CubeCL/HIP text and vision runtime.
-- `jevons-engine`: inference orchestration, image preparation, and the SCM CLI.
+- `jevons-core`: shared read types, errors, prefill diagnostics, image decoding, and the `DiffusionModel` contract.
+- `jevons-formats`: GGUF and safetensors readers; `jevons-tokenizer`: Gemma 4 and Hugging Face tokenizers.
+- `jevons-gemma4-diffusion`: the DiffusionGemma text and vision runtime (tuned CubeCL kernels on the CubeCL 0.11 runtime shared with Burn).
+- `jevons-kernels`: shared tuned CubeCL kernels (device buffers, quantized / FP16-weight GEMM).
+- `jevons-burn`: shared Burn 0.22 runtime (HIP device, weight streaming, attention, KV cache, tuned GEMM as a Burn extension).
+- `jevons-nemotron-diffusion`: Nemotron-Labs-Diffusion on Burn.
+- `jevons-models`: architecture detection and model loading.
+- `jevons-engine`: inference orchestration, chat framing, diffusion samplers, and the SCM CLI.
 - `jevons-system-one`: request validation, question compilation, and response mapping.
 - `jevons-rs`: Axum routes, authentication, and the bounded inference worker.
 
-Unit tests live in each crate’s source modules. `examples/system-one.json` provides a request fixture; `scripts/smoke-test.py` exercises a running service. GGUF models are external assets and are not downloaded automatically.
+Unit tests live in each crate’s source modules. `examples/system-one.json` provides a request fixture; `scripts/smoke-test.py` exercises a running service. Models (DiffusionGemma GGUF files, Nemotron checkpoint directories) are external assets and are not downloaded automatically.
 
 ## Build, Test, and Development Commands
 
-Inference runs on AMD GPUs through CubeCL/HIP (RDNA3-class, 32-lane waves); the ROCm/HIP SDK is required, and kernels compile at runtime (cached in `~/.cache/diffusion-cubecl`). There is no C/C++ build, CMake, or submodule. Follow [docs/build.md](docs/build.md) for ROCm setup.
+Inference runs on AMD GPUs through CubeCL/HIP (RDNA3-class, 32-lane waves); the ROCm/HIP SDK is required, and kernels compile at runtime (cached in `~/.cache/diffusion-cubecl` for DiffusionGemma and `~/.cache/jevons-burn` for Burn models). There is no C/C++ build, CMake, or submodule. Follow [docs/build.md](docs/build.md) for ROCm setup.
 
 - `cargo build --workspace --locked`: build all crates.
 - `cargo fmt --all -- --check`: check Rust formatting.
@@ -38,7 +43,7 @@ cargo test --release -p jevons-engine --locked --lib -- --ignored --exact \
   engine::tests::model_reads_preserve_reproducibility_across_requests
 ```
 
-Repeat for `model_extensions_average_refine_think_and_chunk` and `model_images_prefill_and_preserve_text_reproducibility`, and run the GPU kernel tests with `cargo test --release -p jevons-cubecl --features hip --locked --lib -- --ignored --test-threads=1`. See [docs/development.md](docs/development.md#checks).
+Repeat for `model_extensions_average_refine_think_and_chunk` and `model_images_prefill_and_preserve_text_reproducibility`, and run the GPU kernel tests with `cargo test --release -p jevons-gemma4-diffusion --locked --lib -- --ignored --test-threads=1`. For Nemotron-Labs-Diffusion, set `NEMOTRON_MODEL` to the checkpoint directory and run `cargo test --release -p jevons-nemotron-diffusion --lib -- --ignored` (it compares against the reference dump from `scripts/reference/nemotron_dump.py --dtype bfloat16`). Never run two model-loading processes at once: on APUs GPU memory is host memory, and the default `CARGO_TARGET_DIR=/dev/shm/...` build output is RAM too. See [docs/development.md](docs/development.md#checks).
 
 ## Commit & Pull Request Guidelines
 

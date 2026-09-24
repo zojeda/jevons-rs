@@ -20,6 +20,42 @@ struct Args {
     /// Reuse prompt KV across requests; off measures fresh prefill.
     #[arg(long)]
     prompt_cache: bool,
+    /// Largest accepted probability difference from the warmup read (0 = bitwise). Runtimes
+    /// without row-invariant prefill (Nemotron on Burn) differ slightly after partial reuse.
+    #[arg(long, default_value_t = 0.0)]
+    tolerance: f64,
+}
+
+/// Largest probability difference between two reads, or `None` if anything else differs.
+fn probability_difference(a: &Value, b: &Value) -> Option<f64> {
+    let strip = |v: &Value| {
+        let mut v = v.clone();
+        for slot in v["slots"].as_array_mut()? {
+            let slot = slot.as_object_mut()?;
+            slot.remove("probabilities");
+            slot.remove("logits");
+        }
+        Some(v)
+    };
+    if strip(a)? != strip(b)? {
+        return None;
+    }
+    let probabilities = |v: &Value| -> Vec<f64> {
+        v["slots"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|s| s["probabilities"].as_array().cloned().unwrap_or_default())
+            .filter_map(|p| p.as_f64())
+            .collect()
+    };
+    let (pa, pb) = (probabilities(a), probabilities(b));
+    (pa.len() == pb.len()).then(|| {
+        pa.iter()
+            .zip(&pb)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0, f64::max)
+    })
 }
 
 fn synthetic_cases() -> Vec<(String, ReadRequest)> {
@@ -95,6 +131,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }));
     }
     let mut samples = Vec::new();
+    let mut max_difference = 0f64;
     let mut prefill_times = vec![Vec::new(); cases.len()];
     let mut wall_times = vec![Vec::new(); cases.len()];
     for round in 0..args.rounds {
@@ -107,10 +144,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "slots": read.slots, "prompt_tokens": read.prompt_tokens,
                 "canvas_tokens": read.canvas_tokens, "output_tokens": read.output_tokens,
             });
-            if observed != reference[index] {
-                return Err(
-                    format!("Read differs from warmup reference: {name}, round {round}").into(),
-                );
+            let difference = if observed == reference[index] {
+                Some(0.0)
+            } else {
+                probability_difference(&observed, &reference[index])
+            };
+            match difference {
+                Some(d) if d <= args.tolerance => max_difference = max_difference.max(d),
+                _ => {
+                    return Err(format!(
+                        "Read differs from warmup reference: {name}, round {round} (probability difference {difference:?})"
+                    )
+                    .into());
+                }
             }
             if profile.calls == 0
                 || profile.processed_tokens + profile.reused_tokens != read.prompt_tokens
@@ -152,7 +198,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             "batch_size": config.batch_size, "context_size": config.context_size,
             "seed": 42, "rounds": args.rounds,
             "model_file": args.model.file_name(), "load_ms": load_ms,
-            "warmup_requests": cases.len(), "exact_repeat_checks_passed": true,
+            "warmup_requests": cases.len(),
+            "repeat_tolerance": args.tolerance, "max_repeat_probability_difference": max_difference,
             "percentile_method": "nearest rank; small runs are smoke checks, not reliable tail estimates",
             "reference": reference, "summary": summaries, "samples": samples,
         }))?
