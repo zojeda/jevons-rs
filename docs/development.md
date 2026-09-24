@@ -7,7 +7,12 @@
 | Crate | Responsibility |
 | --- | --- |
 | `jevons-core` | Read types, errors, prefill diagnostics, image decoding, model configuration, and the `DiffusionModel` contract. |
-| `jevons-cubecl` | GGUF reader, Gemma 4 tokenizer, image preprocessing, and the CubeCL/HIP DiffusionGemma and vision runtime (feature `hip`). |
+| `jevons-formats` | GGUF, GGML quantization and safetensors readers. |
+| `jevons-tokenizer` | Gemma 4 (GGUF) and Hugging Face `tokenizer.json` tokenizers. |
+| `jevons-kernels` | Shared tuned CubeCL kernels: device buffers and the quantized / FP16-weight GEMM, callable on Burn tensors' buffers. |
+| `jevons-gemma4-diffusion` | DiffusionGemma text and vision runtime: tuned CubeCL kernels (MoE routing, visibility-aware attention, fused norms, plus the shared GEMM) on the CubeCL 0.11 runtime shared with Burn. |
+| `jevons-burn` | Shared Burn 0.22 runtime: HIP device, weight streaming, RMS norm, rotary embedding, grouped-query attention, KV cache, and the tuned GEMM as a Burn backend extension. |
+| `jevons-nemotron-diffusion` | Nemotron-Labs-Diffusion on Burn. |
 | `jevons-models` | Detect a model's architecture and load its `DiffusionModel` implementation (DiffusionGemma with feature `gemma4`). |
 | `jevons-engine` | Prepare tokens, frame chats, sample the canvas for each diffusion scheme, and provide the SCM CLI. |
 | `jevons-system-one` | Validate requests, compile questions into slots, and map answers. |
@@ -22,7 +27,10 @@ We keep model ownership on a dedicated worker thread and blocking inference off 
 | `jevons-core` | `read`, `error`, `profile`, `config`, `image`, `model` |
 | `jevons-models` | `detect`, `gemma4` |
 | `jevons-engine` | `engine`, `sampler::{uniform, masked}`, `probability` |
-| `jevons-cubecl` | `gguf`, `tokenizer`, `quant`, `vision_input`, `gpu::{gemm, attention, ops, tune, vision}`, `model`, `vision` |
+| `jevons-gemma4-diffusion` | `vision_input`, `gpu::{gemm, attention, ops, tune, vision}`, `model`, `vision` |
+| `jevons-kernels` | `gemm` |
+| `jevons-burn` | `device`, `weights`, `layers`, `kernels` |
+| `jevons-nemotron-diffusion` | `config`, `rope`, `model` |
 | `jevons-system-one` | `request`, `compiler`, `response`, `error` |
 | `jevons-rs` | `http`, `handlers`, `middleware`, `worker`, `error` |
 
@@ -46,10 +54,19 @@ for t in model_reads_preserve_reproducibility_across_requests \
          model_images_prefill_and_preserve_text_reproducibility; do
   cargo test --release -p jevons-engine --locked --lib -- --ignored --exact "engine::tests::$t"
 done
-cargo test --release -p jevons-cubecl --features hip --locked --lib -- --ignored --test-threads=1
+cargo test --release -p jevons-gemma4-diffusion --locked --lib -- --ignored --test-threads=1
 ```
 
-The last command runs the GPU kernel tests against CPU references. Against a running service, run `python3 scripts/smoke-test.py` with the server's `TYPESAFE_API_KEY` if configured.
+The last command runs the GPU kernel tests against CPU references. For Nemotron-Labs-Diffusion, set `NEMOTRON_MODEL` to the checkpoint directory and run, one at a time:
+
+```bash
+cargo test --release -p jevons-burn --lib -- --ignored --test-threads=1        # tuned GEMM on Burn tensors
+cargo test --release -p jevons-nemotron-diffusion --lib -- --ignored --test-threads=1
+cargo test --release -p jevons-engine --lib -- --ignored --exact \
+  engine::tests::nemotron_reads_are_calibrated_reproducible_and_support_extensions
+```
+
+The Nemotron parity tests compare against the reference dump from `scripts/reference/nemotron_dump.py --dtype bfloat16` in `$JEVONS_GOLDEN_DIR`. Set `JEVONS_TUNED_GEMM=0` to run Nemotron's linears on Burn's matmul instead of the tuned GEMM (for comparisons). Against a running service, run `python3 scripts/smoke-test.py` with the server's `TYPESAFE_API_KEY` if configured.
 
 Regular tests cover validation, probability math, error mapping, model aliases, request IDs, image preprocessing, and queue behavior. The ignored model tests check reproducibility, extension behavior, and image prefill (including exact reuse of a cached image) using real assets.
 
@@ -63,7 +80,7 @@ cargo run --release --locked -p jevons-engine --example golden -- dump
 cargo run --release --locked -p jevons-engine --example golden -- compare            # bitwise
 cargo run --release --locked -p jevons-engine --example golden -- compare --tolerance 5e-3
 # DiffusionGemma per-layer traces, logits, K/V and vision rows for porting the runtime.
-cargo run --release --locked -p jevons-cubecl --features hip --example golden_dump -- \
+cargo run --release --locked -p jevons-gemma4-diffusion --example golden_dump -- \
   "$DIFFUSION_MODEL" ~/.cache/jevons/golden/gemma4-diffusion-model "$DIFFUSION_MMPROJ"
 # Nemotron-Labs-Diffusion references from the official Python implementation (CPU).
 uv run scripts/reference/nemotron_dump.py "$NEMOTRON_MODEL" ~/.cache/jevons/golden/nemotron-diffusion-f32

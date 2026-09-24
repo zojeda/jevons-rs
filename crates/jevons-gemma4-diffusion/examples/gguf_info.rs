@@ -1,5 +1,5 @@
 //! Prints model metadata that the CubeCL runtime depends on.
-use jevons_cubecl::gguf::Gguf;
+use jevons_gemma4_diffusion::gguf::Gguf;
 
 fn main() {
     let path = std::env::args()

@@ -2,11 +2,11 @@
 #![allow(clippy::unnecessary_cast)] // CubeCL DSL index casts
 use cubecl::prelude::*;
 use half::f16;
-use jevons_cubecl::gpu::{Gpu, Hip};
+use jevons_gemma4_diffusion::gpu::Gpu;
 use std::time::Instant;
 
 #[cube(launch)]
-fn wmma_loop<N8: Size>(out: &mut Array<f32>, iters: u32, #[comptime] use_lds: bool) {
+fn wmma_loop<N8: Size>(out: &mut [f32], iters: u32, #[comptime] use_lds: bool) {
     let def = cmma::MmaDefinition::<f16, f16, f32>::new(16usize, 16usize, 16usize);
     let size!(NC) = def.vector_size(cmma::MatrixIdent::Accumulator);
     let mut a = Array::<Vector<f16, N8>>::new(2usize);
@@ -16,7 +16,7 @@ fn wmma_loop<N8: Size>(out: &mut Array<f32>, iters: u32, #[comptime] use_lds: bo
     a[1usize] = v;
     b[0usize] = v;
     b[1usize] = v;
-    let mut lds = SharedMemory::<Vector<f16, N8>>::new(256usize);
+    let mut lds = Shared::<[Vector<f16, N8>]>::new_slice(256usize);
     lds[UNIT_POS as usize % 256usize] = v;
     sync_cube();
     let mut acc = Sequence::<Array<Vector<f32, NC>>>::new();
@@ -43,13 +43,13 @@ fn wmma_loop<N8: Size>(out: &mut Array<f32>, iters: u32, #[comptime] use_lds: bo
     let mut s = 0.0f32;
     #[unroll]
     for i in 0usize..4usize {
-        s += acc.index(i)[0usize][0usize];
+        s += acc.index(i)[0usize].extract(0usize);
     }
     out[ABSOLUTE_POS as usize] = s;
 }
 
 #[cube(launch)]
-fn fma_loop(out: &mut Array<f32>, iters: u32) {
+fn fma_loop(out: &mut [f32], iters: u32) {
     let mut a = Array::<f32>::new(8usize);
     #[unroll]
     for i in 0usize..8usize {
@@ -77,7 +77,7 @@ fn main() {
         let iters = 4096u32;
         let out = gpu.empty(groups as usize * 256, 4);
         let run = || {
-            fma_loop::launch::<Hip>(
+            fma_loop::launch(
                 &gpu.client,
                 CubeCount::Static(groups, 1, 1),
                 CubeDim::new_1d(256),
@@ -105,7 +105,7 @@ fn main() {
         for groups in [1u32, 40, 80, 160, 400, 1600] {
             let out = gpu.empty(groups as usize * 128, 4);
             let run = || {
-                wmma_loop::launch::<Hip>(
+                wmma_loop::launch(
                     &gpu.client,
                     CubeCount::Static(groups, 1, 1),
                     CubeDim::new_2d(32, 4),

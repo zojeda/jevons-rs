@@ -1,5 +1,5 @@
 //! Times reading, packing and uploading one layer's tensors.
-use jevons_cubecl::{gguf::Gguf, gpu::Gpu, quant};
+use jevons_gemma4_diffusion::{gguf::Gguf, gpu::Gpu, quant};
 use std::time::Instant;
 
 fn main() {

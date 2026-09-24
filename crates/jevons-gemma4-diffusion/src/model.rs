@@ -554,7 +554,7 @@ impl Model {
         let rope_full = gpu.upload_f32(&rope_table(&cfg, cap, true));
         let scratch = Self::scratch(&gpu, &cfg, chunk);
         gpu.sync();
-        let usage = gpu.client.memory_usage().ok();
+        let usage = Some(gpu.client.memory_usage());
         eprintln!(
             "cubecl: loaded {} layers in {:.1}s ({:.1} GB in use, {:.1} GB reserved)",
             cfg.layers,

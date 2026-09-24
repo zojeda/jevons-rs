@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod device;
+pub mod kernels;
 pub mod layers;
 pub mod weights;
 

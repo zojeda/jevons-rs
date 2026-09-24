@@ -25,8 +25,8 @@ struct Layer {
     qkv: Tensor<2>,
     output: Tensor<2>,
     post_norm: Tensor<1>,
-    /// Fused `[gate; up]` rows.
-    gate_up: Tensor<2>,
+    gate: Tensor<2>,
+    up: Tensor<2>,
     down: Tensor<2>,
     cache: KvCache,
 }
@@ -50,6 +50,9 @@ pub struct Nemotron {
     cached: Vec<i32>,
     /// Final normed hidden rows of the last canvas forward.
     canvas: Option<Tensor<2>>,
+    /// Residual rows after each layer of the next forwards, for parity tests.
+    #[cfg(test)]
+    trace: Option<Vec<Vec<f32>>>,
     logits: Option<Tensor<2>>,
 }
 
@@ -71,7 +74,8 @@ fn chat_format() -> ChatFormat {
 }
 
 impl Nemotron {
-    /// Loads a checkpoint directory; streams BF16 weights to HIP device `config.main_gpu`.
+    /// Loads a checkpoint directory onto HIP device `config.main_gpu`, streaming one tensor at a
+    /// time. Projection and head weights are converted from BF16 to FP16 for the tuned GEMM.
     pub fn load(config: &ModelConfig) -> Result<Self> {
         if config.mmproj.is_some() {
             return Err(Error::InvalidInput(
@@ -104,6 +108,8 @@ impl Nemotron {
         };
         let (d, hd) = (cfg.hidden_size, cfg.head_dim);
         let (q_rows, kv_rows) = (cfg.num_attention_heads * hd, cfg.num_key_value_heads * hd);
+        // FP16 projections for the tuned GEMM (rows padded to its 64-row tiles).
+        let mat = |names: &[(&str, usize)], cols: usize| load.stacked_f16(names, cols, 64);
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         for l in 0..cfg.num_hidden_layers {
             let name = |suffix: &str| format!("encoder.layers.{l}.{suffix}.weight");
@@ -117,23 +123,14 @@ impl Nemotron {
                 input_norm: load
                     .vector_f32(&name("input_layernorm"), d)
                     .map_err(load_error)?,
-                qkv: load
-                    .stacked(&[(&q, q_rows), (&k, kv_rows), (&v, kv_rows)], d)
-                    .map_err(load_error)?,
-                output: load
-                    .matrix(&name("self_attn.o_proj"), d, q_rows)
-                    .map_err(load_error)?,
+                qkv: mat(&[(&q, q_rows), (&k, kv_rows), (&v, kv_rows)], d).map_err(load_error)?,
+                output: mat(&[(&name("self_attn.o_proj"), d)], q_rows).map_err(load_error)?,
                 post_norm: load
                     .vector_f32(&name("post_attention_layernorm"), d)
                     .map_err(load_error)?,
-                gate_up: load
-                    .stacked(
-                        &[(&gate, cfg.intermediate_size), (&up, cfg.intermediate_size)],
-                        d,
-                    )
-                    .map_err(load_error)?,
-                down: load
-                    .matrix(&name("mlp.down_proj"), d, cfg.intermediate_size)
+                gate: mat(&[(&gate, cfg.intermediate_size)], d).map_err(load_error)?,
+                up: mat(&[(&up, cfg.intermediate_size)], d).map_err(load_error)?,
+                down: mat(&[(&name("mlp.down_proj"), d)], cfg.intermediate_size)
                     .map_err(load_error)?,
                 cache: KvCache::new(&device, cfg.num_key_value_heads, capacity, hd),
             });
@@ -144,8 +141,9 @@ impl Nemotron {
         let norm = load
             .vector_f32("encoder.norm.weight", d)
             .map_err(load_error)?;
+        // Zero rows pad the vocabulary to the GEMM's 64-row tiles; logits are cut back to it.
         let head = load
-            .matrix("diffusion_head.weight", cfg.vocab_size, d)
+            .stacked_f16(&[("diffusion_head.weight", cfg.vocab_size)], d, 64)
             .map_err(load_error)?;
         let (cos, sin) = Rope::new(&cfg).tables(0..capacity);
         let table = |values: Vec<f32>| {
@@ -182,6 +180,8 @@ impl Nemotron {
             prompt_cache: config.prompt_cache,
             cached: Vec::new(),
             canvas: None,
+            #[cfg(test)]
+            trace: None,
             logits: None,
         };
         model.device.memory_cleanup();
@@ -243,6 +243,8 @@ impl Nemotron {
             .clone()
             .select(0, self.ids(&input)?)
             .cast(DType::F32);
+        #[cfg(test)]
+        let mut trace = self.trace.take();
         for layer in &mut self.layers {
             let x = rms_norm(h.clone(), &layer.input_norm, eps);
             let qkv = linear(x, &layer.qkv);
@@ -267,9 +269,17 @@ impl Nemotron {
             let attended = grouped_attention(q, k, v, Some(&mask));
             h = h + linear(attended, &layer.output);
             let x = rms_norm(h.clone(), &layer.post_norm, eps);
-            h = h + gated_mlp(x, &layer.gate_up, &layer.down);
+            h = h + gated_mlp(x, &layer.gate, &layer.up, &layer.down);
+            #[cfg(test)]
+            if let Some(trace) = trace.as_mut() {
+                trace.push(host_f32(h.clone().slice([0..rows, 0..cfg.hidden_size])));
+            }
         }
-        let d = cfg.hidden_size;
+        #[cfg(test)]
+        {
+            self.trace = trace;
+        }
+        let d = self.config.hidden_size;
         Ok(h.slice([0..rows, 0..d]))
     }
 }
@@ -382,7 +392,11 @@ impl DiffusionModel for Nemotron {
         }
         let h = self.forward(tokens, prompt_length, false)?;
         let hidden = rms_norm(h, &self.norm, self.config.rms_norm_eps);
-        self.logits = (logits == Logits::Full).then(|| linear(hidden.clone(), &self.head));
+        let vocab = self.config.vocab_size;
+        self.logits = (logits == Logits::Full).then(|| {
+            let rows = hidden.dims()[0];
+            linear(hidden.clone(), &self.head).slice([0..rows, 0..vocab])
+        });
         self.canvas = Some(hidden);
         Ok(())
     }
@@ -449,19 +463,22 @@ mod tests {
         (0..row.len()).fold(0, |b, i| if row[i] > row[b] { i } else { b })
     }
 
-    /// Compares canvas logits with the official implementation (BF16 on CPU): per-row top-1
-    /// agreement and the largest logit difference.
+    /// Compares canvas logits with the official implementation (BF16 on CPU). Returns rows whose
+    /// top token is the reference's top token or within `TIE` logits of it (near-ties flip with
+    /// rounding), the row count, and the largest logit difference.
     fn compare(label: &str, got: &[f32], want: &[f32], vocab: usize) -> (usize, usize, f32) {
+        const TIE: f32 = 0.25;
         assert_eq!(got.len(), want.len());
         let rows = got.len() / vocab;
-        let mut agree = 0;
+        let (mut agree, mut exact) = (0, 0);
         let mut worst = 0f32;
         for r in 0..rows {
             let (g, w) = (
                 &got[r * vocab..(r + 1) * vocab],
                 &want[r * vocab..(r + 1) * vocab],
             );
-            agree += usize::from(argmax(g) == argmax(w));
+            exact += usize::from(argmax(g) == argmax(w));
+            agree += usize::from(w[argmax(g)] >= w[argmax(w)] - TIE);
             worst = worst.max(
                 g.iter()
                     .zip(w)
@@ -469,8 +486,45 @@ mod tests {
                     .fold(0.0, f32::max),
             );
         }
-        println!("{label}: top-1 agreement {agree}/{rows}, max |logit diff| {worst:.4}");
+        println!(
+            "{label}: top-1 agreement {exact}/{rows} ({agree}/{rows} within {TIE} of the best), max |logit diff| {worst:.4}"
+        );
         (agree, rows, worst)
+    }
+
+    #[test]
+    #[ignore = "Requires NEMOTRON_MODEL, a HIP GPU and the reference dump"]
+    fn prefill_layer_outputs_match_the_reference_implementation() {
+        let mut config = ModelConfig::new(std::env::var("NEMOTRON_MODEL").unwrap());
+        config.context_size = 4096;
+        let mut model = Nemotron::load(&config).unwrap();
+        let prompt = ints("prompt");
+        model.trace = Some(Vec::new());
+        model.prefill(&[PromptPart::Text(prompt)], &[]).unwrap();
+        let trace = model.trace.take().unwrap();
+        let last = trace.len() - 1;
+        for (layer, name) in [
+            (0, "prefill_l0_out"),
+            (last / 2, "prefill_l17_out"),
+            (last, "prefill_l33_out"),
+        ] {
+            let want = floats(name);
+            let got = &trace[layer];
+            let worst = got
+                .iter()
+                .zip(&want)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0, f32::max);
+            let rms = (want.iter().map(|v| v * v).sum::<f32>() / want.len() as f32).sqrt();
+            let err = (got
+                .iter()
+                .zip(&want)
+                .map(|(a, b)| (a - b) * (a - b))
+                .sum::<f32>()
+                / want.len() as f32)
+                .sqrt();
+            println!("layer {layer}: rms error {err:.4} of rms {rms:.4}, max |diff| {worst:.3}");
+        }
     }
 
     #[test]
@@ -496,7 +550,7 @@ mod tests {
             &floats("canvas_logits"),
             vocab,
         );
-        assert!(agree + 1 >= rows);
+        assert_eq!(agree, rows);
         let candidates = ints("candidates");
         let picked = model
             .candidate_logits(canvas.len() - 1, &candidates)
@@ -521,7 +575,7 @@ mod tests {
             &floats("block32_logits"),
             vocab,
         );
-        assert!(agree * 10 >= rows * 9);
+        assert_eq!(agree, rows);
 
         // The prompt cache survives canvas forwards and serves a repeat without recomputation.
         model.profile = PrefillProfile::default();

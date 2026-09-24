@@ -6,8 +6,9 @@ This Rust 2024 workspace requires Rust 1.95 or newer (Burn 0.22 and CubeCL 0.11)
 
 - `jevons-core`: shared read types, errors, prefill diagnostics, image decoding, and the `DiffusionModel` contract.
 - `jevons-formats`: GGUF and safetensors readers; `jevons-tokenizer`: Gemma 4 and Hugging Face tokenizers.
-- `jevons-cubecl`: the CubeCL/HIP DiffusionGemma text and vision runtime.
-- `jevons-burn`: shared Burn 0.22 runtime (HIP device, weight streaming, attention and KV cache).
+- `jevons-gemma4-diffusion`: the DiffusionGemma text and vision runtime (tuned CubeCL kernels on the CubeCL 0.11 runtime shared with Burn).
+- `jevons-kernels`: shared tuned CubeCL kernels (device buffers, quantized / FP16-weight GEMM).
+- `jevons-burn`: shared Burn 0.22 runtime (HIP device, weight streaming, attention, KV cache, tuned GEMM as a Burn extension).
 - `jevons-nemotron-diffusion`: Nemotron-Labs-Diffusion on Burn.
 - `jevons-models`: architecture detection and model loading.
 - `jevons-engine`: inference orchestration, chat framing, diffusion samplers, and the SCM CLI.
@@ -42,7 +43,7 @@ cargo test --release -p jevons-engine --locked --lib -- --ignored --exact \
   engine::tests::model_reads_preserve_reproducibility_across_requests
 ```
 
-Repeat for `model_extensions_average_refine_think_and_chunk` and `model_images_prefill_and_preserve_text_reproducibility`, and run the GPU kernel tests with `cargo test --release -p jevons-cubecl --features hip --locked --lib -- --ignored --test-threads=1`. For Nemotron-Labs-Diffusion, set `NEMOTRON_MODEL` to the checkpoint directory and run `cargo test --release -p jevons-nemotron-diffusion --lib -- --ignored` (it compares against the reference dump from `scripts/reference/nemotron_dump.py --dtype bfloat16`). Never run two model-loading processes at once: on APUs GPU memory is host memory, and the default `CARGO_TARGET_DIR=/dev/shm/...` build output is RAM too. See [docs/development.md](docs/development.md#checks).
+Repeat for `model_extensions_average_refine_think_and_chunk` and `model_images_prefill_and_preserve_text_reproducibility`, and run the GPU kernel tests with `cargo test --release -p jevons-gemma4-diffusion --locked --lib -- --ignored --test-threads=1`. For Nemotron-Labs-Diffusion, set `NEMOTRON_MODEL` to the checkpoint directory and run `cargo test --release -p jevons-nemotron-diffusion --lib -- --ignored` (it compares against the reference dump from `scripts/reference/nemotron_dump.py --dtype bfloat16`). Never run two model-loading processes at once: on APUs GPU memory is host memory, and the default `CARGO_TARGET_DIR=/dev/shm/...` build output is RAM too. See [docs/development.md](docs/development.md#checks).
 
 ## Commit & Pull Request Guidelines
 

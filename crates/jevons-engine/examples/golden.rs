@@ -186,6 +186,48 @@ fn diff(path: &str, want: &Value, got: &Value, tolerance: f64) -> Option<String>
     }
 }
 
+/// Prints, per read, the largest logit and probability differences and whether every slot keeps
+/// its most probable candidate.
+fn report(want: &Value, got: &Value) {
+    let floats = |v: &Value| -> Vec<f64> {
+        v.as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|x| f64::from_bits(x.as_u64().unwrap()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let argmax = |v: &[f64]| (0..v.len()).fold(0, |b, i| if v[i] > v[b] { i } else { b });
+    let Some(reads) = want["reads"].as_object() else {
+        return;
+    };
+    for (name, read) in reads {
+        let (mut logit, mut prob, mut agree, mut slots) = (0f64, 0f64, 0, 0);
+        let other = &got["reads"][name]["slots"];
+        for (i, slot) in read["slots"].as_array().into_iter().flatten().enumerate() {
+            let (wl, gl) = (floats(&slot["logits"]), floats(&other[i]["logits"]));
+            let (wp, gp) = (
+                floats(&slot["probabilities"]),
+                floats(&other[i]["probabilities"]),
+            );
+            logit = wl
+                .iter()
+                .zip(&gl)
+                .map(|(a, b)| (a - b).abs())
+                .fold(logit, f64::max);
+            prob = wp
+                .iter()
+                .zip(&gp)
+                .map(|(a, b)| (a - b).abs())
+                .fold(prob, f64::max);
+            agree += usize::from(!gp.is_empty() && argmax(&wp) == argmax(&gp));
+            slots += 1;
+        }
+        println!("{name}: max |dlogit| {logit:.4}, max |dp| {prob:.4}, argmax {agree}/{slots}");
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let tolerance = args
@@ -202,6 +244,7 @@ fn main() {
         }
         Some("compare") => {
             let want: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+            report(&want, &got);
             match diff("", &want, &got, tolerance) {
                 None => println!("match ({} tolerance {tolerance})", file.display()),
                 Some(d) => {

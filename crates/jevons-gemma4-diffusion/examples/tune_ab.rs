@@ -1,7 +1,7 @@
 //! Interleaved same-process comparison of tuned and heuristic launch plans.
 //!
 //! usage: tune_ab MODEL.gguf [rounds] [prompt_tokens] [canvas_tokens]
-use jevons_cubecl::{gguf::Gguf, model::Model, tokenizer::Tokenizer};
+use jevons_gemma4_diffusion::{gguf::Gguf, model::Model, tokenizer::Tokenizer};
 use std::time::Instant;
 
 fn main() {

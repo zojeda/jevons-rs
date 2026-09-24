@@ -11,9 +11,10 @@ publish = false
 [workspace.dependencies]
 jevons-burn = { path = "crates/jevons-burn" }
 jevons-core = { path = "crates/jevons-core" }
-jevons-cubecl = { path = "crates/jevons-cubecl" }
+jevons-gemma4-diffusion = { path = "crates/jevons-gemma4-diffusion" }
 jevons-engine = { path = "crates/jevons-engine" }
 jevons-formats = { path = "crates/jevons-formats" }
+jevons-kernels = { path = "crates/jevons-kernels" }
 jevons-tokenizer = { path = "crates/jevons-tokenizer" }
 jevons-nemotron-diffusion = { path = "crates/jevons-nemotron-diffusion" }
 jevons-models = { path = "crates/jevons-models", default-features = false }

@@ -1,7 +1,7 @@
 //! Quantized-weight matrix products `out[r, n] = sum_k x[r, k] * W[n, k]`.
 //!
 //! Activations are FP16 rows; weights stay in their GGML block encodings (see
-//! [`crate::quant::pack`]) and are dequantized into FP16 shared-memory tiles, 64 K values per
+//! [`jevons_formats::quant::pack`]) and are dequantized into FP16 shared-memory tiles, 64 K values per
 //! step. Products use 16x16x16 RDNA3 matrix instructions with FP32 accumulation. RDNA3 wave32
 //! register mapping: A: lane%16 = row, 16 contiguous k; B: lane%16 = column, 16 contiguous k;
 //! C: lane%16 = column, element e = row 2e + lane/16.
@@ -17,10 +17,10 @@
     clippy::unnecessary_cast,
     clippy::too_many_arguments
 )]
-use super::{Buf, Gpu, Hip};
-use crate::gguf::TensorType;
+use crate::{Buf, Gpu};
 use cubecl::prelude::*;
 use half::f16;
+use jevons_formats::gguf::TensorType;
 
 pub const FMT_Q4K: u32 = 0;
 pub const FMT_Q6K: u32 = 1;
@@ -72,10 +72,10 @@ pub fn sbyte(w: u32, shift: u32) -> f32 {
 #[cube]
 #[allow(clippy::too_many_arguments)]
 fn fetch_half<N4: Size>(
-    q: &Array<Vector<u32, N4>>,
-    h: &Array<u32>,
-    s: &Array<u32>,
-    d: &Array<f32>,
+    q: &[Vector<u32, N4>],
+    h: &[u32],
+    s: &[u32],
+    d: &[f32],
     rv: &mut Array<Vector<u32, N4>>,
     rs: &mut Array<u32>,
     rf: &mut Array<f32>,
@@ -136,7 +136,7 @@ fn decode_half<N4: Size, N8: Size>(
     rv: &Array<Vector<u32, N4>>,
     rs: &Array<u32>,
     rf: &Array<f32>,
-    tile: &mut SharedMemory<Vector<f16, N8>>,
+    tile: &mut Shared<[Vector<f16, N8>]>,
     row: usize,
     lds_half: usize,
     step: usize,
@@ -155,8 +155,14 @@ fn decode_half<N4: Size, N8: Size>(
             let mut o = Vector::<f16, N8>::empty();
             #[unroll]
             for i in 0usize..4usize {
-                o[comptime!(2 * i)] = f16::reinterpret(u16::cast_from(words[i] & 0xffff));
-                o[comptime!(2 * i + 1)] = f16::reinterpret(u16::cast_from(words[i] >> 16));
+                o.insert(
+                    comptime!(2 * i),
+                    f16::reinterpret(u16::cast_from(words.extract(i) & 0xffff)),
+                );
+                o.insert(
+                    comptime!(2 * i + 1),
+                    f16::reinterpret(u16::cast_from(words.extract(i) >> 16)),
+                );
             }
             tile[out + v] = o;
         }
@@ -164,27 +170,30 @@ fn decode_half<N4: Size, N8: Size>(
         let head = rv[v0];
         let pair = (step % 4usize) as u32;
         let (sc, mn) = q4k_scale_min(
-            head[1usize],
-            head[2usize],
-            head[3usize],
+            head.extract(1usize),
+            head.extract(2usize),
+            head.extract(3usize),
             2 * pair + hh as u32,
         );
-        let dd = half_lo(head[0usize]) * f32::cast_from(sc);
-        let mm = half_hi(head[0usize]) * f32::cast_from(mn);
+        let dd = half_lo(head.extract(0usize)) * f32::cast_from(sc);
+        let mm = half_hi(head.extract(0usize)) * f32::cast_from(mn);
         let shift = 4 * hh as u32;
         #[unroll]
         for vv in 0usize..2usize {
             let words = rv[comptime!(v0 + 1 + vv)];
             #[unroll]
             for half in 0usize..2usize {
-                let wa = words[comptime!(2 * half)];
-                let wb = words[comptime!(2 * half + 1)];
+                let wa = words.extract(comptime!(2 * half));
+                let wb = words.extract(comptime!(2 * half + 1));
                 let mut o = Vector::<f16, N8>::empty();
                 #[unroll]
                 for b in 0usize..4usize {
                     let sb = comptime!((8 * b) as u32) + shift;
-                    o[b] = f16::cast_from(dd * f32::cast_from((wa >> sb) & 15) - mm);
-                    o[b + 4usize] = f16::cast_from(dd * f32::cast_from((wb >> sb) & 15) - mm);
+                    o.insert(b, f16::cast_from(dd * f32::cast_from((wa >> sb) & 15) - mm));
+                    o.insert(
+                        b + 4usize,
+                        f16::cast_from(dd * f32::cast_from((wb >> sb) & 15) - mm),
+                    );
                 }
                 tile[out + comptime!(2 * vv + half)] = o;
             }
@@ -196,14 +205,14 @@ fn decode_half<N4: Size, N8: Size>(
             let words = rv[comptime!(v0 + vv)];
             #[unroll]
             for half in 0usize..2usize {
-                let wa = words[comptime!(2 * half)];
-                let wb = words[comptime!(2 * half + 1)];
+                let wa = words.extract(comptime!(2 * half));
+                let wb = words.extract(comptime!(2 * half + 1));
                 let mut o = Vector::<f16, N8>::empty();
                 #[unroll]
                 for b in 0usize..4usize {
                     let sb = comptime!((8 * b) as u32);
-                    o[b] = f16::cast_from(dd * sbyte(wa, sb));
-                    o[b + 4usize] = f16::cast_from(dd * sbyte(wb, sb));
+                    o.insert(b, f16::cast_from(dd * sbyte(wa, sb)));
+                    o.insert(b + 4usize, f16::cast_from(dd * sbyte(wb, sb)));
                 }
                 tile[out + comptime!(2 * vv + half)] = o;
             }
@@ -216,8 +225,8 @@ fn decode_half<N4: Size, N8: Size>(
         for v in 0usize..4usize {
             // v=0,1: low nibbles of bytes 8v..; v=2,3: high nibbles of bytes 8(v-2)..
             let nib = comptime!(((v / 2) * 4) as u32);
-            let wa = qs[comptime!(2 * (v % 2))];
-            let wb = qs[comptime!(2 * (v % 2) + 1)];
+            let wa = qs.extract(comptime!(2 * (v % 2)));
+            let wb = qs.extract(comptime!(2 * (v % 2) + 1));
             let mut o = Vector::<f16, N8>::empty();
             #[unroll]
             for b in 0usize..4usize {
@@ -226,8 +235,11 @@ fn decode_half<N4: Size, N8: Size>(
                 let jb = comptime!((8 * v + 4 + b) as u32);
                 let qa = ((wa >> sb) & 15) | (((qh >> ja) & 1) << 4);
                 let qb = ((wb >> sb) & 15) | (((qh >> jb) & 1) << 4);
-                o[b] = f16::cast_from(dd * (f32::cast_from(qa) - 16.0f32));
-                o[b + 4usize] = f16::cast_from(dd * (f32::cast_from(qb) - 16.0f32));
+                o.insert(b, f16::cast_from(dd * (f32::cast_from(qa) - 16.0f32)));
+                o.insert(
+                    b + 4usize,
+                    f16::cast_from(dd * (f32::cast_from(qb) - 16.0f32)),
+                );
             }
             tile[out + v] = o;
         }
@@ -249,8 +261,8 @@ fn decode_half<N4: Size, N8: Size>(
             for half in 0usize..2usize {
                 let v = comptime!(2 * vv + half);
                 let scale = if comptime!(v < 2) { s_lo } else { s_hi };
-                let wa = ql[comptime!(2 * half)];
-                let wb = ql[comptime!(2 * half + 1)];
+                let wa = ql.extract(comptime!(2 * half));
+                let wb = ql.extract(comptime!(2 * half + 1));
                 let ha = rs[comptime!(s0 + 2 * v)];
                 let hb = rs[comptime!(s0 + 2 * v + 1)];
                 let mut o = Vector::<f16, N8>::empty();
@@ -259,8 +271,11 @@ fn decode_half<N4: Size, N8: Size>(
                     let sb = comptime!((8 * b) as u32);
                     let qa = ((wa >> (sb + nib)) & 15) | (((ha >> (sb + hshift)) & 3) << 4);
                     let qb = ((wb >> (sb + nib)) & 15) | (((hb >> (sb + hshift)) & 3) << 4);
-                    o[b] = f16::cast_from(scale * (f32::cast_from(qa) - 32.0f32));
-                    o[b + 4usize] = f16::cast_from(scale * (f32::cast_from(qb) - 32.0f32));
+                    o.insert(b, f16::cast_from(scale * (f32::cast_from(qa) - 32.0f32)));
+                    o.insert(
+                        b + 4usize,
+                        f16::cast_from(scale * (f32::cast_from(qb) - 32.0f32)),
+                    );
                 }
                 tile[out + v] = o;
             }
@@ -289,28 +304,28 @@ fn unpack_slot<N4: Size>(
             let words = rv[v0 + v];
             #[unroll]
             for i in 0usize..4usize {
-                w[comptime!(8 * v + 2 * i)] = half_lo(words[i]);
-                w[comptime!(8 * v + 2 * i + 1)] = half_hi(words[i]);
+                w[comptime!(8 * v + 2 * i)] = half_lo(words.extract(i));
+                w[comptime!(8 * v + 2 * i + 1)] = half_hi(words.extract(i));
             }
         }
     } else if comptime!(fmt == FMT_Q4K) {
         let head = rv[v0];
         let pair = (step % 4usize) as u32;
         let (sc, mn) = q4k_scale_min(
-            head[1usize],
-            head[2usize],
-            head[3usize],
+            head.extract(1usize),
+            head.extract(2usize),
+            head.extract(3usize),
             2 * pair + hh as u32,
         );
-        let dd = half_lo(head[0usize]) * f32::cast_from(sc);
-        let mm = half_hi(head[0usize]) * f32::cast_from(mn);
+        let dd = half_lo(head.extract(0usize)) * f32::cast_from(sc);
+        let mm = half_hi(head.extract(0usize)) * f32::cast_from(mn);
         let shift = 4 * hh as u32;
         #[unroll]
         for vv in 0usize..2usize {
             let words = rv[comptime!(v0 + 1 + vv)];
             #[unroll]
             for wi in 0usize..4usize {
-                let word = words[wi];
+                let word = words.extract(wi);
                 #[unroll]
                 for b in 0usize..4usize {
                     let sb = comptime!((8 * b) as u32) + shift;
@@ -326,7 +341,7 @@ fn unpack_slot<N4: Size>(
             let words = rv[comptime!(v0 + vv)];
             #[unroll]
             for wi in 0usize..4usize {
-                let word = words[wi];
+                let word = words.extract(wi);
                 #[unroll]
                 for b in 0usize..4usize {
                     w[comptime!(16 * vv + 4 * wi + b)] =
@@ -342,8 +357,8 @@ fn unpack_slot<N4: Size>(
         for j in 0usize..32usize {
             let byte = comptime!(j % 16);
             let nib = comptime!(((j / 16) * 4 + (byte % 4) * 8) as u32);
-            let qv =
-                ((qs[comptime!(byte / 4)] >> nib) & 15) | (((qh >> comptime!(j as u32)) & 1) << 4);
+            let qv = ((qs.extract(comptime!(byte / 4)) >> nib) & 15)
+                | (((qh >> comptime!(j as u32)) & 1) << 4);
             w[j] = dd * (f32::cast_from(qv) - 16.0f32);
         }
     } else {
@@ -358,7 +373,7 @@ fn unpack_slot<N4: Size>(
         let s_hi = dd * sbyte(sw, soff + 8);
         #[unroll]
         for l in 0usize..32usize {
-            let wq = rv[comptime!(v0 + l / 16)][comptime!((l % 16) / 4)];
+            let wq = rv[comptime!(v0 + l / 16)].extract(comptime!((l % 16) / 4));
             let wh = rs[comptime!(s0 + l / 4)];
             let sb = comptime!(((l % 4) * 8) as u32);
             let qv = ((wq >> (sb + nib)) & 15) | (((wh >> (sb + hshift)) & 3) << 4);
@@ -387,15 +402,15 @@ fn group_sum(v: f32, #[comptime] lanes: usize) -> f32 {
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 fn gemv<N4: Size, N8: Size>(
-    x: &Array<Vector<f16, N8>>,
-    q: &Array<Vector<u32, N4>>,
-    h: &Array<u32>,
-    s: &Array<u32>,
-    d: &Array<f32>,
-    ids: &Array<u32>,
-    offsets: &Array<u32>,
-    jobs: &Array<u32>,
-    out: &mut Array<f32>,
+    x: &[Vector<f16, N8>],
+    q: &[Vector<u32, N4>],
+    h: &[u32],
+    s: &[u32],
+    d: &[f32],
+    ids: &[u32],
+    offsets: &[u32],
+    jobs: &[u32],
+    out: &mut [f32],
     m: u32,
     in_div: u32,
     #[comptime] k: usize,
@@ -491,7 +506,7 @@ fn gemv<N4: Size, N8: Size>(
                                 let xv = x[base + v];
                                 #[unroll]
                                 for e in 0usize..8usize {
-                                    sum += w[comptime!(8 * v + e)] * f32::cast_from(xv[e]);
+                                    sum += w[comptime!(8 * v + e)] * f32::cast_from(xv.extract(e));
                                 }
                             }
                             acc[t] += sum;
@@ -519,15 +534,15 @@ fn gemv<N4: Size, N8: Size>(
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 fn gemm<N4: Size, N8: Size>(
-    x: &Array<Vector<f16, N8>>,
-    q: &Array<Vector<u32, N4>>,
-    h: &Array<u32>,
-    s: &Array<u32>,
-    d: &Array<f32>,
-    ids: &Array<u32>,
-    offsets: &Array<u32>,
-    jobs: &Array<u32>,
-    out: &mut Array<f32>,
+    x: &[Vector<f16, N8>],
+    q: &[Vector<u32, N4>],
+    h: &[u32],
+    s: &[u32],
+    d: &[f32],
+    ids: &[u32],
+    offsets: &[u32],
+    jobs: &[u32],
+    out: &mut [f32],
     m: u32,
     in_div: u32,
     k_substeps: u32,
@@ -575,8 +590,8 @@ fn gemm<N4: Size, N8: Size>(
     }
     let wbase = expert * n + col0;
 
-    let mut a_tile = SharedMemory::<Vector<f16, N8>>::new(bm * row_vecs);
-    let mut b_tile = SharedMemory::<Vector<f16, N8>>::new(bn * row_vecs);
+    let mut a_tile = Shared::<[Vector<f16, N8>]>::new_slice(bm * row_vecs);
+    let mut b_tile = Shared::<[Vector<f16, N8>]>::new_slice(bn * row_vecs);
 
     // Input row of each A-tile row this thread loads (invalid rows read row 0 and are zeroed).
     let a_loads = comptime!((bm * 64 / 8).div_ceil(128));
@@ -778,7 +793,7 @@ fn gemm<N4: Size, N8: Size>(
                 #[unroll]
                 for j in 0usize..fnn {
                     let c = col0 + wn * comptime!(bn / 2) + j * 16usize + lane % 16usize;
-                    out[orow * n + c] = acc.index(comptime!(i * fnn + j))[e][0usize];
+                    out[orow * n + c] = acc.index(comptime!(i * fnn + j))[e].extract(0usize);
                 }
             }
         }
@@ -787,7 +802,7 @@ fn gemm<N4: Size, N8: Size>(
 
 /// `out[i] = sum_z part[z * len + i]`.
 #[cube(launch)]
-fn reduce_splits(part: &Array<f32>, out: &mut Array<f32>, len: u32, #[comptime] splits: usize) {
+fn reduce_splits(part: &[f32], out: &mut [f32], len: u32, #[comptime] splits: usize) {
     let i = ABSOLUTE_POS as usize;
     if i < len as usize {
         let mut sum = 0.0f32;
@@ -828,17 +843,24 @@ impl QMatrix {
                 "{kind:?} [{experts}x{n}, {k}] has the wrong byte count"
             ));
         }
-        Self::from_packed(gpu, kind, n, k, experts, crate::quant::pack(kind, raw)?)
+        Self::from_packed(
+            gpu,
+            kind,
+            n,
+            k,
+            experts,
+            jevons_formats::quant::pack(kind, raw)?,
+        )
     }
 
-    /// Uploads already packed blocks (see [`crate::quant::pack`]) without extra host copies.
+    /// Uploads already packed blocks (see [`jevons_formats::quant::pack`]) without extra host copies.
     pub fn from_packed(
         gpu: &Gpu,
         kind: TensorType,
         n: usize,
         k: usize,
         experts: usize,
-        p: crate::quant::Packed,
+        p: jevons_formats::quant::Packed,
     ) -> Result<Self, String> {
         let fmt = match kind {
             TensorType::Q4K => FMT_Q4K,
@@ -849,7 +871,7 @@ impl QMatrix {
         };
         let (block, _) = kind.block().ok_or("unsupported type")?;
         let blocks = experts * n * k / block as usize;
-        let words = crate::quant::packed_words(kind);
+        let words = jevons_formats::quant::packed_words(kind);
         if !k.is_multiple_of(64)
             || !n.is_multiple_of(64)
             || !k.is_multiple_of(block as usize)
@@ -879,6 +901,31 @@ impl QMatrix {
     /// Device regions `(q, h, s, d)` of the packed layout.
     pub fn regions(&self) -> (&Buf, &Buf, &Buf, &Buf) {
         (&self.q, &self.h, &self.s, &self.d)
+    }
+
+    /// Views row-major FP16 weights `[n, k]` (stored as `n * k / 2` words) with caller-owned
+    /// placeholder buffers for the unused scale regions, so repeated views allocate nothing.
+    pub fn f16_view(
+        n: usize,
+        k: usize,
+        words: Buf,
+        dummy_words: &Buf,
+        dummy_scale: &Buf,
+    ) -> Result<Self, String> {
+        if !k.is_multiple_of(64) || !n.is_multiple_of(64) || words.len() != n * k / 2 {
+            return Err(format!("F16 [{n}, {k}] has an unsupported shape"));
+        }
+        Ok(Self {
+            kind: TensorType::F16,
+            fmt: FMT_F16,
+            n,
+            k,
+            experts: 1,
+            q: words,
+            h: dummy_words.clone(),
+            s: dummy_words.clone(),
+            d: dummy_scale.clone(),
+        })
     }
 
     /// Wraps a device buffer of row-major FP16 weights `[n, k]` (stored as `n * k / 2` words).
@@ -1093,7 +1140,7 @@ pub fn matvec(gpu: &Gpu, x: &Buf, m: usize, w: &QMatrix, out: &Buf, dummy: &Buf)
     }
     let mr = m.next_power_of_two();
     let (lanes, rounds) = gemv_shape(w.k);
-    gemv::launch::<Hip>(
+    gemv::launch(
         &gpu.client,
         CubeCount::Static(w.n.div_ceil(4 * rounds * 32 / lanes) as u32, 1, 1),
         CubeDim::new_2d(32, 4),
@@ -1124,7 +1171,7 @@ pub fn matvec(gpu: &Gpu, x: &Buf, m: usize, w: &QMatrix, out: &Buf, dummy: &Buf)
 pub fn matvec_grouped(gpu: &Gpu, x: &Buf, w: &QMatrix, g: &Groups, out: &Buf, mr: usize) {
     assert!(out.len() >= g.rows * w.n && mr <= GEMV_ROWS);
     let (lanes, rounds) = gemv_shape(w.k);
-    gemv::launch::<Hip>(
+    gemv::launch(
         &gpu.client,
         CubeCount::Static(
             w.n.div_ceil(4 * rounds * 32 / lanes) as u32,
@@ -1177,7 +1224,7 @@ pub fn matmul_split(
     } else {
         out.clone()
     };
-    gemm::launch::<Hip>(
+    gemm::launch(
         &gpu.client,
         CubeCount::Static((w.n / bn) as u32, m.div_ceil(bm) as u32, splits as u32),
         CubeDim::new_2d(32, 4),
@@ -1210,7 +1257,7 @@ pub fn matmul_split(
 }
 
 fn reduce(gpu: &Gpu, part: &Buf, out: &Buf, len: usize, splits: usize) {
-    reduce_splits::launch::<Hip>(
+    reduce_splits::launch(
         &gpu.client,
         CubeCount::Static(len.div_ceil(256) as u32, 1, 1),
         CubeDim::new_1d(256),
@@ -1241,7 +1288,7 @@ pub fn matmul_grouped(
     } else {
         out.clone()
     };
-    gemm::launch::<Hip>(
+    gemm::launch(
         &gpu.client,
         CubeCount::Static((w.n / bn) as u32, g.max_jobs as u32, splits as u32),
         CubeDim::new_2d(32, 4),

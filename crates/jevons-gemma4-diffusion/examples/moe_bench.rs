@@ -1,7 +1,7 @@
 //! Grouped expert products (gate_up and down) with random top-k routes on real weights.
 //!
 //! usage: moe_bench MODEL.gguf LAYER TOKENS [rounds] [bm] [splits] [bn]
-use jevons_cubecl::{
+use jevons_gemma4_diffusion::{
     gguf::Gguf,
     gpu::{Gpu, gemm, ops},
     quant,
@@ -69,10 +69,10 @@ fn main() {
     let (out_gu, out_dn) = (gpu.zeros(a * 2 * ff, 4), gpu.zeros(a * d, 4));
     let run_group = || ops::group_routes(&gpu, &idb, &sorted, &offsets, &jobs, a, experts, bm);
     run_group();
-    let grouped = |x: &jevons_cubecl::gpu::Buf,
+    let grouped = |x: &jevons_gemma4_diffusion::gpu::Buf,
                    w: &gemm::QMatrix,
                    g: &gemm::Groups,
-                   out: &jevons_cubecl::gpu::Buf| {
+                   out: &jevons_gemma4_diffusion::gpu::Buf| {
         if bm <= gemm::GEMV_ROWS {
             gemm::matvec_grouped(&gpu, x, w, g, out, bm)
         } else {

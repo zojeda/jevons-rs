@@ -6,7 +6,7 @@
 //! out of git; it is model-specific and large.
 //!
 //! usage: golden_dump MODEL.gguf OUT_DIR [MMPROJ.gguf]
-use jevons_cubecl::{gguf::Gguf, model::Model, tokenizer::Tokenizer};
+use jevons_gemma4_diffusion::{gguf::Gguf, model::Model, tokenizer::Tokenizer};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -143,7 +143,7 @@ fn main() {
     );
 
     if let Some(mmproj) = args.get(2) {
-        use jevons_cubecl::{vision::Vision, vision_input::Rgb};
+        use jevons_gemma4_diffusion::{vision::Vision, vision_input::Rgb};
         let vision = Vision::load(model.gpu(), mmproj.as_ref(), d, 280).unwrap();
         vision.warmup().unwrap();
         let rgb = Rgb {

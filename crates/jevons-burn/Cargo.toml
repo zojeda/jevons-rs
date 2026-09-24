@@ -7,7 +7,9 @@ publish.workspace = true
 
 [dependencies]
 jevons-formats.workspace = true
-burn = { version = "=0.22.0-pre.4", default-features = false, features = ["std", "rocm", "fusion", "autotune"] }
+jevons-kernels.workspace = true
+burn = { version = "=0.22.0-pre.4", default-features = false, features = ["std", "rocm", "fusion", "autotune", "extension"] }
+burn-cubecl = { version = "=0.22.0-pre.4", default-features = false, features = ["std", "hip", "fusion", "autotune"] }
 cubecl = { version = "=0.11.0-pre.4", features = ["hip"] }
 # The default pliron/LLVM HIP compiler panics on BF16 kernels; hiprtc C++ works.
 cubecl-hip = { version = "=0.11.0-pre.4", default-features = false, features = ["cpp"] }
@@ -17,4 +19,4 @@ half = "2.7"
 workspace = true
 
 [dev-dependencies]
-burn = { version = "=0.22.0-pre.4", default-features = false, features = ["std", "rocm", "fusion", "autotune", "flex"] }
+burn = { version = "=0.22.0-pre.4", default-features = false, features = ["std", "rocm", "fusion", "autotune", "extension", "flex"] }

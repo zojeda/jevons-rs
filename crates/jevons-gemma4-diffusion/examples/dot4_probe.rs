@@ -1,25 +1,25 @@
 //! Codegen probe: does CubeCL HIP output compile to RDNA3 int8 dot-product instructions?
 #![allow(clippy::unnecessary_cast)] // CubeCL DSL index casts
 use cubecl::prelude::*;
-use jevons_cubecl::gpu::{Gpu, Hip};
+use jevons_gemma4_diffusion::gpu::Gpu;
 
 /// Sign-extended byte products written with shifts on i32.
 #[cube(launch)]
-fn dot_shifts(a: &Array<u32>, b: &Array<u32>, out: &mut Array<i32>) {
+fn dot_shifts(a: &[u32], b: &[u32], out: &mut [i32]) {
     let i = ABSOLUTE_POS as usize;
     let (x, y) = (i32::cast_from(a[i]), i32::cast_from(b[i]));
     let mut acc = 0i32;
     #[unroll]
     for k in 0u32..4u32 {
-        let sh = comptime!(24 - 8 * k);
-        acc += ((x << sh) >> 24) * ((y << sh) >> 24);
+        let sh = comptime!((24 - 8 * k) as i32);
+        acc += ((x << sh) >> 24i32) * ((y << sh) >> 24i32);
     }
     out[i] = acc;
 }
 
 /// The same through vectorized i8 and CubeCL's dot.
 #[cube(launch)]
-fn dot_vector<N4: Size>(a: &Array<u32>, b: &Array<u32>, out: &mut Array<i32>) {
+fn dot_vector<N4: Size>(a: &[u32], b: &[u32], out: &mut [i32]) {
     let i = ABSOLUTE_POS as usize;
     let x = Vector::<i8, N4>::reinterpret(a[i]);
     let y = Vector::<i8, N4>::reinterpret(b[i]);
@@ -51,7 +51,7 @@ fn main() {
         let out = gpu.zeros(n, 4);
         let count = CubeCount::Static((n / 256) as u32, 1, 1);
         if variant == "shifts" {
-            dot_shifts::launch::<Hip>(
+            dot_shifts::launch(
                 &gpu.client,
                 count,
                 CubeDim::new_1d(256),
@@ -60,7 +60,7 @@ fn main() {
                 out.arg(),
             );
         } else {
-            dot_vector::launch::<Hip>(
+            dot_vector::launch(
                 &gpu.client,
                 count,
                 CubeDim::new_1d(256),

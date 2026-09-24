@@ -4,9 +4,9 @@ use jevons_core::{
     ChatFormat, Conditioning, DiffusionModel, DiffusionScheme, Error, ImageInput, Logits,
     ModelConfig, ModelInfo, PrefillProfile, PromptPart, Result, TextTokenizer, decode_image,
 };
-use jevons_cubecl::model::Segment;
-use jevons_cubecl::vision::{EncodedImage, Vision};
-use jevons_cubecl::{gguf::Gguf, model, tokenizer::Tokenizer, vision_input::Rgb};
+use jevons_gemma4_diffusion::model::Segment;
+use jevons_gemma4_diffusion::vision::{EncodedImage, Vision};
+use jevons_gemma4_diffusion::{gguf::Gguf, model, tokenizer::Tokenizer, vision_input::Rgb};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::Instant;
 

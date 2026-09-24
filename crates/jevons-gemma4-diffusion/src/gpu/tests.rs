@@ -1,5 +1,5 @@
 //! GPU kernels against CPU f64 references. Run with
-//! `cargo test -p jevons-cubecl --features hip --lib -- --include-ignored`.
+//! `cargo test -p jevons-gemma4-diffusion --lib -- --include-ignored`.
 use super::attention::{self, AttnShape};
 use super::gemm::{self, Groups, QMatrix};
 use super::ops::{self, QkvShape};
@@ -811,12 +811,7 @@ fn attention_rows_do_not_depend_on_query_chunking() {
 }
 
 #[cube(launch)]
-fn one_wmma<N8: Size>(
-    a: &Array<Vector<f16, N8>>,
-    b: &Array<Vector<f16, N8>>,
-    c0: &Array<f32>,
-    out: &mut Array<f32>,
-) {
+fn one_wmma<N8: Size>(a: &[Vector<f16, N8>], b: &[Vector<f16, N8>], c0: &[f32], out: &mut [f32]) {
     let def = cmma::MmaDefinition::<f16, f16, f32>::new(16usize, 16usize, 16usize);
     let size!(NC) = def.vector_size(cmma::MatrixIdent::Accumulator);
     let lane = UNIT_POS_PLANE as usize;
@@ -835,7 +830,7 @@ fn one_wmma<N8: Size>(
     def.execute_inplace(&fa, &fb, &mut c);
     #[unroll]
     for e in 0usize..8usize {
-        out[(2usize * e + lane / 16usize) * 16usize + lane % 16usize] = c[e][0usize];
+        out[(2usize * e + lane / 16usize) * 16usize + lane % 16usize] = c[e].extract(0usize);
     }
 }
 
@@ -867,7 +862,7 @@ fn wmma_zero_products_sensitivity_probe() {
         }
         let run = |b: &[f32]| {
             let out = gpu.zeros(256, 4);
-            one_wmma::launch::<super::Hip>(
+            one_wmma::launch(
                 &gpu.client,
                 CubeCount::Static(1, 1, 1),
                 CubeDim::new_1d(32),
@@ -1188,7 +1183,7 @@ fn vision_ffn_pooling_positions_and_norms_match_reference() {
 #[ignore = "requires a HIP GPU"]
 fn released_buffers_return_device_memory_after_cleanup() {
     let gpu = Gpu::new(0).unwrap();
-    let reserved = || gpu.client.memory_usage().unwrap().bytes_reserved;
+    let reserved = || gpu.client.memory_usage().bytes_reserved;
     let before = reserved();
     let big = gpu.zeros(256 << 20, 4);
     gpu.sync();

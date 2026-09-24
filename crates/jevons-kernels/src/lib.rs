@@ -1,29 +1,23 @@
-//! Device buffers and CubeCL kernels for the DiffusionGemma runtime (HIP).
+//! Tuned CubeCL kernels shared by the model runtimes (HIP): device buffers and the quantized /
+//! FP16-weight GEMM. They run on the same CubeCL runtime and memory pool as Burn, so a Burn
+//! tensor's buffer can be passed to them directly ([`Buf::from_handle`], [`Gpu::from_client`]).
 //!
 //! Kernels launch in CubeCL's checked mode: every global array access is bounds-checked
 //! against the real allocation size, so a wrong logical length can never read or write
 //! outside a buffer. The crate therefore stays free of `unsafe`.
-pub mod attention;
-pub mod gemm;
-pub mod ops;
-pub mod tune;
-pub mod vision;
+#![forbid(unsafe_code)]
 
-use cubecl::{
-    client::ComputeClient,
-    hip::{AmdDevice, HipRuntime},
-    prelude::*,
-    server::Handle,
-};
+pub mod gemm;
+
+use cubecl::{client::Client, hip::HipRuntime, prelude::*, server::Handle};
 use half::f16;
-use std::marker::PhantomData;
 
 pub type Hip = HipRuntime;
 
 /// Owns the compute client used by every buffer and kernel on one device.
 #[derive(Clone)]
 pub struct Gpu {
-    pub client: ComputeClient<Hip>,
+    pub client: Client,
 }
 
 /// Raw device allocation with a logical element count for launch metadata.
@@ -34,6 +28,12 @@ pub struct Buf {
 }
 
 impl Buf {
+    /// Views an existing allocation (such as a Burn tensor's buffer) as `len` elements. Checked
+    /// launches bound every access by the real allocation size.
+    pub fn from_handle(handle: Handle, len: usize) -> Self {
+        Self { handle, len }
+    }
+
     /// Uploads raw little-endian bytes holding `len` elements.
     pub fn from_bytes(gpu: &Gpu, bytes: &[u8], len: usize) -> Self {
         Self {
@@ -42,15 +42,16 @@ impl Buf {
         }
     }
 
-    /// Array argument of `len` scalar elements (vectorized kernels divide by the vector size).
-    pub fn arg(&self) -> ArrayArg<Hip> {
-        TensorBinding::<Hip> {
+    /// Buffer argument of `len` scalar elements (vectorized kernels divide by the vector size).
+    /// Checked launches bound every access by the real allocation size.
+    pub fn arg(&self) -> BufferArg {
+        TensorBinding {
             handle: self.handle.clone().binding(),
             strides: [1].into(),
             shape: [self.len].into(),
-            runtime: PhantomData,
+            tiling: cubecl::zspace::Tiling::UNTILED,
         }
-        .into_array_arg()
+        .into_buffer_arg()
     }
 
     pub fn len(&self) -> usize {
@@ -94,10 +95,9 @@ fn configure_compilation_cache() {
             return;
         }
         let mut config = CubeClRuntimeConfig::from_current_dir().override_from_env();
-        if config.compilation.cache.is_none()
-            && let Some(dir) = cache_dir()
-        {
-            config.compilation.cache = Some(CacheConfig::File(dir));
+        if let Some(dir) = cache_dir() {
+            config.compilation.cache = true;
+            config.environment.path = CacheConfig::Directory(dir);
         }
         CubeClRuntimeConfig::set(config);
     });
@@ -106,12 +106,19 @@ fn configure_compilation_cache() {
 impl Gpu {
     pub fn new(device: usize) -> Result<Self, String> {
         configure_compilation_cache();
-        let client = <Hip as cubecl::Runtime>::client(&AmdDevice::new(device));
+        let client = cubecl::Device::rocm(device)
+            .map_err(|e| format!("HIP device {device}: {e:?}"))?
+            .client();
         let hw = &client.properties().hardware;
         if hw.plane_size_min != 32 || hw.plane_size_max != 32 {
             return Err("The CubeCL backend requires 32-lane waves".into());
         }
         Ok(Self { client })
+    }
+
+    /// Wraps an existing compute client, such as a Burn tensor's, for launching kernels.
+    pub fn from_client(client: Client) -> Self {
+        Self { client }
     }
 
     /// Uploads an owned word vector without an intermediate host copy.
@@ -224,6 +231,3 @@ impl Gpu {
 fn bytes_of_u32(data: &[u32]) -> &[u8] {
     bytemuck::cast_slice(data)
 }
-
-#[cfg(test)]
-mod tests;

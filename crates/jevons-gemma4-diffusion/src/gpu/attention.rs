@@ -30,7 +30,7 @@
     clippy::unnecessary_cast,
     clippy::too_many_arguments
 )]
-use super::{Buf, Gpu, Hip};
+use super::{Buf, Gpu};
 use cubecl::prelude::*;
 use half::f16;
 
@@ -82,10 +82,10 @@ fn visible(
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 fn flash_attention<N8: Size>(
-    q: &Array<Vector<f16, N8>>,
-    k_cache: &Array<Vector<f16, N8>>,
-    v_cache: &Array<Vector<f16, N8>>,
-    out: &mut Array<f16>,
+    q: &[Vector<f16, N8>],
+    k_cache: &[Vector<f16, N8>],
+    v_cache: &[Vector<f16, N8>],
+    out: &mut [f16],
     rows: u32,
     pos0: u32,
     kv_len: u32,
@@ -110,13 +110,13 @@ fn flash_attention<N8: Size>(
     let qstride = comptime!(hd / 8 + 1);
 
     // Q tile [16, hd] (+1 vector padding per row).
-    let mut q_tile = SharedMemory::<Vector<f16, N8>>::new(16usize * qstride);
+    let mut q_tile = Shared::<[Vector<f16, N8>]>::new_slice(16usize * qstride);
     // Probabilities [16, 64] (+8 padding per row), scalar so each lane writes its own score.
-    let mut p_tile = SharedMemory::<f16>::new(16usize * 72usize);
-    let mut stats = SharedMemory::<f32>::new(4usize * 16usize);
-    let mut alpha_s = SharedMemory::<f32>::new(16usize);
-    let mut row_m = SharedMemory::<f32>::new(16usize);
-    let mut row_l = SharedMemory::<f32>::new(16usize);
+    let mut p_tile = Shared::<[f16]>::new_slice(16usize * 72usize);
+    let mut stats = Shared::<[f32]>::new_slice(4usize * 16usize);
+    let mut alpha_s = Shared::<[f32]>::new_slice(16usize);
+    let mut row_m = Shared::<[f32]>::new_slice(16usize);
+    let mut row_l = Shared::<[f32]>::new_slice(16usize);
 
     let zero = Vector::<f16, N8>::empty().fill(f16::cast_from(0.0f32));
     for i in 0usize..comptime!(16 * hd / 8 / 128) {
@@ -202,7 +202,7 @@ fn flash_attention<N8: Size>(
         for e in 0usize..8usize {
             let r = 2usize * e + half;
             let qp = (a0 + r) as u32;
-            let mut v = s[e][0usize];
+            let mut v = s[e].extract(0usize);
             if !visible(qp, key, kv_len, prompt, block, window, swa) {
                 v = f32::new(-3.0e38f32);
             }
@@ -232,7 +232,7 @@ fn flash_attention<N8: Size>(
         #[unroll]
         for e in 0usize..8usize {
             let r = 2usize * e + half;
-            let p = f32::exp(s[e][0usize] - row_m[r]);
+            let p = f32::exp(s[e].extract(0usize) - row_m[r]);
             let p16 = f16::cast_from(p);
             ps[e] = half_wave_sum(f32::cast_from(p16));
             p_tile[r * 72usize + 16usize * wave + col] = p16;
@@ -258,7 +258,7 @@ fn flash_attention<N8: Size>(
             #[unroll]
             for e in 0usize..8usize {
                 let r = 2usize * e + half;
-                let cur = o.index(f)[e][0usize];
+                let cur = o.index(f)[e].extract(0usize);
                 o.index_mut(f)[e] = Vector::cast_from(cur * alpha_s[r]);
             }
         }
@@ -270,8 +270,8 @@ fn flash_attention<N8: Size>(
             let mut pb = Vector::<f16, N8>::empty();
             #[unroll]
             for i in 0usize..8usize {
-                pa[i] = p_tile[col * 72usize + kk * 16usize + i];
-                pb[i] = p_tile[col * 72usize + kk * 16usize + 8usize + i];
+                pa.insert(i, p_tile[col * 72usize + kk * 16usize + i]);
+                pb.insert(i, p_tile[col * 72usize + kk * 16usize + 8usize + i]);
             }
             a[0usize] = pa;
             a[1usize] = pb;
@@ -289,16 +289,16 @@ fn flash_attention<N8: Size>(
                     #[unroll]
                     for e in 0usize..8usize {
                         let r = 2usize * e + half;
-                        let mut acc = o.index(f)[e][0usize];
+                        let mut acc = o.index(f)[e].extract(0usize);
                         #[unroll]
                         for i in 0usize..8usize {
                             acc += f32::cast_from(p_tile[r * 72usize + kk * 16usize + i])
-                                * f32::cast_from(v0[i]);
+                                * f32::cast_from(v0.extract(i));
                         }
                         #[unroll]
                         for i in 0usize..8usize {
                             acc += f32::cast_from(p_tile[r * 72usize + kk * 16usize + 8usize + i])
-                                * f32::cast_from(v1[i]);
+                                * f32::cast_from(v1.extract(i));
                         }
                         o.index_mut(f)[e] = Vector::cast_from(acc);
                     }
@@ -314,10 +314,10 @@ fn flash_attention<N8: Size>(
                     #[unroll]
                     for i in 0usize..8usize {
                         if key0 + i >= kv_len as usize {
-                            v0[i] = f16::cast_from(0.0f32);
+                            v0.insert(i, f16::cast_from(0.0f32));
                         }
                         if key0 + 8usize + i >= kv_len as usize {
-                            v1[i] = f16::cast_from(0.0f32);
+                            v1.insert(i, f16::cast_from(0.0f32));
                         }
                     }
                 }
@@ -341,7 +341,7 @@ fn flash_attention<N8: Size>(
             let qa = a0 + r;
             if qa >= pos0 as usize && qa < (pos0 + rows) as usize {
                 let l = row_l[r];
-                let v = o.index(f)[e][0usize] / select(l > 0.0f32, l, 1.0f32);
+                let v = o.index(f)[e].extract(0usize) / select(l > 0.0f32, l, 1.0f32);
                 out[((qa - pos0 as usize) * heads + head) * hd + c] = f16::cast_from(v);
             }
         }
@@ -374,7 +374,7 @@ pub fn attention(
     shape: &AttnShape,
 ) {
     assert!(cap.is_multiple_of(16) && kv_len <= cap && rows > 0);
-    flash_attention::launch::<Hip>(
+    flash_attention::launch(
         &gpu.client,
         CubeCount::Static(
             ((pos0 + rows).div_ceil(16) - pos0 / 16) as u32,

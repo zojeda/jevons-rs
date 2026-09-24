@@ -2,7 +2,7 @@
 //! (little-endian f32 `[tokens, d]` files named `<image stem>.embd`).
 //!
 //! usage: vision_check MMPROJ.gguf REFERENCE_DIR IMAGE...
-use jevons_cubecl::{gpu::Gpu, vision::Vision, vision_input::Rgb};
+use jevons_gemma4_diffusion::{gpu::Gpu, vision::Vision, vision_input::Rgb};
 use std::time::Instant;
 
 fn main() {

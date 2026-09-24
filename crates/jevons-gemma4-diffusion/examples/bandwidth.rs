@@ -1,38 +1,30 @@
 //! Raw device read bandwidth with coalesced and row-strided vector loads.
 #![allow(clippy::unnecessary_cast)] // CubeCL DSL index casts
 use cubecl::prelude::*;
-use jevons_cubecl::gpu::{Gpu, Hip};
+use jevons_gemma4_diffusion::gpu::Gpu;
 use std::time::Instant;
 
 #[cube(launch)]
-fn stream<N4: Size>(
-    data: &Array<Vector<u32, N4>>,
-    out: &mut Array<u32>,
-    #[comptime] per_thread: usize,
-) {
+fn stream<N4: Size>(data: &[Vector<u32, N4>], out: &mut [u32], #[comptime] per_thread: usize) {
     let base = ABSOLUTE_POS as usize * per_thread;
     let mut acc = 0u32;
     #[unroll]
     for i in 0usize..per_thread {
         let v = data[base + i];
-        acc = acc ^ v[0usize] ^ v[1usize] ^ v[2usize] ^ v[3usize];
+        acc = acc ^ v.extract(0usize) ^ v.extract(1usize) ^ v.extract(2usize) ^ v.extract(3usize);
     }
     out[ABSOLUTE_POS as usize] = acc;
 }
 
 /// Grid-stride coalesced: consecutive lanes read consecutive vectors.
 #[cube(launch)]
-fn stream_coalesced<N4: Size>(
-    data: &Array<Vector<u32, N4>>,
-    out: &mut Array<u32>,
-    #[comptime] iters: usize,
-) {
+fn stream_coalesced<N4: Size>(data: &[Vector<u32, N4>], out: &mut [u32], #[comptime] iters: usize) {
     let total = (CUBE_COUNT_X * CUBE_DIM_X) as usize;
     let mut acc = 0u32;
     #[unroll]
     for i in 0usize..iters {
         let v = data[i * total + ABSOLUTE_POS as usize];
-        acc = acc ^ v[0usize] ^ v[1usize] ^ v[2usize] ^ v[3usize];
+        acc = acc ^ v.extract(0usize) ^ v.extract(1usize) ^ v.extract(2usize) ^ v.extract(3usize);
     }
     out[ABSOLUTE_POS as usize] = acc;
 }
@@ -43,7 +35,7 @@ fn main() {
         let tiny = gpu.zeros(256, 4);
         let out = gpu.empty(1, 4);
         let run = || {
-            stream::launch::<Hip>(
+            stream::launch(
                 &gpu.client,
                 CubeCount::Static(1, 1, 1),
                 CubeDim::new_1d(1),
@@ -79,7 +71,7 @@ fn main() {
         let out = gpu.empty(threads, 4);
         let run = || {
             if name == "coalesced" {
-                stream_coalesced::launch::<Hip>(
+                stream_coalesced::launch(
                     &gpu.client,
                     CubeCount::Static((threads / 256) as u32, 1, 1),
                     CubeDim::new_1d(256),
@@ -89,7 +81,7 @@ fn main() {
                     per,
                 );
             } else {
-                stream::launch::<Hip>(
+                stream::launch(
                     &gpu.client,
                     CubeCount::Static((threads / 256) as u32, 1, 1),
                     CubeDim::new_1d(256),

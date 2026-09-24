@@ -1,0 +1,60 @@
+[package]
+name = "jevons-gemma4-diffusion"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+jevons-formats.workspace = true
+jevons-kernels.workspace = true
+jevons-tokenizer.workspace = true
+thiserror.workspace = true
+half = "2.7"
+bytemuck = "1"
+cubecl = { version = "=0.11.0-pre.4", features = ["hip"] }
+# hiprtc C++ code generation, as in CubeCL 0.10 (the default LLVM path rejects some kernels).
+cubecl-hip = { version = "=0.11.0-pre.4", default-features = false, features = ["cpp"] }
+
+[dev-dependencies]
+image.workspace = true
+serde_json.workspace = true
+
+[[example]]
+name = "gemm_bench"
+
+[[example]]
+name = "moe_bench"
+
+[[example]]
+name = "gguf_info"
+
+[[example]]
+name = "bandwidth"
+
+[[example]]
+name = "wmma_probe"
+
+[[example]]
+name = "prefix_check"
+
+[[example]]
+name = "golden_dump"
+
+[[example]]
+name = "load_profile"
+
+[[example]]
+name = "dot4_probe"
+
+[[example]]
+name = "tune_ab"
+
+[[example]]
+name = "vision_check"
+
+[[example]]
+name = "f16_bench"
+
+[lints]
+workspace = true

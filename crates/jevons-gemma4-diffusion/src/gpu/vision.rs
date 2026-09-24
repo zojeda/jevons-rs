@@ -10,7 +10,7 @@
     clippy::too_many_arguments
 )]
 use super::ops::block_sum;
-use super::{Buf, Gpu, Hip};
+use super::{Buf, Gpu};
 use cubecl::prelude::*;
 use half::f16;
 
@@ -22,7 +22,7 @@ const QROWS: usize = 64;
 #[cube]
 fn row_inv_rms(
     vals: &Array<f32>,
-    scratch: &mut SharedMemory<f32>,
+    scratch: &mut Shared<[f32]>,
     #[comptime] per: usize,
     #[comptime] d: usize,
     eps: f32,
@@ -39,9 +39,9 @@ fn row_inv_rms(
 /// `x[r] += tx[r % cols] + ty[r / cols]` (learned x/y position tables `[positions, d]`).
 #[cube(launch)]
 fn add_positions(
-    x: &mut Array<f32>,
-    tx: &Array<f32>,
-    ty: &Array<f32>,
+    x: &mut [f32],
+    tx: &[f32],
+    ty: &[f32],
     rows: u32,
     cols: u32,
     #[comptime] d: usize,
@@ -58,11 +58,11 @@ fn add_positions(
 
 /// `out = rms_norm(x) * w` as f16.
 #[cube(launch)]
-fn norm_rows(x: &Array<f32>, w: &Array<f32>, out: &mut Array<f16>, eps: f32, #[comptime] d: usize) {
+fn norm_rows(x: &[f32], w: &[f32], out: &mut [f16], eps: f32, #[comptime] d: usize) {
     let per = comptime!(d / VT);
     let row = CUBE_POS_X as usize;
     let t = UNIT_POS as usize;
-    let mut scratch = SharedMemory::<f32>::new(4usize);
+    let mut scratch = Shared::<[f32]>::new_slice(4usize);
     let mut vals = Array::<f32>::new(per);
     #[unroll]
     for i in 0usize..per {
@@ -78,11 +78,11 @@ fn norm_rows(x: &Array<f32>, w: &Array<f32>, out: &mut Array<f16>, eps: f32, #[c
 
 /// Post-norm residual: `x += rms_norm(y) * w`.
 #[cube(launch)]
-fn add_normed(x: &mut Array<f32>, y: &Array<f32>, w: &Array<f32>, eps: f32, #[comptime] d: usize) {
+fn add_normed(x: &mut [f32], y: &[f32], w: &[f32], eps: f32, #[comptime] d: usize) {
     let per = comptime!(d / VT);
     let row = CUBE_POS_X as usize;
     let t = UNIT_POS as usize;
-    let mut scratch = SharedMemory::<f32>::new(4usize);
+    let mut scratch = Shared::<[f32]>::new_slice(4usize);
     let mut vals = Array::<f32>::new(per);
     #[unroll]
     for i in 0usize..per {
@@ -100,14 +100,14 @@ fn add_normed(x: &mut Array<f32>, y: &Array<f32>, w: &Array<f32>, eps: f32, #[co
 /// NeoX rotary embedding: dims `[0, hd/2)` rotate by the patch column, `[hd/2, hd)` by the row.
 #[cube(launch)]
 fn prepare_qkv(
-    q: &Array<f32>,
-    k: &Array<f32>,
-    v: &Array<f32>,
-    qw: &Array<f32>,
-    kw: &Array<f32>,
-    qo: &mut Array<f16>,
-    ko: &mut Array<f16>,
-    vo: &mut Array<f16>,
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    qw: &[f32],
+    kw: &[f32],
+    qo: &mut [f16],
+    ko: &mut [f16],
+    vo: &mut [f16],
     rows: u32,
     cols: u32,
     log_theta: f32,
@@ -163,10 +163,10 @@ fn prepare_qkv(
 /// per thread; keys and values stream through shared memory in tiles of `KEYS`.
 #[cube(launch)]
 fn attention(
-    q: &Array<f16>,
-    k: &Array<f16>,
-    v: &Array<f16>,
-    out: &mut Array<f16>,
+    q: &[f16],
+    k: &[f16],
+    v: &[f16],
+    out: &mut [f16],
     rows: u32,
     #[comptime] heads: usize,
     #[comptime] hd: usize,
@@ -176,8 +176,8 @@ fn attention(
     let row = CUBE_POS_X as usize * QROWS + tid;
     let d = comptime!(heads * hd);
     let n = rows as usize;
-    let mut kt = SharedMemory::<f16>::new(KEYS * hd);
-    let mut vt = SharedMemory::<f16>::new(KEYS * hd);
+    let mut kt = Shared::<[f16]>::new_slice(KEYS * hd);
+    let mut vt = Shared::<[f16]>::new_slice(KEYS * hd);
     let mut qr = Array::<f32>::new(hd);
     let mut o = Array::<f32>::new(hd);
     let src = min(row, n - 1) * d + head * hd;
@@ -244,8 +244,8 @@ fn attention(
 /// `c < f`; columns `f..stride_out` (padding) are zeroed. Gate at column 0, up at `up_off`.
 #[cube(launch)]
 fn geglu_quick(
-    gu: &Array<f32>,
-    out: &mut Array<f16>,
+    gu: &[f32],
+    out: &mut [f16],
     rows: u32,
     #[comptime] f: usize,
     #[comptime] stride_in: usize,
@@ -270,10 +270,10 @@ fn geglu_quick(
 /// `(x - bias) * scale`, and RMS-normalizes without weight (f16 output rows `oy * ox_n + ox`).
 #[cube(launch)]
 fn pool(
-    x: &Array<f32>,
-    bias: &Array<f32>,
-    scale: &Array<f32>,
-    out: &mut Array<f16>,
+    x: &[f32],
+    bias: &[f32],
+    scale: &[f32],
+    out: &mut [f16],
     cols: u32,
     eps: f32,
     #[comptime] k: usize,
@@ -285,7 +285,7 @@ fn pool(
     let out_cols = cols as usize / k;
     let oy = token / out_cols;
     let ox = token % out_cols;
-    let mut scratch = SharedMemory::<f32>::new(4usize);
+    let mut scratch = Shared::<[f32]>::new_slice(4usize);
     let mut vals = Array::<f32>::new(per);
     let factor = f32::sqrt(comptime!(d as f32)) / comptime!((k * k) as f32);
     #[unroll]
@@ -324,7 +324,7 @@ pub fn add_position_tables(
     cols: usize,
     d: usize,
 ) {
-    add_positions::launch::<Hip>(
+    add_positions::launch(
         &gpu.client,
         flat_grid(rows * d),
         CubeDim::new_1d(256),
@@ -339,7 +339,7 @@ pub fn add_position_tables(
 
 pub fn rms_norm_f16(gpu: &Gpu, x: &Buf, w: &Buf, out: &Buf, rows: usize, d: usize, eps: f32) {
     assert!(d.is_multiple_of(VT));
-    norm_rows::launch::<Hip>(
+    norm_rows::launch(
         &gpu.client,
         rows_grid(rows),
         CubeDim::new_1d(VT as u32),
@@ -352,7 +352,7 @@ pub fn rms_norm_f16(gpu: &Gpu, x: &Buf, w: &Buf, out: &Buf, rows: usize, d: usiz
 }
 
 pub fn add_rms_normed(gpu: &Gpu, x: &Buf, y: &Buf, w: &Buf, rows: usize, d: usize, eps: f32) {
-    add_normed::launch::<Hip>(
+    add_normed::launch(
         &gpu.client,
         rows_grid(rows),
         CubeDim::new_1d(VT as u32),
@@ -384,7 +384,7 @@ pub fn qkv(
     theta: f32,
     eps: f32,
 ) {
-    prepare_qkv::launch::<Hip>(
+    prepare_qkv::launch(
         &gpu.client,
         flat_grid(rows * heads),
         CubeDim::new_1d(256),
@@ -406,7 +406,7 @@ pub fn qkv(
 }
 
 pub fn self_attention(gpu: &Gpu, qkv: QkvOut, out: &Buf, rows: usize, heads: usize, hd: usize) {
-    attention::launch::<Hip>(
+    attention::launch(
         &gpu.client,
         CubeCount::Static(rows.div_ceil(QROWS) as u32, heads as u32, 1),
         CubeDim::new_1d(QROWS as u32),
@@ -431,7 +431,7 @@ pub fn gated_quick_gelu(
     up_off: usize,
     stride_out: usize,
 ) {
-    geglu_quick::launch::<Hip>(
+    geglu_quick::launch(
         &gpu.client,
         flat_grid(rows * stride_out),
         CubeDim::new_1d(256),
@@ -458,7 +458,7 @@ pub fn pool_tokens(
     d: usize,
     eps: f32,
 ) {
-    pool::launch::<Hip>(
+    pool::launch(
         &gpu.client,
         rows_grid(tokens),
         CubeDim::new_1d(VT as u32),

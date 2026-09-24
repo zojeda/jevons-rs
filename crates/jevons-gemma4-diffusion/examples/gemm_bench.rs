@@ -1,7 +1,7 @@
 //! Correctness and timing of the quantized GEMM on real checkpoint weights.
 //!
 //! usage: gemm_bench MODEL.gguf TENSOR M [rounds]
-use jevons_cubecl::{
+use jevons_gemma4_diffusion::{
     gguf::Gguf,
     gpu::{Gpu, gemm},
     quant,

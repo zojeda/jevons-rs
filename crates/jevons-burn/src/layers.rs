@@ -1,4 +1,5 @@
 //! Transformer building blocks on `burn` tensors.
+use crate::kernels::{f16_linear, f16_linear_scaled, supports_kernels};
 use burn::tensor::activation::silu;
 use burn::tensor::module::attention;
 use burn::tensor::ops::AttentionModuleOptions;
@@ -17,23 +18,35 @@ pub fn rms_norm(x: Tensor<2>, weight: &Tensor<1>, eps: f64) -> Tensor<2> {
     x * inv * weight.clone().reshape([1, d])
 }
 
-/// `x @ weightᵀ` with BF16 inputs, returned in f32. `weight` is stored `[out, in]`.
+/// `x @ weightᵀ` in f32; `weight` is stored `[out, in]`. FP16 weights on a CubeCL device use
+/// the tuned GEMM ([`f16_linear`]); otherwise Burn's matmul runs in the weight's dtype.
+///
+/// Inputs must be normalized or otherwise bounded to the FP16 range; see [`linear_unbounded`].
 pub fn linear(x: Tensor<2>, weight: &Tensor<2>) -> Tensor<2> {
-    x.cast(DType::BF16)
+    if weight.dtype() == DType::F16 && supports_kernels(&x) {
+        return f16_linear(x, weight);
+    }
+    x.cast(weight.dtype())
         .matmul(weight.clone().transpose())
         .cast(DType::F32)
 }
 
-/// SiLU-gated MLP with fused `[gate; up]` rows: `down(silu(gate(x)) * up(x))`.
-pub fn gated_mlp(x: Tensor<2>, gate_up: &Tensor<2>, down: &Tensor<2>) -> Tensor<2> {
-    let [rows, _] = x.dims();
-    let hidden = gate_up.dims()[0] / 2;
-    let both = x.cast(DType::BF16).matmul(gate_up.clone().transpose());
-    let gate = both.clone().slice([0..rows, 0..hidden]);
-    let up = both.slice([0..rows, hidden..2 * hidden]);
-    (silu(gate) * up)
-        .matmul(down.clone().transpose())
-        .cast(DType::F32)
+/// [`linear`] for inputs that may exceed the FP16 range, scaled per row for FP16 weights.
+pub fn linear_unbounded(x: Tensor<2>, weight: &Tensor<2>) -> Tensor<2> {
+    if weight.dtype() == DType::F16 && supports_kernels(&x) {
+        return f16_linear_scaled(x, weight);
+    }
+    linear(x, weight)
+}
+
+/// SiLU-gated MLP: `down(silu(gate(x)) * up(x))`.
+///
+/// Gate and up are separate products: slicing one fused `[gate; up]` product feeds a
+/// custom-kernel output twice into one fused elementwise kernel, which Burn 0.22-pre's fusion
+/// reads wrongly.
+pub fn gated_mlp(x: Tensor<2>, gate: &Tensor<2>, up: &Tensor<2>, down: &Tensor<2>) -> Tensor<2> {
+    let hidden = silu(linear(x.clone(), gate)) * linear(x, up);
+    linear_unbounded(hidden, down)
 }
 
 /// Rotary embedding in the `rotate_half` layout on `[rows, heads, head_dim]`, with `cos` and

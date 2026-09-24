@@ -84,7 +84,7 @@ pub fn detect(path: &Path) -> Result<Architecture> {
             path.display()
         )));
     }
-    let gguf = jevons_cubecl::gguf::Gguf::open(path).map_err(|_| Error::ModelLoad)?;
+    let gguf = jevons_formats::gguf::Gguf::open(path).map_err(|_| Error::ModelLoad)?;
     match gguf
         .get("general.architecture")
         .ok()

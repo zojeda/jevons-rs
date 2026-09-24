@@ -1,6 +1,6 @@
 //! Checks that reused prompt KV equals a fresh prefill after partial recomputation.
 #![allow(clippy::needless_range_loop)] // parallel per-layer vectors
-use jevons_cubecl::{gguf::Gguf, model::Model, tokenizer::Tokenizer};
+use jevons_gemma4_diffusion::{gguf::Gguf, model::Model, tokenizer::Tokenizer};
 
 fn main() {
     let path = std::path::PathBuf::from(std::env::args().nth(1).expect("model path"));
@@ -79,7 +79,7 @@ fn main() {
     );
     // Replay layer-5 attention standalone: caches (fresh/stale) x chunking (whole/tail).
     {
-        use jevons_cubecl::gpu::attention::{AttnShape, attention};
+        use jevons_gemma4_diffusion::gpu::attention::{AttnShape, attention};
         let again_raw = model.kv_raw(5);
         let gpu = model.gpu();
         let q_fresh = &trace_fresh

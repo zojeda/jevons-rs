@@ -11,7 +11,7 @@
     clippy::too_many_arguments
 )]
 use super::gemm::sbyte;
-use super::{Buf, Gpu, Hip};
+use super::{Buf, Gpu};
 use cubecl::prelude::*;
 use half::f16;
 
@@ -19,7 +19,7 @@ pub const ROW_THREADS: usize = 256;
 
 /// Sum over the whole workgroup (`threads` lanes in 32-lane waves); every lane gets the result.
 #[cube]
-pub fn block_sum(v: f32, scratch: &mut SharedMemory<f32>, #[comptime] threads: usize) -> f32 {
+pub fn block_sum(v: f32, scratch: &mut Shared<[f32]>, #[comptime] threads: usize) -> f32 {
     let s = plane_sum(v);
     let wave = UNIT_POS / 32;
     if UNIT_POS % 32 == 0 {
@@ -39,7 +39,7 @@ pub fn block_sum(v: f32, scratch: &mut SharedMemory<f32>, #[comptime] threads: u
 #[cube]
 fn inv_rms(
     vals: &Array<f32>,
-    scratch: &mut SharedMemory<f32>,
+    scratch: &mut Shared<[f32]>,
     #[comptime] per: usize,
     #[comptime] d: usize,
     eps: f32,
@@ -56,9 +56,9 @@ fn inv_rms(
 /// `out = rms_norm(x) * w` (or without weight) per row; `O` is f16 or f32.
 #[cube(launch)]
 fn rms_norm_rows<O: Float>(
-    x: &Array<f32>,
-    w: &Array<f32>,
-    out: &mut Array<O>,
+    x: &[f32],
+    w: &[f32],
+    out: &mut [O],
     eps: f32,
     pre_scale: f32,
     #[comptime] d: usize,
@@ -67,7 +67,7 @@ fn rms_norm_rows<O: Float>(
     let per = comptime!(d / ROW_THREADS);
     let row = CUBE_POS_X as usize;
     let t = UNIT_POS as usize;
-    let mut scratch = SharedMemory::<f32>::new(8usize);
+    let mut scratch = Shared::<[f32]>::new_slice(8usize);
     let mut vals = Array::<f32>::new(per);
     #[unroll]
     for i in 0usize..per {
@@ -91,22 +91,22 @@ fn rms_norm_rows<O: Float>(
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 fn post_attention(
-    attn: &Array<f32>,
-    res: &mut Array<f32>,
-    w_post: &Array<f32>,
-    w_ffn: &Array<f32>,
-    w_pre2: &Array<f32>,
-    router_scale: &Array<f32>,
-    x_ffn: &mut Array<f16>,
-    x_moe: &mut Array<f16>,
-    x_router: &mut Array<f32>,
+    attn: &[f32],
+    res: &mut [f32],
+    w_post: &[f32],
+    w_ffn: &[f32],
+    w_pre2: &[f32],
+    router_scale: &[f32],
+    x_ffn: &mut [f16],
+    x_moe: &mut [f16],
+    x_router: &mut [f32],
     eps: f32,
     #[comptime] d: usize,
 ) {
     let per = comptime!(d / ROW_THREADS);
     let row = CUBE_POS_X as usize;
     let t = UNIT_POS as usize;
-    let mut scratch = SharedMemory::<f32>::new(8usize);
+    let mut scratch = Shared::<[f32]>::new_slice(8usize);
     let mut vals = Array::<f32>::new(per);
     #[unroll]
     for i in 0usize..per {
@@ -136,15 +136,15 @@ fn post_attention(
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 fn post_ffn(
-    mlp: &Array<f32>,
-    down: &Array<f32>,
-    weights: &Array<f32>,
-    res: &mut Array<f32>,
-    w1: &Array<f32>,
-    w2: &Array<f32>,
-    w3: &Array<f32>,
-    w_next: &Array<f32>,
-    x_next: &mut Array<f16>,
+    mlp: &[f32],
+    down: &[f32],
+    weights: &[f32],
+    res: &mut [f32],
+    w1: &[f32],
+    w2: &[f32],
+    w3: &[f32],
+    w_next: &[f32],
+    x_next: &mut [f16],
     scale: f32,
     eps: f32,
     #[comptime] d: usize,
@@ -153,7 +153,7 @@ fn post_ffn(
     let per = comptime!(d / ROW_THREADS);
     let row = CUBE_POS_X as usize;
     let t = UNIT_POS as usize;
-    let mut scratch = SharedMemory::<f32>::new(8usize);
+    let mut scratch = Shared::<[f32]>::new_slice(8usize);
     let mut a = Array::<f32>::new(per);
     let mut b = Array::<f32>::new(per);
     #[unroll]
@@ -193,17 +193,17 @@ fn post_ffn(
 /// Precomputed input rows (image embeddings): `out = src` and `x_attn = norm(src)*w_attn` (f16).
 #[cube(launch)]
 fn input_rows(
-    src: &Array<f32>,
-    w_attn: &Array<f32>,
-    out: &mut Array<f32>,
-    x_attn: &mut Array<f16>,
+    src: &[f32],
+    w_attn: &[f32],
+    out: &mut [f32],
+    x_attn: &mut [f16],
     eps: f32,
     #[comptime] d: usize,
 ) {
     let per = comptime!(d / ROW_THREADS);
     let row = CUBE_POS_X as usize;
     let t = UNIT_POS as usize;
-    let mut scratch = SharedMemory::<f32>::new(8usize);
+    let mut scratch = Shared::<[f32]>::new_slice(8usize);
     let mut vals = Array::<f32>::new(per);
     #[unroll]
     for i in 0usize..per {
@@ -223,15 +223,15 @@ fn input_rows(
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 fn embed_q6k(
-    tokens: &Array<u32>,
-    ql: &Array<u32>,
-    qh: &Array<u32>,
-    sc: &Array<u32>,
-    dq: &Array<f32>,
-    w_attn: &Array<f32>,
-    cond: &Array<f32>,
-    out: &mut Array<f32>,
-    x_attn: &mut Array<f16>,
+    tokens: &[u32],
+    ql: &[u32],
+    qh: &[u32],
+    sc: &[u32],
+    dq: &[f32],
+    w_attn: &[f32],
+    cond: &[f32],
+    out: &mut [f32],
+    x_attn: &mut [f16],
     first_canvas: u32,
     eps: f32,
     #[comptime] d: usize,
@@ -241,7 +241,7 @@ fn embed_q6k(
     let row = CUBE_POS_X as usize;
     let t = UNIT_POS as usize;
     let token = tokens[row] as usize;
-    let mut scratch = SharedMemory::<f32>::new(8usize);
+    let mut scratch = Shared::<[f32]>::new_slice(8usize);
     let mut vals = Array::<f32>::new(per);
     let embed_scale = f32::sqrt(comptime!(d as f32));
     #[unroll]
@@ -293,15 +293,15 @@ fn embed_q6k(
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 fn qkv_prepare(
-    q: &Array<f32>,
-    k: &Array<f32>,
-    v: &Array<f32>,
-    q_norm: &Array<f32>,
-    k_norm: &Array<f32>,
-    rope: &Array<f32>,
-    q_out: &mut Array<f16>,
-    k_cache: &mut Array<f16>,
-    v_cache: &mut Array<f16>,
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    q_norm: &[f32],
+    k_norm: &[f32],
+    rope: &[f32],
+    q_out: &mut [f16],
+    k_cache: &mut [f16],
+    v_cache: &mut [f16],
     pos0: u32,
     cap: u32,
     eps: f32,
@@ -314,8 +314,8 @@ fn qkv_prepare(
     let slot = CUBE_POS_Y as usize;
     let t = UNIT_POS as usize;
     let pos = pos0 as usize + row;
-    let mut scratch = SharedMemory::<f32>::new(4usize);
-    let mut stage = SharedMemory::<f32>::new(hd);
+    let mut scratch = Shared::<[f32]>::new_slice(4usize);
+    let mut stage = Shared::<[f32]>::new_slice(hd);
     let mut vals = Array::<f32>::new(per);
     let is_q = slot < heads;
     let is_k = slot >= heads && slot < heads + kv_heads;
@@ -383,9 +383,9 @@ fn qkv_prepare(
 /// `out[r, i] = gelu_tanh(gate[r, i]) * up[r, i]` in f16; gate/up rows have `stride` values.
 #[cube(launch)]
 fn geglu(
-    gate: &Array<f32>,
-    up: &Array<f32>,
-    out: &mut Array<f16>,
+    gate: &[f32],
+    up: &[f32],
+    out: &mut [f16],
     rows: u32,
     #[comptime] f: usize,
     #[comptime] stride: usize,
@@ -408,11 +408,11 @@ fn geglu(
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 fn route(
-    x: &Array<f32>,
-    wt: &Array<f32>,
-    expert_scale: &Array<f32>,
-    ids: &mut Array<u32>,
-    weights: &mut Array<f32>,
+    x: &[f32],
+    wt: &[f32],
+    expert_scale: &[f32],
+    ids: &mut [u32],
+    weights: &mut [f32],
     rows: u32,
     #[comptime] d: usize,
     #[comptime] experts: usize,
@@ -423,8 +423,8 @@ fn route(
     let lane = UNIT_POS_PLANE as usize;
     let wave = UNIT_POS_Y as usize;
     let row0 = CUBE_POS_X as usize * tpw;
-    let mut xs = SharedMemory::<f32>::new(tpw * 256usize);
-    let mut logits = SharedMemory::<f32>::new(tpw * experts);
+    let mut xs = Shared::<[f32]>::new_slice(tpw * 256usize);
+    let mut logits = Shared::<[f32]>::new_slice(tpw * experts);
     let mut acc = Array::<f32>::new(tpw);
     #[unroll]
     for t in 0usize..tpw {
@@ -524,20 +524,20 @@ fn route(
 /// (`jobs[0]` = count, then `(expert, start)` pairs) for row tiles of `bm`.
 #[cube(launch)]
 fn group(
-    ids: &Array<u32>,
-    sorted: &mut Array<u32>,
-    offsets: &mut Array<u32>,
-    jobs: &mut Array<u32>,
+    ids: &[u32],
+    sorted: &mut [u32],
+    offsets: &mut [u32],
+    jobs: &mut [u32],
     assignments: u32,
     #[comptime] experts: usize,
     #[comptime] bm: usize,
     #[comptime] max_assignments: usize,
 ) {
     let e = UNIT_POS as usize;
-    let mut staged = SharedMemory::<u32>::new(max_assignments);
-    let mut counts = SharedMemory::<u32>::new(experts);
-    let mut starts = SharedMemory::<u32>::new(experts + 1usize);
-    let mut job_starts = SharedMemory::<u32>::new(experts + 1usize);
+    let mut staged = Shared::<[u32]>::new_slice(max_assignments);
+    let mut counts = Shared::<[u32]>::new_slice(experts);
+    let mut starts = Shared::<[u32]>::new_slice(experts + 1usize);
+    let mut job_starts = Shared::<[u32]>::new_slice(experts + 1usize);
     for i in 0usize..comptime!(max_assignments / experts) {
         let a = e + i * experts;
         if a < assignments as usize {
@@ -590,13 +590,13 @@ fn group(
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 fn pick_logits(
-    x: &Array<f16>,
-    pairs: &Array<u32>,
-    ql: &Array<u32>,
-    qh: &Array<u32>,
-    sc: &Array<u32>,
-    dq: &Array<f32>,
-    out: &mut Array<f32>,
+    x: &[f16],
+    pairs: &[u32],
+    ql: &[u32],
+    qh: &[u32],
+    sc: &[u32],
+    dq: &[f32],
+    out: &mut [f32],
     softcap: f32,
     #[comptime] d: usize,
 ) {
@@ -604,7 +604,7 @@ fn pick_logits(
     let row = pairs[2usize * p] as usize;
     let token = pairs[2usize * p + 1usize] as usize;
     let t = UNIT_POS as usize;
-    let mut scratch = SharedMemory::<f32>::new(8usize);
+    let mut scratch = Shared::<[f32]>::new_slice(8usize);
     let mut acc = 0.0f32;
     #[unroll]
     for i in 0usize..comptime!(d / ROW_THREADS) {
@@ -635,10 +635,10 @@ fn pick_logits(
 
 /// `probs[r] = softmax(logits[r] * inv_temp)` in f16, one workgroup per row of `v` values.
 #[cube(launch)]
-fn softmax_rows(logits: &Array<f32>, probs: &mut Array<f16>, inv_temp: f32, #[comptime] v: usize) {
+fn softmax_rows(logits: &[f32], probs: &mut [f16], inv_temp: f32, #[comptime] v: usize) {
     let row = CUBE_POS_X as usize;
     let t = UNIT_POS as usize;
-    let mut scratch = SharedMemory::<f32>::new(8usize);
+    let mut scratch = Shared::<[f32]>::new_slice(8usize);
     let per = comptime!(v / ROW_THREADS);
     let mut mx = f32::new(-3.0e38f32);
     for i in 0usize..per {
@@ -671,18 +671,18 @@ fn softmax_rows(logits: &Array<f32>, probs: &mut Array<f16>, inv_temp: f32, #[co
 /// Q6_K table `[rows, d]` dequantized and transposed to FP16 `[d, rows]` via 64x64 tiles.
 #[cube(launch)]
 fn q6k_transpose(
-    ql: &Array<u32>,
-    qh: &Array<u32>,
-    sc: &Array<u32>,
-    dq: &Array<f32>,
-    out: &mut Array<f16>,
+    ql: &[u32],
+    qh: &[u32],
+    sc: &[u32],
+    dq: &[f32],
+    out: &mut [f16],
     #[comptime] d: usize,
     #[comptime] rows: usize,
 ) {
     let r0 = CUBE_POS_X as usize * 64usize;
     let c0 = CUBE_POS_Y as usize * 64usize;
     let t = UNIT_POS as usize;
-    let mut tile = SharedMemory::<f32>::new(64usize * 65usize);
+    let mut tile = Shared::<[f32]>::new_slice(64usize * 65usize);
     for i in 0usize..16usize {
         let idx = t + i * 256usize;
         let r = r0 + idx / 64usize;
@@ -716,7 +716,7 @@ fn q6k_transpose(
 
 pub fn softmax_f16(gpu: &Gpu, logits: &Buf, probs: &Buf, rows: usize, v: usize, inv_temp: f32) {
     assert!(v.is_multiple_of(ROW_THREADS));
-    softmax_rows::launch::<Hip>(
+    softmax_rows::launch(
         &gpu.client,
         row_grid(rows),
         CubeDim::new_1d(ROW_THREADS as u32),
@@ -732,7 +732,7 @@ pub fn softmax_f16(gpu: &Gpu, logits: &Buf, probs: &Buf, rows: usize, v: usize, 
 pub fn q6k_transposed_f16(gpu: &Gpu, table: &Q6kTable, rows: usize, d: usize) -> Buf {
     assert!(rows.is_multiple_of(64) && d.is_multiple_of(256));
     let out = gpu.empty(rows * d, 2);
-    q6k_transpose::launch::<Hip>(
+    q6k_transpose::launch(
         &gpu.client,
         CubeCount::Static((rows / 64) as u32, (d / 64) as u32, 1),
         CubeDim::new_1d(256),
@@ -749,7 +749,7 @@ pub fn q6k_transposed_f16(gpu: &Gpu, table: &Q6kTable, rows: usize, d: usize) ->
 
 /// In-place final-logit soft capping.
 #[cube(launch)]
-fn softcap(x: &mut Array<f32>, len: u32, cap: f32) {
+fn softcap(x: &mut [f32], len: u32, cap: f32) {
     let i = ABSOLUTE_POS as usize;
     if i < len as usize {
         x[i] = cap * f32::tanh(x[i] / cap);
@@ -773,7 +773,7 @@ pub fn rms_norm_f16(
     eps: f32,
     dummy: &Buf,
 ) {
-    rms_norm_rows::launch::<f16, Hip>(
+    rms_norm_rows::launch::<f16>(
         &gpu.client,
         row_grid(rows),
         CubeDim::new_1d(ROW_THREADS as u32),
@@ -799,7 +799,7 @@ pub fn rms_norm_scaled_f16(
     eps: f32,
     pre_scale: f32,
 ) {
-    rms_norm_rows::launch::<f16, Hip>(
+    rms_norm_rows::launch::<f16>(
         &gpu.client,
         row_grid(rows),
         CubeDim::new_1d(ROW_THREADS as u32),
@@ -823,7 +823,7 @@ pub fn rms_norm_f32(
     eps: f32,
     dummy: &Buf,
 ) {
-    rms_norm_rows::launch::<f32, Hip>(
+    rms_norm_rows::launch::<f32>(
         &gpu.client,
         row_grid(rows),
         CubeDim::new_1d(ROW_THREADS as u32),
@@ -853,7 +853,7 @@ pub fn post_attention_norms(
     d: usize,
     eps: f32,
 ) {
-    post_attention::launch::<Hip>(
+    post_attention::launch(
         &gpu.client,
         row_grid(rows),
         CubeDim::new_1d(ROW_THREADS as u32),
@@ -889,7 +889,7 @@ pub fn post_ffn_norms(
     top_k: usize,
     eps: f32,
 ) {
-    post_ffn::launch::<Hip>(
+    post_ffn::launch(
         &gpu.client,
         row_grid(rows),
         CubeDim::new_1d(ROW_THREADS as u32),
@@ -931,7 +931,7 @@ pub fn embed(
     d: usize,
     eps: f32,
 ) {
-    embed_q6k::launch::<Hip>(
+    embed_q6k::launch(
         &gpu.client,
         row_grid(rows),
         CubeDim::new_1d(ROW_THREADS as u32),
@@ -963,7 +963,7 @@ pub fn embed_rows(
     d: usize,
     eps: f32,
 ) {
-    input_rows::launch::<Hip>(
+    input_rows::launch(
         &gpu.client,
         row_grid(rows),
         CubeDim::new_1d(ROW_THREADS as u32),
@@ -1000,7 +1000,7 @@ pub fn qkv(
     shape: &QkvShape,
     eps: f32,
 ) {
-    qkv_prepare::launch::<Hip>(
+    qkv_prepare::launch(
         &gpu.client,
         CubeCount::Static(rows as u32, (shape.heads + 2 * shape.kv_heads) as u32, 1),
         CubeDim::new_1d(128),
@@ -1037,7 +1037,7 @@ pub fn geglu_rows(
     if total == 0 {
         return;
     }
-    geglu::launch::<Hip>(
+    geglu::launch(
         &gpu.client,
         CubeCount::Static(total.div_ceil(256) as u32, 1, 1),
         CubeDim::new_1d(256),
@@ -1068,7 +1068,7 @@ pub fn route_tokens(
     assert!(experts == 128 && d.is_multiple_of(256) && top_k <= 32);
     // Few tokens: one per workgroup for parallelism; many: share router weight reads.
     let tpw = if rows <= 64 { 1 } else { 8 };
-    route::launch::<Hip>(
+    route::launch(
         &gpu.client,
         CubeCount::Static(rows.div_ceil(tpw) as u32, 1, 1),
         CubeDim::new_2d(32, (experts / 32) as u32),
@@ -1114,7 +1114,7 @@ pub fn group_routes(
         max_assignments * 4 <= 48 * 1024,
         "too many routes for one grouping workgroup"
     );
-    group::launch::<Hip>(
+    group::launch(
         &gpu.client,
         CubeCount::Static(1, 1, 1),
         CubeDim::new_1d(experts as u32),
@@ -1140,7 +1140,7 @@ pub fn pick(
     cap: f32,
     d: usize,
 ) {
-    pick_logits::launch::<Hip>(
+    pick_logits::launch(
         &gpu.client,
         row_grid(count),
         CubeDim::new_1d(ROW_THREADS as u32),
@@ -1157,7 +1157,7 @@ pub fn pick(
 }
 
 pub fn softcap_logits(gpu: &Gpu, x: &Buf, len: usize, cap: f32) {
-    softcap::launch::<Hip>(
+    softcap::launch(
         &gpu.client,
         CubeCount::Static(len.div_ceil(256) as u32, 1, 1),
         CubeDim::new_1d(256),
