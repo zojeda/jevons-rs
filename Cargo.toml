@@ -5,13 +5,18 @@ resolver = "3"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.95"
 publish = false
 
 [workspace.dependencies]
+jevons-burn = { path = "crates/jevons-burn" }
 jevons-core = { path = "crates/jevons-core" }
 jevons-cubecl = { path = "crates/jevons-cubecl" }
 jevons-engine = { path = "crates/jevons-engine" }
+jevons-formats = { path = "crates/jevons-formats" }
+jevons-tokenizer = { path = "crates/jevons-tokenizer" }
+jevons-nemotron-diffusion = { path = "crates/jevons-nemotron-diffusion" }
+jevons-models = { path = "crates/jevons-models", default-features = false }
 jevons-system-one = { path = "crates/jevons-system-one" }
 axum = "0.8"
 clap = { version = "4.6", features = ["derive", "env"] }

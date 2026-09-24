@@ -1,4 +1,4 @@
-//! Entropy-bound refinement, following the pinned native diffusion example.
+//! Entropy-bound refinement for uniform-noise diffusion, following the pinned native sampler.
 use crate::{Error, Result};
 use rand::Rng;
 

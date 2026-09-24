@@ -1,7 +1,9 @@
-//! CubeCL/HIP backend adapter: Rust tokenizer, GPU model, vision encoder and prompt-prefix
-//! reuse.
-use crate::backend::{Backend, PromptPart};
-use crate::{Error, ImageInput, ModelConfig, PrefillProfile, Result};
+//! DiffusionGemma on the CubeCL/HIP runtime: Rust tokenizer, GPU model, vision encoder and
+//! prompt-prefix reuse.
+use jevons_core::{
+    ChatFormat, Conditioning, DiffusionModel, DiffusionScheme, Error, ImageInput, Logits,
+    ModelConfig, ModelInfo, PrefillProfile, PromptPart, Result, TextTokenizer, decode_image,
+};
 use jevons_cubecl::model::Segment;
 use jevons_cubecl::vision::{EncodedImage, Vision};
 use jevons_cubecl::{gguf::Gguf, model, tokenizer::Tokenizer, vision_input::Rgb};
@@ -10,6 +12,8 @@ use std::time::Instant;
 
 /// Image tokens per image, as in llama.cpp's DiffusionGemma integration.
 const MAX_IMAGE_TOKENS: usize = 280;
+/// Largest canvas per forward, matching the pinned native sampler.
+const MAX_CANVAS: usize = 64;
 
 struct Images {
     encoder: Vision,
@@ -20,12 +24,31 @@ struct Images {
     encoded: Vec<(EncodedImage, u64)>,
 }
 
-pub(crate) struct CubeBackend {
+struct GemmaTokenizer(Tokenizer);
+
+impl TextTokenizer for GemmaTokenizer {
+    fn tokenize(&self, text: &str, bos: bool, special: bool) -> Result<Vec<i32>> {
+        Ok(self.0.tokenize(text, bos, special))
+    }
+
+    fn code_piece(&self, token: i32) -> Option<String> {
+        if token < 0 || token as usize >= self.0.n_vocab() || self.0.is_control(token) {
+            return None;
+        }
+        let bytes = self.0.token_to_piece(token);
+        if !(1..=16).contains(&bytes.len()) || !bytes.iter().all(u8::is_ascii_alphanumeric) {
+            return None;
+        }
+        String::from_utf8(bytes).ok()
+    }
+}
+
+pub(crate) struct Gemma4 {
     model: model::Model,
-    tokenizer: Tokenizer,
+    tokenizer: GemmaTokenizer,
+    info: ModelInfo,
+    chat: ChatFormat,
     profile: PrefillProfile,
-    n_ctx: usize,
-    batch_size: usize,
     prompt_cache: bool,
     images: Option<Images>,
 }
@@ -38,10 +61,24 @@ fn map(error: model::ModelError) -> Error {
     }
 }
 
-impl CubeBackend {
+fn chat_format() -> ChatFormat {
+    ChatFormat {
+        bos: true,
+        user_open: "<|turn>user\n".into(),
+        model_open: "<turn|>\n<|turn>model\n".into(),
+        thought_open: "<|channel>thought\n".into(),
+        thought_close: "<channel|>".into(),
+        empty_thought: "<|channel>thought\n<channel|>".into(),
+        thought_stops: vec!["<channel|>".into(), "<turn|>".into()],
+        space_joins_answers: false,
+    }
+}
+
+impl Gemma4 {
     pub fn load(config: &ModelConfig) -> Result<Self> {
         let gguf = Gguf::open(&config.model).map_err(|_| Error::ModelLoad)?;
-        let tokenizer = Tokenizer::from_gguf(&gguf).map_err(|_| Error::UnsupportedModel)?;
+        let tokenizer = Tokenizer::from_gguf(&gguf)
+            .map_err(|e| Error::UnsupportedModel(format!("DiffusionGemma tokenizer: {e}")))?;
         drop(gguf);
         let model = model::Model::load(
             &config.model,
@@ -51,7 +88,9 @@ impl CubeBackend {
         )
         .map_err(map)?;
         if model.cfg.vocab != tokenizer.n_vocab() {
-            return Err(Error::UnsupportedModel);
+            return Err(Error::UnsupportedModel(
+                "tokenizer and model vocabulary sizes differ".into(),
+            ));
         }
         let mut model = model;
         model.warmup().map_err(map)?;
@@ -62,7 +101,7 @@ impl CubeBackend {
                     Vision::load(model.gpu(), path, model.cfg.d, MAX_IMAGE_TOKENS).map_err(map)?;
                 let sample = encoder.warmup().map_err(map)?;
                 let warm = [
-                    Segment::Tokens(&[2]),
+                    Segment::Tokens(&[tokenizer.bos()]),
                     Segment::Image {
                         rows: &sample.rows,
                         count: sample.tokens,
@@ -73,7 +112,9 @@ impl CubeBackend {
                 model.clear_prompt_cache();
                 let delimiter = |text: &str| match tokenizer.tokenize(text, false, true)[..] {
                     [token] => Ok(token),
-                    _ => Err(Error::UnsupportedModel),
+                    _ => Err(Error::UnsupportedModel(format!(
+                        "the tokenizer has no single token for the image marker {text}"
+                    ))),
                 };
                 Some(Images {
                     encoder,
@@ -83,54 +124,46 @@ impl CubeBackend {
                 })
             }
         };
-        Ok(Self {
-            images,
+        let info = ModelInfo {
+            architecture: "gemma4-diffusion",
+            display_name: "DiffusionGemma GGUF".into(),
+            n_vocab: tokenizer.n_vocab() as i32,
             n_ctx: config.context_size as usize,
             batch_size: config.batch_size as usize,
+            max_canvas: MAX_CANVAS,
+        };
+        Ok(Self {
+            images,
+            info,
+            chat: chat_format(),
             prompt_cache: config.prompt_cache,
             model,
-            tokenizer,
+            tokenizer: GemmaTokenizer(tokenizer),
             profile: PrefillProfile::default(),
         })
     }
 }
 
-impl Backend for CubeBackend {
-    fn n_vocab(&self) -> i32 {
-        self.tokenizer.n_vocab() as i32
+impl DiffusionModel for Gemma4 {
+    fn info(&self) -> &ModelInfo {
+        &self.info
     }
 
-    fn mask(&self) -> i32 {
-        self.tokenizer.mask()
+    fn tokenizer(&self) -> &dyn TextTokenizer {
+        &self.tokenizer
     }
 
-    fn n_ctx(&self) -> usize {
-        self.n_ctx
+    fn chat(&self) -> &ChatFormat {
+        &self.chat
     }
 
-    fn batch_size(&self) -> usize {
-        self.batch_size
-    }
-
-    fn tokenize(&self, text: &str, add_special: bool, parse_special: bool) -> Result<Vec<i32>> {
-        Ok(self.tokenizer.tokenize(text, add_special, parse_special))
-    }
-
-    fn code_piece(&self, token: i32) -> Option<String> {
-        if token < 0
-            || token as usize >= self.tokenizer.n_vocab()
-            || self.tokenizer.is_control(token)
-        {
-            return None;
+    fn scheme(&self) -> DiffusionScheme {
+        DiffusionScheme::UniformSelfConditioned {
+            mask: self.tokenizer.0.mask(),
         }
-        let bytes = self.tokenizer.token_to_piece(token);
-        if !(1..=16).contains(&bytes.len()) || !bytes.iter().all(u8::is_ascii_alphanumeric) {
-            return None;
-        }
-        String::from_utf8(bytes).ok()
     }
 
-    fn image_parts(&mut self, images: &[ImageInput]) -> Result<Vec<PromptPart>> {
+    fn encode_images(&mut self, images: &[ImageInput]) -> Result<Vec<PromptPart>> {
         if images.is_empty() {
             return Ok(Vec::new());
         }
@@ -146,14 +179,14 @@ impl Backend for CubeBackend {
         state.encoded.clear();
         let mut parts = Vec::with_capacity(3 * images.len());
         for (index, image) in images.iter().enumerate() {
-            let rgb = crate::images::decode(image)?;
+            let image = decode_image(image)?;
             let rgb = Rgb {
-                width: rgb.width() as usize,
-                height: rgb.height() as usize,
-                data: rgb.into_raw(),
+                width: image.width,
+                height: image.height,
+                data: image.data,
             };
             let tokens = state.encoder.tokens_for(rgb.width, rgb.height);
-            if tokens > self.batch_size {
+            if tokens > self.info.batch_size {
                 return Err(Error::InvalidInput(format!(
                     "Image needs {tokens} tokens in one batch; increase --batch-size"
                 )));
@@ -175,7 +208,7 @@ impl Backend for CubeBackend {
     fn prefill(&mut self, parts: &[PromptPart], suffix: &[i32]) -> Result<usize> {
         let start = Instant::now();
         let length = parts.iter().map(PromptPart::len).sum::<usize>() + suffix.len();
-        if length > self.n_ctx {
+        if length > self.info.n_ctx {
             return Err(Error::InvalidInput("Prompt exceeds context size".into()));
         }
         let encoded = self.images.as_ref().map_or(&[][..], |s| &s.encoded[..]);
@@ -209,32 +242,31 @@ impl Backend for CubeBackend {
         Ok(length)
     }
 
-    fn decode_canvas(
+    fn forward_canvas(
         &mut self,
         tokens: &[i32],
         prompt_length: usize,
-        previous: Option<&[f32]>,
-        inverse_temperature: f32,
-        full_logits: bool,
+        conditioning: Conditioning<'_>,
+        logits: Logits,
     ) -> Result<()> {
+        let previous = match conditioning {
+            Conditioning::None => None,
+            Conditioning::Previous {
+                logits,
+                inverse_temperature,
+            } => Some((logits, inverse_temperature)),
+        };
         self.model
-            .canvas(
-                tokens,
-                prompt_length,
-                full_logits,
-                previous.map(|p| (p, inverse_temperature)),
-            )
+            .canvas(tokens, prompt_length, logits == Logits::Full, previous)
             .map_err(map)
     }
 
-    fn all_logits(&mut self) -> Result<Vec<f32>> {
+    fn candidate_logits(&mut self, row: usize, candidates: &[i32]) -> Result<Vec<f64>> {
+        self.model.candidate_logits(row, candidates).map_err(map)
+    }
+
+    fn full_logits(&mut self) -> Result<Vec<f32>> {
         self.model.all_logits().map_err(|_| Error::MissingLogits)
-    }
-
-    fn logits(&mut self, position: usize, candidates: &[i32]) -> Result<Vec<f64>> {
-        self.model
-            .candidate_logits(position, candidates)
-            .map_err(map)
     }
 
     fn profile(&mut self) -> &mut PrefillProfile {

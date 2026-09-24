@@ -9,8 +9,6 @@ use axum::{
 use jevons_system_one::ValidationError;
 use serde_json::{Value, json};
 
-const ALIASES: &[&str] = &["gemmadiffusion-latest", "openjev-latest", "jev-latest"];
-
 pub(super) async fn health(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
     if !state.worker.is_alive() {
         return Err(ApiError::unavailable());
@@ -20,15 +18,10 @@ pub(super) async fn health(State(state): State<AppState>) -> Result<Json<Value>,
 
 pub(super) async fn models(State(state): State<AppState>) -> Json<Value> {
     let mut names = vec![state.model_id.as_str()];
-    names.extend(
-        ALIASES
-            .iter()
-            .copied()
-            .filter(|name| *name != state.model_id),
-    );
+    names.extend(state.aliases.iter().map(String::as_str));
     Json(json!({"models": names.iter().map(|name| json!({
         "name":name,
-        "description":format!("Local DiffusionGemma GGUF, structured diffusion reads. Served as {}.", state.model_id),
+        "description":state.description,
         "release_date":"2026-09-19"
     })).collect::<Vec<_>>()}))
 }
@@ -49,7 +42,7 @@ pub(super) async fn system_one(
         }
     })?;
     let request = jevons_system_one::Request::parse(value)?;
-    if request.model() != state.model_id && !ALIASES.contains(&request.model()) {
+    if request.model() != state.model_id && !state.aliases.iter().any(|a| a == request.model()) {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,
             "not_found_error",

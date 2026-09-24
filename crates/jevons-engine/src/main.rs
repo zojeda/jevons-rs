@@ -3,10 +3,14 @@ use jevons_engine::{Engine, ModelConfig, ReadRequest};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(about = "Read one restricted DiffusionGemma classification slot")]
+#[command(about = "Read one restricted diffusion-model classification slot")]
 struct Args {
+    /// GGUF file or Hugging Face checkpoint directory.
     #[arg(short, long, env = "DIFFUSION_MODEL")]
     model: PathBuf,
+    /// Model architecture; detected from the model files by default.
+    #[arg(long, env = "JEVONS_ARCH", default_value = "auto")]
+    arch: String,
     #[arg(short, long)]
     prompt: String,
     #[arg(long, default_value_t = 42)]
@@ -28,6 +32,7 @@ struct Args {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let mut config = ModelConfig::new(args.model);
+    config.architecture = Some(args.arch);
     config.main_gpu = args.main_gpu;
     config.context_size = args.context_size;
     config.batch_size = args.batch_size;

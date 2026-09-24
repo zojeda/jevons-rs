@@ -1,0 +1,26 @@
+[package]
+name = "burn022-spike"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+# Throwaway feasibility spike for Burn 0.22 on ROCm; not part of the main workspace.
+[workspace]
+
+[dependencies]
+burn = { version = "=0.22.0-pre.4", default-features = false, features = ["std", "rocm", "fusion", "autotune", "extension", "safetensors", "flex"] }
+burn-cubecl = { version = "=0.22.0-pre.4", default-features = false, features = ["std", "hip", "fusion", "autotune"] }
+cubecl = { version = "=0.11.0-pre.4", features = ["hip"] }
+half = "2.7"
+cubecl-hip = { version = "=0.11.0-pre.4", default-features = false, optional = true }
+safetensors = "0.7"
+tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-regex"] }
+serde_json = "1.0.151"
+
+[features]
+# Use HIP C++ (hiprtc) instead of the default pliron/LLVM compiler.
+cpp = ["dep:cubecl-hip", "cubecl-hip/cpp"]
+
+[profile.release]
+debug = 1

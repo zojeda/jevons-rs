@@ -8,17 +8,27 @@ publish.workspace = true
 [[bin]]
 name = "jevons-scm"
 path = "src/main.rs"
+required-features = ["models"]
+
+[[example]]
+name = "golden"
+required-features = ["models"]
+
+[features]
+default = ["models"]
+# Architecture detection and the built-in model implementations.
+models = ["dep:jevons-models", "jevons-models/gemma4", "jevons-models/nemotron"]
 
 [dependencies]
 jevons-core.workspace = true
-image.workspace = true
-jevons-cubecl = { workspace = true, features = ["hip"] }
+jevons-models = { workspace = true, optional = true }
 clap.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
-serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
+
+[dev-dependencies]
+image.workspace = true
 
 [lints]
 workspace = true

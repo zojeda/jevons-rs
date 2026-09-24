@@ -7,7 +7,7 @@
 //! `token_to_piece` with `lstrip = 0` and `special = false`. Output is expected to be
 //! token-for-token identical to `llama_tokenize`; the parity test in this module checks that
 //! against a dump produced by the linked library.
-use crate::gguf::{Gguf, GgufError, Value};
+use jevons_formats::gguf::{Gguf, GgufError, Value};
 use std::{
     cmp::Reverse,
     collections::{BinaryHeap, HashMap},

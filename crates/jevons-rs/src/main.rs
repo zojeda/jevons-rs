@@ -1,20 +1,25 @@
 use clap::Parser;
-use jevons_engine::ModelConfig;
+use jevons_engine::{ModelConfig, resolve_architecture};
 use jevons_rs::{AppState, router, worker};
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 #[derive(Parser)]
-#[command(about = "A System One API backed by DiffusionGemma structured reads")]
+#[command(about = "A System One API backed by structured diffusion-model reads")]
 struct Args {
+    /// GGUF file or Hugging Face checkpoint directory.
     #[arg(short, long, env = "DIFFUSION_MODEL")]
     model: PathBuf,
-    /// Compatible DiffusionGemma vision projector; required for image requests.
+    /// Model architecture; detected from the model files by default.
+    #[arg(long, env = "JEVONS_ARCH", default_value = "auto")]
+    arch: String,
+    /// Separate vision projector for DiffusionGemma; required for its image requests.
     #[arg(long, env = "DIFFUSION_MMPROJ")]
     mmproj: Option<PathBuf>,
     #[arg(long, default_value = "127.0.0.1:8080")]
     bind: SocketAddr,
-    #[arg(long, default_value = "gemmadiffusion-0.1")]
-    model_id: String,
+    /// Served model ID; defaults to the architecture's ID, such as gemmadiffusion-0.1.
+    #[arg(long)]
+    model_id: Option<String>,
     #[arg(long, env = "TYPESAFE_API_KEY", hide_env_values = true)]
     api_key: Option<String>,
     /// HIP device index.
@@ -41,27 +46,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
     let args = Args::parse();
-    if args.model_id.trim().is_empty() || args.api_key.as_ref().is_some_and(|key| key.is_empty()) {
+    let mut config = ModelConfig::new(args.model);
+    config.architecture = Some(args.arch);
+    let architecture = resolve_architecture(&config)?;
+    let model_id = args
+        .model_id
+        .unwrap_or_else(|| architecture.default_model_id().into());
+    if model_id.trim().is_empty() || args.api_key.as_ref().is_some_and(|key| key.is_empty()) {
         return Err("Model ID and configured API key must be nonempty".into());
     }
     let listener = tokio::net::TcpListener::bind(args.bind).await?;
-    let mut config = ModelConfig::new(args.model);
     config.mmproj = args.mmproj;
     config.main_gpu = args.main_gpu;
     config.context_size = args.context_size;
     config.batch_size = args.batch_size;
     config.prompt_cache = !args.no_prompt_cache;
-    tracing::info!("Loading DiffusionGemma");
-    let (client, thread) = worker::start(
-        config,
-        args.model_id.clone(),
-        args.seed,
-        args.queue_capacity,
-    )
-    .await?;
+    tracing::info!(architecture = architecture.id(), "Loading model");
+    let (client, thread, info) =
+        worker::start(config, model_id.clone(), args.seed, args.queue_capacity).await?;
+    tracing::info!(model = %info.display_name, "Model loaded");
     let app = router(AppState {
         worker: client,
-        model_id: args.model_id,
+        aliases: [architecture.latest_alias(), "openjev-latest", "jev-latest"]
+            .into_iter()
+            .filter(|alias| *alias != model_id)
+            .map(String::from)
+            .collect(),
+        description: format!(
+            "Local {}, structured diffusion reads. Served as {model_id}.",
+            info.display_name
+        ),
+        model_id,
         api_key: args.api_key.map(Arc::from),
     });
     tracing::info!(address = %args.bind, "System One service is ready");

@@ -1,4 +1,4 @@
-//! Errors shared by the inference API and the CubeCL runtime adapter.
+//! Errors shared by the inference API and the model implementations.
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -8,8 +8,8 @@ pub enum Error {
     InvalidInput(String),
     #[error("Could not load the model")]
     ModelLoad,
-    #[error("A DiffusionGemma model with prompt KV caching is required")]
-    UnsupportedModel,
+    #[error("Unsupported model: {0}")]
+    UnsupportedModel(String),
     #[error("The canvas forward returned no logits")]
     MissingLogits,
     #[error("Candidate logits must be finite and nonempty")]

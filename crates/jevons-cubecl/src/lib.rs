@@ -2,9 +2,8 @@
 //! kernels and the prompt/canvas forward passes.
 #![forbid(unsafe_code)]
 
-pub mod gguf;
-pub mod quant;
-pub mod tokenizer;
+pub use jevons_formats::{gguf, quant};
+pub use jevons_tokenizer::gemma4 as tokenizer;
 pub mod vision_input;
 
 #[cfg(feature = "hip")]

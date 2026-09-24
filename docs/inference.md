@@ -90,6 +90,18 @@ Long question lists use canvases of at most 64 tokens, split at question boundar
 
 Image requests require a compatible `gemma4v` vision-projector GGUF. Rust decodes the compressed image into RGB, resizes it to 70–280 image tokens, and the CubeCL vision encoder produces projected patch embeddings. Each image sits between `<|image>` and `<image|>` tokens, before the state. Image rows keep the projector's embedding scale and are prefilled as one block that attends bidirectionally within itself, as in llama.cpp's DiffusionGemma integration. Text prefill remains causal.
 
+## Masked diffusion (Nemotron-Labs-Diffusion)
+
+The extensions above describe DiffusionGemma, which starts from uniform noise and conditions later steps on earlier logits. Nemotron-Labs-Diffusion is a LLaDA-style masked diffusion model trained on 32-token blocks: every unknown position starts as the mask token (`<SPECIAL_100>`, the checkpoint's `mask_token_id`), and denoising fixes positions in order of confidence. The engine selects this sampler from the model's `DiffusionScheme`.
+
+- **Canvas.** Answer slots start as masks, and the canvas is padded with trailing masks to the full 32-token block. The model was trained on whole blocks; on test reads, a lone trailing mask gave flatter distributions than a padded block.
+- **Answer tokens.** The Tekken tokenizer attaches a leading space to the next word, so a slot prefix's trailing space moves onto the candidates: `"Answer: " + "A"` is read as `"Answer:"` followed by the token `" A"`. Without this, nearly all probability mass fell outside the candidates. Answer codes are chosen so that each `" code"` is one token.
+- **`steps=2..8`.** Each step reads every still-masked slot's candidate distribution and fixes the most confident slot, plus any other slot whose best candidate reaches probability 0.9, to its best candidate. Fixed slots report the distribution from the step that fixed them and are never read again; the last step reads the rest. This follows LLaDA's low-confidence remasking, restricted to the candidates.
+- **`samples`.** Masked reads are deterministic, so repeated samples are identical; averaging changes nothing.
+- **`think`.** Thought tokens are generated in 32-token blocks of masks. Each iteration fixes the most confident position (full vocabulary) plus any at probability 0.9 or higher; a block ends when a stop marker (`</think>` or `<|im_end|>`) is fixed with everything before it. The block is then committed causally to the prompt cache by the next prefill, as the reference `generate` does.
+
+Prompts use ChatML: `<|im_start|>user\n…<|im_end|>\n<|im_start|>assistant\n`, followed by `<think></think>` when no thought is requested. The tokenizer marks `<think>` and `</think>` as non-special added tokens, so user text is encoded with a tokenizer that has no added tokens at all; text that looks like a marker stays plain text.
+
 ## Reproducibility and accounting
 
 We seed `ChaCha8Rng` for noise and sampling. Sample seeds increment by 7919; question chunk seeds increment by 104729, with wrapping arithmetic. Matching requests and seeds reproduce initialization. Different backends and RNG implementations can produce different probabilities.

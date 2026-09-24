@@ -7,8 +7,11 @@ use std::path::PathBuf;
 pub struct ModelConfig {
     /// Reuse resident prompt KV for the longest common token prefix across prefills.
     pub prompt_cache: bool,
+    /// Model file or checkpoint directory.
     pub model: PathBuf,
-    /// Vision projector GGUF; enables image input.
+    /// Architecture override (`auto` or an architecture ID); detected from the files if unset.
+    pub architecture: Option<String>,
+    /// Separate vision projector for architectures that use one; enables image input.
     pub mmproj: Option<PathBuf>,
     /// HIP device index.
     pub main_gpu: usize,
@@ -23,6 +26,7 @@ impl ModelConfig {
         Self {
             prompt_cache: true,
             model: model.into(),
+            architecture: None,
             mmproj: None,
             main_gpu: 0,
             context_size: 8192,
@@ -30,7 +34,7 @@ impl ModelConfig {
         }
     }
 
-    pub(crate) fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         if self.context_size == 0
             || self.context_size > i32::MAX as u32
             || self.batch_size == 0

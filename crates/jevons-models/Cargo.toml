@@ -1,0 +1,23 @@
+[package]
+name = "jevons-models"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = ["gemma4", "nemotron"]
+# DiffusionGemma on the CubeCL/HIP runtime.
+gemma4 = ["jevons-cubecl/hip"]
+# Nemotron-Labs-Diffusion on Burn (HIP).
+nemotron = ["dep:jevons-nemotron-diffusion"]
+
+[dependencies]
+jevons-core.workspace = true
+# The GGUF reader is always used for detection; `hip` adds the GPU runtime.
+jevons-cubecl.workspace = true
+jevons-nemotron-diffusion = { workspace = true, optional = true }
+serde_json.workspace = true
+
+[lints]
+workspace = true

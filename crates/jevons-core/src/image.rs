@@ -1,8 +1,18 @@
+//! Bounded decoding of compressed request images.
 use crate::{Error, ImageInput, Result};
-use image::{ImageFormat, ImageReader, Limits, RgbImage};
+use image::{ImageFormat, ImageReader, Limits};
 use std::io::Cursor;
 
-pub(crate) fn decode(input: &ImageInput) -> Result<RgbImage> {
+/// A decoded image in 8-bit RGB, row-major.
+#[derive(Clone, Debug)]
+pub struct RgbImage {
+    pub width: usize,
+    pub height: usize,
+    pub data: Vec<u8>,
+}
+
+/// Decodes JPEG, PNG, WebP or GIF bytes with allocation limits.
+pub fn decode_image(input: &ImageInput) -> Result<RgbImage> {
     if input.bytes.is_empty() || input.bytes.len() > 5 * 1024 * 1024 {
         return Err(Error::InvalidInput(
             "Image must contain 1 byte to 5 MiB".into(),
@@ -32,7 +42,12 @@ pub(crate) fn decode(input: &ImageInput) -> Result<RgbImage> {
     if u64::from(image.width()) * u64::from(image.height()) > 16_777_216 {
         return Err(Error::InvalidInput("Image exceeds 16 megapixels".into()));
     }
-    Ok(image.to_rgb8())
+    let rgb = image.to_rgb8();
+    Ok(RgbImage {
+        width: rgb.width() as usize,
+        height: rgb.height() as usize,
+        data: rgb.into_raw(),
+    })
 }
 
 #[cfg(test)]
@@ -47,15 +62,16 @@ mod tests {
             ImageFormat::Gif,
             ImageFormat::WebP,
         ] {
-            let image = RgbImage::from_pixel(2, 3, image::Rgb([10, 20, 30]));
+            let image = image::RgbImage::from_pixel(2, 3, image::Rgb([10, 20, 30]));
             let mut output = Cursor::new(Vec::new());
             image.write_to(&mut output, format).unwrap();
             let mut input = ImageInput {
                 bytes: output.into_inner(),
             };
-            assert_eq!(decode(&input).unwrap().dimensions(), (2, 3));
+            let decoded = decode_image(&input).unwrap();
+            assert_eq!((decoded.width, decoded.height), (2, 3));
             input.bytes.truncate(8);
-            assert!(decode(&input).is_err());
+            assert!(decode_image(&input).is_err());
         }
     }
 }

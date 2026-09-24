@@ -21,7 +21,7 @@ was removed after CubeCL matched its answers (see [Performance](#performance)).
 ## Build and run
 
 Install ROCm/HIP and set the [ROCm/WSL environment](build.md#rocmhip). Building needs
-Rust 1.92+.
+Rust 1.95+.
 
 ```bash
 export DIFFUSION_MODEL="$HOME/models/diffusiongemma/diffusiongemma-26B-A4B-it-Q4_K_M.gguf"
