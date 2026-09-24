@@ -1271,4 +1271,52 @@ mod tests {
         assert!((1..=40).contains(&thought.output_tokens));
         assert!(thought.prompt_tokens > first.prompt_tokens);
     }
+
+    #[cfg(feature = "models")]
+    #[test]
+    #[ignore = "Requires NEMOTRON_MODEL and a HIP GPU"]
+    fn nemotron_images_are_read_and_their_prompt_blocks_reused() {
+        let mut engine = nemotron_engine();
+        let png = |rgb: [u8; 3]| {
+            let mut out = std::io::Cursor::new(Vec::new());
+            image::RgbImage::from_pixel(224, 224, image::Rgb(rgb))
+                .write_to(&mut out, image::ImageFormat::Png)
+                .unwrap();
+            ImageInput {
+                bytes: out.into_inner(),
+            }
+        };
+        let question = ReadRequest {
+            prompt: "What color is the image? Use these answer codes:\nA = red\nB = blue".into(),
+            slots: vec![crate::Slot {
+                prefix: "Answer: ".into(),
+                candidates: vec!["A".into(), "B".into()],
+            }],
+        };
+        let red = engine
+            .read_with_options(&question, 42, ReadOptions::default(), &[png([230, 20, 20])])
+            .unwrap();
+        let blue = engine
+            .read_with_options(&question, 42, ReadOptions::default(), &[png([20, 40, 230])])
+            .unwrap();
+        println!(
+            "P(red): red image {:.3}, blue image {:.3}",
+            red.slots[0].probabilities[0], blue.slots[0].probabilities[0]
+        );
+        assert!(red.slots[0].probabilities[0] > 0.5);
+        assert!(blue.slots[0].probabilities[0] < 0.5);
+        // 224x224 is 8x8 merged tokens: start, 8 rows of 8 pads and a break (the last an end).
+        assert!(red.prompt_tokens > 1 + 8 * 9);
+        let again = engine
+            .read_with_options(&question, 42, ReadOptions::default(), &[png([20, 40, 230])])
+            .unwrap();
+        assert!(engine.prefill_profile().reused_tokens > 8 * 9);
+        for (a, b) in blue.slots[0]
+            .probabilities
+            .iter()
+            .zip(&again.slots[0].probabilities)
+        {
+            assert!((a - b).abs() < 1e-5, "{a} != {b}");
+        }
+    }
 }

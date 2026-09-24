@@ -104,6 +104,36 @@ impl Loader<'_> {
         Ok(self.persistent(data, DType::F16))
     }
 
+    /// A BF16 tensor of any rank whose first dimension is `rows`, flattened to `[rows, cols]`
+    /// and widened to f32 (such as a convolution kernel used as a matrix).
+    pub fn reshaped_f32(
+        &self,
+        name: &str,
+        rows: usize,
+        cols: usize,
+    ) -> Result<Tensor<2>, WeightError> {
+        let info = self.checkpoint.tensor(name)?;
+        if info.shape.first() != Some(&rows) || info.elements() != rows * cols {
+            return Err(WeightError::Shape {
+                name: name.into(),
+                expected: vec![rows, cols],
+                found: info.shape.clone(),
+            });
+        }
+        if info.dtype != Dtype::BF16 {
+            return Err(WeightError::Dtype(name.into()));
+        }
+        let mut bytes = vec![0; info.byte_len()];
+        self.checkpoint.read_into(info, &mut bytes)?;
+        let values: Vec<f32> = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| half::bf16::from_le_bytes(*c).to_f32())
+            .collect();
+        Ok(self.persistent(TensorData::new(values, [rows, cols]), DType::F32))
+    }
+
     /// A BF16 vector widened to f32, such as a norm weight.
     pub fn vector_f32(&self, name: &str, len: usize) -> Result<Tensor<1>, WeightError> {
         let bytes = self.bytes(name, len, 0)?;

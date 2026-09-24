@@ -21,10 +21,25 @@ def sha256(path):
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
+def model_digest(model):
+    """SHA-256 of a model file, or of a checkpoint directory's config and shard index."""
+    if not model.is_dir():
+        return sha256(model)
+    digest = hashlib.sha256()
+    for name in ("config.json", "model.safetensors.index.json"):
+        path = model / name
+        if path.exists():
+            digest.update(name.encode() + b"\0" + path.read_bytes())
+    return digest.hexdigest()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
-    parser.add_argument("--model", type=Path, required=True)
+    parser.add_argument("--model", type=Path, required=True,
+                        help="GGUF file or Hugging Face checkpoint directory")
+    parser.add_argument("--model-id", default="gemmadiffusion-0.1",
+                        help="Model ID served and requested (e.g. nemotron-diffusion-8b)")
     parser.add_argument("--harness", type=Path, required=True)
     parser.add_argument("--tasks-dir", type=Path,
                         help="Defaults to HARNESS/datasets/public")
@@ -49,7 +64,7 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     endpoint = f"http://127.0.0.1:{args.port}"
     # Exercise the service's context, seed, batch and inference defaults.
-    command = [str(binary), "--model", str(model), "--bind",
+    command = [str(binary), "--model", str(model), "--model-id", args.model_id, "--bind",
                f"127.0.0.1:{args.port}"]
     env = dict(os.environ, PYTHONPATH=str(harness), PYTHONDONTWRITEBYTECODE="1",
                RUST_LOG="info")
@@ -66,7 +81,7 @@ def main():
         "started_unix": time.time(),
         "binary_sha256": sha256(binary),
         "model_file": model.name,
-        "model_sha256": sha256(model),
+        "model_sha256": model_digest(model),
         "runner_sha256": sha256(Path(__file__).resolve()),
         "thinking_wrapper_sha256": sha256(repository / "scripts/jevbench-think.py"),
         "request_options": {"think": args.think} if args.think else {},
@@ -94,7 +109,7 @@ def main():
                 if time.monotonic() > deadline:
                     raise TimeoutError("Server did not become ready within 300 seconds")
                 time.sleep(1)
-            warmup = {"model": "gemmadiffusion-0.1", "state": "A red ball.",
+            warmup = {"model": args.model_id, "state": "A red ball.",
                       "questions": {"decision": {"type": "noul",
                                                 "instructions": "Is the ball red?"}}}
             if args.think:
@@ -115,7 +130,7 @@ def main():
                 runner += ["-m", "jevbench.cli", "run", "--adapter", "typesafe"]
             subprocess.run([
                 *runner, "--tasks", task_spec,
-                "--endpoint", endpoint, "--model", "gemmadiffusion-0.1", "--key-env", "",
+                "--endpoint", endpoint, "--model", args.model_id, "--key-env", "",
                 "--cost-basis", "local_compute_unpriced", "--reserve-usd", "0",
                 "--cap-usd", "0", "--results", str(output / "results.jsonl"),
                 "--raw-dir", str(output / "raw"), "--ledger", str(output / "ledger.jsonl"),

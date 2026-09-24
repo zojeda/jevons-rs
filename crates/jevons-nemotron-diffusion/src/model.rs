@@ -4,8 +4,14 @@
 //! prefix. Canvas forwards attend bidirectionally to the prompt and the whole canvas and leave
 //! the prompt cache unchanged: their keys and values go to scratch rows past the prompt, which the
 //! next prefill overwrites.
+//!
+//! Images are encoded by the Pixtral tower into rows that replace the `<|image_pad|>` embeddings
+//! of `<|image_start|> (pads <|image_break|>)... <|image_end|>`, and are prefilled causally like
+//! text. Cached image rows are keyed by the image content.
 use crate::config::Config;
+use crate::image;
 use crate::rope::Rope;
+use crate::vision::{Vision, VisionConfig};
 use jevons_burn::layers::{
     KvCache, attention_mask, gated_mlp, grouped_attention, host_f32, linear, rms_norm, rotate_half,
 };
@@ -13,10 +19,11 @@ use jevons_burn::weights::Loader;
 use jevons_burn::{DType, Device, Int, Tensor, TensorData};
 use jevons_core::{
     ChatFormat, Conditioning, DiffusionModel, DiffusionScheme, Error, ImageInput, Logits,
-    ModelConfig, ModelInfo, PrefillProfile, PromptPart, Result, TextTokenizer,
+    ModelConfig, ModelInfo, PrefillProfile, PromptPart, Result, TextTokenizer, decode_image,
 };
 use jevons_formats::safetensors::Checkpoint;
 use jevons_tokenizer::hf::HfTokenizer;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::Instant;
 
 struct Layer {
@@ -46,8 +53,11 @@ pub struct Nemotron {
     chat: ChatFormat,
     profile: PrefillProfile,
     prompt_cache: bool,
-    /// Token ids whose keys and values are resident, in order.
-    cached: Vec<i32>,
+    vision: Vision,
+    /// Images encoded for the current request: embedding rows and a content key.
+    encoded: Vec<(Tensor<2>, i64)>,
+    /// Keys of the resident positions: token ids, or negative image content keys.
+    cached: Vec<i64>,
     /// Final normed hidden rows of the last canvas forward.
     canvas: Option<Tensor<2>>,
     /// Residual rows after each layer of the next forwards, for parity tests.
@@ -100,6 +110,18 @@ impl Nemotron {
                 "tokenizer and model vocabulary sizes differ".into(),
             ));
         }
+        for (marker, id) in [
+            ("<|image_start|>", IMAGE_START),
+            ("<|image_pad|>", IMAGE_PAD),
+            ("<|image_break|>", IMAGE_BREAK),
+            ("<|image_end|>", IMAGE_END),
+        ] {
+            if tokenizer.single_token(marker) != Some(id) {
+                return Err(Error::UnsupportedModel(format!(
+                    "the tokenizer does not map {marker} to {id}"
+                )));
+            }
+        }
         let checkpoint = Checkpoint::open_dir(dir).map_err(load_error)?;
         let device = jevons_burn::device::hip(config.main_gpu);
         let load = Loader {
@@ -145,6 +167,20 @@ impl Nemotron {
         let head = load
             .stacked_f16(&[("diffusion_head.weight", cfg.vocab_size)], d, 64)
             .map_err(load_error)?;
+        let vision_config: VisionConfig = serde_json::from_value(
+            serde_json::from_str::<serde_json::Value>(
+                &std::fs::read_to_string(dir.join("config.json")).map_err(|_| Error::ModelLoad)?,
+            )
+            .map_err(load_error)?["vision_config"]
+                .clone(),
+        )
+        .map_err(|e| Error::UnsupportedModel(format!("vision config: {e}")))?;
+        if vision_config.patch_size != image::PATCH || vision_config.hidden_act != "silu" {
+            return Err(Error::UnsupportedModel(
+                "unsupported Pixtral vision config".into(),
+            ));
+        }
+        let vision = Vision::load(&load, vision_config, d).map_err(load_error)?;
         let (cos, sin) = Rope::new(&cfg).tables(0..capacity);
         let table = |values: Vec<f32>| {
             Tensor::<2>::from_data(
@@ -178,6 +214,8 @@ impl Nemotron {
             chat,
             profile: PrefillProfile::default(),
             prompt_cache: config.prompt_cache,
+            vision,
+            encoded: Vec::new(),
             cached: Vec::new(),
             canvas: None,
             #[cfg(test)]
@@ -201,15 +239,25 @@ impl Nemotron {
         ))
     }
 
-    /// Runs `tokens` at positions `start..` and returns their final residual rows (not normed).
+    /// Embedding rows of `tokens` in f32.
+    fn embed(&self, tokens: &[i32]) -> Result<Tensor<2>> {
+        Ok(self
+            .embed
+            .clone()
+            .select(0, self.ids(tokens)?)
+            .cast(DType::F32))
+    }
+
+    /// Runs embedding rows at positions `start..` and returns their final residual rows (not
+    /// normed).
     ///
     /// Rows are padded to a power-of-two bucket and keys to a power-of-two length, so kernels
     /// are compiled and autotuned for a small set of shapes rather than every prompt length.
     /// Padding rows write scratch keys past the real ones; the mask hides them and anything stale
     /// from real queries. With `causal`, query `start + i` sees keys `0..=start + i`; otherwise
     /// it sees every key before `start + rows`.
-    fn forward(&mut self, tokens: &[i32], start: usize, causal: bool) -> Result<Tensor<2>> {
-        let rows = tokens.len();
+    fn forward(&mut self, input: Tensor<2>, start: usize, causal: bool) -> Result<Tensor<2>> {
+        let [rows, d] = input.dims();
         let end = start + rows;
         if end > self.info.n_ctx {
             return Err(Error::InvalidInput(
@@ -219,8 +267,6 @@ impl Nemotron {
         let capacity = self.layers[0].cache.capacity();
         let padded = row_bucket(rows);
         let keys = key_bucket(start + padded, capacity);
-        let mut input = tokens.to_vec();
-        input.resize(padded, self.config.eos_token_id);
         let cfg = &self.config;
         let (heads, kv_heads, hd) = (
             cfg.num_attention_heads,
@@ -238,11 +284,17 @@ impl Nemotron {
             keys,
             |i, j| if causal { j > start + i } else { j >= end },
         );
-        let mut h = self
-            .embed
-            .clone()
-            .select(0, self.ids(&input)?)
-            .cast(DType::F32);
+        let mut h = if padded > rows {
+            Tensor::cat(
+                vec![
+                    input,
+                    Tensor::zeros([padded - rows, d], (&self.device, DType::F32)),
+                ],
+                0,
+            )
+        } else {
+            input
+        };
         #[cfg(test)]
         let mut trace = self.trace.take();
         for layer in &mut self.layers {
@@ -279,10 +331,15 @@ impl Nemotron {
         {
             self.trace = trace;
         }
-        let d = self.config.hidden_size;
         Ok(h.slice([0..rows, 0..d]))
     }
 }
+
+/// Image marker tokens (`<|image_start|>`, `<|image_break|>`, `<|image_end|>`).
+const IMAGE_START: i32 = 18;
+const IMAGE_PAD: i32 = 19;
+const IMAGE_BREAK: i32 = 20;
+const IMAGE_END: i32 = 21;
 
 /// Smallest power-of-two row count (at least 32) holding `rows`.
 fn row_bucket(rows: usize) -> usize {
@@ -317,45 +374,112 @@ impl DiffusionModel for Nemotron {
     }
 
     fn encode_images(&mut self, images: &[ImageInput]) -> Result<Vec<PromptPart>> {
-        if images.is_empty() {
-            Ok(Vec::new())
-        } else {
-            Err(Error::InvalidInput(
-                "Image input is not supported for Nemotron-Labs-Diffusion yet".into(),
-            ))
+        if images.len() > 8 {
+            return Err(Error::InvalidInput("At most 8 images are allowed".into()));
         }
+        self.encoded.clear();
+        let mut parts = Vec::with_capacity(images.len());
+        for (index, input) in images.iter().enumerate() {
+            let rgb = decode_image(input)?;
+            let mut hasher = DefaultHasher::new();
+            (rgb.width, rgb.height, &rgb.data).hash(&mut hasher);
+            let key = -((hasher.finish() >> 1) as i64) - 1;
+            let patches = image::patches(&rgb);
+            let (w, h) = patches.tokens;
+            let tokens = 1 + h * (w + 1);
+            if tokens > self.info.n_ctx {
+                return Err(Error::InvalidInput(format!(
+                    "Image needs {tokens} tokens; the context allows {}",
+                    self.info.n_ctx
+                )));
+            }
+            let features = self.vision.encode(&patches);
+            let d = self.config.hidden_size;
+            let marks = self.embed(&[IMAGE_START, IMAGE_BREAK, IMAGE_END])?;
+            let mark = |i: usize| marks.clone().slice([i..i + 1, 0..d]);
+            let mut rows = vec![mark(0)];
+            for r in 0..h {
+                rows.push(features.clone().slice([r * w..(r + 1) * w, 0..d]));
+                rows.push(mark(if r + 1 == h { 2 } else { 1 }));
+            }
+            self.encoded.push((Tensor::cat(rows, 0), key));
+            parts.push(PromptPart::Image { tokens, index });
+        }
+        Ok(parts)
     }
 
     fn prefill(&mut self, parts: &[PromptPart], suffix: &[i32]) -> Result<usize> {
         let start_time = Instant::now();
-        let mut tokens = Vec::new();
+        // Each segment: its position keys and where its rows come from.
+        enum Rows<'a> {
+            Tokens(&'a [i32]),
+            Image(usize),
+        }
+        let mut segments = Vec::with_capacity(parts.len() + 1);
         for part in parts {
-            match part {
-                PromptPart::Text(t) => tokens.extend(t),
-                PromptPart::Image { .. } => {
-                    return Err(Error::InvalidInput("Unknown image part".into()));
+            segments.push(match part {
+                PromptPart::Text(t) => Rows::Tokens(t),
+                PromptPart::Image { tokens, index } => match self.encoded.get(*index) {
+                    Some((rows, _)) if rows.dims()[0] == *tokens => Rows::Image(*index),
+                    _ => return Err(Error::InvalidInput("Unknown image part".into())),
+                },
+            });
+        }
+        segments.push(Rows::Tokens(suffix));
+        let mut keys = Vec::new();
+        for segment in &segments {
+            match segment {
+                Rows::Tokens(t) => keys.extend(t.iter().map(|&t| i64::from(t))),
+                Rows::Image(i) => {
+                    let (rows, key) = &self.encoded[*i];
+                    keys.extend(std::iter::repeat_n(*key, rows.dims()[0]));
                 }
             }
         }
-        tokens.extend(suffix);
-        if tokens.len() > self.info.n_ctx {
+        if keys.len() > self.info.n_ctx {
             return Err(Error::InvalidInput("Prompt exceeds context size".into()));
         }
         if !self.prompt_cache {
             self.cached.clear();
         }
-        let reused = tokens
+        let reused = keys
             .iter()
             .zip(&self.cached)
             .take_while(|(a, b)| a == b)
             .count();
         self.cached.truncate(reused);
+        // Embedding rows of the uncached positions, then causal forwards in batches.
+        let mut pieces = Vec::new();
+        let mut position = 0;
+        for segment in &segments {
+            let len = match segment {
+                Rows::Tokens(t) => t.len(),
+                Rows::Image(i) => self.encoded[*i].0.dims()[0],
+            };
+            let (from, to) = (reused.max(position), position + len);
+            if from < to {
+                let (a, b) = (from - position, to - position);
+                pieces.push(match segment {
+                    Rows::Tokens(t) => self.embed(&t[a..b])?,
+                    Rows::Image(i) => {
+                        let d = self.config.hidden_size;
+                        self.encoded[*i].0.clone().slice([a..b, 0..d])
+                    }
+                });
+            }
+            position = to;
+        }
         let mut batches = 0;
-        for chunk in tokens[reused..].chunks(self.info.batch_size) {
-            let start = self.cached.len();
-            self.forward(chunk, start, true)?;
-            self.cached.extend(chunk);
-            batches += 1;
+        if !pieces.is_empty() {
+            let rows = Tensor::cat(pieces, 0);
+            let (total, d) = (keys.len() - reused, self.config.hidden_size);
+            for begin in (0..total).step_by(self.info.batch_size) {
+                let end = (begin + self.info.batch_size).min(total);
+                let start = self.cached.len();
+                self.forward(rows.clone().slice([begin..end, 0..d]), start, true)?;
+                self.cached.extend(&keys[reused + begin..reused + end]);
+                batches += 1;
+            }
         }
         self.device
             .sync()
@@ -365,9 +489,9 @@ impl DiffusionModel for Nemotron {
         self.profile.wall_ms += start_time.elapsed().as_secs_f64() * 1000.0;
         self.profile.calls += 1;
         self.profile.batches += batches;
-        self.profile.processed_tokens += tokens.len() - reused;
+        self.profile.processed_tokens += keys.len() - reused;
         self.profile.reused_tokens += reused;
-        Ok(tokens.len())
+        Ok(keys.len())
     }
 
     fn forward_canvas(
@@ -390,7 +514,8 @@ impl DiffusionModel for Nemotron {
         if tokens.is_empty() || tokens.len() > self.info.batch_size {
             return Err(Error::InvalidInput("canvas exceeds the batch size".into()));
         }
-        let h = self.forward(tokens, prompt_length, false)?;
+        let input = self.embed(tokens)?;
+        let h = self.forward(input, prompt_length, false)?;
         let hidden = rms_norm(h, &self.norm, self.config.rms_norm_eps);
         let vocab = self.config.vocab_size;
         self.logits = (logits == Logits::Full).then(|| {
@@ -490,6 +615,104 @@ mod tests {
             "{label}: top-1 agreement {exact}/{rows} ({agree}/{rows} within {TIE} of the best), max |logit diff| {worst:.4}"
         );
         (agree, rows, worst)
+    }
+
+    fn fixture_image() -> ImageInput {
+        ImageInput {
+            bytes: golden("fixture.png"),
+        }
+    }
+
+    #[test]
+    #[ignore = "Requires the reference dump (scripts/reference/nemotron_dump.py)"]
+    fn image_preprocessing_matches_the_reference_pixels() {
+        let rgb = decode_image(&fixture_image()).unwrap();
+        let (planes, width, height) = image::normalized_planes(&rgb);
+        assert_eq!((width, height), (308, 224));
+        let want = floats("image_pixels");
+        let worst = planes
+            .iter()
+            .zip(&want)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f32::max);
+        println!("pixels: max |diff| {worst}");
+        assert!(worst < 1e-4, "{worst}");
+    }
+
+    #[test]
+    #[ignore = "Requires NEMOTRON_MODEL, a HIP GPU and the reference dump"]
+    fn image_features_and_reads_match_the_reference_implementation() {
+        let mut config = ModelConfig::new(std::env::var("NEMOTRON_MODEL").unwrap());
+        config.context_size = 4096;
+        let mut model = Nemotron::load(&config).unwrap();
+        let parts = model.encode_images(&[fixture_image()]).unwrap();
+        let PromptPart::Image { tokens, .. } = parts[0] else {
+            panic!("image part")
+        };
+        assert_eq!(tokens, 1 + 8 * 12);
+        // Tower output, then projector output (pad rows only), against the FP32 reference (the
+        // BF16 reference itself is 20% off in the tower, whose activations reach the
+        // thousands); produced by `nemotron_dump.py`.
+        let rgb = decode_image(&fixture_image()).unwrap();
+        let tower = host_f32(model.vision.tower(&image::patches(&rgb)));
+        let want = floats("image_tower_f32");
+        let rms = (want.iter().map(|v| v * v).sum::<f32>() / want.len() as f32).sqrt();
+        let err = (tower
+            .iter()
+            .zip(&want)
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum::<f32>()
+            / want.len() as f32)
+            .sqrt();
+        println!("image tower: rms error {err:.5} of rms {rms:.5}");
+        assert!(err < 0.03 * rms, "{err} of {rms}");
+        let rows = model.encoded[0].0.clone();
+        let d = model.config.hidden_size;
+        let mut pads = Vec::new();
+        for r in 0..8 {
+            let begin = 1 + r * 12;
+            pads.push(rows.clone().slice([begin..begin + 11, 0..d]));
+        }
+        let got = host_f32(Tensor::cat(pads, 0));
+        let want = floats("image_features_f32");
+        let rms = (want.iter().map(|v| v * v).sum::<f32>() / want.len() as f32).sqrt();
+        let err = (got
+            .iter()
+            .zip(&want)
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum::<f32>()
+            / want.len() as f32)
+            .sqrt();
+        println!("image features: rms error {err:.5} of rms {rms:.5}");
+        assert!(err < 0.03 * rms, "{err} of {rms}");
+        // The reference prompt with its image block replaced by the encoded rows.
+        let prompt = ints("image_prompt");
+        let start = prompt.iter().position(|&t| t == IMAGE_START).unwrap();
+        let end = prompt.iter().position(|&t| t == IMAGE_END).unwrap();
+        assert_eq!(end + 1 - start, tokens);
+        let prompt_parts = [
+            PromptPart::Text(prompt[..start].to_vec()),
+            PromptPart::Image { tokens, index: 0 },
+            PromptPart::Text(prompt[end + 1..].to_vec()),
+        ];
+        let length = model.prefill(&prompt_parts, &[]).unwrap();
+        assert_eq!(length, prompt.len());
+        let canvas = ints("image_canvas");
+        model
+            .forward_canvas(&canvas, length, Conditioning::None, Logits::Full)
+            .unwrap();
+        let (agree, rows, _) = compare(
+            "image canvas",
+            &model.full_logits().unwrap(),
+            &floats("image_canvas_logits"),
+            model.config.vocab_size,
+        );
+        assert_eq!(agree, rows);
+        // A repeated image prompt is served from the cache.
+        model.encode_images(&[fixture_image()]).unwrap();
+        model.profile = PrefillProfile::default();
+        model.prefill(&prompt_parts, &[]).unwrap();
+        assert_eq!(model.profile.processed_tokens, 0);
     }
 
     #[test]

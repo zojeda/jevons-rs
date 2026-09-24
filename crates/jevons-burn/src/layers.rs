@@ -61,7 +61,7 @@ pub fn rotate_half(x: Tensor<3>, cos: &Tensor<2>, sin: &Tensor<2>) -> Tensor<3> 
 }
 
 /// Per-layer keys and values for every context position, `[1, kv_heads, capacity, head_dim]`
-/// in BF16. Each slab has a single owner so updates happen in place.
+/// in FP16. Each slab has a single owner so updates happen in place.
 pub struct KvCache {
     pub keys: Tensor<4>,
     pub values: Tensor<4>,
@@ -69,7 +69,7 @@ pub struct KvCache {
 
 impl KvCache {
     pub fn new(device: &Device, kv_heads: usize, capacity: usize, head_dim: usize) -> Self {
-        let zeros = || Tensor::zeros([1, kv_heads, capacity, head_dim], (device, DType::BF16));
+        let zeros = || Tensor::zeros([1, kv_heads, capacity, head_dim], (device, DType::F16));
         Self {
             keys: zeros(),
             values: zeros(),
@@ -85,18 +85,18 @@ impl KvCache {
         let [rows, kv_heads, dim] = keys.dims();
         let range = [0..1, 0..kv_heads, start..start + rows, 0..dim];
         let layout = |t: Tensor<3>| {
-            t.cast(DType::BF16)
+            t.cast(DType::F16)
                 .swap_dims(0, 1)
                 .reshape([1, kv_heads, rows, dim])
         };
         let keys_slab = std::mem::replace(
             &mut self.keys,
-            Tensor::empty([1, 1, 1, 1], (&keys.device(), DType::BF16)),
+            Tensor::empty([1, 1, 1, 1], (&keys.device(), DType::F16)),
         );
         self.keys = keys_slab.slice_assign(range.clone(), layout(keys));
         let values_slab = std::mem::replace(
             &mut self.values,
-            Tensor::empty([1, 1, 1, 1], (&values.device(), DType::BF16)),
+            Tensor::empty([1, 1, 1, 1], (&values.device(), DType::F16)),
         );
         self.values = values_slab.slice_assign(range, layout(values));
     }
@@ -138,15 +138,14 @@ pub fn grouped_attention(
             "attention mask shape"
         );
     }
-    let folded =
-        queries
-            .cast(DType::BF16)
-            .swap_dims(0, 1)
-            .reshape([1, kv_heads, group * rows, dim]);
+    let folded = queries
+        .cast(DType::F16)
+        .swap_dims(0, 1)
+        .reshape([1, kv_heads, group * rows, dim]);
     let out = attention(
         folded,
-        keys.cast(DType::BF16),
-        values.cast(DType::BF16),
+        keys.cast(DType::F16),
+        values.cast(DType::F16),
         mask.cloned(),
         None,
         AttentionModuleOptions::default(),
@@ -307,7 +306,7 @@ mod tests {
                 mask.as_ref(),
             ));
             let want = reference(&q, &k, &v, (rows, heads, kv_heads, len, dim), start, causal);
-            // BF16 inputs.
+            // FP16 inputs.
             close(&got, &want, 2e-2);
         }
     }

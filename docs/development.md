@@ -12,7 +12,7 @@
 | `jevons-kernels` | Shared tuned CubeCL kernels: device buffers and the quantized / FP16-weight GEMM, callable on Burn tensors' buffers. |
 | `jevons-gemma4-diffusion` | DiffusionGemma text and vision runtime: tuned CubeCL kernels (MoE routing, visibility-aware attention, fused norms, plus the shared GEMM) on the CubeCL 0.11 runtime shared with Burn. |
 | `jevons-burn` | Shared Burn 0.22 runtime: HIP device, weight streaming, RMS norm, rotary embedding, grouped-query attention, KV cache, and the tuned GEMM as a Burn backend extension. |
-| `jevons-nemotron-diffusion` | Nemotron-Labs-Diffusion on Burn. |
+| `jevons-nemotron-diffusion` | Nemotron-Labs-Diffusion on Burn: Ministral-3 decoder, Pixtral vision tower and projector, image preprocessing. |
 | `jevons-models` | Detect a model's architecture and load its `DiffusionModel` implementation (DiffusionGemma with feature `gemma4`). |
 | `jevons-engine` | Prepare tokens, frame chats, sample the canvas for each diffusion scheme, and provide the SCM CLI. |
 | `jevons-system-one` | Validate requests, compile questions into slots, and map answers. |
@@ -30,7 +30,7 @@ We keep model ownership on a dedicated worker thread and blocking inference off 
 | `jevons-gemma4-diffusion` | `vision_input`, `gpu::{gemm, attention, ops, tune, vision}`, `model`, `vision` |
 | `jevons-kernels` | `gemm` |
 | `jevons-burn` | `device`, `weights`, `layers`, `kernels` |
-| `jevons-nemotron-diffusion` | `config`, `rope`, `model` |
+| `jevons-nemotron-diffusion` | `config`, `rope`, `image`, `vision`, `model` |
 | `jevons-system-one` | `request`, `compiler`, `response`, `error` |
 | `jevons-rs` | `http`, `handlers`, `middleware`, `worker`, `error` |
 

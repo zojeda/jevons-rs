@@ -1,6 +1,6 @@
 # jevons-rs
 
-A Rust implementation of [TypeSafe AI's System One API](https://docs.typesafe.ai/introduction): typed, probabilistic answers (yes/no, choice, rubric scores) from diffusion language models (DiffusionGemma, and NVIDIA Nemotron-Labs-Diffusion for text), running on AMD GPUs through [CubeCL](https://github.com/tracel-ai/cubecl) and [Burn](https://github.com/tracel-ai/burn) with no llama.cpp or C++ build. It includes a Gemma 4 vision encoder, exact prompt-prefix caching and per-GPU autotuning.
+A Rust implementation of [TypeSafe AI's System One API](https://docs.typesafe.ai/introduction): typed, probabilistic answers (yes/no, choice, rubric scores) from diffusion language models (DiffusionGemma and NVIDIA Nemotron-Labs-Diffusion, both with image input), running on AMD GPUs through [CubeCL](https://github.com/tracel-ai/cubecl) and [Burn](https://github.com/tracel-ai/burn) with no llama.cpp or C++ build. It includes a Gemma 4 vision encoder, exact prompt-prefix caching and per-GPU autotuning.
 
 jevons-rs serves the System One API. You send a state and questions, and get probability distributions over yes/no answers, choices or rubric scores. Behind it, DiffusionGemma reads fixed answer slots on a masked canvas in a single pass.
 
@@ -47,7 +47,7 @@ cargo run --release --locked -p jevons-rs -- --bind 127.0.0.1:8080
 
 The first start on a new GPU measures launch plans and compiles kernel variants, which took a few minutes on the test machine. Later starts reuse the results from `~/.cache/diffusion-cubecl` and load the weights in about 35 s. NVIDIA GPUs and CPU inference are not supported.
 
-### Nemotron-Labs-Diffusion (text)
+### Nemotron-Labs-Diffusion
 
 Point `-m` at a [Nemotron-Labs-Diffusion](https://huggingface.co/nvidia/Nemotron-Labs-Diffusion-VLM-8B) checkpoint directory (BF16 safetensors, about 18 GB); the architecture is detected from its `config.json`, or set it with `--arch nemotron-diffusion`:
 
@@ -55,7 +55,7 @@ Point `-m` at a [Nemotron-Labs-Diffusion](https://huggingface.co/nvidia/Nemotron
 cargo run --release --locked -p jevons-rs -- -m "$HOME/models/nemotron-labs-diffusion-vlm-8b"
 ```
 
-It runs on the Burn runtime and serves `nemotron-diffusion-8b` (alias `nemotron-diffusion-latest`). The first start compiles and autotunes kernels for several minutes; results are cached in `~/.cache/jevons-burn`. Image input is not supported for this architecture yet. Check the model's license (the VLM card names the NVIDIA Source Code License) before any use beyond evaluation.
+It runs on the Burn runtime and serves `nemotron-diffusion-8b` (alias `nemotron-diffusion-latest`). The first start compiles and autotunes kernels for several minutes; results are cached in `~/.cache/jevons-burn`. Image questions work without extra files: the checkpoint contains its Pixtral vision tower (no `--mmproj`). Check the model's license (the VLM card names the NVIDIA Source Code License) before any use beyond evaluation.
 
 ## Text example
 

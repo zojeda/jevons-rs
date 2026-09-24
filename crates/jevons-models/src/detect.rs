@@ -22,6 +22,11 @@ impl Architecture {
         }
     }
 
+    /// Whether image input needs a separate vision projector file (`--mmproj`).
+    pub fn uses_separate_projector(self) -> bool {
+        matches!(self, Self::Gemma4Diffusion)
+    }
+
     /// Routing alias that names the newest local model of this architecture.
     pub fn latest_alias(self) -> &'static str {
         match self {

@@ -100,6 +100,8 @@ The extensions above describe DiffusionGemma, which starts from uniform noise an
 - **`samples`.** Masked reads are deterministic, so repeated samples are identical; averaging changes nothing.
 - **`think`.** Thought tokens are generated in 32-token blocks of masks. Each iteration fixes the most confident position (full vocabulary) plus any at probability 0.9 or higher; a block ends when a stop marker (`</think>` or `<|im_end|>`) is fixed with everything before it. The block is then committed causally to the prompt cache by the next prefill, as the reference `generate` does.
 
+Images go through the checkpoint's Pixtral tower. Each image is resized with OpenCV-compatible bicubic interpolation so its longest edge is at most 1400 pixels and both sides are multiples of 28, normalized with the CLIP statistics, and split into 14-pixel patches. The tower attends bidirectionally over one image's patches; a 2x2 patch merger and a two-layer projector map every 28-pixel cell to one embedding. In the prompt an image becomes `<|image_start|>`, then one row of cell embeddings followed by `<|image_break|>` per row of cells, with the last break replaced by `<|image_end|>`. The whole block is prefilled causally like text, as in the reference implementation, and cached image rows are keyed by image content, so repeating an image reuses them.
+
 Prompts use ChatML: `<|im_start|>user\n…<|im_end|>\n<|im_start|>assistant\n`, followed by `<think></think>` when no thought is requested. The tokenizer marks `<think>` and `</think>` as non-special added tokens, so user text is encoded with a tokenizer that has no added tokens at all; text that looks like a marker stays plain text.
 
 ## Reproducibility and accounting

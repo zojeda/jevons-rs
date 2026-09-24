@@ -57,6 +57,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let listener = tokio::net::TcpListener::bind(args.bind).await?;
     config.mmproj = args.mmproj;
+    if config.mmproj.is_some() && !architecture.uses_separate_projector() {
+        // Often inherited from DIFFUSION_MMPROJ; the checkpoint carries its own vision tower.
+        tracing::warn!(
+            architecture = architecture.id(),
+            "Ignoring --mmproj: this architecture's vision tower is in the model files"
+        );
+        config.mmproj = None;
+    }
     config.main_gpu = args.main_gpu;
     config.context_size = args.context_size;
     config.batch_size = args.batch_size;

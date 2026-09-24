@@ -172,6 +172,50 @@ with torch.no_grad():
 for h in handles:
     h.remove()
 
+# Image fixture: a deterministic 300x200 RGB picture (gradient, red disc, blue bar), saved as
+# PNG so the Rust port decodes the same pixels. Its size is not a multiple of 28, so resizing
+# is exercised.
+from PIL import Image  # noqa: E402
+from image_processing import encode_image, build_image_token_str  # noqa: E402
+
+yy, xx = np.mgrid[0:200, 0:300]
+picture = np.stack([xx * 255 // 299, yy * 255 // 199, np.full_like(xx, 96)], -1).astype(np.uint8)
+picture[(xx - 90) ** 2 + (yy - 100) ** 2 < 50**2] = [220, 30, 30]
+picture[40:60, 160:280] = [30, 60, 220]
+Image.fromarray(picture).save(out / "fixture.png")
+image = Image.open(out / "fixture.png")
+w_tok, h_tok, pixels = encode_image(image)
+manifest["image"] = {"w_tokens": w_tok, "h_tokens": h_tok}
+f32("image_pixels", torch.from_numpy(pixels))
+image_sizes = [(h_tok * 28, w_tok * 28)]
+pixel_values = torch.from_numpy(pixels)[None].to(dtype)
+with torch.no_grad():
+    tower = model.encoder.vision_tower(pixel_values, image_sizes=image_sizes, output_hidden_states=True, return_dict=True)
+    f32("image_tower", tower.hidden_states[-1][0])
+    features = model.get_image_features(pixel_values, image_sizes)
+    f32("image_features", features)
+    question = tok.encode(
+        "<|im_start|>user\n" + build_image_token_str(w_tok, h_tok)
+        + "Is there a red circle in the image? Use these answer codes:\nA = yes\nB = no"
+        "<|im_end|>\n<|im_start|>assistant\n<think></think>",
+        add_special_tokens=False,
+    )
+    i32("image_prompt", question)
+    set_diffusion(False)
+    embeds = model._embed_with_vision(torch.tensor([question]), pixel_values, image_sizes)
+    output = model.encoder(inputs_embeds=embeds, use_cache=True, use_causal_mask=True)
+    cache = output.past_key_values
+    set_diffusion(True)
+    answer = tok.encode("Answer:", add_special_tokens=False)
+    canvas = answer + [config.mask_token_id] * (32 - len(answer))
+    logits = model(torch.tensor([canvas]), past_key_values=cache, use_cache=False).logits[0]
+    i32("image_canvas", canvas)
+    f32("image_canvas_logits", logits)
+    yes, no = tok.encode(" A", add_special_tokens=False)[0], tok.encode(" B", add_special_tokens=False)[0]
+    row = logits[len(answer)].float()
+    manifest["image_read"] = {"candidates": [yes, no], "logits": [float(row[yes]), float(row[no])]}
+    print("image read logits (A, B):", manifest["image_read"]["logits"])
+
 if not args.skip_generate:
     gen_prompt = tok.encode(
         "<|im_start|>user\nWrite one sentence about concrete.<|im_end|>\n"
