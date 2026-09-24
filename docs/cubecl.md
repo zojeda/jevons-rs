@@ -88,7 +88,7 @@ Tuning cannot change a prompt's results: prompt plans only vary tile shapes, and
 row is accumulated in the same order for every tile shape. The kernel tests check this bitwise.
 On the 8060S, whose heuristics were hand-tuned, tuned plans perform the same as the heuristics
 on 466-token prompts and are 3-4% faster on 1000-token prompts with a 256-token canvas
-(`examples/tune_ab.rs`, interleaved in one process).
+(interleaved in one process).
 
 On APUs such as Strix Halo, GPU memory is system memory: the model, caches and a concurrent
 build share the same RAM. Keep build directories on disk rather than in `/dev/shm` and avoid
@@ -160,8 +160,7 @@ llama.cpp running parts of its vision graph in FP16. Encoding a 77-token image t
 
 - **No int8 matrix path.** llama.cpp quantizes activations to 8 bits and uses integer dot
   products. CubeCL's HIP backend exposes only FP16/BF16 WMMA on RDNA3, and its `dot`
-  compiles to scalar multiplies: LLVM does not form `v_dot4` from them
-  (`examples/dot4_probe.rs`). An int8 path would need changes to CubeCL itself.
+  compiles to scalar multiplies: LLVM does not form `v_dot4` from them. An int8 path would need changes to CubeCL itself.
 
 The practical ceilings measured on the 8060S under WSL are about 20 TFLOP/s for FP16 WMMA,
 6 TFLOP/s for FP32 vector math and 190 GB/s of memory bandwidth. Prefill is now dominated by
@@ -184,6 +183,5 @@ The image test also needs `DIFFUSION_MMPROJ`. `tokenizer_matches_llama_reference
 a llama.cpp tokenizer dump (`TOKENIZER_REFERENCE`); see its doc comment.
 
 `crates/jevons-gemma4-diffusion/examples/prefix_check.rs` compares reused-prefix results with fresh
-prefills bitwise; `gemm_bench`, `moe_bench` and `bandwidth` measure kernels in isolation;
-`tune_ab` compares tuned and heuristic plans on the full model; `vision_check` compares image
-embeddings with reference dumps.
+prefills bitwise; `vision_check` compares image embeddings with reference dumps; `golden_dump`
+writes per-layer traces for regression comparisons.

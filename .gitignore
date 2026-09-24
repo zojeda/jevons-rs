@@ -9,4 +9,3 @@ node_modules/
 skills-lock.json
 .playwright-mcp/
 **/*.pyc
-/spikes/*/target/

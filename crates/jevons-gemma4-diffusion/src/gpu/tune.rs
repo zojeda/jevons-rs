@@ -131,8 +131,6 @@ pub struct Tuner {
     grouped: HashMap<GroupKey, GroupPlan>,
     path: Option<PathBuf>,
     announced: bool,
-    /// Ignore stored plans (A/B measurements).
-    pub heuristics_only: bool,
 }
 
 impl Tuner {
@@ -149,7 +147,6 @@ impl Tuner {
             grouped: HashMap::new(),
             path,
             announced: false,
-            heuristics_only: false,
         };
         if std::env::var("DIFFUSION_CUBECL_AUTOTUNE").as_deref() != Ok("retune") {
             tuner.load();
@@ -170,7 +167,7 @@ impl Tuner {
             bucket: bucket(m),
             row_invariant,
         };
-        match self.dense.get(&key).filter(|_| !self.heuristics_only) {
+        match self.dense.get(&key) {
             Some(&p) if p.valid_for(w, m) && (!row_invariant || invariant(p)) => p,
             _ => Plan::heuristic(w, m, row_invariant, self.profile.groups_target()),
         }
@@ -185,7 +182,7 @@ impl Tuner {
             experts: w.experts,
             bucket: bucket(rows),
         };
-        match self.grouped.get(&key).filter(|_| !self.heuristics_only) {
+        match self.grouped.get(&key) {
             Some(&p) if w.n.is_multiple_of(p.bn) => p,
             _ => GroupPlan::heuristic(w),
         }

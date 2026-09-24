@@ -6,7 +6,7 @@ Goal: faster prompt prefill on RDNA3 by multiplying 8-bit activations with the q
 using integer instructions, as llama.cpp does, instead of converting weight tiles to FP16.
 
 Today CubeCL 0.10's HIP backend exposes only FP16/BF16 matrix instructions, and its `dot` compiles
-to scalar multiplies (`examples/dot4_probe.rs`). Prefill is dominated by the routed-expert
+to scalar multiplies. Prefill is dominated by the routed-expert
 products, which are limited by the weight-to-FP16 conversion.
 
 ## Constraints
@@ -41,7 +41,7 @@ separate crate with HIP FFI.
       generator and the frontend.
 - [ ] Add `i8 x i8 -> i32` as an accepted type for the matrix-multiply operations on HIP RDNA3,
       with the correct register layout. Phase 3 only.
-- [ ] Unit-test the new ops against CPU references, extending `dot4_probe`, and check the ISA
+- [ ] Unit-test the new ops against CPU references, and check the ISA
       contains `v_dot4` / `v_wmma_i32_16x16x16_iu8`.
 - [ ] Prepare an upstream PR to tracel-ai/cubecl so the patch can eventually be dropped.
 
@@ -56,7 +56,7 @@ separate crate with HIP FFI.
 - [ ] Start with the grouped expert product (the prefill hotspot), then the dense projections.
 - [ ] Kernel tests against CPU references for every weight format, plus a row-invariance test
       (bitwise identical rows across tile shapes and row counts).
-- [ ] Benchmark against the FP16 kernel with `moe_bench` and `gemm_bench` at prefill sizes.
+- [ ] Benchmark against the FP16 kernel at prefill sizes.
       **Go/no-go:** continue only if the expert products get at least 1.3x faster.
 
 ## Phase 3: int8 matrix instructions (if Phase 2 pays off)
@@ -79,7 +79,7 @@ separate crate with HIP FFI.
 ## Phase 5: validate and report
 
 - [ ] Kernel tests, `prefix_check`, and the engine reproducibility and extension tests.
-- [ ] Snake prefill benchmark: interleaved in-process FP16 vs int8 comparison (`tune_ab`-style),
+- [ ] Snake prefill benchmark: interleaved in-process FP16 vs int8 comparison ,
       plus `prefill_bench`.
 - [ ] JevBench and System One corpus runs; compare labels and probabilities with the FP16
       snapshots.

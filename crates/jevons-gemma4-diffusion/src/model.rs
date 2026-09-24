@@ -698,11 +698,6 @@ impl Model {
         self.tuner.tune(gpu, &work, &bufs)
     }
 
-    /// Uses heuristic launch plans instead of tuned ones (A/B measurements).
-    pub fn set_heuristic_plans(&mut self, on: bool) {
-        self.tuner.heuristics_only = on;
-    }
-
     /// Non-cached product (canvas side paths) with the tuned plan for its shape.
     #[allow(clippy::too_many_arguments)]
     fn matmul(

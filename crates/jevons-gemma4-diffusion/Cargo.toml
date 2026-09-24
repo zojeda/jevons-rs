@@ -21,19 +21,7 @@ image.workspace = true
 serde_json.workspace = true
 
 [[example]]
-name = "gemm_bench"
-
-[[example]]
-name = "moe_bench"
-
-[[example]]
 name = "gguf_info"
-
-[[example]]
-name = "bandwidth"
-
-[[example]]
-name = "wmma_probe"
 
 [[example]]
 name = "prefix_check"
@@ -42,19 +30,7 @@ name = "prefix_check"
 name = "golden_dump"
 
 [[example]]
-name = "load_profile"
-
-[[example]]
-name = "dot4_probe"
-
-[[example]]
-name = "tune_ab"
-
-[[example]]
 name = "vision_check"
-
-[[example]]
-name = "f16_bench"
 
 [lints]
 workspace = true

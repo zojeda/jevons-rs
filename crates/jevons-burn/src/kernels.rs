@@ -96,12 +96,9 @@ impl GemmOps for CubeBackend {
     }
 }
 
-/// Whether `tensor` lives on a CubeCL device (the kernels have no CPU implementation) and
-/// tuned kernels are enabled; `JEVONS_TUNED_GEMM=0` falls back to Burn's matmul for comparison.
+/// Whether `tensor` lives on a CubeCL device (the kernels have no CPU implementation).
 pub fn supports_kernels(tensor: &Tensor<2>) -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("JEVONS_TUNED_GEMM").map_or(true, |v| v != "0"))
-        && matches!(tensor.device().as_dispatch(), DispatchDevice::Cube(_))
+    matches!(tensor.device().as_dispatch(), DispatchDevice::Cube(_))
 }
 
 /// Largest activation magnitude sent to the FP16 GEMM by [`f16_linear_scaled`].
@@ -135,7 +132,6 @@ pub fn f16_linear_scaled(x: Tensor<2>, weight: &Tensor<2>) -> Tensor<2> {
 mod tests {
     use super::*;
     use burn::tensor::Distribution;
-    use std::time::Instant;
 
     #[test]
     #[ignore = "Requires a HIP GPU"]
@@ -308,52 +304,6 @@ mod tests {
                 .fold(0.0, f32::max);
             println!("{label}: max difference {worst}");
             assert!(worst < 2e-3, "{label}: max difference {worst}");
-        }
-    }
-
-    /// Per-shape timings against Burn's matmul (Nemotron-8B shapes, 32 rows). Outputs stay
-    /// alive and are read back, so lazy fusion cannot drop them.
-    #[test]
-    #[ignore = "Requires a HIP GPU; timing report"]
-    fn f16_matmul_timings() {
-        let device = crate::device::hip(0);
-        for (label, n, k) in [
-            ("qkv", 6144usize, 4096usize),
-            ("o", 4096, 4096),
-            ("gate_up", 28672, 4096),
-            ("down", 4096, 14336),
-            ("head", 131_136, 4096),
-        ] {
-            let x = Tensor::<2>::random(
-                [32, k],
-                Distribution::Uniform(-1.0, 1.0),
-                (&device, DType::F16),
-            );
-            let w = Tensor::<2>::random(
-                [n, k],
-                Distribution::Uniform(-0.1, 0.1),
-                (&device, DType::F16),
-            );
-            let time = |f: &dyn Fn() -> Tensor<2>| {
-                let _warm: Vec<_> = (0..3).map(|_| f()).collect();
-                device.sync().unwrap();
-                let start = Instant::now();
-                let outs: Vec<_> = (0..10).map(|_| f()).collect();
-                let total: f32 = outs
-                    .into_iter()
-                    .map(|o| {
-                        o.slice([0..1, 0..1])
-                            .into_data()
-                            .try_to_vec::<f32>()
-                            .unwrap()[0]
-                    })
-                    .sum();
-                assert!(total.is_finite());
-                start.elapsed().as_secs_f64() * 100.0
-            };
-            let tuned = time(&|| f16_linear(x.clone(), &w));
-            let burn = time(&|| x.clone().matmul(w.clone().transpose()).cast(DType::F32));
-            println!("{label:8} [32x{k}]x[{k}x{n}]: tuned {tuned:.3} ms, burn {burn:.3} ms");
         }
     }
 }

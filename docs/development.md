@@ -66,7 +66,7 @@ cargo test --release -p jevons-engine --lib -- --ignored --exact \
   engine::tests::nemotron_reads_are_calibrated_reproducible_and_support_extensions
 ```
 
-The Nemotron parity tests compare against the reference dump from `scripts/reference/nemotron_dump.py --dtype bfloat16` in `$JEVONS_GOLDEN_DIR`. Set `JEVONS_TUNED_GEMM=0` to run Nemotron's linears on Burn's matmul instead of the tuned GEMM (for comparisons). Against a running service, run `python3 scripts/smoke-test.py` with the server's `TYPESAFE_API_KEY` if configured.
+The Nemotron parity tests compare against the reference dump from `scripts/reference/nemotron_dump.py --dtype bfloat16` in `$JEVONS_GOLDEN_DIR`. Against a running service, run `python3 scripts/smoke-test.py` with the server's `TYPESAFE_API_KEY` if configured.
 
 Regular tests cover validation, probability math, error mapping, model aliases, request IDs, image preprocessing, and queue behavior. The ignored model tests check reproducibility, extension behavior, and image prefill (including exact reuse of a cached image) using real assets.
 
