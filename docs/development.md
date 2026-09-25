@@ -64,9 +64,11 @@ cargo test --release -p jevons-burn --lib -- --ignored --test-threads=1        #
 cargo test --release -p jevons-nemotron-diffusion --lib -- --ignored --test-threads=1
 cargo test --release -p jevons-engine --lib -- --ignored --exact \
   engine::tests::nemotron_reads_are_calibrated_reproducible_and_support_extensions
+cargo test --release -p jevons-engine --lib -- --ignored --exact --nocapture \
+  engine::tests::nemotron_self_speculation_reproduces_autoregressive_thoughts
 ```
 
-The Nemotron parity tests compare against the reference dump from `scripts/reference/nemotron_dump.py --dtype bfloat16` in `$JEVONS_GOLDEN_DIR`. Against a running service, run `python3 scripts/smoke-test.py` with the server's `TYPESAFE_API_KEY` if configured.
+The Nemotron parity tests compare against the reference dump from `scripts/reference/nemotron_dump.py --dtype bfloat16` in `$JEVONS_GOLDEN_DIR`. `NEMOTRON_GOLDEN` names the dump directory for the checkpoint under test (default `nemotron-diffusion-bf16`, the VLM; for example `nemotron-diffusion-3b-bf16`). Image tests need the VLM, and `causal_predictions_follow_the_reference_greedy_thought` needs a text checkpoint, whose code has `ar_generate`. The self-speculation test prints tokens per forward and thought speed for each `--think-decoding` and checks that self-speculation reproduces autoregressive thoughts; the 3B closes thoughts at once, so use the VLM. Against a running service, run `python3 scripts/smoke-test.py` with the server's `TYPESAFE_API_KEY` if configured.
 
 Regular tests cover validation, probability math, error mapping, model aliases, request IDs, image preprocessing, and queue behavior. The ignored model tests check reproducibility, extension behavior, and image prefill (including exact reuse of a cached image) using real assets.
 

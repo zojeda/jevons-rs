@@ -187,6 +187,23 @@ pub fn host_f32<const D: usize>(t: Tensor<D>) -> Vec<f32> {
         .expect("f32 tensor data")
 }
 
+/// Each row's argmax and that column's softmax probability, reduced on the device so only two
+/// values per row are read back.
+pub fn greedy(logits: Tensor<2>) -> Vec<(i32, f32)> {
+    let max = logits.clone().max_dim(1);
+    let tokens = logits.clone().argmax(1);
+    let sums = (logits - max).exp().sum_dim(1);
+    let tokens = tokens
+        .into_data()
+        .try_to_vec_as::<i64>()
+        .expect("argmax indices");
+    tokens
+        .into_iter()
+        .zip(host_f32(sums))
+        .map(|(token, sum)| (token as i32, 1.0 / sum))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,6 +300,21 @@ mod tests {
                     - 1.0
             })
             .collect()
+    }
+
+    #[test]
+    fn greedy_reads_each_rows_argmax_and_its_probability() {
+        let device = cpu();
+        let logits = Tensor::<2>::from_data(
+            TensorData::new(vec![0.0f32, 2f32.ln(), -1e4, 5.0, 1.0, 1.0], [2, 3]),
+            (&device, DType::F32),
+        );
+        let rows = greedy(logits);
+        assert_eq!(rows[0].0, 1);
+        assert!((rows[0].1 - 2.0 / 3.0).abs() < 1e-5);
+        assert_eq!(rows[1].0, 0);
+        let want = 1.0 / (1.0 + 2.0 * (-4f32).exp());
+        assert!((rows[1].1 - want).abs() < 1e-5);
     }
 
     #[test]

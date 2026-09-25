@@ -149,6 +149,61 @@ pub trait DiffusionModel {
     fn candidate_logits(&mut self, row: usize, candidates: &[i32]) -> Result<Vec<f64>>;
     /// All logits (canvas rows x vocab) of the last canvas forward with [`Logits::Full`].
     fn full_logits(&mut self) -> Result<Vec<f32>>;
+    /// Each canvas row's full-vocabulary argmax and that token's probability, for the last
+    /// canvas forward with [`Logits::Full`]. Models may compute this on the device; the default
+    /// reads [`Self::full_logits`].
+    fn greedy_proposals(&mut self) -> Result<Vec<(i32, f64)>> {
+        let vocab = self.info().n_vocab as usize;
+        let logits = self.full_logits()?;
+        if vocab == 0 || logits.is_empty() || !logits.len().is_multiple_of(vocab) {
+            return Err(Error::InvalidLogits);
+        }
+        logits.chunks(vocab).map(greedy).collect()
+    }
+    /// Like [`Self::prefill`], but always evaluates the last `rows` positions of
+    /// `parts + suffix` instead of serving them from the cache, and returns each one's greedy
+    /// causal next-token prediction, in order, with the resident prompt length. Only models
+    /// trained with a causal language-model objective support it.
+    fn prefill_predict(
+        &mut self,
+        parts: &[PromptPart],
+        suffix: &[i32],
+        rows: usize,
+    ) -> Result<(usize, Vec<i32>)> {
+        let _ = (parts, suffix, rows);
+        Err(Error::UnsupportedModel(
+            "this model has no causal next-token predictions".into(),
+        ))
+    }
     /// Prefill work counters, reset by the engine at the start of each read.
     fn profile(&mut self) -> &mut PrefillProfile;
+}
+
+/// The argmax of one logit row and its softmax probability. The first maximum wins ties.
+pub fn greedy(row: &[f32]) -> Result<(i32, f64)> {
+    if row.is_empty() || row.iter().any(|x| !x.is_finite()) {
+        return Err(Error::InvalidLogits);
+    }
+    let best = row
+        .iter()
+        .enumerate()
+        .fold(0, |best, (i, x)| if *x > row[best] { i } else { best });
+    let max = f64::from(row[best]);
+    let z: f64 = row.iter().map(|&x| (f64::from(x) - max).exp()).sum();
+    Ok((best as i32, 1.0 / z))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn greedy_takes_the_first_argmax_with_its_stable_probability() {
+        let (token, confidence) = greedy(&[1000.0, 1000.0 + 2f32.ln(), 0.0]).unwrap();
+        assert_eq!(token, 1);
+        assert!((confidence - 2.0 / 3.0).abs() < 1e-4);
+        assert_eq!(greedy(&[3.0, 3.0]).unwrap().0, 0);
+        assert!(greedy(&[f32::INFINITY]).is_err());
+        assert!(greedy(&[]).is_err());
+    }
 }

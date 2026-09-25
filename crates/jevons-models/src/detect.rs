@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 pub enum Architecture {
     /// DiffusionGemma GGUF (`general.architecture = diffusion-gemma`).
     Gemma4Diffusion,
-    /// Nemotron-Labs-Diffusion Hugging Face checkpoint directory.
+    /// Nemotron-Labs-Diffusion Hugging Face checkpoint directory (text or VLM).
     NemotronDiffusion,
 }
 
@@ -35,12 +35,39 @@ impl Architecture {
         }
     }
 
-    /// The model ID served by default for this architecture.
+    /// The model ID served by default for this architecture when the files do not name a size.
     pub fn default_model_id(self) -> &'static str {
         match self {
             Self::Gemma4Diffusion => "gemmadiffusion-0.1",
             Self::NemotronDiffusion => "nemotron-diffusion-8b",
         }
+    }
+}
+
+/// The model ID served by default for the model at `path`: the architecture's ID, sized for
+/// Nemotron-Labs-Diffusion checkpoints (`nemotron-diffusion-3b`, `-8b` or `-14b`).
+pub fn default_model_id(path: &Path, architecture: Architecture) -> String {
+    let size = match architecture {
+        Architecture::NemotronDiffusion => checkpoint_dir(path)
+            .and_then(|dir| std::fs::read_to_string(dir.join("config.json")).ok())
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .and_then(|config| {
+                let dims = (
+                    config["num_hidden_layers"].as_u64()?,
+                    config["hidden_size"].as_u64()?,
+                );
+                match dims {
+                    (26, 3072) => Some("3b"),
+                    (34, 4096) => Some("8b"),
+                    (40, 5120) => Some("14b"),
+                    _ => None,
+                }
+            }),
+        Architecture::Gemma4Diffusion => None,
+    };
+    match size {
+        Some(size) => format!("nemotron-diffusion-{size}"),
+        None => architecture.default_model_id().into(),
     }
 }
 
@@ -111,9 +138,15 @@ fn detect_checkpoint(dir: &Path) -> Result<Architecture> {
         .as_array()
         .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
         .unwrap_or_default();
-    if model_type == "nemotron_labs_diffusion_vlm"
-        || architectures.contains(&"NemotronLabsDiffusionVLMModel")
-    {
+    if matches!(
+        model_type,
+        "nemotron_labs_diffusion" | "nemotron_labs_diffusion_vlm"
+    ) || architectures.iter().any(|a| {
+        matches!(
+            *a,
+            "NemotronLabsDiffusionModel" | "NemotronLabsDiffusionVLMModel"
+        )
+    }) {
         return Ok(Architecture::NemotronDiffusion);
     }
     Err(Error::UnsupportedModel(format!(
@@ -151,6 +184,20 @@ mod tests {
         assert_eq!(
             detect(&dir.join("config.json")).unwrap(),
             Architecture::NemotronDiffusion
+        );
+        assert_eq!(
+            default_model_id(&dir, Architecture::NemotronDiffusion),
+            "nemotron-diffusion-8b"
+        );
+        std::fs::write(
+            dir.join("config.json"),
+            r#"{"model_type":"nemotron_labs_diffusion","architectures":["NemotronLabsDiffusionModel"],"num_hidden_layers":26,"hidden_size":3072}"#,
+        )
+        .unwrap();
+        assert_eq!(detect(&dir).unwrap(), Architecture::NemotronDiffusion);
+        assert_eq!(
+            default_model_id(&dir, Architecture::NemotronDiffusion),
+            "nemotron-diffusion-3b"
         );
         std::fs::write(dir.join("config.json"), r#"{"model_type":"llama"}"#).unwrap();
         assert!(matches!(detect(&dir), Err(Error::UnsupportedModel(_))));

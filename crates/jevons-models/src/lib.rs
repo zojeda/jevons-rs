@@ -8,7 +8,7 @@ mod detect;
 #[cfg(feature = "gemma4")]
 mod gemma4;
 
-pub use detect::{Architecture, detect};
+pub use detect::{Architecture, default_model_id, detect};
 use jevons_core::{DiffusionModel, Error, ModelConfig, Result};
 
 /// Loads the model named by `config` on the calling thread.

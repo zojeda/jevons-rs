@@ -1,5 +1,5 @@
 use clap::Parser;
-use jevons_engine::{ModelConfig, resolve_architecture};
+use jevons_engine::{ModelConfig, ThinkDecoding, default_model_id, resolve_architecture};
 use jevons_rs::{AppState, router, worker};
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
@@ -17,7 +17,8 @@ struct Args {
     mmproj: Option<PathBuf>,
     #[arg(long, default_value = "127.0.0.1:8080")]
     bind: SocketAddr,
-    /// Served model ID; defaults to the architecture's ID, such as gemmadiffusion-0.1.
+    /// Served model ID; defaults to the model's ID, such as gemmadiffusion-0.1 or
+    /// nemotron-diffusion-3b.
     #[arg(long)]
     model_id: Option<String>,
     #[arg(long, env = "TYPESAFE_API_KEY", hide_env_values = true)]
@@ -36,6 +37,10 @@ struct Args {
     seed: u64,
     #[arg(long, default_value_t = 8)]
     queue_capacity: usize,
+    /// How thoughts (`think`) are generated: diffusion, self-speculation or autoregressive. The
+    /// last two need a masked model with causal predictions, such as Nemotron-Labs-Diffusion.
+    #[arg(long, default_value = "diffusion")]
+    think_decoding: ThinkDecoding,
 }
 
 #[tokio::main]
@@ -51,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let architecture = resolve_architecture(&config)?;
     let model_id = args
         .model_id
-        .unwrap_or_else(|| architecture.default_model_id().into());
+        .unwrap_or_else(|| default_model_id(&config.model, architecture));
     if model_id.trim().is_empty() || args.api_key.as_ref().is_some_and(|key| key.is_empty()) {
         return Err("Model ID and configured API key must be nonempty".into());
     }
@@ -70,9 +75,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.batch_size = args.batch_size;
     config.prompt_cache = !args.no_prompt_cache;
     tracing::info!(architecture = architecture.id(), "Loading model");
-    let (client, thread, info) =
-        worker::start(config, model_id.clone(), args.seed, args.queue_capacity).await?;
-    tracing::info!(model = %info.display_name, "Model loaded");
+    let (client, thread, info) = worker::start(
+        config,
+        model_id.clone(),
+        args.seed,
+        args.queue_capacity,
+        args.think_decoding,
+    )
+    .await?;
+    tracing::info!(
+        model = %info.display_name,
+        think_decoding = args.think_decoding.id(),
+        "Model loaded"
+    );
     let app = router(AppState {
         worker: client,
         aliases: [architecture.latest_alias(), "openjev-latest", "jev-latest"]

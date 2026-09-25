@@ -32,6 +32,8 @@ pub(crate) struct Log {
     pub prefills: Vec<Vec<i32>>,
     pub canvases: Vec<Vec<i32>>,
     pub conditioned: Vec<bool>,
+    /// Rows requested by each causal prediction, in call order.
+    pub predicted: Vec<usize>,
 }
 
 pub(crate) struct FakeTokenizer {
@@ -101,6 +103,9 @@ pub(crate) struct FakeModel {
     pub log: Rc<RefCell<Log>>,
     /// Token favored at each canvas row of full logits, by row index.
     pub favored: Vec<i32>,
+    /// Causal continuation after the last `<think>`: the prediction for thought position `k`
+    /// is `causal[k]` whatever the earlier tokens are, or `<end>` past the script.
+    pub causal: Vec<i32>,
     pub scheme: DiffusionScheme,
     pub tokenizer: FakeTokenizer,
     profile: PrefillProfile,
@@ -131,6 +136,7 @@ impl FakeModel {
             },
             log: Rc::default(),
             favored: Vec::new(),
+            causal: Vec::new(),
             scheme: DiffusionScheme::UniformSelfConditioned { mask: MASK },
             tokenizer: FakeTokenizer { space_joins: false },
             profile: PrefillProfile::default(),
@@ -223,6 +229,29 @@ impl DiffusionModel for FakeModel {
             logits[row * vocab + token as usize] = 100.0;
         }
         Ok(logits)
+    }
+
+    fn prefill_predict(
+        &mut self,
+        parts: &[PromptPart],
+        suffix: &[i32],
+        rows: usize,
+    ) -> Result<(usize, Vec<i32>)> {
+        let length = self.prefill(parts, suffix)?;
+        assert!((1..=length).contains(&rows));
+        self.log.borrow_mut().predicted.push(rows);
+        let start = self
+            .prompt
+            .iter()
+            .rposition(|&t| t == 12)
+            .map_or(length, |i| i + 1);
+        let predictions = (length - rows..length)
+            .map(|position| {
+                let k = (position + 1).saturating_sub(start);
+                self.causal.get(k).copied().unwrap_or(14)
+            })
+            .collect();
+        Ok((length, predictions))
     }
 
     fn profile(&mut self) -> &mut PrefillProfile {

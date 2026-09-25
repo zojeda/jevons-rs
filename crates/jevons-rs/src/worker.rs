@@ -2,7 +2,7 @@
 
 use crate::error::ApiError;
 use axum::http::StatusCode;
-use jevons_engine::{Engine, Error, ModelConfig, ModelInfo};
+use jevons_engine::{Engine, Error, ModelConfig, ModelInfo, ThinkDecoding};
 use jevons_system_one::{Request, Response, ValidationError};
 use std::thread::JoinHandle;
 use tokio::sync::{mpsc, oneshot};
@@ -40,6 +40,7 @@ pub async fn start(
     model_id: String,
     seed: u64,
     capacity: usize,
+    think_decoding: ThinkDecoding,
 ) -> Result<(Client, JoinHandle<()>, ModelInfo), Box<dyn std::error::Error>> {
     if capacity == 0 {
         return Err("Queue capacity must be positive".into());
@@ -49,7 +50,10 @@ pub async fn start(
     let thread = std::thread::Builder::new()
         .name("diffusion-inference".into())
         .spawn(move || {
-            let mut engine = match Engine::load(&config) {
+            let mut engine = match Engine::load(&config).and_then(|mut engine| {
+                engine.set_think_decoding(think_decoding)?;
+                Ok(engine)
+            }) {
                 Ok(engine) => engine,
                 Err(error) => {
                     let _ = ready_sender.send(Err(error.to_string()));

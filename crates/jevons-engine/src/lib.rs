@@ -12,11 +12,11 @@ mod fake;
 mod probability;
 mod sampler;
 
-pub use engine::Engine;
+pub use engine::{Engine, ThinkDecoding};
 pub use jevons_core::{
     DiffusionModel, Error, ImageInput, ModelConfig, ModelInfo, PrefillProfile, ReadOptions,
     ReadRequest, ReadResult, Result, Slot, SlotRead,
 };
 #[cfg(feature = "models")]
-pub use jevons_models::{Architecture, resolve as resolve_architecture};
+pub use jevons_models::{Architecture, default_model_id, resolve as resolve_architecture};
 pub use probability::restricted_softmax;
