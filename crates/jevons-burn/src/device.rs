@@ -3,12 +3,15 @@ use burn::tensor::Device;
 use std::path::PathBuf;
 use std::sync::Once;
 
-/// `$JEVONS_BURN_CACHE`, or `~/.cache/jevons-burn`.
+/// `$JEVONS_BURN_CACHE`, or `~/.cache/jevons-burn` (the home directory is `HOME`, or
+/// `USERPROFILE` on Windows).
 pub fn cache_dir() -> PathBuf {
     std::env::var_os("JEVONS_BURN_CACHE")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from);
+            let home = std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map_or_else(|| PathBuf::from("."), PathBuf::from);
             home.join(".cache/jevons-burn")
         })
 }

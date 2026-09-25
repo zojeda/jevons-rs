@@ -7,7 +7,6 @@ use std::{
     collections::{BTreeMap, HashMap},
     fs::File,
     io::Read,
-    os::unix::fs::FileExt,
     path::{Path, PathBuf},
 };
 
@@ -242,10 +241,7 @@ impl Checkpoint {
         if out.len() != info.byte_len() {
             return Err(format(&shard.path, "output buffer size mismatch"));
         }
-        shard
-            .file
-            .read_exact_at(out, info.offset)
-            .map_err(io(&shard.path))
+        crate::io::read_exact_at(&shard.file, out, info.offset).map_err(io(&shard.path))
     }
 
     /// Reads a floating-point tensor widened to f32.

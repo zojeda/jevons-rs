@@ -4,5 +4,6 @@
 #![forbid(unsafe_code)]
 
 pub mod gguf;
+mod io;
 pub mod quant;
 pub mod safetensors;
