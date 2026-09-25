@@ -5,7 +5,7 @@ use crate::openai::{
 };
 use crate::system_one::ValidationError;
 use crate::workers::{diffusion::Update, speech};
-use crate::{AppState, MAX_AUDIO_BYTES, SpeechService, TextService, error::ApiError};
+use crate::{AppState, DiffusionService, MAX_AUDIO_BYTES, SpeechService, error::ApiError};
 use axum::{
     Json,
     extract::{
@@ -28,38 +28,44 @@ use std::convert::Infallible;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 pub(super) async fn health(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let text_alive = state.text.as_ref().is_none_or(|t| t.worker.is_alive());
-    let speech_alive = state.speech.as_ref().is_none_or(|s| s.worker.is_alive());
-    if !text_alive || !speech_alive {
+    let alive = state
+        .generative
+        .as_ref()
+        .is_none_or(|s| s.worker.is_alive())
+        && state.decision.as_ref().is_none_or(|s| s.worker.is_alive())
+        && state.speech.as_ref().is_none_or(|s| s.worker.is_alive());
+    if !alive {
         return Err(ApiError::unavailable());
     }
-    let mut body = json!({"status": "ok", "model": state.text.as_ref().map(|t| &t.model_id)});
-    if let Some(speech) = &state.speech {
-        body["speech_model"] = json!(speech.model_id);
-    }
-    Ok(Json(body))
+    Ok(Json(json!({
+        "status": "ok",
+        "services": {
+            "generative": state.generative.as_ref().map(|s| &s.model_id),
+            "decision": state.decision.as_ref().map(|s| &s.model_id),
+            "speech": state.speech.as_ref().map(|s| &s.model_id),
+        },
+    })))
 }
 
-/// The System One listing (`models`) and the OpenAI one (`object`, `data`) in one body.
+/// The System One listing (`models`) and the OpenAI one (`object`, `data`) in one body. A
+/// model that serves several services is listed once.
 pub(super) async fn models(State(state): State<AppState>) -> Json<Value> {
-    let mut names: Vec<(&str, &str)> = Vec::new();
-    if let Some(text) = &state.text {
-        names.push((&text.model_id, &text.description));
-        names.extend(
-            text.aliases
-                .iter()
-                .map(|a| (a.as_str(), text.description.as_str())),
-        );
+    let mut models: Vec<(&str, &[String], &str)> = Vec::new();
+    for service in [&state.generative, &state.decision].into_iter().flatten() {
+        if !models.iter().any(|(id, _, _)| *id == service.model_id) {
+            models.push((&service.model_id, &service.aliases, &service.description));
+        }
     }
     if let Some(speech) = &state.speech {
-        names.push((&speech.model_id, &speech.description));
-        names.extend(
-            speech
-                .aliases
-                .iter()
-                .map(|a| (a.as_str(), speech.description.as_str())),
-        );
+        models.push((&speech.model_id, &speech.aliases, &speech.description));
     }
+    let names: Vec<(&str, &str)> = models
+        .iter()
+        .flat_map(|(id, aliases, description)| {
+            std::iter::once((*id, *description))
+                .chain(aliases.iter().map(move |a| (a.as_str(), *description)))
+        })
+        .collect();
     Json(json!({
         "models": names.iter().map(|(name, description)| json!({
             "name": name,
@@ -105,7 +111,7 @@ pub(super) async fn system_one(
     })?;
     let request = crate::system_one::Request::parse(value)?;
     let text = state
-        .text
+        .decision
         .as_ref()
         .filter(|t| t.serves(request.model()))
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found_error", "Unknown model"))?;
@@ -172,8 +178,8 @@ async fn generate(
         )
     })?;
     let request = OpenAiRequest::parse(api, &value)?;
-    let text: &TextService = state
-        .text
+    let text: &DiffusionService = state
+        .generative
         .as_ref()
         .filter(|t| t.serves(&request.model))
         .ok_or_else(|| model_not_found(&request.model))?;

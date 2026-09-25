@@ -6,8 +6,8 @@
 
     uv run examples/openai-sdk.py [--url http://127.0.0.1:8080/v1]
 
-Needs a server with a language model (`-m`) and a speech model (`--speech-model`); sections
-for a missing model are skipped. Set TYPESAFE_API_KEY when the server requires a key.
+Needs a server with the generative and speech services enabled (see jevons.example.toml);
+sections for a missing service are skipped. Set TYPESAFE_API_KEY when the server requires a key.
 """
 
 import argparse

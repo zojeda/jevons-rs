@@ -44,7 +44,7 @@ verify: fmt-check clippy test
 doc:
     cargo doc --workspace --no-deps --locked
 
-# Start the HTTP service; set DIFFUSION_MODEL or pass --model PATH.
+# Start the HTTP service from ./jevons.toml, or pass --config PATH.
 [group('Run')]
 serve *args:
     cargo run --locked -p jevons-rs -- "$@"

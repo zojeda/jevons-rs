@@ -531,7 +531,8 @@ mod tests {
     /// Serves a scripted speech model; returns the Realtime URL.
     async fn server(key: Option<&str>) -> String {
         let app = router(AppState {
-            text: None,
+            generative: None,
+            decision: None,
             speech: Some(scripted_service(20.0).await),
             api_key: key.map(Arc::from),
         });

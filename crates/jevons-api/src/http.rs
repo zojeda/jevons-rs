@@ -18,9 +18,10 @@ pub const MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
 /// Room for the other multipart fields of a transcription request.
 const FORM_OVERHEAD_BYTES: usize = 1024 * 1024;
 
-/// The diffusion language model and the names it answers to.
+/// A diffusion language model on its worker and the names it answers to. When Generative and
+/// Decision use the same model, they share one of these (one engine, one queue).
 #[derive(Clone)]
-pub struct TextService {
+pub struct DiffusionService {
     pub worker: worker::Client,
     pub model_id: String,
     /// Routing aliases accepted in place of `model_id`.
@@ -43,7 +44,7 @@ pub struct SpeechService {
     pub realtime: bool,
 }
 
-impl TextService {
+impl DiffusionService {
     pub fn serves(&self, model: &str) -> bool {
         model == self.model_id || self.aliases.iter().any(|a| a == model)
     }
@@ -62,10 +63,14 @@ impl SpeechService {
     }
 }
 
-/// At least one of `text` and `speech` is present.
+/// The enabled services; at least one is present.
 #[derive(Clone)]
 pub struct AppState {
-    pub text: Option<TextService>,
+    /// OpenAI Chat Completions, Completions and Responses.
+    pub generative: Option<DiffusionService>,
+    /// The System One API.
+    pub decision: Option<DiffusionService>,
+    /// OpenAI audio transcriptions and Realtime transcription sessions.
     pub speech: Option<SpeechService>,
     pub api_key: Option<Arc<str>>,
 }
@@ -118,14 +123,17 @@ mod tests {
 
     fn app(key: Option<&str>) -> (Router, mpsc::Receiver<worker::Job>) {
         let (sender, receiver) = mpsc::channel(1);
+        // Generative and Decision share one model, as when the settings point both at it.
+        let local = DiffusionService {
+            worker: worker::Client { sender },
+            model_id: "local".into(),
+            aliases: ["jev-latest".to_string()].into(),
+            description: "Local test model.".into(),
+        };
         (
             router(AppState {
-                text: Some(TextService {
-                    worker: worker::Client { sender },
-                    model_id: "local".into(),
-                    aliases: ["jev-latest".to_string()].into(),
-                    description: "Local test model.".into(),
-                }),
+                generative: Some(local.clone()),
+                decision: Some(local),
                 speech: None,
                 api_key: key.map(Arc::from),
             }),
@@ -507,7 +515,8 @@ mod tests {
 
     async fn speech_app() -> Router {
         router(AppState {
-            text: None,
+            generative: None,
+            decision: None,
             speech: Some(crate::workers::speech::scripted_service(20.0).await),
             api_key: None,
         })
@@ -717,13 +726,15 @@ mod tests {
     #[tokio::test]
     async fn listings_and_health_include_the_speech_model() {
         let (sender, _receiver) = mpsc::channel(1);
+        let local = DiffusionService {
+            worker: worker::Client { sender },
+            model_id: "local".into(),
+            aliases: Arc::from([]),
+            description: "Local test model.".into(),
+        };
         let app = router(AppState {
-            text: Some(TextService {
-                worker: worker::Client { sender },
-                model_id: "local".into(),
-                aliases: Arc::from([]),
-                description: "Local test model.".into(),
-            }),
+            generative: Some(local.clone()),
+            decision: Some(local),
             speech: Some(crate::workers::speech::scripted_service(20.0).await),
             api_key: None,
         });
@@ -760,7 +771,7 @@ mod tests {
         let health: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(
             health,
-            json!({"status": "ok", "model": "local", "speech_model": "scripted-asr"})
+            json!({"status": "ok", "services": {"generative": "local", "decision": "local", "speech": "scripted-asr"}})
         );
     }
 }

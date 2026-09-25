@@ -49,7 +49,7 @@ def main():
                         help="Thought token cap (0–4096); uses a 900s timeout when enabled")
     parser.add_argument("--decoding",
                         choices=["diffusion", "self-speculation", "autoregressive"],
-                        help="Server --decoding (default: the server's, diffusion)")
+                        help="Model decoding setting (default: diffusion)")
     args = parser.parse_args()
     if not 0 <= args.think <= 4096:
         parser.error("--think must be between 0 and 4096")
@@ -66,11 +66,21 @@ def main():
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     endpoint = f"http://127.0.0.1:{args.port}"
-    # Exercise the service's context, seed, batch and inference defaults.
-    command = [str(binary), "--model", str(model), "--model-id", args.model_id, "--bind",
-               f"127.0.0.1:{args.port}"]
+    # Exercise the service's context, seed, batch and inference defaults: only the model, its
+    # ID and decoding are set, for the Decision service (System One) that JevBench calls.
+    settings = output / "jevons.toml"
+    lines = [
+        "[server]",
+        f"bind = {json.dumps(f'127.0.0.1:{args.port}')}",
+        "[models.bench]",
+        f"path = {json.dumps(str(model))}",
+        f"id = {json.dumps(args.model_id)}",
+    ]
     if args.decoding:
-        command += ["--decoding", args.decoding]
+        lines.append(f"decoding = {json.dumps(args.decoding)}")
+    lines += ["[services.decision]", 'model = "bench"']
+    settings.write_text("\n".join(lines) + "\n")
+    command = [str(binary), "--config", str(settings)]
     env = dict(os.environ, PYTHONPATH=str(harness), PYTHONDONTWRITEBYTECODE="1",
                RUST_LOG="info")
     env.pop("TYPESAFE_API_KEY", None)

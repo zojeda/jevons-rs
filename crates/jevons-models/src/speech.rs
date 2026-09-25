@@ -105,7 +105,7 @@ mod tests {
         );
         assert!(matches!(
             crate::detect(&dir),
-            Err(Error::UnsupportedModel(message)) if message.contains("--speech-model")
+            Err(Error::UnsupportedModel(message)) if message.contains("services.speech")
         ));
         std::fs::write(
             dir.join("config.json"),

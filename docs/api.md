@@ -4,25 +4,50 @@
 
 ## Start the service
 
-```bash
-export TYPESAFE_API_KEY="local-development-key"
-cargo run --release --locked -p jevons-rs -- \
-  -m "$DIFFUSION_MODEL" \
-  --bind 127.0.0.1:8080 \
-  --context-size 8192 --batch-size 512 --seed 42
+The server reads a settings file of **models** (each loaded once) and the **services** that use them:
+
+```toml
+[server]
+bind = "127.0.0.1:8080"
+
+[models.gemma]
+path = "~/models/diffusiongemma/diffusiongemma-26B-A4B-it-Q4_K_M.gguf"
+context_size = 8192
+batch_size = 512
+seed = 42
+
+[services.generative]
+model = "gemma"
+[services.decision]
+model = "gemma"
 ```
 
-The service runs DiffusionGemma on an AMD GPU with the [CubeCL backend](cubecl.md); complete the [ROCm setup](build.md#rocmhip) first. Add `--speech-model` to also serve [speech to text](#speech-to-text), or pass only `--speech-model` to run without a language model.
+```bash
+export TYPESAFE_API_KEY="local-development-key"
+cargo run --release --locked -p jevons-rs -- --config jevons.toml
+```
 
-If you omit both `--api-key` and `TYPESAFE_API_KEY`, the server disables authentication. A configured key protects `/v1/*`; `/health` remains open. Logs include counts and timing, excluding request state and credentials. Ctrl-C and SIGTERM drain pending requests and release the model.
+Complete the [ROCm setup](build.md#rocmhip) first. DiffusionGemma runs on the [CubeCL backend](cubecl.md), and Nemotron-Labs-Diffusion and Parakeet on Burn. Add a speech model and `[services.speech]` to also serve [speech to text](#speech-to-text); a server may enable any subset of the three services.
+
+If neither `server.api_key` nor `TYPESAFE_API_KEY` (or `--api-key`) is set, the server disables authentication. A configured key protects `/v1/*`; `/health` remains open. Logs include counts and timing, excluding request state and credentials. Ctrl-C and SIGTERM drain pending requests and release the models.
 
 ## Settings file
 
-Flags can live in a TOML file: `--config PATH` (or `JEVONS_CONFIG`), otherwise `./jevons.toml` or `~/.config/jevons/config.toml`, whichever exists first. Keys are the long flag names with underscores (`model`, `bind`, `context_size`, `decoding`, …; `prompt_cache = false` replaces `--no-prompt-cache`). Flags and environment variables override the file, relative paths resolve against the file's directory, and unknown keys are errors. See [jevons.example.toml](../jevons.example.toml). Prefer `TYPESAFE_API_KEY` to an `api_key` in the file, and keep keys out of commits.
+The file is `--config PATH` (or `JEVONS_CONFIG`), otherwise `./jevons.toml` or `~/.config/jevons/config.toml`, whichever exists first; there is no default without one. [jevons.example.toml](../jevons.example.toml) shows every key. Relative paths resolve against the file's directory, `~/` against the home directory, and unknown keys are errors. `--bind` overrides `server.bind`, and `--api-key` or `TYPESAFE_API_KEY` override `server.api_key`; prefer the environment variable, and keep keys out of commits.
+
+| Section | Keys |
+| --- | --- |
+| `[server]` | `bind` (default `127.0.0.1:8080`), `api_key` |
+| `[models.<name>]` | `path` (required: GGUF file or checkpoint directory), `id` (served model ID; defaults to the model's own), `main_gpu` (0), `queue_capacity` (8). Diffusion language models only: `arch` (detected), `mmproj` (DiffusionGemma images), `context_size` (8192), `batch_size` (512), `prompt_cache` (true), `seed` (42), `decoding` (`diffusion`, `self-speculation` or `autoregressive`) |
+| `[services.generative]` | `model` |
+| `[services.decision]` | `model` |
+| `[services.speech]` | `model`, `max_audio_seconds` (3600), `realtime` (true) |
+
+Every model must be used by a service. When `generative` and `decision` name the same model, it is loaded once: one engine, one worker and one queue serve both, and each request decides whether it reads the masked canvas (System One) or generates free text (OpenAI routes). Naming two different models gives each service its own model and worker, memory permitting; their IDs and aliases must differ. A model serves either language services or speech, not both, and a speech model rejects the diffusion-only keys.
 
 ## Routes
 
-The routes belong to the three services (see the [architecture](../README.md#architecture)): Generative and Decision need a language model (`-m`), Speech a speech model (`--speech-model`).
+The routes belong to the three services (see the [architecture](../README.md#architecture)); a route answers `404 model_not_found` when its service is not enabled.
 
 | Service | Route | Purpose |
 | --- | --- | --- |
@@ -58,7 +83,7 @@ See [probability math](inference.md#from-logits-to-answers) for score and confid
 
 ## Models and clients
 
-The served model ID depends on the architecture: `gemmadiffusion-0.1` for DiffusionGemma and `nemotron-diffusion-8b` for Nemotron-Labs-Diffusion. Change it with `--model-id`. The server accepts the architecture's alias (`gemmadiffusion-latest` or `nemotron-diffusion-latest`), `openjev-latest`, and `jev-latest` as routing aliases and reports the local model ID in responses. Those aliases do not identify Codiv's hosted model.
+The served model ID depends on the architecture: `gemmadiffusion-0.1` for DiffusionGemma and `nemotron-diffusion-8b` (or `-3b`) for Nemotron-Labs-Diffusion. Change it with the model's `id`. The server accepts the architecture's alias (`gemmadiffusion-latest` or `nemotron-diffusion-latest`) as a routing alias, plus `openjev-latest` and `jev-latest` for the Decision model (or the only diffusion model), and reports the local model ID in responses. Those aliases do not identify Codiv's hosted model.
 
 For a TypeSafe client, set `TYPESAFE_BASE_URL=http://127.0.0.1:8080` and use a listed model or `jev-latest`. The server runs without a TypeSafe SDK or a connection to Codiv's infrastructure.
 
@@ -95,11 +120,12 @@ curl http://127.0.0.1:8080/v1/systemone \
   --data-binary @examples/system-one-extensions.json
 ```
 
-For images, start the service with a compatible projector (see [image setup](build.md#image-input)):
+For DiffusionGemma images, give the model a compatible projector (see [image setup](build.md#image-input)); Nemotron-Labs-Diffusion VLM checkpoints carry their own vision tower:
 
-```bash
-cargo run --release --locked -p jevons-rs -- \
-  -m "$DIFFUSION_MODEL" --mmproj "$DIFFUSION_MMPROJ"
+```toml
+[models.gemma]
+path = "~/models/diffusiongemma/diffusiongemma-26B-A4B-it-Q4_K_M.gguf"
+mmproj = "~/models/diffusiongemma/mmproj-diffusiongemma-26b-a4b-f16.gguf"
 ```
 
 An image is either `"data:image/png;base64,..."` or `{"content_type":"image/png","base64":"..."}`. Remote image URLs are not fetched.
@@ -112,24 +138,18 @@ The repository includes [the photo](../examples/hotdog.jpg) and a [ready-to-send
 
 Photo: Renee Comet, National Cancer Institute, 1994. Public domain; the bundled JPEG is Wikimedia Commons' 330 × 220 thumbnail of [NCI Visuals Food Hot Dog](https://commons.wikimedia.org/wiki/File:NCI_Visuals_Food_Hot_Dog.jpg).
 
-**Start with the vision projector.** If your service was started without `--mmproj` or `DIFFUSION_MMPROJ`, stop it and restart with the projector. Setting the variable in another terminal does not change a running service. A service that already loaded the projector needs no restart.
+**Start with the vision projector.** If the model has no `mmproj`, add it to its `[models.*]` section and restart the service; a running service does not reread its settings file.
 
 ```bash
-export DIFFUSION_MODEL="$HOME/models/diffusiongemma/diffusiongemma-26B-A4B-it-Q4_K_M.gguf"
-export DIFFUSION_MMPROJ="$HOME/models/diffusiongemma/mmproj-diffusiongemma-26b-a4b-f16.gguf"
-
 # The development machine's ROCm/WSL setup:
 export ROCM_PATH=/opt/rocm-7.2.1
 export HSA_ENABLE_DXG_DETECTION=1
 export LD_LIBRARY_PATH="$ROCM_PATH/lib:${LD_LIBRARY_PATH:-}"
 
-cargo run --release --locked -p jevons-rs -- \
-  --model "$DIFFUSION_MODEL" \
-  --mmproj "$DIFFUSION_MMPROJ" \
-  --bind 127.0.0.1:8080
+cargo run --release --locked -p jevons-rs -- --config jevons.toml
 ```
 
-Adjust the SDK path for other machines; see [ROCm setup](build.md#rocmhip). Wait for `System One service is ready`, then use another terminal:
+Adjust the SDK path for other machines; see [ROCm setup](build.md#rocmhip). Wait for `jevons-rs is ready`, then use another terminal:
 
 ```bash
 curl --fail-with-body http://127.0.0.1:8080/v1/systemone \
@@ -158,13 +178,13 @@ The response includes `answers.hotdog.noul` (the probability of a hot dog) and `
 
 The server accepts bodies up to 64 MiB, accommodating eight base64-encoded 5 MiB images plus request text. Image decoding is limited to 8192 pixels per side, 16 megapixels, and a 64 MiB decoder allocation budget. Malformed images return `422`.
 
-Question templates are split at question boundaries into canvases of at most 64 tokens (or `--batch-size`, if smaller). Each image's patch block must fit in one batch for bidirectional attention. Prompt, thought framing, reserved thought budget, and canvas must fit in `--context-size`; sequential requests also reserve space for earlier answers. The batch and context defaults are 512 and 8192. Oversized requests return `422`; increase the relevant server limit if needed. Larger contexts allocate more cache memory.
+Question templates are split at question boundaries into canvases of at most 64 tokens (or the model's `batch_size`, if smaller). Each image's patch block must fit in one batch for bidirectional attention. Prompt, thought framing, reserved thought budget, and canvas must fit in the model's `context_size`; sequential requests also reserve space for earlier answers. The batch and context defaults are 512 and 8192. Oversized requests return `422`; increase the relevant model setting if needed. Larger contexts allocate more cache memory.
 
-`usage.input_tokens` sums prompt and canvas tokens across explicitly requested samples and question chunks, including image tokens and any thought prefix. With `think=0`, prefill includes an empty, closed thought channel; these framing tokens count as input and generate no output tokens. Steps reuse the same tokens and do not multiply this count. Thought generation adds each generation block's prompt tokens to input usage (with `--decoding self-speculation` a block is one draft and verification round, and with `autoregressive` one token); generated thought tokens count toward `usage.output_tokens`. Usage describes logical reads even when the prompt cache is reused between samples.
+`usage.input_tokens` sums prompt and canvas tokens across explicitly requested samples and question chunks, including image tokens and any thought prefix. With `think=0`, prefill includes an empty, closed thought channel; these framing tokens count as input and generate no output tokens. Steps reuse the same tokens and do not multiply this count. Thought generation adds each generation block's prompt tokens to input usage (with `decoding = "self-speculation"` a block is one draft and verification round, and with `autoregressive` one token); generated thought tokens count toward `usage.output_tokens`. Usage describes logical reads even when the prompt cache is reused between samples.
 
 The thought generator uses blocks of up to 64 tokens with at most 48 denoising steps per block and an entropy-based early stop. It follows the entropy-bound sampler of llama.cpp's DiffusionGemma support; numerical results and token accounting need not match OpenJEV's vLLM implementation.
 
-The worker handles one request at a time. `--queue-capacity` defaults to eight waiting requests. It skips disconnected queued requests and lets an active GPU forward finish. Configure TLS, rate limits, accounts, and billing outside this service.
+Each model's worker handles one request at a time, whichever service it comes from. `queue_capacity` defaults to eight waiting requests per model. It skips disconnected queued requests and lets an active GPU forward finish. Configure TLS, rate limits, accounts, and billing outside this service.
 
 ## OpenAI-compatible generation
 
@@ -181,9 +201,9 @@ reply = client.chat.completions.create(
 print(reply.choices[0].message.content)
 ```
 
-- **Decoding.** Answers use the server's `--decoding` (see [masked diffusion](inference.md#masked-diffusion-nemotron-labs-diffusion)). For Nemotron-Labs-Diffusion, `self-speculation` gives greedy autoregressive text at about twice the speed of `diffusion`. DiffusionGemma always uses its uniform-noise denoiser, whose longer answers are rougher. Decoding is greedy: `temperature`, `top_p` and `seed` are accepted, and only `seed` changes anything (DiffusionGemma's noise).
+- **Decoding.** Answers use the model's `decoding` setting (see [masked diffusion](inference.md#masked-diffusion-nemotron-labs-diffusion)). For Nemotron-Labs-Diffusion, `self-speculation` gives greedy autoregressive text at about twice the speed of `diffusion`. DiffusionGemma always uses its uniform-noise denoiser, whose longer answers are rougher. Decoding is greedy: `temperature`, `top_p` and `seed` are accepted, and only `seed` changes anything (DiffusionGemma's noise).
 - **Prompts.** Chat roles `system` and `developer` become system turns; `user` and `assistant` keep their turns. The answer follows an empty, closed thought unless `reasoning_effort` (Chat Completions) or `reasoning.effort` (Responses) asks for a thought first: `minimal`, `low`, `medium` and `high` allow 64, 256, 1,024 and 4,096 thought tokens. Thoughts are never returned; they count as `reasoning_tokens`. Completions continue the raw `prompt` text without chat markers. Leading newlines of chat answers are dropped.
-- **Limits.** `max_completion_tokens` or `max_tokens` (chat), `max_tokens` (completions, default 16) and `max_output_tokens` (responses) cap the answer; without one, chat answers may use the rest of the context, up to 2,048 tokens. Up to four `stop` sequences end the answer and are not returned. The prompt, thought and answer must fit `--context-size`.
+- **Limits.** `max_completion_tokens` or `max_tokens` (chat), `max_tokens` (completions, default 16) and `max_output_tokens` (responses) cap the answer; without one, chat answers may use the rest of the context, up to 2,048 tokens. Up to four `stop` sequences end the answer and are not returned. The prompt, thought and answer must fit the model's `context_size`.
 - **Streaming.** `stream: true` sends server-sent events: completion chunks ending with `data: [DONE]`, with a final usage chunk when `stream_options.include_usage` is set, or the named Responses events from `response.created` to `response.completed` (`response.incomplete` when `max_output_tokens` ends the answer). Text arrives per decoding round or block. Closing the connection stops generation.
 - **Not supported.** Several choices (`n` > 1), tools and function calls, log probabilities, penalties, logit bias, structured output (`response_format`, `text.format` other than text), image or audio content, stored responses (`previous_response_id`, `conversation`), background responses and reasoning summaries return `400` with the parameter named. Unknown parameters are rejected the same way. `store` and `metadata` are accepted; nothing is stored.
 
@@ -191,14 +211,19 @@ OpenAI routes report errors as `{"error":{"message","type","param","code"}}`: `4
 
 ## Speech to text
 
-`--speech-model DIR` (`JEVONS_SPEECH_MODEL`, or `speech_model` in the settings file) loads a speech-to-text checkpoint on its own worker thread and queue, next to the language model or alone. The supported model is NVIDIA [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) (CC-BY-4.0): a Hugging Face directory with `config.json`, `processor_config.json`, `tokenizer.json` and `model.safetensors` (2.5 GB F32, about 1.2 GB on the GPU in FP16). It transcribes 25 European languages, including Spanish and English, detects the language by itself, and adds punctuation and capitals. It does not translate and takes no prompts.
+The Speech service runs a speech-to-text model on its own worker thread and queue, next to the language model or alone. The supported model is NVIDIA [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) (CC-BY-4.0): a Hugging Face directory with `config.json`, `processor_config.json`, `tokenizer.json` and `model.safetensors` (2.5 GB F32, about 1.2 GB on the GPU in FP16). It transcribes 25 European languages, including Spanish and English, detects the language by itself, and adds punctuation and capitals. It does not translate and takes no prompts.
 
-```bash
-jevons-rs --speech-model ~/models/parakeet-tdt-0.6b-v3                 # speech only
-jevons-rs -m "$DIFFUSION_MODEL" --speech-model ~/models/parakeet-tdt-0.6b-v3   # both
+```toml
+[models.parakeet]
+path = "~/models/parakeet-tdt-0.6b-v3"
+
+[services.speech]
+model = "parakeet"
+max_audio_seconds = 3600.0   # longest upload or Realtime buffer
+realtime = true              # serve /v1/realtime
 ```
 
-The model is served as `parakeet-tdt-0.6b-v3` (change it with `--speech-model-id`), with the alias `parakeet-latest`, and listed by `/v1/models`. Both models share the GPU: a transcription during a long generation is slower (about three times on an APU) but never waits for it. The first requests of a new length compile and tune kernels, cached afterwards in `~/.cache/jevons-burn`.
+The model is served as `parakeet-tdt-0.6b-v3` (change it with the model's `id`), with the alias `parakeet-latest`, and listed by `/v1/models`. Both models share the GPU: a transcription during a long generation is slower (about three times on an APU) but never waits for it. The first requests of a new length compile and tune kernels, cached afterwards in `~/.cache/jevons-burn`.
 
 ### Transcriptions
 
@@ -215,7 +240,7 @@ with open("examples/speech-en.flac", "rb") as audio:
     text = client.audio.transcriptions.create(model="parakeet-tdt-0.6b-v3", file=audio).text
 ```
 
-- **Audio.** WAV, FLAC, MP3, OGG Vorbis, Ogg Opus, WebM with Opus (what browsers record with `MediaRecorder`, so Open WebUI dictation works) and M4A/MP4 (AAC), up to 25 MiB and `--max-audio-seconds` (default 3,600). Channels are mixed to mono and resampled to 16 kHz. Opus is decoded by the pure-Rust [`opuscule`](https://crates.io/crates/opuscule) crate (MPL-2.0; bit-exact with libopus on the fixtures); mono and stereo only.
+- **Audio.** WAV, FLAC, MP3, OGG Vorbis, Ogg Opus, WebM with Opus (what browsers record with `MediaRecorder`, so Open WebUI dictation works) and M4A/MP4 (AAC), up to 25 MiB and `max_audio_seconds` (default 3,600). Channels are mixed to mono and resampled to 16 kHz. Opus is decoded by the pure-Rust [`opuscule`](https://crates.io/crates/opuscule) crate (MPL-2.0; bit-exact with libopus on the fixtures); mono and stereo only.
 - **Fields.** `model` and `file` are required. `language` (ISO-639-1) must be one of the model's languages; it is checked and echoed, and the model detects the language regardless. `response_format` is `json` (default), `text`, `srt`, `vtt` or `verbose_json`. `verbose_json` has `segments` and, with `timestamp_granularities[]=word`, `words` with start and end times. `include[]=logprobs` (with `json`) adds token log probabilities. `temperature` is accepted (decoding is greedy), `chunking_strategy` only as `auto`, and `prompt` only when empty; any other field, a non-empty `prompt`, diarization and translation return `400`.
 - **Streaming.** `stream=true` (with `json` or `text`) sends server-sent events: a `transcript.text.delta` per segment, then `transcript.text.done` with the full text and usage.
 - **Long audio.** Recordings over 120 seconds are transcribed in overlapping 120-second windows with 5 seconds of context on each side, and each window keeps the words that start in its middle. Segments end at sentence punctuation, pauses of 0.8 seconds or 30 seconds of speech.
@@ -223,7 +248,7 @@ with open("examples/speech-en.flac", "rb") as audio:
 
 ### Realtime
 
-`GET /v1/realtime` opens an OpenAI Realtime [transcription session](https://platform.openai.com/docs/guides/realtime-transcription) over a WebSocket (`--no-realtime` turns it off). `?intent=transcription` and `?model=` are accepted. Browsers, which cannot set headers, may pass the key as the subprotocol `openai-insecure-api-key.<key>` next to `realtime`. [examples/realtime.py](../examples/realtime.py) streams a file at real-time pace:
+`GET /v1/realtime` opens an OpenAI Realtime [transcription session](https://platform.openai.com/docs/guides/realtime-transcription) over a WebSocket (`realtime = false` turns it off). `?intent=transcription` and `?model=` are accepted. Browsers, which cannot set headers, may pass the key as the subprotocol `openai-insecure-api-key.<key>` next to `realtime`. [examples/realtime.py](../examples/realtime.py) streams a file at real-time pace:
 
 ```bash
 uv run examples/realtime.py examples/speech-es.flac --url ws://127.0.0.1:8080/v1/realtime --language es

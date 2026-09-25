@@ -35,11 +35,15 @@ The example asks three questions about a construction material. Set `TYPESAFE_AP
 
 ## Image example
 
-For images, start the service with a compatible projector (see [image setup](build.md#image-input)):
+For images, give the Decision model a compatible projector (see [image setup](build.md#image-input)):
 
-```bash
-export DIFFUSION_MMPROJ="$HOME/models/diffusiongemma/mmproj-diffusiongemma-26b-a4b-f16.gguf"
-cargo run --release --locked -p jevons-rs -- -m "$DIFFUSION_MODEL" --mmproj "$DIFFUSION_MMPROJ"
+```toml
+[models.gemma]
+path = "~/models/diffusiongemma/diffusiongemma-26B-A4B-it-Q4_K_M.gguf"
+mmproj = "~/models/diffusiongemma/mmproj-diffusiongemma-26b-a4b-f16.gguf"
+
+[services.decision]
+model = "gemma"
 ```
 
 Ask what’s in a photo and get structured answers:
@@ -130,5 +134,5 @@ The image data is abbreviated here; [hotdog.json](../examples/hotdog.json) conta
 
 Try the [hot dog photo example](api.md#hot-dog-photo), including the [bundled JPEG](../examples/hotdog.jpg), [ready-to-send request](../examples/hotdog.json), and startup instructions for the vision projector.
 
-Use [JavaScript SDK examples](../examples/javascript/README.md) for application code. The [API reference](api.md) covers request types, model aliases, and errors. Use the [extensions](api.md#extensions) for `steps`, `samples`, `think`, `sequential`, and `images`. Text defaults are `steps=1`, `samples=1`, and `think=0`, with an 8,192-token context. Override the context with `--context-size`; larger contexts allocate more cache memory. Image requests require `--mmproj` or `DIFFUSION_MMPROJ`.
+Use [JavaScript SDK examples](../examples/javascript/README.md) for application code. The [API reference](api.md) covers request types, model aliases, and errors. Use the [extensions](api.md#extensions) for `steps`, `samples`, `think`, `sequential`, and `images`. Text defaults are `steps=1`, `samples=1`, and `think=0`, with an 8,192-token context. Override the context with the model's `context_size`; larger contexts allocate more cache memory. DiffusionGemma image requests require its `mmproj`.
 

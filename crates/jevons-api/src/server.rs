@@ -1,53 +1,82 @@
-//! Startup: load the configured models on their worker threads, then serve the API.
+//! Startup: load each configured model once on its worker thread, attach the services that use
+//! it, then serve the API.
 
-use crate::config::Settings;
+use crate::config::{Model, Settings, Speech};
 use crate::workers::{diffusion as worker, speech};
-use crate::{AppState, SpeechService, TextService, router};
+use crate::{AppState, DiffusionService, SpeechService, router};
 use jevons_core::{ModelConfig, SpeechConfig};
 use jevons_diffusion::{default_model_id, resolve_architecture};
 use jevons_speech::{default_speech_model_id, detect_speech};
-use std::path::Path;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
 type Error = Box<dyn std::error::Error>;
 
 /// Loads the configured models, starts their workers and serves until SIGINT or SIGTERM.
-pub async fn run(args: Settings) -> Result<(), Error> {
-    if args.model.is_none() && args.speech_model.is_none() {
-        return Err(
-            "Set a language model with --model (DIFFUSION_MODEL) or a speech model with \
-                    --speech-model (JEVONS_SPEECH_MODEL), or either in the settings file"
-                .into(),
+pub async fn run(settings: Settings) -> Result<(), Error> {
+    let listener = tokio::net::TcpListener::bind(settings.server.bind).await?;
+    let mut threads = Vec::new();
+    let services = &settings.services;
+    let diffusion_models = settings.diffusion_models();
+    let mut engines: BTreeMap<&str, DiffusionService> = BTreeMap::new();
+    for &name in &diffusion_models {
+        let uses: Vec<&str> = [
+            ("generative", &services.generative),
+            ("decision", &services.decision),
+        ]
+        .into_iter()
+        .filter(|(_, s)| s.as_ref().is_some_and(|s| s.model == name))
+        .map(|(service, _)| service)
+        .collect();
+        // The generic `jev-latest` / `openjev-latest` aliases name the System One model, or the
+        // only diffusion model.
+        let generic = uses.contains(&"decision") || diffusion_models.len() == 1;
+        let service =
+            load_diffusion(name, &settings.models[name], &uses, generic, &mut threads).await?;
+        engines.insert(name, service);
+    }
+    let engine = |service: &Option<crate::config::ServiceModel>| {
+        service.as_ref().map(|s| engines[s.model.as_str()].clone())
+    };
+    let generative = engine(&services.generative);
+    let decision = engine(&services.decision);
+    let speech = match &services.speech {
+        Some(speech) => Some(
+            load_speech(
+                &speech.model,
+                &settings.models[&speech.model],
+                speech,
+                &mut threads,
+            )
+            .await?,
+        ),
+        None => None,
+    };
+    let mut names: Vec<String> = Vec::new();
+    for service in engines.values() {
+        names.extend(
+            std::iter::once(service.model_id.clone()).chain(service.aliases.iter().cloned()),
         );
     }
-    if args.api_key.as_ref().is_some_and(|key| key.is_empty()) {
-        return Err("The configured API key must be nonempty".into());
-    }
-    if !(args.max_audio_seconds.is_finite() && args.max_audio_seconds > 0.0) {
-        return Err("--max-audio-seconds must be positive".into());
-    }
-    let listener = tokio::net::TcpListener::bind(args.bind).await?;
-    let mut threads = Vec::new();
-    let text = match args.model.clone() {
-        Some(model) => Some(load_text(&args, model, &mut threads).await?),
-        None => None,
-    };
-    let speech = match args.speech_model.clone() {
-        Some(model) => Some(load_speech(&args, &model, &mut threads).await?),
-        None => None,
-    };
-    if let (Some(text), Some(speech)) = (&text, &speech)
-        && speech.names().iter().any(|name| text.serves(name))
+    names.extend(speech.iter().flat_map(SpeechService::names));
+    if let Some(name) = names
+        .iter()
+        .enumerate()
+        .find_map(|(i, n)| names[..i].contains(n).then_some(n))
     {
-        return Err("The language and speech models must have different IDs and aliases".into());
+        return Err(format!("Two models answer to {name:?}; give them different ids").into());
     }
+    // The router owns the only queue handles from here on: when it is dropped at shutdown, the
+    // workers see their queues close and their threads end.
+    drop(engines);
     let app = router(AppState {
-        text,
+        generative,
+        decision,
         speech,
-        api_key: args.api_key.map(Arc::from),
+        api_key: settings.server.api_key.clone().map(Arc::from),
     });
-    tracing::info!(address = %args.bind, "jevons-rs is ready");
+    tracing::info!(address = %settings.server.bind, "jevons-rs is ready");
     let result = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown())
         .await;
@@ -60,86 +89,99 @@ pub async fn run(args: Settings) -> Result<(), Error> {
     Ok(())
 }
 
-async fn load_text(
-    args: &Settings,
-    model: std::path::PathBuf,
+/// Loads a diffusion language model once for the services in `uses`.
+async fn load_diffusion(
+    name: &str,
+    model: &Model,
+    uses: &[&str],
+    generic_aliases: bool,
     threads: &mut Vec<JoinHandle<()>>,
-) -> Result<TextService, Error> {
-    let mut config = ModelConfig::new(model);
-    config.architecture = Some(args.arch.clone());
-    let architecture = resolve_architecture(&config)?;
-    let model_id = args
-        .model_id
+) -> Result<DiffusionService, Error> {
+    let mut config = ModelConfig::new(model.path.clone());
+    config.architecture = model.arch.clone();
+    let architecture = resolve_architecture(&config).map_err(|e| format!("models.{name}: {e}"))?;
+    let model_id = model
+        .id
         .clone()
         .unwrap_or_else(|| default_model_id(&config.model, architecture));
-    if model_id.trim().is_empty() {
-        return Err("The model ID must be nonempty".into());
-    }
-    config.mmproj = args.mmproj.clone();
+    config.mmproj = model.mmproj.clone();
     if config.mmproj.is_some() && !architecture.uses_separate_projector() {
-        // Often inherited from DIFFUSION_MMPROJ; the checkpoint carries its own vision tower.
         tracing::warn!(
+            model = name,
             architecture = architecture.id(),
-            "Ignoring --mmproj: this architecture's vision tower is in the model files"
+            "Ignoring mmproj: this architecture's vision tower is in the model files"
         );
         config.mmproj = None;
     }
-    config.main_gpu = args.main_gpu;
-    config.context_size = args.context_size;
-    config.batch_size = args.batch_size;
-    config.prompt_cache = !args.no_prompt_cache;
-    tracing::info!(architecture = architecture.id(), "Loading model");
+    config.main_gpu = model.main_gpu;
+    config.context_size = model.context_size();
+    config.batch_size = model.batch_size();
+    config.prompt_cache = model.prompt_cache();
+    let decoding = model.decoding()?;
+    tracing::info!(model = name, architecture = architecture.id(), services = ?uses, "Loading model");
     let (client, thread, info) = worker::start(
         config,
         model_id.clone(),
-        args.seed,
-        args.queue_capacity,
-        args.decoding,
+        model.seed(),
+        model.queue_capacity,
+        decoding,
     )
     .await?;
     threads.push(thread);
-    tracing::info!(
-        model = %info.display_name,
-        decoding = args.decoding.id(),
-        "Model loaded"
-    );
-    Ok(TextService {
+    tracing::info!(model = %info.display_name, decoding = decoding.id(), "Model loaded");
+    let generic: &[&str] = if generic_aliases {
+        &["openjev-latest", "jev-latest"]
+    } else {
+        &[]
+    };
+    Ok(DiffusionService {
         worker: client,
-        aliases: [architecture.latest_alias(), "openjev-latest", "jev-latest"]
-            .into_iter()
+        aliases: std::iter::once(architecture.latest_alias())
+            .chain(generic.iter().copied())
             .filter(|alias| *alias != model_id)
             .map(String::from)
             .collect(),
         description: format!(
-            "Local {}, structured diffusion reads. Served as {model_id}.",
-            info.display_name
+            "Local {}, serving {}. Served as {model_id}.",
+            info.display_name,
+            uses.join(" and ")
         ),
         model_id,
     })
 }
 
 async fn load_speech(
-    args: &Settings,
-    model: &Path,
+    name: &str,
+    model: &Model,
+    service: &Speech,
     threads: &mut Vec<JoinHandle<()>>,
 ) -> Result<SpeechService, Error> {
-    let architecture = detect_speech(model)?;
-    let model_id = args
-        .speech_model_id
-        .clone()
-        .unwrap_or_else(|| default_speech_model_id(model, architecture));
-    if model_id.trim().is_empty() {
-        return Err("The speech model ID must be nonempty".into());
+    let architecture = detect_speech(&model.path).map_err(|e| format!("models.{name}: {e}"))?;
+    let options = model.diffusion_options();
+    if !options.is_empty() {
+        return Err(format!(
+            "models.{name} is a speech model; {} apply to diffusion language models only",
+            options.join(", ")
+        )
+        .into());
     }
-    let mut config = SpeechConfig::new(model);
-    config.main_gpu = args.main_gpu;
-    tracing::info!(architecture = architecture.id(), "Loading speech model");
-    let (client, thread, info) = speech::start(config, args.speech_queue_capacity).await?;
+    let model_id = model
+        .id
+        .clone()
+        .unwrap_or_else(|| default_speech_model_id(&model.path, architecture));
+    let mut config = SpeechConfig::new(model.path.clone());
+    config.main_gpu = model.main_gpu;
+    tracing::info!(
+        model = name,
+        architecture = architecture.id(),
+        "Loading speech model"
+    );
+    let (client, thread, info) = speech::start(config, model.queue_capacity).await?;
     threads.push(thread);
     tracing::info!(
         model = %info.display_name,
         languages = info.languages.len(),
-        realtime = !args.no_realtime,
+        realtime = service.realtime,
         "Speech model loaded"
     );
     Ok(SpeechService {
@@ -150,14 +192,14 @@ async fn load_speech(
             .map(String::from)
             .collect(),
         description: format!(
-            "Local {}, speech to text in {} languages. Served as {model_id}.",
+            "Local {}, serving speech to text in {} languages. Served as {model_id}.",
             info.display_name,
             info.languages.len()
         ),
         model_id,
         info,
-        max_audio_seconds: args.max_audio_seconds,
-        realtime: !args.no_realtime,
+        max_audio_seconds: service.max_audio_seconds,
+        realtime: service.realtime,
     })
 }
 

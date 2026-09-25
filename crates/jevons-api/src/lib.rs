@@ -19,5 +19,7 @@ mod server;
 pub mod system_one;
 pub mod workers;
 
-pub use http::{AppState, MAX_AUDIO_BYTES, MAX_BODY_BYTES, SpeechService, TextService, router};
+pub use http::{
+    AppState, DiffusionService, MAX_AUDIO_BYTES, MAX_BODY_BYTES, SpeechService, router,
+};
 pub use server::run;

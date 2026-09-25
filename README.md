@@ -81,20 +81,36 @@ flowchart TB
 | [Nemotron-Labs-Diffusion](https://huggingface.co/nvidia/Nemotron-Labs-Diffusion-VLM-8B) 8B VLM or [3B](https://huggingface.co/nvidia/Nemotron-Labs-Diffusion-3B) (safetensors) | Diffusion language model, with self-speculative autoregressive decoding | Burn | Generative, Decision |
 | [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) (safetensors) | Speech recognition, 25 European languages including Spanish and English | Burn | Speech |
 
-One server runs one language model (`-m`, serving Generative and Decision), one speech model (`--speech-model`, serving Speech), or both. The architecture is detected from the model files. Obtain the models yourself and check their licenses.
+A settings file declares each model once and points services at it: Generative and Decision usually share one loaded diffusion model (one engine and queue, the masked canvas used or not per request), and can also use two different ones. The architecture is detected from the model files. Obtain the models yourself and check their licenses.
 
 ## Quick start
 
-You need Rust 1.95+, ROCm/HIP ([build guide](docs/build.md#rocmhip)) and at least one model.
+You need Rust 1.95+, ROCm/HIP ([build guide](docs/build.md#rocmhip)) and at least one model. Describe the models and the services that use them in `jevons.toml`:
 
-```bash
-cargo run --release --locked -p jevons-rs -- \
-  -m ~/models/nemotron-labs-diffusion-3b --decoding self-speculation \
-  --speech-model ~/models/parakeet-tdt-0.6b-v3 \
-  --bind 127.0.0.1:8080
+```toml
+[server]
+bind = "127.0.0.1:8080"
+
+[models.nemotron]                  # loaded once
+path = "~/models/nemotron-labs-diffusion-3b"
+decoding = "self-speculation"
+
+[models.parakeet]
+path = "~/models/parakeet-tdt-0.6b-v3"
+
+[services.generative]              # OpenAI chat, completions, responses
+model = "nemotron"
+[services.decision]                # System One, on the same engine
+model = "nemotron"
+[services.speech]                  # transcriptions and Realtime
+model = "parakeet"
 ```
 
-Or put the same settings in a file: copy [jevons.example.toml](jevons.example.toml) to `./jevons.toml` (or `~/.config/jevons/config.toml`, or pass `--config`); flags and environment variables override it. Set `TYPESAFE_API_KEY` to require a bearer key on `/v1/*`.
+```bash
+cargo run --release --locked -p jevons-rs -- --config jevons.toml
+```
+
+Without `--config`, the server reads `./jevons.toml` or `~/.config/jevons/config.toml`. [jevons.example.toml](jevons.example.toml) lists every key: per model the served `id`, context and batch sizes, decoding, seed, prompt cache and queue capacity; per service its model, and for speech the audio limit and Realtime switch. `--bind` overrides the address; set `TYPESAFE_API_KEY` to require a bearer key on `/v1/*`.
 
 The first start on a new GPU compiles and tunes kernels for a few minutes; later starts reuse the caches in `~/.cache/diffusion-cubecl` (DiffusionGemma) and `~/.cache/jevons-burn` (Burn models). Every loaded model is listed by `GET /v1/models`, under its ID and aliases: the language model also answers to `jev-latest`, and Parakeet to `parakeet-latest`, which the examples below use.
 
@@ -193,7 +209,7 @@ On the Radeon 8060S, measured when warm:
 | --- | --- |
 | Decision (System One), DiffusionGemma Q4_K_M | JevBench public cases 189/231 correct, 0.40 s median |
 | Decision (System One), Nemotron-Labs-Diffusion 3B | 143/231, 0.27 s median |
-| Generative and Decision thoughts, Nemotron-Labs-Diffusion 8B, `--decoding self-speculation` | 11.1 tokens/s (5.7 with diffusion) |
+| Generative and Decision thoughts, Nemotron-Labs-Diffusion 8B, `decoding = "self-speculation"` | 11.1 tokens/s (5.7 with diffusion) |
 | Speech, Parakeet TDT v3 | 16 s of Spanish in 0.55 s; a 186 s MP3 in 5.7 s |
 
 See [benchmarks](benchmarks/README.md) for methods, per-case results and comparisons with hosted System One services.

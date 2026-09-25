@@ -26,7 +26,7 @@ Inference runs on AMD GPUs through CubeCL/HIP (RDNA3-class, 32-lane waves); the 
 - `cargo fmt --all -- --check`: check Rust formatting.
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`: run lint checks.
 - `cargo test --workspace --locked`: run regular tests without loading a model.
-- `cargo run --locked -p jevons-rs -- -m "$DIFFUSION_MODEL" --bind 127.0.0.1:8080`: start the service.
+- `cargo run --locked -p jevons-rs -- --config jevons.toml`: start the service (models and services come from the settings file; see `jevons.example.toml`).
 - `python3 scripts/smoke-test.py`: validate the running service.
 
 ## Coding Style & Naming Conventions

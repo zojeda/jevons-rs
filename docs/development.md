@@ -137,7 +137,7 @@ just model-test          # Run the model-dependent reproducibility test.
 just smoke               # Check a running service.
 ```
 
-Set `DIFFUSION_MODEL` or pass `--model PATH` to an inference command. The `serve`, `serve-release`, and `scm` recipes forward extra arguments to their binaries.
+The `serve` and `serve-release` recipes start the server from `./jevons.toml` (or pass `--config PATH`); `scm` takes `--model PATH` or `DIFFUSION_MODEL`. The recipes forward extra arguments to their binaries.
 
 ## SCM CLI
 
