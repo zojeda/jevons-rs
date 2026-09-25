@@ -1,0 +1,22 @@
+[package]
+name = "jevons-diffusion"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = ["models"]
+# Architecture detection and the built-in diffusion model implementations.
+models = ["dep:jevons-models", "jevons-models/gemma4", "jevons-models/nemotron"]
+# A scripted fake model for the services' unit tests.
+testing = []
+
+[dependencies]
+jevons-core.workspace = true
+jevons-models = { workspace = true, optional = true }
+rand.workspace = true
+rand_chacha.workspace = true
+
+[lints]
+workspace = true

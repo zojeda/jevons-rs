@@ -74,7 +74,7 @@ Per-case JevBench results and summaries, per-request corpus results and `prefill
 the 3B are in this directory. Raw HTTP evidence stays under the gitignored `benchmarks/results/`.
 
 ```bash
-cargo build --release --locked -p jevons-rs --bins --example prefill_bench
+cargo build --release --locked -p jevons-rs -p jevons-api --bins --example prefill_bench
 BIN="${CARGO_TARGET_DIR:-target}/release"
 python3 -B scripts/jevbench-local.py --port 8093 --binary $BIN/jevons-rs \
   --model ~/models/nemotron-labs-diffusion-3b --model-id nemotron-diffusion-3b \
@@ -84,6 +84,6 @@ python3 -B scripts/jevbench-local.py --port 8093 --binary $BIN/jevons-rs \
   --think 256 --decoding self-speculation \
   --harness "$JEVBENCH_SOURCE" --output benchmarks/results/jevbench-8b-think256-selfspec
 NEMOTRON_MODEL=~/models/nemotron-labs-diffusion-vlm-8b cargo test --release --locked \
-  -p jevons-engine --lib -- --ignored --exact --nocapture \
-  engine::tests::nemotron_self_speculation_reproduces_autoregressive_thoughts
+  -p jevons-decision --lib -- --ignored --exact --nocapture \
+  read::tests::nemotron_self_speculation_reproduces_autoregressive_thoughts
 ```

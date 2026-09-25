@@ -22,16 +22,18 @@ Flags can live in a TOML file: `--config PATH` (or `JEVONS_CONFIG`), otherwise `
 
 ## Routes
 
-| Route | Purpose |
-| --- | --- |
-| `POST /v1/systemone` | Evaluate `state`, `model`, and one or more `questions`. |
-| `POST /v1/chat/completions` | OpenAI Chat Completions: free-form answers (see [OpenAI-compatible generation](#openai-compatible-generation)). |
-| `POST /v1/completions` | OpenAI Completions: continue raw text. |
-| `POST /v1/responses` | OpenAI Responses: free-form answers without stored state. |
-| `POST /v1/audio/transcriptions` | OpenAI transcriptions: an uploaded recording to text, subtitles or timestamps (see [speech to text](#speech-to-text)). |
-| `GET /v1/realtime` | OpenAI Realtime transcription sessions over a WebSocket. |
-| `GET /v1/models` | List models: System One `models` (`name`, `description`, `release_date`) and OpenAI `data` (`id`, `object`, `created`, `owned_by`). |
-| `GET /health` | Check model readiness and worker availability: `model` (the language model, or `null`) and `speech_model` when one is loaded. |
+The routes belong to the three services (see the [architecture](../README.md#architecture)): Generative and Decision need a language model (`-m`), Speech a speech model (`--speech-model`).
+
+| Service | Route | Purpose |
+| --- | --- | --- |
+| Generative | `POST /v1/chat/completions` | OpenAI Chat Completions: free-form answers (see [OpenAI-compatible generation](#openai-compatible-generation)). |
+| Generative | `POST /v1/completions` | OpenAI Completions: continue raw text. |
+| Generative | `POST /v1/responses` | OpenAI Responses: free-form answers without stored state. |
+| Speech | `POST /v1/audio/transcriptions` | OpenAI transcriptions: an uploaded recording to text, subtitles or timestamps (see [speech to text](#speech-to-text)). |
+| Speech | `GET /v1/realtime` | OpenAI Realtime transcription sessions over a WebSocket. |
+| Decision | `POST /v1/systemone` | Evaluate `state`, `model`, and one or more `questions` ([System One guide](system-one.md)). |
+| All | `GET /v1/models` | List models: System One `models` (`name`, `description`, `release_date`) and OpenAI `data` (`id`, `object`, `created`, `owned_by`). |
+| All | `GET /health` | Check model readiness and worker availability: `model` (the language model, or `null`) and `speech_model` when one is loaded. |
 
 ```bash
 curl http://127.0.0.1:8080/v1/systemone \

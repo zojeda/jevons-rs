@@ -3,7 +3,13 @@
 //! A model owns its weights, tokenizer, prompt KV state and device buffers on the inference
 //! worker thread; nothing here requires `Send`. The engine drives reads through this trait and
 //! keeps sampling policy to itself, selected by the model's [`DiffusionScheme`].
-use crate::{Error, ImageInput, PrefillProfile, Result};
+use crate::{Error, PrefillProfile, Result};
+
+/// Compressed image bytes, decoded on the inference worker with allocation limits.
+#[derive(Clone, Debug)]
+pub struct ImageInput {
+    pub bytes: Vec<u8>,
+}
 
 pub enum PromptPart {
     Text(Vec<i32>),

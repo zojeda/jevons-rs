@@ -62,7 +62,7 @@ each model are in this directory. Raw HTTP evidence and server logs stay in the 
 ## Reproduce
 
 ```bash
-cargo build --release --locked -p jevons-rs --bins --example prefill_bench
+cargo build --release --locked -p jevons-rs -p jevons-api --bins --example prefill_bench
 BIN="${CARGO_TARGET_DIR:-target}/release"
 # Prefill (per model; use --model "$NEMOTRON_MODEL" for Nemotron, a checkpoint directory):
 $BIN/examples/prefill_bench --model "$DIFFUSION_MODEL" --requests benchmarks/cubecl/snake-requests.json --rounds 5

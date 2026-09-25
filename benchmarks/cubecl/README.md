@@ -131,6 +131,8 @@ binary in the same session. It still loses to patched native on every workload.
 
 ## Checks
 
+> These commands are from the 2026-09-21 to 2026-09-23 backend comparison, when the llama.cpp backend and the `jevons-cubecl` crate still existed. For the current workspace, see [development checks](../../docs/development.md#checks); `prefill_bench` is now `cargo run --release --locked -p jevons-api --example prefill_bench`.
+
 ```bash
 cargo test --locked -p jevons-core -p jevons-system-one
 cargo tree --locked -p jevons-system-one --edges normal

@@ -3829,6 +3829,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
+name = "jevons-api"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "clap",
+ "futures-util",
+ "jevons-audio",
+ "jevons-core",
+ "jevons-decision",
+ "jevons-diffusion",
+ "jevons-generative",
+ "jevons-speech",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-tungstenite",
+ "toml",
+ "tower",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "jevons-audio"
 version = "0.1.0"
 dependencies = [
@@ -3861,16 +3886,27 @@ dependencies = [
 ]
 
 [[package]]
-name = "jevons-engine"
+name = "jevons-decision"
 version = "0.1.0"
 dependencies = [
  "clap",
  "image",
  "jevons-core",
+ "jevons-diffusion",
+ "rand 0.9.5",
+ "rand_chacha 0.9.0",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "jevons-diffusion"
+version = "0.1.0"
+dependencies = [
+ "jevons-core",
  "jevons-models",
  "rand 0.9.5",
  "rand_chacha 0.9.0",
- "serde_json",
 ]
 
 [[package]]
@@ -3897,6 +3933,14 @@ dependencies = [
  "jevons-tokenizer",
  "serde_json",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "jevons-generative"
+version = "0.1.0"
+dependencies = [
+ "jevons-core",
+ "jevons-diffusion",
 ]
 
 [[package]]
@@ -3935,15 +3979,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "jevons-openai"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "jevons-core",
- "serde_json",
-]
-
-[[package]]
 name = "jevons-parakeet"
 version = "0.1.0"
 dependencies = [
@@ -3960,34 +3995,18 @@ dependencies = [
 name = "jevons-rs"
 version = "0.1.0"
 dependencies = [
- "axum",
- "base64 0.22.1",
- "clap",
- "futures-util",
- "jevons-audio",
- "jevons-engine",
- "jevons-openai",
- "jevons-system-one",
- "serde",
- "serde_json",
+ "jevons-api",
  "tokio",
- "tokio-tungstenite",
- "toml",
- "tower",
- "tracing",
  "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]
-name = "jevons-system-one"
+name = "jevons-speech"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
  "jevons-core",
- "serde",
+ "jevons-models",
  "serde_json",
- "thiserror 2.0.20",
 ]
 
 [[package]]

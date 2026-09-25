@@ -9,19 +9,21 @@ rust-version = "1.95"
 publish = false
 
 [workspace.dependencies]
+jevons-api = { path = "crates/jevons-api" }
 jevons-audio = { path = "crates/jevons-audio" }
 jevons-burn = { path = "crates/jevons-burn" }
 jevons-core = { path = "crates/jevons-core" }
-jevons-gemma4-diffusion = { path = "crates/jevons-gemma4-diffusion" }
-jevons-engine = { path = "crates/jevons-engine" }
+jevons-decision = { path = "crates/jevons-decision" }
+jevons-diffusion = { path = "crates/jevons-diffusion" }
 jevons-formats = { path = "crates/jevons-formats" }
+jevons-gemma4-diffusion = { path = "crates/jevons-gemma4-diffusion" }
+jevons-generative = { path = "crates/jevons-generative" }
 jevons-kernels = { path = "crates/jevons-kernels" }
-jevons-tokenizer = { path = "crates/jevons-tokenizer" }
+jevons-models = { path = "crates/jevons-models", default-features = false }
 jevons-nemotron-diffusion = { path = "crates/jevons-nemotron-diffusion" }
 jevons-parakeet = { path = "crates/jevons-parakeet" }
-jevons-models = { path = "crates/jevons-models", default-features = false }
-jevons-system-one = { path = "crates/jevons-system-one" }
-jevons-openai = { path = "crates/jevons-openai" }
+jevons-speech = { path = "crates/jevons-speech" }
+jevons-tokenizer = { path = "crates/jevons-tokenizer" }
 axum = "0.8"
 clap = { version = "4.6", features = ["derive", "env"] }
 rand = "0.9"

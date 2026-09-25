@@ -57,13 +57,13 @@ serve-release *args:
 # Classify a material description; set DIFFUSION_MODEL or pass --model PATH.
 [group('Run')]
 scm prompt *args:
-    cargo run --locked -p jevons-engine -- --prompt "$@"
+    cargo run --locked -p jevons-decision --bin jevons-scm -- --prompt "$@"
 
 # Verify reproducibility with the local model in DIFFUSION_MODEL (GPU required).
 [group('Tests')]
 model-test:
     @test -n "${DIFFUSION_MODEL:-}" || { echo "Set DIFFUSION_MODEL to a local GGUF file" >&2; exit 1; }
-    cargo test --release -p jevons-engine --locked --lib -- --ignored --exact engine::tests::model_reads_preserve_reproducibility_across_requests
+    cargo test --release -p jevons-decision --locked --lib -- --ignored --exact read::tests::model_reads_preserve_reproducibility_across_requests
 
 # Exercise a running service; honors TYPESAFE_API_KEY.
 [group('Tests')]
