@@ -12,7 +12,7 @@ cargo run --release --locked -p jevons-rs -- \
   --context-size 8192 --batch-size 512 --seed 42
 ```
 
-The service runs DiffusionGemma on an AMD GPU with the [CubeCL backend](cubecl.md); complete the [ROCm setup](build.md#rocmhip) first.
+The service runs DiffusionGemma on an AMD GPU with the [CubeCL backend](cubecl.md); complete the [ROCm setup](build.md#rocmhip) first. Add `--speech-model` to also serve [speech to text](#speech-to-text), or pass only `--speech-model` to run without a language model.
 
 If you omit both `--api-key` and `TYPESAFE_API_KEY`, the server disables authentication. A configured key protects `/v1/*`; `/health` remains open. Logs include counts and timing, excluding request state and credentials. Ctrl-C and SIGTERM drain pending requests and release the model.
 
@@ -28,8 +28,10 @@ Flags can live in a TOML file: `--config PATH` (or `JEVONS_CONFIG`), otherwise `
 | `POST /v1/chat/completions` | OpenAI Chat Completions: free-form answers (see [OpenAI-compatible generation](#openai-compatible-generation)). |
 | `POST /v1/completions` | OpenAI Completions: continue raw text. |
 | `POST /v1/responses` | OpenAI Responses: free-form answers without stored state. |
+| `POST /v1/audio/transcriptions` | OpenAI transcriptions: an uploaded recording to text, subtitles or timestamps (see [speech to text](#speech-to-text)). |
+| `GET /v1/realtime` | OpenAI Realtime transcription sessions over a WebSocket. |
 | `GET /v1/models` | List models: System One `models` (`name`, `description`, `release_date`) and OpenAI `data` (`id`, `object`, `created`, `owned_by`). |
-| `GET /health` | Check model readiness and worker availability. |
+| `GET /health` | Check model readiness and worker availability: `model` (the language model, or `null`) and `speech_model` when one is loaded. |
 
 ```bash
 curl http://127.0.0.1:8080/v1/systemone \
@@ -185,6 +187,50 @@ print(reply.choices[0].message.content)
 
 OpenAI routes report errors as `{"error":{"message","type","param","code"}}`: `400` for invalid or unsupported input (including a prompt too long for the context), `404` with code `model_not_found`, and the service statuses below for authentication, full queues and failures.
 
+## Speech to text
+
+`--speech-model DIR` (`JEVONS_SPEECH_MODEL`, or `speech_model` in the settings file) loads a speech-to-text checkpoint on its own worker thread and queue, next to the language model or alone. The supported model is NVIDIA [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) (CC-BY-4.0): a Hugging Face directory with `config.json`, `processor_config.json`, `tokenizer.json` and `model.safetensors` (2.5 GB F32, about 1.2 GB on the GPU in FP16). It transcribes 25 European languages, including Spanish and English, detects the language by itself, and adds punctuation and capitals. It does not translate and takes no prompts.
+
+```bash
+jevons-rs --speech-model ~/models/parakeet-tdt-0.6b-v3                 # speech only
+jevons-rs -m "$DIFFUSION_MODEL" --speech-model ~/models/parakeet-tdt-0.6b-v3   # both
+```
+
+The model is served as `parakeet-tdt-0.6b-v3` (change it with `--speech-model-id`), with the alias `parakeet-latest`, and listed by `/v1/models`. Both models share the GPU: a transcription during a long generation is slower (about three times on an APU) but never waits for it. The first requests of a new length compile and tune kernels, cached afterwards in `~/.cache/jevons-burn`.
+
+### Transcriptions
+
+`POST /v1/audio/transcriptions` takes the OpenAI multipart form, so OpenAI SDKs and tools such as Open WebUI work unchanged:
+
+```bash
+curl http://127.0.0.1:8080/v1/audio/transcriptions \
+  -H "Authorization: Bearer $TYPESAFE_API_KEY" \
+  -F file=@examples/speech-es.flac -F model=parakeet-tdt-0.6b-v3 -F language=es
+```
+
+```python
+with open("examples/speech-en.flac", "rb") as audio:
+    text = client.audio.transcriptions.create(model="parakeet-tdt-0.6b-v3", file=audio).text
+```
+
+- **Audio.** WAV, FLAC, MP3, OGG Vorbis, Ogg Opus, WebM with Opus (what browsers record with `MediaRecorder`, so Open WebUI dictation works) and M4A/MP4 (AAC), up to 25 MiB and `--max-audio-seconds` (default 3,600). Channels are mixed to mono and resampled to 16 kHz. Opus is decoded by the pure-Rust [`opuscule`](https://crates.io/crates/opuscule) crate (MPL-2.0; bit-exact with libopus on the fixtures); mono and stereo only.
+- **Fields.** `model` and `file` are required. `language` (ISO-639-1) must be one of the model's languages; it is checked and echoed, and the model detects the language regardless. `response_format` is `json` (default), `text`, `srt`, `vtt` or `verbose_json`. `verbose_json` has `segments` and, with `timestamp_granularities[]=word`, `words` with start and end times. `include[]=logprobs` (with `json`) adds token log probabilities. `temperature` is accepted (decoding is greedy), `chunking_strategy` only as `auto`, and `prompt` only when empty; any other field, a non-empty `prompt`, diarization and translation return `400`.
+- **Streaming.** `stream=true` (with `json` or `text`) sends server-sent events: a `transcript.text.delta` per segment, then `transcript.text.done` with the full text and usage.
+- **Long audio.** Recordings over 120 seconds are transcribed in overlapping 120-second windows with 5 seconds of context on each side, and each window keeps the words that start in its middle. Segments end at sentence punctuation, pauses of 0.8 seconds or 30 seconds of speech.
+- **Usage** is `{"type": "duration", "seconds": N}`, rounded up.
+
+### Realtime
+
+`GET /v1/realtime` opens an OpenAI Realtime [transcription session](https://platform.openai.com/docs/guides/realtime-transcription) over a WebSocket (`--no-realtime` turns it off). `?intent=transcription` and `?model=` are accepted. Browsers, which cannot set headers, may pass the key as the subprotocol `openai-insecure-api-key.<key>` next to `realtime`. [examples/realtime.py](../examples/realtime.py) streams a file at real-time pace:
+
+```bash
+uv run examples/realtime.py examples/speech-es.flac --url ws://127.0.0.1:8080/v1/realtime --language es
+```
+
+- **Session.** The server sends `session.created`; `session.update` with `session.type = "transcription"` sets `audio.input.format` (`audio/pcm` at 24 kHz, or 8, 16 or 48 kHz; `audio/pcmu`; `audio/pcma`), `audio.input.transcription` (`model`, `language`; `prompt` only empty), `audio.input.turn_detection` and `include: ["item.input_audio_transcription.logprobs"]`. The beta `transcription_session.update` is accepted too, and the session then answers in the beta shape (`transcription_session.updated`, `conversation.item.created`).
+- **Turns.** With `server_vad` (the default; `threshold`, `prefix_padding_ms`, `silence_duration_ms`), an energy detector sends `input_audio_buffer.speech_started` and `speech_stopped` and commits the turn. With `turn_detection: null` the client sends `input_audio_buffer.commit` (at least 100 ms of audio). `input_audio_buffer.clear` drops the buffer. `semantic_vad`, noise reduction and responses (`response.create`) are rejected with an `error` event.
+- **Transcripts.** While a detected turn is spoken, a pass over it runs every 0.7 seconds of audio, and the words two consecutive passes agree on arrive as `conversation.item.input_audio_transcription.delta` events for the turn's `item_id` (for the first 30 seconds of a turn). After the commit (`input_audio_buffer.committed`, `conversation.item.added`), the whole turn is transcribed and `…transcription.completed` carries the final transcript and usage, followed by `conversation.item.done`. The final transcript is authoritative: it can revise words already sent as deltas. Live passes run before queued uploads and between the windows of long ones.
+
 ## Errors
 
 Responses include `x-typesafe-request-id`. System One validation errors use `{"detail":[{"loc":...,"msg":...,"type":...}]}`. Other errors use `{"detail":{"error_type":...,"message":...}}`; OpenAI routes use the OpenAI shape above.
@@ -193,10 +239,10 @@ Responses include `x-typesafe-request-id`. System One validation errors use `{"d
 | --- | --- |
 | 401 / 403 | Incorrect key / missing key with authentication enabled |
 | 404 | Unknown model or path |
-| 413 | Body exceeds 64 MiB |
+| 413 | Body exceeds 64 MiB (26 MiB for transcriptions) |
 | 422 | Invalid input, unsupported extension, or token capacity exceeded |
 | 529 | Full queue; `retry-after: 1` accompanies the response |
-| 503 | Inference worker unavailable |
+| 503 | Inference worker (language or speech) unavailable |
 | 500 | Inference or internal response mapping failure |
 
 Protocol references: [System One](https://codiv.ai/docs/api-reference/system-one), [errors](https://codiv.ai/docs/api-reference/errors), [models](https://codiv.ai/docs/api-reference/models), and [confidence](https://codiv.ai/docs/guides/confidence). The integration targets the System One contract reviewed on 2026-09-19.

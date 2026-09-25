@@ -21,16 +21,31 @@ const VERSION: &str = match option_env!("JEVONS_BUILD") {
 
 #[derive(Parser, Debug)]
 #[command(
-    about = "A System One and OpenAI-compatible API backed by diffusion language models",
+    about = "A personal inference runtime: OpenAI-compatible chat, transcription and Realtime, and System One APIs on Burn and CubeCL",
     version = VERSION
 )]
 pub struct Settings {
     /// TOML settings file (see jevons.example.toml).
     #[arg(long, env = "JEVONS_CONFIG")]
     pub config: Option<PathBuf>,
-    /// GGUF file or Hugging Face checkpoint directory.
+    /// Diffusion language model: GGUF file or Hugging Face checkpoint directory.
     #[arg(short, long, env = "DIFFUSION_MODEL")]
     pub model: Option<PathBuf>,
+    /// Speech-to-text model: Hugging Face checkpoint directory (Parakeet TDT). Serves
+    /// /v1/audio/transcriptions and /v1/realtime, next to or without a language model.
+    #[arg(long, env = "JEVONS_SPEECH_MODEL")]
+    pub speech_model: Option<PathBuf>,
+    /// Served speech model ID; defaults to the model's ID, such as parakeet-tdt-0.6b-v3.
+    #[arg(long)]
+    pub speech_model_id: Option<String>,
+    #[arg(long, default_value_t = 8)]
+    pub speech_queue_capacity: usize,
+    /// Longest audio upload or Realtime input buffer, in seconds.
+    #[arg(long, default_value_t = 3600.0)]
+    pub max_audio_seconds: f64,
+    /// Do not serve the /v1/realtime WebSocket.
+    #[arg(long)]
+    pub no_realtime: bool,
     /// Model architecture; detected from the model files by default.
     #[arg(long, env = "JEVONS_ARCH", default_value = "auto")]
     pub arch: String,
@@ -71,6 +86,11 @@ pub struct Settings {
 #[serde(deny_unknown_fields)]
 struct File {
     model: Option<PathBuf>,
+    speech_model: Option<PathBuf>,
+    speech_model_id: Option<String>,
+    speech_queue_capacity: Option<usize>,
+    max_audio_seconds: Option<f64>,
+    realtime: Option<bool>,
     arch: Option<String>,
     mmproj: Option<PathBuf>,
     bind: Option<SocketAddr>,
@@ -172,6 +192,23 @@ impl Settings {
         {
             self.model = Some(resolve(model, base));
         }
+        if let Some(model) = file.speech_model
+            && unset("speech_model")
+        {
+            self.speech_model = Some(resolve(model, base));
+        }
+        if let Some(id) = file.speech_model_id
+            && unset("speech_model_id")
+        {
+            self.speech_model_id = Some(id);
+        }
+        take!(speech_queue_capacity);
+        take!(max_audio_seconds);
+        if let Some(realtime) = file.realtime
+            && unset("no_realtime")
+        {
+            self.no_realtime = !realtime;
+        }
         if let Some(mmproj) = file.mmproj
             && unset("mmproj")
         {
@@ -240,6 +277,24 @@ mod tests {
         assert!(settings.no_prompt_cache);
         assert_eq!(settings.context_size, 2048, "flags win over the file");
         assert_eq!(settings.model_id.as_deref(), Some("from-file"));
+    }
+
+    #[test]
+    fn speech_settings_come_from_the_file() {
+        let file: File = toml::from_str(
+            "speech_model = \"~/models/parakeet\"\nspeech_model_id = \"asr\"\n\
+             max_audio_seconds = 600.0\nrealtime = false\nspeech_queue_capacity = 2\n",
+        )
+        .unwrap();
+        let mut settings = Settings::try_parse_from(["jevons-rs"]).unwrap();
+        settings.merge(file, Path::new("/srv"), |_| true).unwrap();
+        if let Some(home) = home() {
+            assert_eq!(settings.speech_model, Some(home.join("models/parakeet")));
+        }
+        assert_eq!(settings.speech_model_id.as_deref(), Some("asr"));
+        assert_eq!(settings.max_audio_seconds, 600.0);
+        assert_eq!(settings.speech_queue_capacity, 2);
+        assert!(settings.no_realtime);
     }
 
     #[test]

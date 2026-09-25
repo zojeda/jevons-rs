@@ -1,4 +1,7 @@
 //! Bearer authentication and request IDs for every HTTP response.
+//!
+//! WebSocket clients in browsers cannot set headers, so they may instead offer the key as a
+//! `Sec-WebSocket-Protocol` entry `openai-insecure-api-key.<key>`, as OpenAI's clients do.
 
 use crate::{AppState, error::ApiError};
 use axum::{
@@ -18,7 +21,17 @@ pub(super) async fn request_context(
     let auth_error = if request.uri().path() == "/health" {
         None
     } else if let Some(expected) = &state.api_key {
+        let offered = protocol_key(&request);
         match request.headers().get("authorization") {
+            None if offered.is_some() => {
+                (offered.as_deref() != Some(expected.as_ref())).then(|| {
+                    ApiError::new(
+                        StatusCode::UNAUTHORIZED,
+                        "authentication_error",
+                        "Invalid API key",
+                    )
+                })
+            }
             None => Some(ApiError::new(
                 StatusCode::FORBIDDEN,
                 "authentication_error",
@@ -48,4 +61,18 @@ pub(super) async fn request_context(
         HeaderValue::from_str(&request_id).expect("UUID is an ASCII header"),
     );
     response
+}
+
+/// The key offered as a WebSocket subprotocol, if any.
+fn protocol_key(request: &Request) -> Option<String> {
+    let protocols = request
+        .headers()
+        .get("sec-websocket-protocol")?
+        .to_str()
+        .ok()?;
+    protocols
+        .split(',')
+        .map(str::trim)
+        .find_map(|p| p.strip_prefix("openai-insecure-api-key."))
+        .map(String::from)
 }

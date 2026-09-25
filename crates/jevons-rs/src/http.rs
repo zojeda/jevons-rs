@@ -1,6 +1,6 @@
 //! Compose routes, middleware, and body limits around shared application state.
 
-use crate::{error::ApiError, handlers, middleware::request_context, worker};
+use crate::{error::ApiError, handlers, middleware::request_context, speech, worker};
 use axum::{
     Router,
     extract::DefaultBodyLimit,
@@ -8,29 +8,84 @@ use axum::{
     middleware,
     routing::{get, post},
 };
+use jevons_engine::SpeechInfo;
 use std::sync::Arc;
 
 pub const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
+/// The largest audio upload, as OpenAI allows.
+pub const MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
+/// Room for the other multipart fields of a transcription request.
+const FORM_OVERHEAD_BYTES: usize = 1024 * 1024;
 
+/// The diffusion language model and the names it answers to.
 #[derive(Clone)]
-pub struct AppState {
+pub struct TextService {
     pub worker: worker::Client,
     pub model_id: String,
     /// Routing aliases accepted in place of `model_id`.
     pub aliases: Arc<[String]>,
     /// Model listing description.
     pub description: String,
+}
+
+/// The speech-to-text model and the names it answers to.
+#[derive(Clone)]
+pub struct SpeechService {
+    pub worker: speech::Client,
+    pub model_id: String,
+    pub aliases: Arc<[String]>,
+    pub description: String,
+    pub info: SpeechInfo,
+    /// Longest upload or Realtime buffer, in seconds.
+    pub max_audio_seconds: f64,
+    /// Whether `/v1/realtime` is served.
+    pub realtime: bool,
+}
+
+impl TextService {
+    pub fn serves(&self, model: &str) -> bool {
+        model == self.model_id || self.aliases.iter().any(|a| a == model)
+    }
+}
+
+impl SpeechService {
+    pub fn serves(&self, model: &str) -> bool {
+        model == self.model_id || self.aliases.iter().any(|a| a == model)
+    }
+
+    /// The model ID, then its aliases.
+    pub fn names(&self) -> Vec<String> {
+        std::iter::once(self.model_id.clone())
+            .chain(self.aliases.iter().cloned())
+            .collect()
+    }
+}
+
+/// At least one of `text` and `speech` is present.
+#[derive(Clone)]
+pub struct AppState {
+    pub text: Option<TextService>,
+    pub speech: Option<SpeechService>,
     pub api_key: Option<Arc<str>>,
 }
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    let mut router = Router::new()
         .route("/health", get(handlers::health))
         .route("/v1/models", get(handlers::models))
         .route("/v1/systemone", post(handlers::system_one))
         .route("/v1/chat/completions", post(handlers::chat_completions))
         .route("/v1/completions", post(handlers::completions))
         .route("/v1/responses", post(handlers::responses))
+        .route(
+            "/v1/audio/transcriptions",
+            post(handlers::transcriptions)
+                .layer(DefaultBodyLimit::max(MAX_AUDIO_BYTES + FORM_OVERHEAD_BYTES)),
+        );
+    if state.speech.as_ref().is_some_and(|s| s.realtime) {
+        router = router.route("/v1/realtime", get(handlers::realtime));
+    }
+    router
         .fallback(|| async {
             ApiError::new(StatusCode::NOT_FOUND, "not_found_error", "Unknown path")
         })
@@ -64,10 +119,13 @@ mod tests {
         let (sender, receiver) = mpsc::channel(1);
         (
             router(AppState {
-                worker: worker::Client { sender },
-                model_id: "local".into(),
-                aliases: ["jev-latest".to_string()].into(),
-                description: "Local test model.".into(),
+                text: Some(TextService {
+                    worker: worker::Client { sender },
+                    model_id: "local".into(),
+                    aliases: ["jev-latest".to_string()].into(),
+                    description: "Local test model.".into(),
+                }),
+                speech: None,
                 api_key: key.map(Arc::from),
             }),
             receiver,
@@ -422,5 +480,286 @@ mod tests {
         worker.await.unwrap();
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["error"]["message"], "too long");
+    }
+
+    /// A 16-bit mono WAV file.
+    fn wav(rate: u32, samples: &[f32]) -> Vec<u8> {
+        let data = samples.len() as u32 * 2;
+        let mut bytes = Vec::new();
+        bytes.extend(b"RIFF");
+        bytes.extend((36 + data).to_le_bytes());
+        bytes.extend(b"WAVEfmt ");
+        bytes.extend(16u32.to_le_bytes());
+        bytes.extend(1u16.to_le_bytes());
+        bytes.extend(1u16.to_le_bytes());
+        bytes.extend(rate.to_le_bytes());
+        bytes.extend((rate * 2).to_le_bytes());
+        bytes.extend(2u16.to_le_bytes());
+        bytes.extend(16u16.to_le_bytes());
+        bytes.extend(b"data");
+        bytes.extend(data.to_le_bytes());
+        for s in samples {
+            bytes.extend(((s * 32768.0).round() as i16).to_le_bytes());
+        }
+        bytes
+    }
+
+    async fn speech_app() -> Router {
+        router(AppState {
+            text: None,
+            speech: Some(crate::speech::scripted_service(20.0).await),
+            api_key: None,
+        })
+    }
+
+    /// Posts a multipart form; `file` is (file name, bytes).
+    async fn post_form(
+        app: Router,
+        fields: &[(&str, &str)],
+        file: Option<(&str, Vec<u8>)>,
+    ) -> (StatusCode, String, String) {
+        let boundary = "jevons-test-boundary";
+        let mut body = Vec::new();
+        for (name, value) in fields {
+            body.extend(
+                format!(
+                    "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+                )
+                .bytes(),
+            );
+        }
+        if let Some((file_name, bytes)) = file {
+            body.extend(
+                format!(
+                    "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; \
+                     filename=\"{file_name}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+                )
+                .bytes(),
+            );
+            body.extend(bytes);
+            body.extend(b"\r\n");
+        }
+        body.extend(format!("--{boundary}--\r\n").bytes());
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/v1/audio/transcriptions")
+                    .header(
+                        "content-type",
+                        format!("multipart/form-data; boundary={boundary}"),
+                    )
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap().to_string())
+            .unwrap_or_default();
+        let bytes = to_bytes(response.into_body(), MAX_BODY_BYTES)
+            .await
+            .unwrap();
+        (
+            status,
+            content_type,
+            String::from_utf8(bytes.to_vec()).unwrap(),
+        )
+    }
+
+    fn speech_audio(seconds: usize) -> Vec<u8> {
+        wav(100, &crate::speech::spoken(seconds, 100))
+    }
+
+    #[tokio::test]
+    async fn transcriptions_answer_in_every_response_format() {
+        let app = speech_app().await;
+        let audio = || Some(("speech.wav", speech_audio(7)));
+        let (status, content_type, body) =
+            post_form(app.clone(), &[("model", "scripted-asr")], audio()).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(content_type.starts_with("application/json"));
+        let json: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["text"], "w1 w2 w3 w4. w5 w6 w7");
+        assert_eq!(json["usage"], json!({"type": "duration", "seconds": 7}));
+
+        let (_, content_type, body) = post_form(
+            app.clone(),
+            &[("model", "asr-latest"), ("response_format", "text")],
+            audio(),
+        )
+        .await;
+        assert!(content_type.starts_with("text/plain"));
+        assert_eq!(body, "w1 w2 w3 w4. w5 w6 w7");
+
+        let (_, _, body) = post_form(
+            app.clone(),
+            &[("model", "scripted-asr"), ("response_format", "srt")],
+            audio(),
+        )
+        .await;
+        assert!(
+            body.starts_with("1\n00:00:00,000 --> 00:00:03,500\nw1 w2 w3 w4.\n\n2\n"),
+            "{body}"
+        );
+
+        let (_, _, body) = post_form(
+            app,
+            &[
+                ("model", "scripted-asr"),
+                ("language", "es"),
+                ("response_format", "verbose_json"),
+                ("timestamp_granularities[]", "word"),
+                ("timestamp_granularities[]", "segment"),
+            ],
+            audio(),
+        )
+        .await;
+        let json: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["language"], "es");
+        assert_eq!(json["duration"], 7.0);
+        assert_eq!(json["segments"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            json["words"][4],
+            json!({"word": "w5", "start": 4.0, "end": 4.5})
+        );
+    }
+
+    #[tokio::test]
+    async fn streamed_transcriptions_send_segment_deltas_then_the_text() {
+        let (status, content_type, body) = post_form(
+            speech_app().await,
+            &[("model", "scripted-asr"), ("stream", "true")],
+            Some(("speech.wav", speech_audio(7))),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(content_type.starts_with("text/event-stream"));
+        let events: Vec<Value> = body
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .map(|data| serde_json::from_str(data).unwrap())
+            .collect();
+        let kinds: Vec<&str> = events.iter().map(|e| e["type"].as_str().unwrap()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "transcript.text.delta",
+                "transcript.text.delta",
+                "transcript.text.done"
+            ]
+        );
+        assert_eq!(events[0]["delta"], "w1 w2 w3 w4.");
+        assert_eq!(events[1]["delta"], " w5 w6 w7");
+        assert_eq!(events[2]["text"], "w1 w2 w3 w4. w5 w6 w7");
+    }
+
+    #[tokio::test]
+    async fn transcription_requests_fail_before_inference_with_openai_errors() {
+        let app = speech_app().await;
+        let error =
+            |body: &str| -> Value { serde_json::from_str::<Value>(body).unwrap()["error"].clone() };
+        let (status, _, body) = post_form(app.clone(), &[("model", "scripted-asr")], None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(error(&body)["param"], "file");
+        let (status, _, body) = post_form(
+            app.clone(),
+            &[("model", "whisper-1")],
+            Some(("a.wav", speech_audio(1))),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(error(&body)["code"], "model_not_found");
+        let (status, _, body) = post_form(
+            app.clone(),
+            &[("model", "scripted-asr"), ("prompt", "names")],
+            Some(("a.wav", speech_audio(1))),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(error(&body)["code"], "unsupported_parameter");
+        let (status, _, body) = post_form(
+            app.clone(),
+            &[("model", "scripted-asr")],
+            Some(("a.webm", b"\x1aE\xdf\xa3 not really webm".to_vec())),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            error(&body)["message"]
+                .as_str()
+                .unwrap()
+                .contains("Supported audio")
+        );
+        let (status, _, _) = post_form(
+            app.clone(),
+            &[("model", "scripted-asr")],
+            Some(("big.wav", vec![0; MAX_AUDIO_BYTES + FORM_OVERHEAD_BYTES])),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        // Without a language model, its routes do not know any model.
+        let (status, body) = send(
+            app,
+            "/v1/chat/completions",
+            r#"{"model":"local","messages":[{"role":"user","content":"x"}]}"#,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["code"], "model_not_found");
+    }
+
+    #[tokio::test]
+    async fn listings_and_health_include_the_speech_model() {
+        let (sender, _receiver) = mpsc::channel(1);
+        let app = router(AppState {
+            text: Some(TextService {
+                worker: worker::Client { sender },
+                model_id: "local".into(),
+                aliases: Arc::from([]),
+                description: "Local test model.".into(),
+            }),
+            speech: Some(crate::speech::scripted_service(20.0).await),
+            api_key: None,
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/v1/models")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+        let models: Value = serde_json::from_slice(&bytes).unwrap();
+        let ids: Vec<&str> = models["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["local", "scripted-asr", "asr-latest"]);
+        assert_eq!(models["models"][1]["description"], "Scripted speech.");
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+        let health: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            health,
+            json!({"status": "ok", "model": "local", "speech_model": "scripted-asr"})
+        );
     }
 }

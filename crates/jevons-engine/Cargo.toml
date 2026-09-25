@@ -17,7 +17,7 @@ required-features = ["models"]
 [features]
 default = ["models"]
 # Architecture detection and the built-in model implementations.
-models = ["dep:jevons-models", "jevons-models/gemma4", "jevons-models/nemotron"]
+models = ["dep:jevons-models", "jevons-models/gemma4", "jevons-models/nemotron", "jevons-models/parakeet"]
 
 [dependencies]
 jevons-core.workspace = true

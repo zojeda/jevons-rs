@@ -9,6 +9,7 @@ rust-version = "1.95"
 publish = false
 
 [workspace.dependencies]
+jevons-audio = { path = "crates/jevons-audio" }
 jevons-burn = { path = "crates/jevons-burn" }
 jevons-core = { path = "crates/jevons-core" }
 jevons-gemma4-diffusion = { path = "crates/jevons-gemma4-diffusion" }
@@ -17,6 +18,7 @@ jevons-formats = { path = "crates/jevons-formats" }
 jevons-kernels = { path = "crates/jevons-kernels" }
 jevons-tokenizer = { path = "crates/jevons-tokenizer" }
 jevons-nemotron-diffusion = { path = "crates/jevons-nemotron-diffusion" }
+jevons-parakeet = { path = "crates/jevons-parakeet" }
 jevons-models = { path = "crates/jevons-models", default-features = false }
 jevons-system-one = { path = "crates/jevons-system-one" }
 jevons-openai = { path = "crates/jevons-openai" }

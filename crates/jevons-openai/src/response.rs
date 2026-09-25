@@ -11,7 +11,7 @@ pub struct Event {
 }
 
 impl Event {
-    fn data(value: Value) -> Self {
+    pub(crate) fn data(value: Value) -> Self {
         Self {
             name: None,
             data: value.to_string(),

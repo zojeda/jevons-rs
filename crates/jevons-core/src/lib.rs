@@ -1,4 +1,4 @@
-//! Backend-independent structured inference inputs, results, errors, and the model contract.
+//! Backend-independent structured inference inputs, results, errors, and the model contracts.
 #![forbid(unsafe_code)]
 
 mod config;
@@ -8,6 +8,7 @@ mod image;
 mod model;
 mod profile;
 mod read;
+mod speech;
 
 pub use config::ModelConfig;
 pub use error::{Error, Result};
@@ -22,3 +23,4 @@ pub use model::{
 };
 pub use profile::PrefillProfile;
 pub use read::{ImageInput, ReadOptions, ReadRequest, ReadResult, Slot, SlotRead};
+pub use speech::{Segment, SpeechConfig, SpeechInfo, SpeechModel, SpeechToken, Transcript, Word};

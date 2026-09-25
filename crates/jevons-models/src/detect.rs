@@ -149,6 +149,12 @@ fn detect_checkpoint(dir: &Path) -> Result<Architecture> {
     }) {
         return Ok(Architecture::NemotronDiffusion);
     }
+    if crate::speech::is_speech_checkpoint(&config) {
+        return Err(Error::UnsupportedModel(format!(
+            "{} is a speech-to-text model; serve it with --speech-model",
+            dir.display()
+        )));
+    }
     Err(Error::UnsupportedModel(format!(
         "checkpoint model_type {model_type:?} is not supported"
     )))

@@ -7,6 +7,13 @@
 model = "~/models/nemotron-labs-diffusion-vlm-8b"
 # arch = "auto"                  # or gemma4-diffusion, nemotron-diffusion
 # mmproj = "~/models/diffusiongemma/mmproj.gguf"   # DiffusionGemma image input only
+# Speech-to-text model (Parakeet TDT checkpoint directory): /v1/audio/transcriptions and the
+# /v1/realtime WebSocket. Set it with or without `model`.
+# speech_model = "~/models/parakeet-tdt-0.6b-v3"
+# speech_model_id = "parakeet-tdt-0.6b-v3"   # defaults to the model's own ID
+# speech_queue_capacity = 8
+# max_audio_seconds = 3600.0    # longest upload or Realtime buffer
+# realtime = true
 bind = "127.0.0.1:8080"
 # model_id = "nemotron-diffusion-8b"   # defaults to the model's own ID
 

@@ -2,14 +2,17 @@
 //!
 //! Each supported architecture implements [`jevons_core::DiffusionModel`]; [`load`] picks one
 //! from the model files, or from an explicit `--arch` choice, and loads it on the calling thread.
+//! Speech models implement [`jevons_core::SpeechModel`] and load with [`load_speech`].
 #![forbid(unsafe_code)]
 
 mod detect;
 #[cfg(feature = "gemma4")]
 mod gemma4;
+mod speech;
 
 pub use detect::{Architecture, default_model_id, detect};
 use jevons_core::{DiffusionModel, Error, ModelConfig, Result};
+pub use speech::{SpeechArchitecture, default_speech_model_id, detect_speech, load_speech};
 
 /// Loads the model named by `config` on the calling thread.
 pub fn load(config: &ModelConfig) -> Result<Box<dyn DiffusionModel>> {
