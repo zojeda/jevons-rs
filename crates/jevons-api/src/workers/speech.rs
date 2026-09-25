@@ -196,6 +196,8 @@ pub(crate) async fn start_with(
 #[cfg(test)]
 pub(crate) struct ScriptedModel {
     pub info: SpeechInfo,
+    /// When set, the first pass waits for a signal, so a test can queue work behind it.
+    pub gate: Option<std::sync::mpsc::Receiver<()>>,
 }
 
 #[cfg(test)]
@@ -210,6 +212,7 @@ impl ScriptedModel {
                 max_window_seconds,
                 languages: &["en", "es"],
             },
+            gate: None,
         }
     }
 }
@@ -224,6 +227,9 @@ impl jevons_core::SpeechModel for ScriptedModel {
         &mut self,
         samples: &[f32],
     ) -> jevons_core::Result<Vec<jevons_core::SpeechToken>> {
+        if let Some(gate) = self.gate.take() {
+            let _ = gate.recv();
+        }
         let level = |x: f32| {
             if x >= 0.005 {
                 (x * 100.0).round() as u32
@@ -336,10 +342,18 @@ mod tests {
 
     #[tokio::test]
     async fn live_passes_run_between_the_windows_of_a_long_recording() {
-        let client = scripted(12.0).await;
-        // Hold the thread on a long recording, then queue a live pass behind it.
+        // The recording's first window waits until the live pass is queued behind it.
+        let (open, gate) = std::sync::mpsc::channel();
+        let (client, _thread, _) = start_with(4, move || {
+            let mut model = ScriptedModel::new(12.0);
+            model.gate = Some(gate);
+            Ok(Transcriber::new(Box::new(model)))
+        })
+        .await
+        .unwrap();
         let mut long = client.transcribe(spoken(60, 100), false).unwrap();
         let pass = client.pass(spoken(2, 100)).unwrap();
+        open.send(()).unwrap();
         let mut segments_before_pass = None;
         let mut segments = 0;
         let mut pass = Some(pass);
