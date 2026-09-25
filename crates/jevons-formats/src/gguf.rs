@@ -6,7 +6,6 @@ use std::{
     collections::HashMap,
     fs::File,
     io::{BufReader, Read, Seek, SeekFrom},
-    os::unix::fs::FileExt,
     path::Path,
 };
 
@@ -358,7 +357,7 @@ impl Gguf {
             ));
         }
         let mut buf = vec![0; info.bytes as usize];
-        self.file.read_exact_at(&mut buf, info.offset)?;
+        crate::io::read_exact_at(&self.file, &mut buf, info.offset)?;
         Ok(buf)
     }
 
@@ -368,7 +367,7 @@ impl Gguf {
             return format_err(format!("range is outside tensor {}", info.name));
         }
         let mut buf = vec![0; len as usize];
-        self.file.read_exact_at(&mut buf, info.offset + start)?;
+        crate::io::read_exact_at(&self.file, &mut buf, info.offset + start)?;
         Ok(buf)
     }
 

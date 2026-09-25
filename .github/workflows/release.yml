@@ -1,0 +1,131 @@
+name: Release
+
+# Every push to main is checked, built for Linux and Windows, and published as a release
+# (tag v0.1.<run number>). Pull requests run the same check and builds without publishing.
+# The binaries load ROCm/HIP at run time; see the release notes.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # HIP binding layout compiled into the binaries: the ROCm version the service is tested on.
+  JEVONS_HIP_VERSION: "7.2.53211"
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Pin the HIP bindings
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          rustc -O .github/hipconfig.rs -o "$RUNNER_TEMP/bin/hipconfig"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+
+  build:
+    needs: check
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            exe: jevons-rs
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            exe: jevons-rs.exe
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: 0.1.${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Pin the HIP bindings
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          rustc -O .github/hipconfig.rs -o "$RUNNER_TEMP/bin/hipconfig${{ runner.os == 'Windows' && '.exe' || '' }}"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Build
+        shell: bash
+        env:
+          JEVONS_BUILD: ${{ env.VERSION }} (${{ github.sha }})
+        run: cargo build --release --locked -p jevons-rs --bin jevons-rs --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          name="jevons-rs-$VERSION-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/${{ matrix.exe }}" README.md jevons.example.toml "dist/$name/"
+          cd dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a -tzip "$name.zip" "$name" > /dev/null
+            sha256sum "$name.zip" > "$name.zip.sha256"
+          else
+            tar czf "$name.tar.gz" "$name"
+            sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+          fi
+          rm -r "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    # Only pushes to main publish; `act` runs the build jobs locally without publishing.
+    if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && !github.event.act }}
+    env:
+      VERSION: 0.1.${{ github.run_number }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        run: |
+          cat > notes.md <<NOTES
+          Build of ${GITHUB_SHA::7} on main.
+
+          - \`jevons-rs-$VERSION-x86_64-unknown-linux-gnu.tar.gz\`: Linux x86-64 (glibc 2.35 or newer).
+          - \`jevons-rs-$VERSION-x86_64-pc-windows-msvc.zip\`: Windows x86-64.
+
+          The service needs an AMD RDNA3-class GPU and loads ROCm/HIP at run time: \`amdhip64\`
+          and \`hiprtc\` from \`ROCM_PATH\`/\`HIP_PATH\` (or their \`lib\` folder) or the system
+          library path. The HIP bindings match ROCm 7.2. The Windows build is untested on a GPU:
+          it needs \`amdhip64.dll\` (installed with the AMD driver) and \`hiprtc.dll\` from the
+          AMD HIP SDK, which may have to be copied next to the executable under that name.
+          Models are not included; copy \`jevons.example.toml\` to \`jevons.toml\` to configure
+          the service.
+          NOTES
+          gh release create "v$VERSION" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "jevons-rs $VERSION" \
+            --notes-file notes.md

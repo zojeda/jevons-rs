@@ -13,8 +13,17 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// The release build (`JEVONS_BUILD`, set by CI) or the crate version.
+const VERSION: &str = match option_env!("JEVONS_BUILD") {
+    Some(build) => build,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 #[derive(Parser, Debug)]
-#[command(about = "A System One and OpenAI-compatible API backed by diffusion language models")]
+#[command(
+    about = "A System One and OpenAI-compatible API backed by diffusion language models",
+    version = VERSION
+)]
 pub struct Settings {
     /// TOML settings file (see jevons.example.toml).
     #[arg(long, env = "JEVONS_CONFIG")]
@@ -78,8 +87,11 @@ struct File {
 
 type Error = Box<dyn std::error::Error>;
 
+/// `HOME`, or `USERPROFILE` on Windows.
 fn home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
 }
 
 /// `~/...` from the home directory; other relative paths from `base`.
@@ -104,9 +116,10 @@ fn default_file() -> Option<PathBuf> {
 }
 
 impl Settings {
-    /// Parses the process arguments and merges the settings file.
+    /// Parses the process arguments and merges the settings file. `--help`, `--version` and
+    /// invalid flags print their message and exit, as usual for clap.
     pub fn load() -> Result<Self, Error> {
-        Self::load_from(std::env::args_os())
+        Self::from_matches(&Self::command().get_matches())
     }
 
     pub fn load_from<I, T>(args: I) -> Result<Self, Error>
@@ -114,8 +127,11 @@ impl Settings {
         I: IntoIterator<Item = T>,
         T: Into<std::ffi::OsString> + Clone,
     {
-        let matches = Self::command().try_get_matches_from(args)?;
-        let mut settings = Self::from_arg_matches(&matches)?;
+        Self::from_matches(&Self::command().try_get_matches_from(args)?)
+    }
+
+    fn from_matches(matches: &clap::ArgMatches) -> Result<Self, Error> {
+        let mut settings = Self::from_arg_matches(matches)?;
         let explicit = settings.config.is_some();
         if let Some(path) = settings.config.clone().or_else(default_file) {
             let text = std::fs::read_to_string(&path)

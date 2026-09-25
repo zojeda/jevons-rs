@@ -72,7 +72,8 @@ impl Buf {
 }
 
 /// Directory for compiled kernels and tuned launch plans: `DIFFUSION_CUBECL_CACHE`, else
-/// `$XDG_CACHE_HOME/diffusion-cubecl`, else `~/.cache/diffusion-cubecl`.
+/// `$XDG_CACHE_HOME/diffusion-cubecl`, else `~/.cache/diffusion-cubecl` (the home directory is
+/// `HOME`, or `USERPROFILE` on Windows).
 pub fn cache_dir() -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
     std::env::var_os("DIFFUSION_CUBECL_CACHE")
@@ -81,7 +82,9 @@ pub fn cache_dir() -> Option<std::path::PathBuf> {
             std::env::var_os("XDG_CACHE_HOME").map(|d| PathBuf::from(d).join("diffusion-cubecl"))
         })
         .or_else(|| {
-            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache/diffusion-cubecl"))
+            std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map(|h| PathBuf::from(h).join(".cache/diffusion-cubecl"))
         })
 }
 
