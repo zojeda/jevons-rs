@@ -1,47 +1,6 @@
-use clap::Parser;
-use jevons_engine::{ModelConfig, ThinkDecoding, default_model_id, resolve_architecture};
-use jevons_rs::{AppState, router, worker};
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
-
-#[derive(Parser)]
-#[command(about = "A System One API backed by structured diffusion-model reads")]
-struct Args {
-    /// GGUF file or Hugging Face checkpoint directory.
-    #[arg(short, long, env = "DIFFUSION_MODEL")]
-    model: PathBuf,
-    /// Model architecture; detected from the model files by default.
-    #[arg(long, env = "JEVONS_ARCH", default_value = "auto")]
-    arch: String,
-    /// Separate vision projector for DiffusionGemma; required for its image requests.
-    #[arg(long, env = "DIFFUSION_MMPROJ")]
-    mmproj: Option<PathBuf>,
-    #[arg(long, default_value = "127.0.0.1:8080")]
-    bind: SocketAddr,
-    /// Served model ID; defaults to the model's ID, such as gemmadiffusion-0.1 or
-    /// nemotron-diffusion-3b.
-    #[arg(long)]
-    model_id: Option<String>,
-    #[arg(long, env = "TYPESAFE_API_KEY", hide_env_values = true)]
-    api_key: Option<String>,
-    /// HIP device index.
-    #[arg(long, default_value_t = 0)]
-    main_gpu: usize,
-    #[arg(long, default_value_t = 8192)]
-    context_size: u32,
-    #[arg(long, default_value_t = 512)]
-    batch_size: u32,
-    /// Recompute every prompt instead of reusing the longest cached token prefix.
-    #[arg(long)]
-    no_prompt_cache: bool,
-    #[arg(long, default_value_t = 42)]
-    seed: u64,
-    #[arg(long, default_value_t = 8)]
-    queue_capacity: usize,
-    /// How thoughts (`think`) are generated: diffusion, self-speculation or autoregressive. The
-    /// last two need a masked model with causal predictions, such as Nemotron-Labs-Diffusion.
-    #[arg(long, default_value = "diffusion")]
-    think_decoding: ThinkDecoding,
-}
+use jevons_engine::{ModelConfig, default_model_id, resolve_architecture};
+use jevons_rs::{AppState, config::Settings, router, worker};
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -50,8 +9,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
-    let args = Args::parse();
-    let mut config = ModelConfig::new(args.model);
+    let args = Settings::load()?;
+    let model = args
+        .model
+        .clone()
+        .ok_or("Set the model with --model, DIFFUSION_MODEL or `model` in the settings file")?;
+    let mut config = ModelConfig::new(model);
     config.architecture = Some(args.arch);
     let architecture = resolve_architecture(&config)?;
     let model_id = args
@@ -80,12 +43,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         model_id.clone(),
         args.seed,
         args.queue_capacity,
-        args.think_decoding,
+        args.decoding,
     )
     .await?;
     tracing::info!(
         model = %info.display_name,
-        think_decoding = args.think_decoding.id(),
+        decoding = args.decoding.id(),
         "Model loaded"
     );
     let app = router(AppState {

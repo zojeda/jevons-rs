@@ -3,6 +3,7 @@
 
 mod config;
 mod error;
+mod generate;
 mod image;
 mod model;
 mod profile;
@@ -10,6 +11,10 @@ mod read;
 
 pub use config::ModelConfig;
 pub use error::{Error, Result};
+pub use generate::{
+    FinishReason, Generation, GenerationPrompt, GenerationRequest, MAX_STOP_SEQUENCES, Message,
+    Role,
+};
 pub use image::{RgbImage, decode_image};
 pub use model::{
     ChatFormat, Conditioning, DiffusionModel, DiffusionScheme, Logits, ModelInfo, PromptPart,

@@ -1,6 +1,7 @@
 //! HTTP transport with a bounded queue and a single owner of the native model.
 #![forbid(unsafe_code)]
 
+pub mod config;
 pub mod error;
 mod handlers;
 mod http;

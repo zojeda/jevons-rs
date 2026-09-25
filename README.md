@@ -45,6 +45,8 @@ export DIFFUSION_MODEL="$HOME/models/diffusiongemma/diffusiongemma-26B-A4B-it-Q4
 cargo run --release --locked -p jevons-rs -- --bind 127.0.0.1:8080
 ```
 
+Flags can also live in a settings file: copy [jevons.example.toml](jevons.example.toml) to `./jevons.toml` (or `~/.config/jevons/config.toml`, or pass `--config`), and flags or environment variables still override it.
+
 The first start on a new GPU measures launch plans and compiles kernel variants, which took a few minutes on the test machine. Later starts reuse the results from `~/.cache/diffusion-cubecl` and load the weights in about 35 s. NVIDIA GPUs and CPU inference are not supported.
 
 ### Nemotron-Labs-Diffusion
@@ -55,7 +57,18 @@ Point `-m` at a [Nemotron-Labs-Diffusion](https://huggingface.co/nvidia/Nemotron
 cargo run --release --locked -p jevons-rs -- -m "$HOME/models/nemotron-labs-diffusion-vlm-8b"
 ```
 
-It runs on the Burn runtime and serves `nemotron-diffusion-8b` (alias `nemotron-diffusion-latest`). Text-only checkpoints such as [Nemotron-Labs-Diffusion-3B](https://huggingface.co/nvidia/Nemotron-Labs-Diffusion-3B) load the same way and are served as `nemotron-diffusion-3b`; they reject images. `--think-decoding self-speculation` (or `autoregressive`) changes how `think` generates thoughts; see [masked diffusion](docs/inference.md#masked-diffusion-nemotron-labs-diffusion). The first start compiles and autotunes kernels for several minutes; results are cached in `~/.cache/jevons-burn`. Image questions work without extra files: the checkpoint contains its Pixtral vision tower (no `--mmproj`). Check the model's license (the VLM card names the NVIDIA Source Code License) before any use beyond evaluation.
+It runs on the Burn runtime and serves `nemotron-diffusion-8b` (alias `nemotron-diffusion-latest`). Text-only checkpoints such as [Nemotron-Labs-Diffusion-3B](https://huggingface.co/nvidia/Nemotron-Labs-Diffusion-3B) load the same way and are served as `nemotron-diffusion-3b`; they reject images. `--decoding self-speculation` (or `autoregressive`) changes how thoughts and free-form answers are generated; see [masked diffusion](docs/inference.md#masked-diffusion-nemotron-labs-diffusion). The first start compiles and autotunes kernels for several minutes; results are cached in `~/.cache/jevons-burn`. Image questions work without extra files: the checkpoint contains its Pixtral vision tower (no `--mmproj`). Check the model's license (the VLM card names the NVIDIA Source Code License) before any use beyond evaluation.
+
+## OpenAI-compatible API
+
+The served model also answers free-form requests on `/v1/chat/completions`, `/v1/completions` and `/v1/responses`, streaming included, so OpenAI SDKs and tools work with `base_url` set to `http://127.0.0.1:8080/v1`:
+
+```bash
+curl http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" \
+  -d '{"model":"nemotron-diffusion-8b","messages":[{"role":"user","content":"What is 15% of 240?"}]}'
+```
+
+Decoding is greedy; tools, several choices and log probabilities are rejected. For Nemotron-Labs-Diffusion, start the server with `--decoding self-speculation` for autoregressive-quality text at about twice the speed of diffusion. See [OpenAI-compatible generation](docs/api.md#openai-compatible-generation).
 
 ## Text example
 
@@ -187,7 +200,7 @@ Measured back to back on the current stack (CubeCL 0.11 / Burn 0.22), one model 
 
 Against the CubeCL 0.10 build of 2026-09-23 (the table below), DiffusionGemma's JevBench and corpus scores each moved by one near-tie case, while JevBench latency and calibration improved. In an interleaved A/B on one day, the new build prefilled 15–25% faster than the old one. The corpus p95 includes two requests that paid one-time kernel compilation on a freshly started service. Nemotron activates all 8B parameters per forward, while DiffusionGemma's MoE activates about 4B; Nemotron's lower accuracy matches the official Python implementation's answers.
 
-The text-only [Nemotron-Labs-Diffusion 3B](https://huggingface.co/nvidia/Nemotron-Labs-Diffusion-3B) answered 143/231 JevBench cases at 0.269 s median latency and 56/84 corpus questions at 240 ms, with a 380 ms Snake prefill: 2.4–2.7 times faster than the 8B, for a small JevBench loss and a larger corpus loss. With `--think-decoding self-speculation`, Nemotron generates thoughts by diffusion drafting and causal verification, with the same tokens as greedy autoregressive decoding. The 8B's thoughts ran at 11.1 tokens/s, against 5.7 with diffusion and 3.0 autoregressive. Its JevBench thoughts are too short to gain, and thinking does not raise its JevBench accuracy. See the [3B and self-speculation report](benchmarks/nemotron-2026-09-25/README.md).
+The text-only [Nemotron-Labs-Diffusion 3B](https://huggingface.co/nvidia/Nemotron-Labs-Diffusion-3B) answered 143/231 JevBench cases at 0.269 s median latency and 56/84 corpus questions at 240 ms, with a 380 ms Snake prefill: 2.4–2.7 times faster than the 8B, for a small JevBench loss and a larger corpus loss. With `--decoding self-speculation`, Nemotron generates thoughts by diffusion drafting and causal verification, with the same tokens as greedy autoregressive decoding. The 8B's thoughts ran at 11.1 tokens/s, against 5.7 with diffusion and 3.0 autoregressive. Its JevBench thoughts are too short to gain, and thinking does not raise its JevBench accuracy. See the [3B and self-speculation report](benchmarks/nemotron-2026-09-25/README.md).
 
 ### DiffusionGemma: CubeCL and the former llama.cpp backend (2026-09-23)
 

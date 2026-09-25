@@ -10,13 +10,14 @@ pub(crate) const BOS: i32 = 1;
 pub(crate) const MASK: i32 = 4;
 const VOCAB: i32 = 512;
 /// Markers parsed only with special tokens enabled.
-const MARKERS: [(&str, i32); 6] = [
+const MARKERS: [(&str, i32); 7] = [
     ("<user>", 10),
     ("<model>", 11),
     ("<think>", 12),
     ("</think>", 13),
     ("<end>", 14),
     ("<nothought>", 15),
+    ("<system>", 9),
 ];
 /// Two-character words tokenized as one token: "w0".."w99" are tokens 300..400.
 const WORDS: i32 = 300;
@@ -83,6 +84,21 @@ impl TextTokenizer for FakeTokenizer {
         Ok(tokens)
     }
 
+    /// Markers decode to nothing; other tokens to the text they were read from.
+    fn decode(&self, tokens: &[i32]) -> Result<String> {
+        Ok(tokens
+            .iter()
+            .filter(|t| !MARKERS.iter().any(|(_, m)| m == *t))
+            .map(|&t| match t {
+                WORDS..400 => format!("w{}", t - WORDS),
+                SPACED_WORDS..500 => format!(" w{}", t - SPACED_WORDS),
+                SPACED_CHARS..212 => format!(" {}", &ALNUM[(t - SPACED_CHARS) as usize..][..1]),
+                16..272 => char::from(u8::try_from(t - 16).unwrap_or(b'?')).to_string(),
+                _ => "?".into(),
+            })
+            .collect())
+    }
+
     fn code_piece(&self, token: i32) -> Option<String> {
         match token {
             WORDS..400 => Some(format!("w{}", token - WORDS)),
@@ -103,9 +119,11 @@ pub(crate) struct FakeModel {
     pub log: Rc<RefCell<Log>>,
     /// Token favored at each canvas row of full logits, by row index.
     pub favored: Vec<i32>,
-    /// Causal continuation after the last `<think>`: the prediction for thought position `k`
-    /// is `causal[k]` whatever the earlier tokens are, or `<end>` past the script.
+    /// Causal continuation after the last `<think>` or `<nothought>` (or, in raw text, after the
+    /// first prediction's prompt): the prediction for position `k` is `causal[k]` whatever the
+    /// earlier tokens are, or `<end>` past the script.
     pub causal: Vec<i32>,
+    origin: Option<usize>,
     pub scheme: DiffusionScheme,
     pub tokenizer: FakeTokenizer,
     profile: PrefillProfile,
@@ -128,6 +146,11 @@ impl FakeModel {
                 bos: true,
                 user_open: "<user>".into(),
                 model_open: "<end><model>".into(),
+                system_open: "<system>".into(),
+                assistant_open: "<model>".into(),
+                turn_close: "<end>".into(),
+                history_prefix: String::new(),
+                answer_stops: vec!["<end>".into()],
                 thought_open: "<think>".into(),
                 thought_close: "</think>".into(),
                 empty_thought: "<nothought>".into(),
@@ -137,6 +160,7 @@ impl FakeModel {
             log: Rc::default(),
             favored: Vec::new(),
             causal: Vec::new(),
+            origin: None,
             scheme: DiffusionScheme::UniformSelfConditioned { mask: MASK },
             tokenizer: FakeTokenizer { space_joins: false },
             profile: PrefillProfile::default(),
@@ -240,11 +264,10 @@ impl DiffusionModel for FakeModel {
         let length = self.prefill(parts, suffix)?;
         assert!((1..=length).contains(&rows));
         self.log.borrow_mut().predicted.push(rows);
-        let start = self
-            .prompt
-            .iter()
-            .rposition(|&t| t == 12)
-            .map_or(length, |i| i + 1);
+        let start = match self.prompt.iter().rposition(|&t| t == 12 || t == 15) {
+            Some(i) => i + 1,
+            None => *self.origin.get_or_insert(length),
+        };
         let predictions = (length - rows..length)
             .map(|position| {
                 let k = (position + 1).saturating_sub(start);

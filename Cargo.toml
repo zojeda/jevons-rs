@@ -19,6 +19,7 @@ jevons-tokenizer = { path = "crates/jevons-tokenizer" }
 jevons-nemotron-diffusion = { path = "crates/jevons-nemotron-diffusion" }
 jevons-models = { path = "crates/jevons-models", default-features = false }
 jevons-system-one = { path = "crates/jevons-system-one" }
+jevons-openai = { path = "crates/jevons-openai" }
 axum = "0.8"
 clap = { version = "4.6", features = ["derive", "env"] }
 rand = "0.9"
@@ -27,6 +28,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 thiserror = "2"
 base64 = "0.22"
+futures-util = { version = "0.3", default-features = false }
+toml = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "signal", "time"] }
 tower = { version = "0.5", features = ["util"] }

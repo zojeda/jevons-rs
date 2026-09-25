@@ -12,10 +12,11 @@ mod fake;
 mod probability;
 mod sampler;
 
-pub use engine::{Engine, ThinkDecoding};
+pub use engine::{Decoding, Engine};
 pub use jevons_core::{
-    DiffusionModel, Error, ImageInput, ModelConfig, ModelInfo, PrefillProfile, ReadOptions,
-    ReadRequest, ReadResult, Result, Slot, SlotRead,
+    DiffusionModel, Error, FinishReason, Generation, GenerationPrompt, GenerationRequest,
+    ImageInput, MAX_STOP_SEQUENCES, Message, ModelConfig, ModelInfo, PrefillProfile, ReadOptions,
+    ReadRequest, ReadResult, Result, Role, Slot, SlotRead,
 };
 #[cfg(feature = "models")]
 pub use jevons_models::{Architecture, default_model_id, resolve as resolve_architecture};

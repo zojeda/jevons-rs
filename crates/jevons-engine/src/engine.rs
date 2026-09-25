@@ -3,14 +3,17 @@
 use crate::sampler::{masked, uniform};
 use crate::{Error, ReadRequest, ReadResult, Result, SlotRead, restricted_softmax};
 use crate::{ImageInput, ReadOptions};
-use jevons_core::{ChatFormat, Conditioning, DiffusionModel, DiffusionScheme, Logits, PromptPart};
+use jevons_core::{
+    ChatFormat, Conditioning, DiffusionModel, DiffusionScheme, Logits, PromptPart, TextTokenizer,
+};
+use jevons_core::{FinishReason, Generation, GenerationPrompt, GenerationRequest, Role};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use std::{collections::HashSet, time::Instant};
 
-/// How a masked diffusion model generates thought tokens.
+/// How text (thoughts and answers) is generated.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ThinkDecoding {
+pub enum Decoding {
     /// The model's diffusion sampler. For masked models, each block starts with the causal
     /// prediction after the committed text and its masks are unmasked by confidence (the
     /// reference `generate`).
@@ -25,10 +28,10 @@ pub enum ThinkDecoding {
     Autoregressive,
 }
 
-impl ThinkDecoding {
+impl Decoding {
     pub const ALL: [Self; 3] = [Self::Diffusion, Self::SelfSpeculation, Self::Autoregressive];
 
-    /// The `--think-decoding` value.
+    /// The `--decoding` value.
     pub fn id(self) -> &'static str {
         match self {
             Self::Diffusion => "diffusion",
@@ -38,7 +41,7 @@ impl ThinkDecoding {
     }
 }
 
-impl std::str::FromStr for ThinkDecoding {
+impl std::str::FromStr for Decoding {
     type Err = Error;
 
     fn from_str(name: &str) -> Result<Self> {
@@ -47,7 +50,7 @@ impl std::str::FromStr for ThinkDecoding {
             .find(|d| d.id() == name)
             .ok_or_else(|| {
                 Error::InvalidInput(format!(
-                    "Unknown think decoding {name:?}; expected diffusion, self-speculation or autoregressive"
+                    "Unknown decoding {name:?}; expected diffusion, self-speculation or autoregressive"
                 ))
             })
     }
@@ -64,7 +67,7 @@ pub struct Engine {
     n_ctx: usize,
     batch_size: usize,
     max_canvas: usize,
-    think_decoding: ThinkDecoding,
+    decoding: Decoding,
 }
 
 impl Engine {
@@ -90,7 +93,7 @@ impl Engine {
             n_ctx: info.n_ctx,
             batch_size: info.batch_size,
             max_canvas: info.max_canvas,
-            think_decoding: ThinkDecoding::Diffusion,
+            decoding: Decoding::Diffusion,
             chat,
             model,
             codes: Vec::new(),
@@ -101,21 +104,20 @@ impl Engine {
 
     /// Selects how thoughts are generated. Self-speculation and autoregressive decoding need a
     /// masked diffusion model with causal next-token predictions.
-    pub fn set_think_decoding(&mut self, decoding: ThinkDecoding) -> Result<()> {
-        if decoding != ThinkDecoding::Diffusion
-            && !matches!(self.scheme, DiffusionScheme::Masked { .. })
+    pub fn set_decoding(&mut self, decoding: Decoding) -> Result<()> {
+        if decoding != Decoding::Diffusion && !matches!(self.scheme, DiffusionScheme::Masked { .. })
         {
             return Err(Error::InvalidInput(format!(
-                "Think decoding {} needs a masked diffusion model with causal predictions",
+                "Decoding {} needs a masked diffusion model with causal predictions",
                 decoding.id()
             )));
         }
-        self.think_decoding = decoding;
+        self.decoding = decoding;
         Ok(())
     }
 
-    pub fn think_decoding(&self) -> ThinkDecoding {
-        self.think_decoding
+    pub fn decoding(&self) -> Decoding {
+        self.decoding
     }
 
     /// Verified single-token codes used to represent arbitrary external labels.
@@ -298,27 +300,7 @@ impl Engine {
             forward_ms: 0.0,
         };
         if options.think > 0 {
-            let thought = match self.scheme {
-                DiffusionScheme::UniformSelfConditioned { .. } => {
-                    self.think(&prompt, options.think, seed)?
-                }
-                DiffusionScheme::Masked {
-                    block,
-                    threshold,
-                    max_steps,
-                    ..
-                } => match self.think_decoding {
-                    ThinkDecoding::Diffusion => {
-                        self.think_masked(&prompt, options.think, block, threshold, max_steps)?
-                    }
-                    ThinkDecoding::SelfSpeculation => {
-                        self.think_causal(&prompt, options.think, block)?
-                    }
-                    ThinkDecoding::Autoregressive => {
-                        self.think_causal(&prompt, options.think, 1)?
-                    }
-                },
-            };
+            let thought = self.think_with(&prompt, options.think, seed, self.decoding)?;
             suffix = thought.suffix;
             result.prompt_tokens += thought.input_tokens;
             result.output_tokens = thought.output_tokens;
@@ -354,6 +336,125 @@ impl Engine {
             result.slots.extend(averaged);
         }
         Ok(result)
+    }
+
+    /// Generates a free-form answer (the OpenAI-compatible endpoints). `on_text` receives the
+    /// answer text in order as it is decided and returns false to stop, for example when the
+    /// client has gone. Text that could still become a stop sequence is held back until it
+    /// cannot.
+    pub fn generate(
+        &mut self,
+        request: &GenerationRequest,
+        seed: u64,
+        on_text: &mut dyn FnMut(&str) -> bool,
+    ) -> Result<Generation> {
+        request.validate()?;
+        *self.model.profile() = crate::PrefillProfile::default();
+        let (prompt, framing) = match &request.prompt {
+            GenerationPrompt::Chat(messages) => {
+                let mut tokens = if self.chat.bos {
+                    self.tokenize("", true, false)?
+                } else {
+                    Vec::new()
+                };
+                for message in messages {
+                    let (open, prefix) = match message.role {
+                        Role::System => (&self.chat.system_open, ""),
+                        Role::User => (&self.chat.user_open, ""),
+                        Role::Assistant => {
+                            (&self.chat.assistant_open, self.chat.history_prefix.as_str())
+                        }
+                    };
+                    tokens.extend(self.tokenize(open, false, true)?);
+                    tokens.extend(self.tokenize(prefix, false, true)?);
+                    tokens.extend(self.tokenize(&message.text, false, false)?);
+                    tokens.extend(self.tokenize(&self.chat.turn_close, false, true)?);
+                }
+                tokens.extend(self.tokenize(&self.chat.assistant_open, false, true)?);
+                let framing = if request.think > 0 {
+                    Vec::new()
+                } else {
+                    self.tokenize(&self.chat.empty_thought, false, true)?
+                };
+                (tokens, framing)
+            }
+            GenerationPrompt::Text(text) => {
+                (self.tokenize(text, self.chat.bos, false)?, Vec::new())
+            }
+        };
+        if prompt.is_empty() {
+            return Err(Error::InvalidInput("The prompt is empty".into()));
+        }
+        let thought_reserve = if request.think > 0 {
+            request.think + self.tokenize(&self.chat.thought_open, false, true)?.len() + 1
+        } else {
+            framing.len()
+        };
+        let available = self.n_ctx.saturating_sub(prompt.len() + thought_reserve);
+        let max_tokens = request
+            .max_tokens
+            .unwrap_or(DEFAULT_MAX_TOKENS.min(available));
+        if max_tokens == 0 || max_tokens > available {
+            return Err(Error::InvalidInput(format!(
+                "The prompt needs {} tokens and the answer up to {max_tokens}; the context allows {}",
+                prompt.len() + thought_reserve,
+                self.n_ctx
+            )));
+        }
+        let prompt_tokens = prompt.len();
+        let prompt = [PromptPart::Text(prompt)];
+        let (start, reasoning_tokens) = if request.think > 0 {
+            let thought = self.think_with(&prompt, request.think, seed, self.decoding)?;
+            (thought.suffix, thought.output_tokens)
+        } else {
+            (framing, 0)
+        };
+        let stops = self.marker_tokens(&self.chat.answer_stops)?;
+        let holdback = request.stop.iter().map(String::len).max().unwrap_or(1) - 1;
+        let mut answer = Answer {
+            trim_start: matches!(request.prompt, GenerationPrompt::Chat(_)),
+            ..Answer::default()
+        };
+        let mut sink = |tokens: &[i32], tokenizer: &dyn TextTokenizer| {
+            answer.tokens.extend(tokens);
+            match tokenizer.decode(&answer.tokens) {
+                Ok(text) => answer.advance(text, &request.stop, holdback, false, on_text),
+                Err(error) => {
+                    answer.error = Some(error);
+                    false
+                }
+            }
+        };
+        let generated = self.generate_tokens(
+            &prompt,
+            &start,
+            max_tokens,
+            &stops,
+            seed,
+            self.decoding,
+            &mut sink,
+        )?;
+        if let Some(error) = answer.error.take() {
+            return Err(error);
+        }
+        if !answer.stopped && !answer.gone {
+            let text = self.model.tokenizer().decode(&answer.tokens)?;
+            answer.advance(text, &request.stop, holdback, true, on_text);
+        }
+        let finish = if generated.stopped || answer.stopped {
+            FinishReason::Stop
+        } else {
+            FinishReason::Length
+        };
+        Ok(Generation {
+            text: answer.text,
+            prompt_tokens: prompt_tokens + start.len(),
+            completion_tokens: reasoning_tokens
+                + generated.tokens.len()
+                + usize::from(generated.stopped),
+            reasoning_tokens,
+            finish,
+        })
     }
 
     /// The user turn with any images, then the opened model turn.
@@ -523,42 +624,118 @@ impl Engine {
     fn thought_markers(&self) -> Result<(Vec<i32>, Vec<i32>, Vec<i32>)> {
         let open = self.tokenize(&self.chat.thought_open, false, true)?;
         let close = self.tokenize(&self.chat.thought_close, false, true)?;
-        let stops = self
-            .chat
-            .thought_stops
-            .iter()
-            .map(|marker| self.single_token(marker))
-            .collect::<Result<Vec<_>>>()?;
+        let stops = self.marker_tokens(&self.chat.thought_stops)?;
         Ok((open, close, stops))
+    }
+
+    fn marker_tokens(&self, markers: &[String]) -> Result<Vec<i32>> {
+        markers.iter().map(|m| self.single_token(m)).collect()
+    }
+
+    fn single_token(&self, marker: &str) -> Result<i32> {
+        match self.tokenize(marker, false, true)?[..] {
+            [token] => Ok(token),
+            _ => Err(Error::UnsupportedModel(format!(
+                "the tokenizer has no single token for the chat marker {marker}"
+            ))),
+        }
+    }
+
+    /// A bounded thought after `prompt`, generated with `decoding`.
+    fn think_with(
+        &mut self,
+        prompt: &[PromptPart],
+        budget: usize,
+        seed: u64,
+        decoding: Decoding,
+    ) -> Result<Thought> {
+        let (open, close, stops) = self.thought_markers()?;
+        let generated = self.generate_tokens(
+            prompt,
+            &open,
+            budget,
+            &stops,
+            seed,
+            decoding,
+            &mut |_, _| true,
+        )?;
+        Ok(Thought {
+            output_tokens: generated.tokens.len() + usize::from(generated.stopped),
+            suffix: [open, generated.tokens, close].concat(),
+            input_tokens: generated.input_tokens,
+            forward_ms: generated.forward_ms,
+            forwards: generated.forwards,
+            accepted: generated.accepted,
+        })
+    }
+
+    /// Generates up to `budget` tokens after `prompt + start`, ending before the first of
+    /// `stops`. `sink` receives each newly decided run of tokens and returns false to end early.
+    #[allow(clippy::too_many_arguments)]
+    fn generate_tokens(
+        &mut self,
+        prompt: &[PromptPart],
+        start: &[i32],
+        budget: usize,
+        stops: &[i32],
+        seed: u64,
+        decoding: Decoding,
+        sink: Sink<'_>,
+    ) -> Result<Generated> {
+        match self.scheme {
+            DiffusionScheme::UniformSelfConditioned { .. } => {
+                self.generate_uniform(prompt, start, budget, stops, seed, sink)
+            }
+            DiffusionScheme::Masked {
+                block,
+                threshold,
+                max_steps,
+                ..
+            } => match decoding {
+                Decoding::Diffusion => self.generate_masked(
+                    prompt, start, budget, stops, block, threshold, max_steps, sink,
+                ),
+                Decoding::SelfSpeculation => {
+                    self.generate_causal(prompt, start, budget, stops, block, sink)
+                }
+                Decoding::Autoregressive => {
+                    self.generate_causal(prompt, start, budget, stops, 1, sink)
+                }
+            },
+        }
     }
 
     /// Masked block diffusion (the reference `generate` with causal context). Each block starts
     /// with the causal prediction after the committed text; its masks are unmasked by
     /// full-vocabulary confidence and the block is truncated at the first stop marker. The next
     /// block's prefill commits it to the prompt cache and predicts that block's first token.
-    fn think_masked(
+    #[allow(clippy::too_many_arguments)]
+    fn generate_masked(
         &mut self,
         prompt: &[PromptPart],
+        start: &[i32],
         budget: usize,
+        stops: &[i32],
         block: usize,
         threshold: f64,
         max_steps: usize,
-    ) -> Result<Thought> {
-        let (mut suffix, close, stops) = self.thought_markers()?;
-        let mut thought = Thought::default();
-        while thought.output_tokens < budget {
+        sink: Sink<'_>,
+    ) -> Result<Generated> {
+        let mut suffix = start.to_vec();
+        let mut generated = Generated::default();
+        while generated.tokens.len() < budget {
             let (prompt_length, first) = self.model.prefill_predict(prompt, &suffix, 1)?;
-            thought.input_tokens += prompt_length;
-            thought.forwards += 1;
+            generated.input_tokens += prompt_length;
+            generated.forwards += 1;
             let count = block
                 .min(self.max_canvas)
                 .min(self.batch_size)
-                .min(budget - thought.output_tokens);
+                .min(budget - generated.tokens.len());
             let mut canvas = vec![self.mask; count];
             canvas[0] = *first.first().ok_or(Error::InvalidLogits)?;
             let mut open = vec![true; count];
             open[0] = false;
-            let start = Instant::now();
+            let clock = Instant::now();
             for step in 0..max_steps.max(1) {
                 // Stop once a stop marker is fixed and everything before it is too.
                 let settled = open.iter().position(|&o| o).unwrap_or(count);
@@ -571,7 +748,7 @@ impl Engine {
                     Conditioning::None,
                     Logits::Full,
                 )?;
-                thought.forwards += 1;
+                generated.forwards += 1;
                 let proposals = self.model.greedy_proposals()?;
                 if proposals.len() != count {
                     return Err(Error::InvalidLogits);
@@ -594,22 +771,25 @@ impl Engine {
                     open[rows[k]] = false;
                 }
             }
-            thought.forward_ms += start.elapsed().as_secs_f64() * 1000.0;
+            generated.forward_ms += clock.elapsed().as_secs_f64() * 1000.0;
             let settled = open.iter().position(|&o| o).unwrap_or(count);
             let stop = canvas[..settled].iter().position(|t| stops.contains(t));
             let length = stop.unwrap_or(settled);
-            suffix.extend(&canvas[..length]);
-            thought.output_tokens += length + usize::from(stop.is_some());
-            if stop.is_some() || length == 0 {
+            if !generated.push(
+                &canvas[..length],
+                stop.is_some(),
+                self.model.tokenizer(),
+                sink,
+            ) || length == 0
+            {
                 break;
             }
+            suffix.extend(&canvas[..length]);
         }
-        suffix.extend(close);
-        thought.suffix = suffix;
-        Ok(thought)
+        Ok(generated)
     }
 
-    /// Greedy causal decoding of a thought, verifying up to `block` tokens per causal forward.
+    /// Greedy causal decoding, verifying up to `block` tokens per causal forward.
     ///
     /// The last decided token is pending: predicted, but not yet in the prompt cache. With
     /// `block > 1` this is linear self-speculation: one bidirectional forward fills the masks
@@ -617,33 +797,40 @@ impl Engine {
     /// and the drafts are kept while they match those predictions, followed by the prediction
     /// after the last match. Cached rows past the kept tokens are dropped by the next prefill.
     /// With `block == 1` it is plain autoregressive decoding; both give the same tokens.
-    fn think_causal(
+    fn generate_causal(
         &mut self,
         prompt: &[PromptPart],
+        start: &[i32],
         budget: usize,
+        stops: &[i32],
         block: usize,
-    ) -> Result<Thought> {
-        let (open, close, stops) = self.thought_markers()?;
-        let mut thought = Thought::default();
-        let (prompt_length, first) = self.model.prefill_predict(prompt, &open, 1)?;
-        thought.input_tokens += prompt_length;
-        thought.forwards += 1;
+        sink: Sink<'_>,
+    ) -> Result<Generated> {
+        let mut generated = Generated::default();
+        if budget == 0 {
+            return Ok(generated);
+        }
+        let (prompt_length, first) = self.model.prefill_predict(prompt, start, 1)?;
+        generated.input_tokens += prompt_length;
+        generated.forwards += 1;
         let first = *first.first().ok_or(Error::InvalidLogits)?;
-        let mut stopped = stops.contains(&first);
-        // Decided thought tokens before any stop marker; the last one is pending.
-        let mut text = if stopped { Vec::new() } else { vec![first] };
+        let stopped = stops.contains(&first);
+        let tokenizer = self.model.tokenizer();
+        let mut going = generated.push(&[first][..usize::from(!stopped)], stopped, tokenizer, sink);
         let capacity = block.max(1).min(self.max_canvas).min(self.batch_size);
-        while !stopped && text.len() < budget {
+        // The decided tokens are `generated.tokens`; the last one is pending.
+        while going && generated.tokens.len() < budget {
+            let text = &generated.tokens;
             let count = capacity.min(budget - text.len());
             let pending = text[text.len() - 1];
-            let mut resident = [&open[..], &text[..text.len() - 1]].concat();
+            let mut resident = [start, &text[..text.len() - 1]].concat();
             let mut drafts = Vec::new();
             if count > 1 {
                 let prompt_length = self.model.prefill(prompt, &resident)?;
-                thought.input_tokens += prompt_length;
+                generated.input_tokens += prompt_length;
                 let mut canvas = vec![self.mask; count];
                 canvas[0] = pending;
-                let start = Instant::now();
+                let clock = Instant::now();
                 self.model.forward_canvas(
                     &canvas,
                     prompt_length,
@@ -651,8 +838,8 @@ impl Engine {
                     Logits::Full,
                 )?;
                 let proposals = self.model.greedy_proposals()?;
-                thought.forward_ms += start.elapsed().as_secs_f64() * 1000.0;
-                thought.forwards += 1;
+                generated.forward_ms += clock.elapsed().as_secs_f64() * 1000.0;
+                generated.forwards += 1;
                 if proposals.len() != count {
                     return Err(Error::InvalidLogits);
                 }
@@ -664,9 +851,9 @@ impl Engine {
                 self.model
                     .prefill_predict(prompt, &resident, drafts.len() + 1)?;
             if count == 1 {
-                thought.input_tokens += prompt_length;
+                generated.input_tokens += prompt_length;
             }
-            thought.forwards += 1;
+            generated.forwards += 1;
             if predicted.len() != drafts.len() + 1 {
                 return Err(Error::InvalidLogits);
             }
@@ -675,50 +862,45 @@ impl Engine {
                 .zip(&predicted)
                 .take_while(|(draft, prediction)| draft == prediction)
                 .count();
-            let decided = drafts[..kept].iter().chain([&predicted[kept]]);
-            for &token in decided {
-                if stops.contains(&token) {
-                    stopped = true;
-                    break;
-                }
-                text.push(token);
-            }
-            thought.accepted.push(kept + 1);
+            let decided: Vec<i32> = drafts[..kept]
+                .iter()
+                .chain([&predicted[kept]])
+                .copied()
+                .collect();
+            let stop = decided.iter().position(|t| stops.contains(t));
+            let length = stop.unwrap_or(decided.len());
+            generated.accepted.push(kept + 1);
+            going = generated.push(
+                &decided[..length],
+                stop.is_some(),
+                self.model.tokenizer(),
+                sink,
+            );
         }
-        thought.output_tokens = text.len() + usize::from(stopped);
-        thought.suffix = [open, text, close].concat();
-        Ok(thought)
+        Ok(generated)
     }
 
-    fn single_token(&self, marker: &str) -> Result<i32> {
-        match self.tokenize(marker, false, true)?[..] {
-            [token] => Ok(token),
-            _ => Err(Error::UnsupportedModel(format!(
-                "the tokenizer has no single token for the chat marker {marker}"
-            ))),
-        }
-    }
-
-    fn think(&mut self, prompt: &[PromptPart], budget: usize, seed: u64) -> Result<Thought> {
+    /// Uniform-noise diffusion with self-conditioning (DiffusionGemma): blocks of up to 64
+    /// tokens refined by the pinned entropy-bound denoiser, at most 48 iterations each.
+    fn generate_uniform(
+        &mut self,
+        prompt: &[PromptPart],
+        start: &[i32],
+        budget: usize,
+        stops: &[i32],
+        seed: u64,
+        sink: Sink<'_>,
+    ) -> Result<Generated> {
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
-        let mut suffix = self.tokenize(&self.chat.thought_open, false, true)?;
-        let close = self.tokenize(&self.chat.thought_close, false, true)?;
-        let stops = self
-            .chat
-            .thought_stops
-            .iter()
-            .map(|marker| self.single_token(marker))
-            .collect::<Result<Vec<_>>>()?;
-        let mut output_tokens = 0;
-        let mut input_tokens = 0;
-        let mut forward_ms = 0.0;
-        while output_tokens < budget {
+        let mut suffix = start.to_vec();
+        let mut generated = Generated::default();
+        while generated.tokens.len() < budget {
             let prompt_length = self.model.prefill(prompt, &suffix)?;
-            input_tokens += prompt_length;
+            generated.input_tokens += prompt_length;
             let count = self
                 .max_canvas
                 .min(self.batch_size)
-                .min(budget - output_tokens);
+                .min(budget - generated.tokens.len());
             let mut canvas: Vec<_> = (0..count)
                 .map(|_| uniform::noise(self.n_vocab, self.mask, &mut rng))
                 .collect();
@@ -726,7 +908,7 @@ impl Engine {
             let mut previous: Option<Vec<f32>> = None;
             let mut previous_best = Vec::new();
             let mut inverse_temperature = 1.0;
-            let start = Instant::now();
+            let clock = Instant::now();
             for step in 0..48 {
                 self.model.forward_canvas(
                     &canvas,
@@ -734,6 +916,7 @@ impl Engine {
                     conditioning(previous.as_deref(), inverse_temperature),
                     Logits::Full,
                 )?;
+                generated.forwards += 1;
                 let logits = self.model.full_logits()?;
                 let temperature = 0.4 + 0.4 * (48 - step) as f64 / 48.0;
                 let predictions = uniform::refine(
@@ -755,23 +938,20 @@ impl Engine {
                 previous = Some(logits);
                 inverse_temperature = (1.0 / temperature) as f32;
             }
-            forward_ms += start.elapsed().as_secs_f64() * 1000.0;
+            generated.forward_ms += clock.elapsed().as_secs_f64() * 1000.0;
             let stop = previous_best.iter().position(|t| stops.contains(t));
             let length = stop.unwrap_or(previous_best.len());
-            suffix.extend(&previous_best[..length]);
-            output_tokens += length + usize::from(stop.is_some());
-            if stop.is_some() {
+            if !generated.push(
+                &previous_best[..length],
+                stop.is_some(),
+                self.model.tokenizer(),
+                sink,
+            ) {
                 break;
             }
+            suffix.extend(&previous_best[..length]);
         }
-        suffix.extend(close);
-        Ok(Thought {
-            suffix,
-            input_tokens,
-            output_tokens,
-            forward_ms,
-            ..Thought::default()
-        })
+        Ok(generated)
     }
 }
 
@@ -789,15 +969,110 @@ struct PreparedSlot {
     prefix: Vec<i32>,
     candidates: Vec<i32>,
 }
+/// Answer tokens generated when neither `max_tokens` nor the context gives a smaller limit.
+const DEFAULT_MAX_TOKENS: usize = 2048;
+
+/// The answer text of a generation as it grows, with what has been passed on.
+#[derive(Default)]
+struct Answer {
+    tokens: Vec<i32>,
+    /// Answer text, cut before any stop sequence.
+    text: String,
+    /// Bytes of `text` already passed on.
+    emitted: usize,
+    stopped: bool,
+    gone: bool,
+    error: Option<Error>,
+    /// Chat answers drop the newlines models put after the closed thought.
+    trim_start: bool,
+}
+
+impl Answer {
+    /// Takes the decoded text so far, cuts it at the first stop sequence, and passes on what
+    /// can no longer change: everything once `last` or stopped, otherwise all but `holdback`
+    /// bytes and any incomplete character. Returns whether generation should continue.
+    fn advance(
+        &mut self,
+        mut text: String,
+        stop: &[String],
+        holdback: usize,
+        last: bool,
+        on_text: &mut dyn FnMut(&str) -> bool,
+    ) -> bool {
+        if self.trim_start {
+            text = text.trim_start_matches('\n').to_string();
+        }
+        if let Some(cut) = stop.iter().filter_map(|s| text.find(s.as_str())).min() {
+            text.truncate(cut);
+            self.stopped = true;
+        }
+        let mut end = if last || self.stopped {
+            text.len()
+        } else {
+            text.trim_end_matches('\u{FFFD}')
+                .len()
+                .saturating_sub(holdback)
+        };
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end > self.emitted {
+            if !on_text(&text[self.emitted..end]) {
+                self.gone = true;
+            }
+            self.emitted = end;
+        }
+        self.text = text;
+        !(self.stopped || self.gone)
+    }
+}
+
+/// Receives each newly decided run of generated tokens; returns false to end generation.
+type Sink<'a> = &'a mut dyn FnMut(&[i32], &dyn TextTokenizer) -> bool;
+
+/// Tokens generated by one decoding run, before any stop marker.
+#[derive(Default)]
+struct Generated {
+    tokens: Vec<i32>,
+    /// A stop marker ended generation.
+    stopped: bool,
+    /// The sink ended generation.
+    cancelled: bool,
+    input_tokens: usize,
+    forwards: usize,
+    forward_ms: f64,
+    /// Tokens decided by each causal verification.
+    accepted: Vec<usize>,
+}
+
+impl Generated {
+    /// Appends decided tokens and passes them on; false when generation should end.
+    fn push(
+        &mut self,
+        tokens: &[i32],
+        stopped: bool,
+        tokenizer: &dyn TextTokenizer,
+        sink: Sink<'_>,
+    ) -> bool {
+        self.tokens.extend(tokens);
+        self.stopped = stopped;
+        if !tokens.is_empty() && !sink(tokens, tokenizer) {
+            self.cancelled = true;
+        }
+        !(stopped || self.cancelled)
+    }
+}
+
 #[derive(Default)]
 struct Thought {
     suffix: Vec<i32>,
     input_tokens: usize,
     output_tokens: usize,
     forward_ms: f64,
-    /// Generation forwards (canvas and causal), excluding reads.
+    /// Generation forwards and tokens per causal verification, printed by the model tests.
+    #[allow(dead_code)]
     forwards: usize,
-    /// Tokens decided by each causal verification.
+    #[allow(dead_code)]
     accepted: Vec<usize>,
 }
 
@@ -868,7 +1143,7 @@ mod tests {
     use super::*;
     use crate::ModelConfig;
     use crate::fake::{BOS, FakeModel, FakeTokenizer, Log, MASK};
-    use jevons_core::TextTokenizer;
+    use jevons_core::{Message, TextTokenizer};
 
     #[cfg(feature = "models")]
     fn model_test_config() -> ModelConfig {
@@ -1088,7 +1363,7 @@ mod tests {
 
     /// Thought tokens of a speculative or autoregressive fake run, with the engine log.
     fn causal_thought(
-        decoding: ThinkDecoding,
+        decoding: Decoding,
         favored: Vec<i32>,
         think: usize,
     ) -> (ReadResult, std::rc::Rc<std::cell::RefCell<Log>>, Vec<i32>) {
@@ -1099,7 +1374,7 @@ mod tests {
         model.causal = [script.clone(), tokens("</think>", false, true)].concat();
         model.favored = favored;
         let (mut engine, log) = fake_engine(model);
-        engine.set_think_decoding(decoding).unwrap();
+        engine.set_decoding(decoding).unwrap();
         let options = ReadOptions {
             think,
             ..Default::default()
@@ -1116,7 +1391,7 @@ mod tests {
         let off_script = w(40);
         // Drafts at block rows 1..3: the next two script tokens, then a miss.
         let (read, log, script) = causal_thought(
-            ThinkDecoding::SelfSpeculation,
+            Decoding::SelfSpeculation,
             vec![0, w(2), w(3), off_script],
             16,
         );
@@ -1146,13 +1421,9 @@ mod tests {
     fn autoregressive_and_speculative_thoughts_agree_and_respect_the_budget() {
         let w = |i: usize| tokens(&format!("w{i}"), false, false)[0];
         for think in [3, 16] {
-            let (ar, ar_log, script) =
-                causal_thought(ThinkDecoding::Autoregressive, Vec::new(), think);
-            let (spec, spec_log, _) = causal_thought(
-                ThinkDecoding::SelfSpeculation,
-                vec![0, w(2), w(9), w(9)],
-                think,
-            );
+            let (ar, ar_log, script) = causal_thought(Decoding::Autoregressive, Vec::new(), think);
+            let (spec, spec_log, _) =
+                causal_thought(Decoding::SelfSpeculation, vec![0, w(2), w(9), w(9)], think);
             assert_eq!(ar.output_tokens, spec.output_tokens);
             assert_eq!(
                 ar_log.borrow().prefills.last(),
@@ -1165,24 +1436,144 @@ mod tests {
     }
 
     #[test]
-    fn causal_think_decoding_needs_a_masked_model() {
-        for decoding in ThinkDecoding::ALL {
-            assert_eq!(decoding.id().parse::<ThinkDecoding>().unwrap(), decoding);
+    fn causal_decoding_needs_a_masked_model() {
+        for decoding in Decoding::ALL {
+            assert_eq!(decoding.id().parse::<Decoding>().unwrap(), decoding);
         }
-        assert!("speculative".parse::<ThinkDecoding>().is_err());
+        assert!("speculative".parse::<Decoding>().is_err());
         let (mut engine, _) = fake_engine(FakeModel::new());
-        assert!(engine.set_think_decoding(ThinkDecoding::Diffusion).is_ok());
-        assert!(
-            engine
-                .set_think_decoding(ThinkDecoding::SelfSpeculation)
-                .is_err()
-        );
+        assert!(engine.set_decoding(Decoding::Diffusion).is_ok());
+        assert!(engine.set_decoding(Decoding::SelfSpeculation).is_err());
         let (mut engine, _) = fake_engine(masked_model());
-        assert!(
-            engine
-                .set_think_decoding(ThinkDecoding::Autoregressive)
-                .is_ok()
+        assert!(engine.set_decoding(Decoding::Autoregressive).is_ok());
+    }
+
+    /// A causal fake engine whose answer is `w1 w2 ...` (as scripted) and a generation request.
+    fn generation(
+        causal: Vec<i32>,
+        prompt: GenerationPrompt,
+        max_tokens: Option<usize>,
+        stop: &[&str],
+    ) -> (
+        Result<Generation>,
+        Vec<String>,
+        std::rc::Rc<std::cell::RefCell<Log>>,
+    ) {
+        let mut model = masked_model();
+        model.causal = causal;
+        let (mut engine, log) = fake_engine(model);
+        engine.set_decoding(Decoding::Autoregressive).unwrap();
+        let request = GenerationRequest {
+            prompt,
+            max_tokens,
+            think: 0,
+            stop: stop.iter().map(|s| s.to_string()).collect(),
+        };
+        let mut deltas = Vec::new();
+        let result = engine.generate(&request, 42, &mut |text| {
+            deltas.push(text.to_string());
+            true
+        });
+        (result, deltas, log)
+    }
+
+    fn words(n: usize) -> Vec<i32> {
+        (1..=n)
+            .map(|i| tokens(&format!("w{i}"), false, false)[0])
+            .collect()
+    }
+
+    fn chat(text: &str) -> GenerationPrompt {
+        GenerationPrompt::Chat(vec![
+            Message {
+                role: Role::System,
+                text: "Be brief.".into(),
+            },
+            Message {
+                role: Role::User,
+                text: text.into(),
+            },
+        ])
+    }
+
+    #[test]
+    fn chat_generation_frames_every_turn_and_ends_at_the_turn_marker() {
+        let end = tokens("<end>", false, true)[0];
+        let newline = tokens("\n", false, false)[0];
+        let (result, deltas, log) = generation(
+            [vec![newline], words(3), vec![end]].concat(),
+            chat("Hi"),
+            None,
+            &[],
         );
+        let answer = result.unwrap();
+        assert_eq!(answer.text, "w1w2w3");
+        assert_eq!(deltas.concat(), "w1w2w3");
+        assert_eq!(answer.finish, FinishReason::Stop);
+        assert_eq!(answer.completion_tokens, 5);
+        let framed = [
+            tokens("<system>", true, true),
+            tokens("Be brief.", false, false),
+            tokens("<end><user>", false, true),
+            tokens("Hi", false, false),
+            tokens("<end><model><nothought>", false, true),
+        ]
+        .concat();
+        assert_eq!(answer.prompt_tokens, framed.len());
+        assert_eq!(log.borrow().prefills[0], framed);
+    }
+
+    #[test]
+    fn stop_sequences_cut_the_answer_and_are_never_streamed_in_part() {
+        let (result, deltas, _) = generation(words(6), chat("Hi"), Some(16), &["w3w", "zz"]);
+        let answer = result.unwrap();
+        assert_eq!(answer.text, "w1w2");
+        assert_eq!(answer.finish, FinishReason::Stop);
+        assert_eq!(deltas.concat(), "w1w2");
+        assert!(
+            deltas.len() > 1,
+            "text is streamed as it is decided: {deltas:?}"
+        );
+    }
+
+    #[test]
+    fn answers_end_at_max_tokens_and_text_prompts_are_not_framed() {
+        let (result, _, log) = generation(
+            words(6),
+            GenerationPrompt::Text("Once".into()),
+            Some(2),
+            &[],
+        );
+        let answer = result.unwrap();
+        assert_eq!(answer.text, "w1w2");
+        assert_eq!(answer.finish, FinishReason::Length);
+        assert_eq!(log.borrow().prefills[0], tokens("Once", true, false));
+        // The prompt and answer must fit the 256-token context.
+        let (result, _, _) = generation(words(1), chat("Hi"), Some(1000), &[]);
+        assert!(matches!(result, Err(Error::InvalidInput(_))));
+    }
+
+    #[test]
+    fn a_client_that_stops_listening_ends_generation() {
+        let mut model = masked_model();
+        model.causal = words(20);
+        let (mut engine, log) = fake_engine(model);
+        engine.set_decoding(Decoding::Autoregressive).unwrap();
+        let request = GenerationRequest {
+            prompt: chat("Hi"),
+            max_tokens: Some(16),
+            think: 0,
+            stop: Vec::new(),
+        };
+        let mut calls = 0;
+        engine
+            .generate(&request, 42, &mut |_| {
+                calls += 1;
+                false
+            })
+            .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(log.borrow().predicted.len(), 1);
     }
 
     #[test]
@@ -1561,15 +1952,7 @@ mod tests {
     #[ignore = "Requires NEMOTRON_MODEL and a HIP GPU"]
     fn nemotron_self_speculation_reproduces_autoregressive_thoughts() {
         let mut engine = nemotron_engine();
-        let DiffusionScheme::Masked {
-            block,
-            threshold,
-            max_steps,
-            ..
-        } = engine.scheme
-        else {
-            panic!("a masked model");
-        };
+        assert!(matches!(engine.scheme, DiffusionScheme::Masked { .. }));
         let budget: usize = std::env::var("THINK_BUDGET")
             .map(|b| b.parse().unwrap())
             .unwrap_or(128);
@@ -1580,26 +1963,19 @@ mod tests {
         ];
         let run = |engine: &mut Engine, prompt: &[PromptPart], decoding| {
             let start = Instant::now();
-            let thought = match decoding {
-                ThinkDecoding::Diffusion => {
-                    engine.think_masked(prompt, budget, block, threshold, max_steps)
-                }
-                ThinkDecoding::SelfSpeculation => engine.think_causal(prompt, budget, block),
-                ThinkDecoding::Autoregressive => engine.think_causal(prompt, budget, 1),
-            }
-            .unwrap();
+            let thought = engine.think_with(prompt, budget, 42, decoding).unwrap();
             (thought, start.elapsed().as_secs_f64())
         };
         // Compile and tune kernels for every shape before timing.
         let warm = engine.prompt_parts(prompts[0], &[]).unwrap();
-        for decoding in ThinkDecoding::ALL {
+        for decoding in Decoding::ALL {
             run(&mut engine, &warm, decoding);
         }
         let mut totals = [(0usize, 0usize, 0.0f64); 3];
         for text in prompts {
             let prompt = engine.prompt_parts(text, &[]).unwrap();
             let mut suffixes = Vec::new();
-            for (i, decoding) in ThinkDecoding::ALL.into_iter().enumerate() {
+            for (i, decoding) in Decoding::ALL.into_iter().enumerate() {
                 let (thought, seconds) = run(&mut engine, &prompt, decoding);
                 let accepted = &thought.accepted;
                 println!(
@@ -1615,7 +1991,7 @@ mod tests {
                 totals[i].0 += thought.output_tokens;
                 totals[i].1 += thought.forwards;
                 totals[i].2 += seconds;
-                if decoding == ThinkDecoding::SelfSpeculation {
+                if decoding == Decoding::SelfSpeculation {
                     println!("  tokens {:?}", thought.suffix);
                 }
                 suffixes.push(thought.suffix);
@@ -1628,7 +2004,7 @@ mod tests {
             println!("  self-speculation matches autoregressive for {agreed} tokens");
             assert_eq!(suffixes[1], suffixes[2], "{text}");
         }
-        for (decoding, (tokens, forwards, seconds)) in ThinkDecoding::ALL.into_iter().zip(totals) {
+        for (decoding, (tokens, forwards, seconds)) in Decoding::ALL.into_iter().zip(totals) {
             println!(
                 "total {:>16}: {tokens} tokens, {:.2} tokens/forward, {:.1} tokens/s",
                 decoding.id(),

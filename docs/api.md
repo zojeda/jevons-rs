@@ -16,12 +16,19 @@ The service runs DiffusionGemma on an AMD GPU with the [CubeCL backend](cubecl.m
 
 If you omit both `--api-key` and `TYPESAFE_API_KEY`, the server disables authentication. A configured key protects `/v1/*`; `/health` remains open. Logs include counts and timing, excluding request state and credentials. Ctrl-C and SIGTERM drain pending requests and release the model.
 
+## Settings file
+
+Flags can live in a TOML file: `--config PATH` (or `JEVONS_CONFIG`), otherwise `./jevons.toml` or `~/.config/jevons/config.toml`, whichever exists first. Keys are the long flag names with underscores (`model`, `bind`, `context_size`, `decoding`, …; `prompt_cache = false` replaces `--no-prompt-cache`). Flags and environment variables override the file, relative paths resolve against the file's directory, and unknown keys are errors. See [jevons.example.toml](../jevons.example.toml). Prefer `TYPESAFE_API_KEY` to an `api_key` in the file, and keep keys out of commits.
+
 ## Routes
 
 | Route | Purpose |
 | --- | --- |
 | `POST /v1/systemone` | Evaluate `state`, `model`, and one or more `questions`. |
-| `GET /v1/models` | List models with `name`, `description`, and `release_date`. |
+| `POST /v1/chat/completions` | OpenAI Chat Completions: free-form answers (see [OpenAI-compatible generation](#openai-compatible-generation)). |
+| `POST /v1/completions` | OpenAI Completions: continue raw text. |
+| `POST /v1/responses` | OpenAI Responses: free-form answers without stored state. |
+| `GET /v1/models` | List models: System One `models` (`name`, `description`, `release_date`) and OpenAI `data` (`id`, `object`, `created`, `owned_by`). |
 | `GET /health` | Check model readiness and worker availability. |
 
 ```bash
@@ -149,15 +156,38 @@ The server accepts bodies up to 64 MiB, accommodating eight base64-encoded 5 MiB
 
 Question templates are split at question boundaries into canvases of at most 64 tokens (or `--batch-size`, if smaller). Each image's patch block must fit in one batch for bidirectional attention. Prompt, thought framing, reserved thought budget, and canvas must fit in `--context-size`; sequential requests also reserve space for earlier answers. The batch and context defaults are 512 and 8192. Oversized requests return `422`; increase the relevant server limit if needed. Larger contexts allocate more cache memory.
 
-`usage.input_tokens` sums prompt and canvas tokens across explicitly requested samples and question chunks, including image tokens and any thought prefix. With `think=0`, prefill includes an empty, closed thought channel; these framing tokens count as input and generate no output tokens. Steps reuse the same tokens and do not multiply this count. Thought generation adds each generation block's prompt tokens to input usage (with `--think-decoding self-speculation` a block is one draft and verification round, and with `autoregressive` one token); generated thought tokens count toward `usage.output_tokens`. Usage describes logical reads even when the prompt cache is reused between samples.
+`usage.input_tokens` sums prompt and canvas tokens across explicitly requested samples and question chunks, including image tokens and any thought prefix. With `think=0`, prefill includes an empty, closed thought channel; these framing tokens count as input and generate no output tokens. Steps reuse the same tokens and do not multiply this count. Thought generation adds each generation block's prompt tokens to input usage (with `--decoding self-speculation` a block is one draft and verification round, and with `autoregressive` one token); generated thought tokens count toward `usage.output_tokens`. Usage describes logical reads even when the prompt cache is reused between samples.
 
-The thought generator uses blocks of up to 64 tokens with at most 48 denoising steps per block and an entropy-based early stop. It follows the entropy-bound sampler of llama.cpp's DiffusionGemma support; numerical results and token accounting need not match OpenJEV's vLLM implementation. There is no `/v1/chat/completions` endpoint.
+The thought generator uses blocks of up to 64 tokens with at most 48 denoising steps per block and an entropy-based early stop. It follows the entropy-bound sampler of llama.cpp's DiffusionGemma support; numerical results and token accounting need not match OpenJEV's vLLM implementation.
 
 The worker handles one request at a time. `--queue-capacity` defaults to eight waiting requests. It skips disconnected queued requests and lets an active GPU forward finish. Configure TLS, rate limits, accounts, and billing outside this service.
 
+## OpenAI-compatible generation
+
+The same model also writes free-form text through the OpenAI Chat Completions, Completions and Responses routes, so OpenAI SDKs work with `base_url` set to `http://HOST:PORT/v1`. The `model` field takes the served model ID or an alias. Authentication is the same bearer key.
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="unused-without-a-key")
+reply = client.chat.completions.create(
+    model="nemotron-diffusion-8b",
+    messages=[{"role": "user", "content": "What is 15% of 240?"}],
+)
+print(reply.choices[0].message.content)
+```
+
+- **Decoding.** Answers use the server's `--decoding` (see [masked diffusion](inference.md#masked-diffusion-nemotron-labs-diffusion)). For Nemotron-Labs-Diffusion, `self-speculation` gives greedy autoregressive text at about twice the speed of `diffusion`. DiffusionGemma always uses its uniform-noise denoiser, whose longer answers are rougher. Decoding is greedy: `temperature`, `top_p` and `seed` are accepted, and only `seed` changes anything (DiffusionGemma's noise).
+- **Prompts.** Chat roles `system` and `developer` become system turns; `user` and `assistant` keep their turns. The answer follows an empty, closed thought unless `reasoning_effort` (Chat Completions) or `reasoning.effort` (Responses) asks for a thought first: `minimal`, `low`, `medium` and `high` allow 64, 256, 1,024 and 4,096 thought tokens. Thoughts are never returned; they count as `reasoning_tokens`. Completions continue the raw `prompt` text without chat markers. Leading newlines of chat answers are dropped.
+- **Limits.** `max_completion_tokens` or `max_tokens` (chat), `max_tokens` (completions, default 16) and `max_output_tokens` (responses) cap the answer; without one, chat answers may use the rest of the context, up to 2,048 tokens. Up to four `stop` sequences end the answer and are not returned. The prompt, thought and answer must fit `--context-size`.
+- **Streaming.** `stream: true` sends server-sent events: completion chunks ending with `data: [DONE]`, with a final usage chunk when `stream_options.include_usage` is set, or the named Responses events from `response.created` to `response.completed` (`response.incomplete` when `max_output_tokens` ends the answer). Text arrives per decoding round or block. Closing the connection stops generation.
+- **Not supported.** Several choices (`n` > 1), tools and function calls, log probabilities, penalties, logit bias, structured output (`response_format`, `text.format` other than text), image or audio content, stored responses (`previous_response_id`, `conversation`), background responses and reasoning summaries return `400` with the parameter named. Unknown parameters are rejected the same way. `store` and `metadata` are accepted; nothing is stored.
+
+OpenAI routes report errors as `{"error":{"message","type","param","code"}}`: `400` for invalid or unsupported input (including a prompt too long for the context), `404` with code `model_not_found`, and the service statuses below for authentication, full queues and failures.
+
 ## Errors
 
-Responses include `x-typesafe-request-id`. Validation errors use `{"detail":[{"loc":...,"msg":...,"type":...}]}`. Other errors use `{"detail":{"error_type":...,"message":...}}`.
+Responses include `x-typesafe-request-id`. System One validation errors use `{"detail":[{"loc":...,"msg":...,"type":...}]}`. Other errors use `{"detail":{"error_type":...,"message":...}}`; OpenAI routes use the OpenAI shape above.
 
 | Status | Meaning |
 | --- | --- |

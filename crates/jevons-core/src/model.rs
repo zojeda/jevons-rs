@@ -51,8 +51,19 @@ pub struct ChatFormat {
     pub bos: bool,
     /// Opens the user turn, before any images and the prompt text.
     pub user_open: String,
-    /// Closes the user turn and opens the model turn.
+    /// Closes the user turn and opens the model turn: `turn_close` + `assistant_open`.
     pub model_open: String,
+    /// Opens a system (instructions) turn.
+    pub system_open: String,
+    /// Opens a model turn.
+    pub assistant_open: String,
+    /// Closes any turn.
+    pub turn_close: String,
+    /// Starts earlier model turns of a conversation (Nemotron's template states an empty
+    /// thought there).
+    pub history_prefix: String,
+    /// Single-token markers that end a generated answer.
+    pub answer_stops: Vec<String>,
     /// Opens a thought for bounded thinking.
     pub thought_open: String,
     /// Closes a thought; appended after generated thought tokens.
@@ -70,7 +81,12 @@ pub struct ChatFormat {
 impl ChatFormat {
     /// Checks that each stop marker is one token, so generation can stop on it.
     pub fn validate(&self, tokenizer: &dyn TextTokenizer) -> Result<()> {
-        for marker in &self.thought_stops {
+        if self.model_open != format!("{}{}", self.turn_close, self.assistant_open) {
+            return Err(Error::UnsupportedModel(
+                "the model turn must open with turn_close + assistant_open".into(),
+            ));
+        }
+        for marker in self.thought_stops.iter().chain(&self.answer_stops) {
             if tokenizer.tokenize(marker, false, true)?.len() != 1 {
                 return Err(Error::UnsupportedModel(format!(
                     "the tokenizer has no single token for the chat marker {marker}"
@@ -124,6 +140,9 @@ pub trait TextTokenizer {
     /// Decoded text of a non-control token if it is 1..=16 ASCII alphanumerics, ignoring one
     /// leading space.
     fn code_piece(&self, token: i32) -> Option<String>;
+    /// Text of generated tokens, without control tokens. Incomplete UTF-8 at the end decodes
+    /// to U+FFFD.
+    fn decode(&self, tokens: &[i32]) -> Result<String>;
 }
 
 pub trait DiffusionModel {

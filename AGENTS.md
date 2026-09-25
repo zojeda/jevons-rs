@@ -13,7 +13,8 @@ This Rust 2024 workspace requires Rust 1.95 or newer (Burn 0.22 and CubeCL 0.11)
 - `jevons-models`: architecture detection and model loading.
 - `jevons-engine`: inference orchestration, chat framing, diffusion samplers, and the SCM CLI.
 - `jevons-system-one`: request validation, question compilation, and response mapping.
-- `jevons-rs`: Axum routes, authentication, and the bounded inference worker.
+- `jevons-openai`: OpenAI Chat Completions, Completions and Responses validation and response/stream rendering.
+- `jevons-rs`: Axum routes (System One and OpenAI-compatible), authentication, the settings file (`jevons.example.toml`), and the bounded inference worker.
 
 Unit tests live in each crate’s source modules. `examples/system-one.json` provides a request fixture; `scripts/smoke-test.py` exercises a running service. Models (DiffusionGemma GGUF files, Nemotron checkpoint directories) are external assets and are not downloaded automatically.
 

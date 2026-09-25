@@ -104,6 +104,21 @@ impl TextTokenizer for HfTokenizer {
         ((1..=16).contains(&piece.len()) && piece.bytes().all(|b| b.is_ascii_alphanumeric()))
             .then(|| piece.to_string())
     }
+
+    fn decode(&self, tokens: &[i32]) -> Result<String> {
+        let ids = tokens
+            .iter()
+            .map(|&t| {
+                u32::try_from(t)
+                    .ok()
+                    .filter(|&id| (id as usize) < self.vocab)
+            })
+            .collect::<Option<Vec<u32>>>()
+            .ok_or_else(|| Error::InvalidInput("token id out of range".into()))?;
+        self.framing
+            .decode(&ids, true)
+            .map_err(|e| Error::Backend(format!("Cannot decode tokens: {e}")))
+    }
 }
 
 #[cfg(test)]

@@ -26,7 +26,7 @@ teacher-forced tokens.
 The 3B's chat template disables thinking. Given an opened thought, the model closes it with its
 first token, so `think` changes nothing for this checkpoint.
 
-## Self-speculation (`--think-decoding self-speculation`), VLM 8B
+## Self-speculation (`--decoding self-speculation`), VLM 8B
 
 Linear self-speculation drafts a 32-token block with one bidirectional forward and verifies it
 with one causal forward. It keeps the drafts that match the causal predictions, plus one causal
@@ -81,7 +81,7 @@ python3 -B scripts/jevbench-local.py --port 8093 --binary $BIN/jevons-rs \
   --harness "$JEVBENCH_SOURCE" --output benchmarks/results/jevbench-3b
 python3 -B scripts/jevbench-local.py --port 8093 --binary $BIN/jevons-rs \
   --model ~/models/nemotron-labs-diffusion-vlm-8b --model-id nemotron-diffusion-8b \
-  --think 256 --think-decoding self-speculation \
+  --think 256 --decoding self-speculation \
   --harness "$JEVBENCH_SOURCE" --output benchmarks/results/jevbench-8b-think256-selfspec
 NEMOTRON_MODEL=~/models/nemotron-labs-diffusion-vlm-8b cargo test --release --locked \
   -p jevons-engine --lib -- --ignored --exact --nocapture \

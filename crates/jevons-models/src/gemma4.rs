@@ -41,6 +41,14 @@ impl TextTokenizer for GemmaTokenizer {
         }
         String::from_utf8(bytes).ok()
     }
+
+    fn decode(&self, tokens: &[i32]) -> Result<String> {
+        let bytes: Vec<u8> = tokens
+            .iter()
+            .flat_map(|&token| self.0.token_to_piece(token))
+            .collect();
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
 }
 
 pub(crate) struct Gemma4 {
@@ -66,6 +74,11 @@ fn chat_format() -> ChatFormat {
         bos: true,
         user_open: "<|turn>user\n".into(),
         model_open: "<turn|>\n<|turn>model\n".into(),
+        system_open: "<|turn>system\n".into(),
+        assistant_open: "<|turn>model\n".into(),
+        turn_close: "<turn|>\n".into(),
+        history_prefix: String::new(),
+        answer_stops: vec!["<turn|>".into(), "<eos>".into(), "<pad>".into()],
         thought_open: "<|channel>thought\n".into(),
         thought_close: "<channel|>".into(),
         empty_thought: "<|channel>thought\n<channel|>".into(),
