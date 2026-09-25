@@ -75,7 +75,10 @@ impl Config {
         let rope = &self.rope_parameters;
         let checks = [
             (
-                self.model_type == "nemotron_labs_diffusion_vlm",
+                matches!(
+                    self.model_type.as_str(),
+                    "nemotron_labs_diffusion" | "nemotron_labs_diffusion_vlm"
+                ),
                 format!("model_type {}", self.model_type),
             ),
             (
@@ -132,9 +135,33 @@ pub(crate) const VLM_8B: &str = r#"{
   "sliding_window": null, "tie_word_embeddings": false, "vocab_size": 131073
 }"#;
 
+/// The text-only 3B checkpoint (`nvidia/Nemotron-Labs-Diffusion-3B`).
+#[cfg(test)]
+pub(crate) const TEXT_3B: &str = r#"{
+  "architectures": ["NemotronLabsDiffusionModel"], "attention_bias": false, "block_size": 32,
+  "dlm_paradigm": "bidirectional", "eos_token_id": 11, "head_dim": 128, "hidden_act": "silu",
+  "hidden_size": 3072, "intermediate_size": 9216, "mask_token_id": 100,
+  "max_position_embeddings": 262144, "mlp_bias": false, "model_type": "nemotron_labs_diffusion",
+  "num_attention_heads": 32, "num_hidden_layers": 26, "num_key_value_heads": 8, "rms_norm_eps": 1e-05,
+  "rope_parameters": {"beta_fast": 32.0, "beta_slow": 1.0, "factor": 16.0, "llama_4_scaling_beta": 0.1,
+    "mscale": 1.0, "mscale_all_dim": 1.0, "original_max_position_embeddings": 16384,
+    "rope_theta": 1000000.0, "rope_type": "yarn"},
+  "sliding_window": null, "tie_word_embeddings": false, "vocab_size": 131072
+}"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_text_only_3b_config_parses() {
+        let config = Config::parse(TEXT_3B).unwrap();
+        assert_eq!(config.model_type, "nemotron_labs_diffusion");
+        assert_eq!((config.num_hidden_layers, config.hidden_size), (26, 3072));
+        assert_eq!(config.num_attention_heads * config.head_dim, 4096);
+        let other = TEXT_3B.replace("nemotron_labs_diffusion\"", "llama\"");
+        assert!(Config::parse(&other).is_err());
+    }
 
     #[test]
     fn the_8b_config_parses_and_unsupported_variants_are_rejected() {

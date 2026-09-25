@@ -5,15 +5,17 @@
 //! the prompt cache unchanged: their keys and values go to scratch rows past the prompt, which the
 //! next prefill overwrites.
 //!
-//! Images are encoded by the Pixtral tower into rows that replace the `<|image_pad|>` embeddings
-//! of `<|image_start|> (pads <|image_break|>)... <|image_end|>`, and are prefilled causally like
-//! text. Cached image rows are keyed by the image content.
+//! In VLM checkpoints, images are encoded by the Pixtral tower into rows that replace the
+//! `<|image_pad|>` embeddings of `<|image_start|> (pads <|image_break|>)... <|image_end|>`, and
+//! are prefilled causally like text. Cached image rows are keyed by the image content. Text-only
+//! checkpoints have no tower and reject images.
 use crate::config::Config;
 use crate::image;
 use crate::rope::Rope;
 use crate::vision::{Vision, VisionConfig};
 use jevons_burn::layers::{
-    KvCache, attention_mask, gated_mlp, grouped_attention, host_f32, linear, rms_norm, rotate_half,
+    KvCache, attention_mask, gated_mlp, greedy, grouped_attention, host_f32, linear, rms_norm,
+    rotate_half,
 };
 use jevons_burn::weights::Loader;
 use jevons_burn::{DType, Device, Int, Tensor, TensorData};
@@ -53,7 +55,8 @@ pub struct Nemotron {
     chat: ChatFormat,
     profile: PrefillProfile,
     prompt_cache: bool,
-    vision: Vision,
+    /// The Pixtral tower of VLM checkpoints.
+    vision: Option<Vision>,
     /// Images encoded for the current request: embedding rows and a content key.
     encoded: Vec<(Tensor<2>, i64)>,
     /// Keys of the resident positions: token ids, or negative image content keys.
@@ -75,6 +78,11 @@ fn chat_format() -> ChatFormat {
         bos: false,
         user_open: "<|im_start|>user\n".into(),
         model_open: "<|im_end|>\n<|im_start|>assistant\n".into(),
+        system_open: "<|im_start|>system\n".into(),
+        assistant_open: "<|im_start|>assistant\n".into(),
+        turn_close: "<|im_end|>\n".into(),
+        history_prefix: "<think></think>".into(),
+        answer_stops: vec!["<|im_end|>".into(), "</s>".into()],
         thought_open: "<think>\n".into(),
         thought_close: "</think>".into(),
         empty_thought: "<think></think>".into(),
@@ -110,18 +118,35 @@ impl Nemotron {
                 "tokenizer and model vocabulary sizes differ".into(),
             ));
         }
-        for (marker, id) in [
-            ("<|image_start|>", IMAGE_START),
-            ("<|image_pad|>", IMAGE_PAD),
-            ("<|image_break|>", IMAGE_BREAK),
-            ("<|image_end|>", IMAGE_END),
-        ] {
-            if tokenizer.single_token(marker) != Some(id) {
-                return Err(Error::UnsupportedModel(format!(
-                    "the tokenizer does not map {marker} to {id}"
-                )));
+        let config_json: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("config.json")).map_err(|_| Error::ModelLoad)?,
+        )
+        .map_err(load_error)?;
+        let vision_config = match config_json.get("vision_config") {
+            Some(value) if !value.is_null() => {
+                let vision_config: VisionConfig = serde_json::from_value(value.clone())
+                    .map_err(|e| Error::UnsupportedModel(format!("vision config: {e}")))?;
+                if vision_config.patch_size != image::PATCH || vision_config.hidden_act != "silu" {
+                    return Err(Error::UnsupportedModel(
+                        "unsupported Pixtral vision config".into(),
+                    ));
+                }
+                for (marker, id) in [
+                    ("<|image_start|>", IMAGE_START),
+                    ("<|image_pad|>", IMAGE_PAD),
+                    ("<|image_break|>", IMAGE_BREAK),
+                    ("<|image_end|>", IMAGE_END),
+                ] {
+                    if tokenizer.single_token(marker) != Some(id) {
+                        return Err(Error::UnsupportedModel(format!(
+                            "the tokenizer does not map {marker} to {id}"
+                        )));
+                    }
+                }
+                Some(vision_config)
             }
-        }
+            _ => None,
+        };
         let checkpoint = Checkpoint::open_dir(dir).map_err(load_error)?;
         let device = jevons_burn::device::hip(config.main_gpu);
         let load = Loader {
@@ -167,20 +192,10 @@ impl Nemotron {
         let head = load
             .stacked_f16(&[("diffusion_head.weight", cfg.vocab_size)], d, 64)
             .map_err(load_error)?;
-        let vision_config: VisionConfig = serde_json::from_value(
-            serde_json::from_str::<serde_json::Value>(
-                &std::fs::read_to_string(dir.join("config.json")).map_err(|_| Error::ModelLoad)?,
-            )
-            .map_err(load_error)?["vision_config"]
-                .clone(),
-        )
-        .map_err(|e| Error::UnsupportedModel(format!("vision config: {e}")))?;
-        if vision_config.patch_size != image::PATCH || vision_config.hidden_act != "silu" {
-            return Err(Error::UnsupportedModel(
-                "unsupported Pixtral vision config".into(),
-            ));
-        }
-        let vision = Vision::load(&load, vision_config, d).map_err(load_error)?;
+        let vision = vision_config
+            .map(|vision_config| Vision::load(&load, vision_config, d))
+            .transpose()
+            .map_err(load_error)?;
         let (cos, sin) = Rope::new(&cfg).tables(0..capacity);
         let table = |values: Vec<f32>| {
             Tensor::<2>::from_data(
@@ -191,7 +206,8 @@ impl Nemotron {
         let info = ModelInfo {
             architecture: "nemotron-diffusion",
             display_name: format!(
-                "Nemotron-Labs-Diffusion ({} layers, d={d})",
+                "Nemotron-Labs-Diffusion{} ({} layers, d={d})",
+                if vision.is_some() { " VLM" } else { "" },
                 cfg.num_hidden_layers
             ),
             n_vocab: cfg.vocab_size as i32,
@@ -246,6 +262,112 @@ impl Nemotron {
             .clone()
             .select(0, self.ids(tokens)?)
             .cast(DType::F32))
+    }
+
+    /// [`DiffusionModel::prefill`] that also evaluates the last `kept` positions when they are
+    /// cached, and returns their final residual rows (not normed).
+    fn prefill_rows(
+        &mut self,
+        parts: &[PromptPart],
+        suffix: &[i32],
+        kept: usize,
+    ) -> Result<(usize, Option<Tensor<2>>)> {
+        let start_time = Instant::now();
+        // Each segment: its position keys and where its rows come from.
+        enum Rows<'a> {
+            Tokens(&'a [i32]),
+            Image(usize),
+        }
+        let mut segments = Vec::with_capacity(parts.len() + 1);
+        for part in parts {
+            segments.push(match part {
+                PromptPart::Text(t) => Rows::Tokens(t),
+                PromptPart::Image { tokens, index } => match self.encoded.get(*index) {
+                    Some((rows, _)) if rows.dims()[0] == *tokens => Rows::Image(*index),
+                    _ => return Err(Error::InvalidInput("Unknown image part".into())),
+                },
+            });
+        }
+        segments.push(Rows::Tokens(suffix));
+        let mut keys = Vec::new();
+        for segment in &segments {
+            match segment {
+                Rows::Tokens(t) => keys.extend(t.iter().map(|&t| i64::from(t))),
+                Rows::Image(i) => {
+                    let (rows, key) = &self.encoded[*i];
+                    keys.extend(std::iter::repeat_n(*key, rows.dims()[0]));
+                }
+            }
+        }
+        if keys.len() > self.info.n_ctx {
+            return Err(Error::InvalidInput("Prompt exceeds context size".into()));
+        }
+        if kept > keys.len().min(self.info.batch_size) {
+            return Err(Error::InvalidInput(
+                "predicted rows exceed the prompt or batch".into(),
+            ));
+        }
+        if !self.prompt_cache {
+            self.cached.clear();
+        }
+        let reused = keys
+            .iter()
+            .zip(&self.cached)
+            .take_while(|(a, b)| a == b)
+            .count()
+            .min(keys.len() - kept);
+        self.cached.truncate(reused);
+        // Embedding rows of the uncached positions, then causal forwards in batches.
+        let mut pieces = Vec::new();
+        let mut position = 0;
+        for segment in &segments {
+            let len = match segment {
+                Rows::Tokens(t) => t.len(),
+                Rows::Image(i) => self.encoded[*i].0.dims()[0],
+            };
+            let (from, to) = (reused.max(position), position + len);
+            if from < to {
+                let (a, b) = (from - position, to - position);
+                pieces.push(match segment {
+                    Rows::Tokens(t) => self.embed(&t[a..b])?,
+                    Rows::Image(i) => {
+                        let d = self.config.hidden_size;
+                        self.encoded[*i].0.clone().slice([a..b, 0..d])
+                    }
+                });
+            }
+            position = to;
+        }
+        let mut batches = 0;
+        let mut outputs = Vec::new();
+        if !pieces.is_empty() {
+            let rows = Tensor::cat(pieces, 0);
+            let (total, d) = (keys.len() - reused, self.config.hidden_size);
+            let first_kept = total - kept;
+            for begin in (0..total).step_by(self.info.batch_size) {
+                let end = (begin + self.info.batch_size).min(total);
+                let start = self.cached.len();
+                let h = self.forward(rows.clone().slice([begin..end, 0..d]), start, true)?;
+                if end > first_kept {
+                    let from = first_kept.max(begin) - begin;
+                    outputs.push(h.slice([from..end - begin, 0..d]));
+                }
+                self.cached.extend(&keys[reused + begin..reused + end]);
+                batches += 1;
+            }
+        }
+        self.device
+            .sync()
+            .map_err(|e| Error::Backend(format!("{e:?}")))?;
+        self.canvas = None;
+        self.logits = None;
+        self.profile.wall_ms += start_time.elapsed().as_secs_f64() * 1000.0;
+        self.profile.calls += 1;
+        self.profile.batches += batches;
+        self.profile.processed_tokens += keys.len() - reused;
+        self.profile.reused_tokens += reused;
+        let outputs = (!outputs.is_empty()).then(|| Tensor::cat(outputs, 0));
+        Ok((keys.len(), outputs))
     }
 
     /// Runs embedding rows at positions `start..` and returns their final residual rows (not
@@ -378,6 +500,14 @@ impl DiffusionModel for Nemotron {
             return Err(Error::InvalidInput("At most 8 images are allowed".into()));
         }
         self.encoded.clear();
+        if images.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Some(vision) = self.vision.as_ref() else {
+            return Err(Error::InvalidInput(
+                "This model is text-only and does not accept images".into(),
+            ));
+        };
         let mut parts = Vec::with_capacity(images.len());
         for (index, input) in images.iter().enumerate() {
             let rgb = decode_image(input)?;
@@ -393,7 +523,7 @@ impl DiffusionModel for Nemotron {
                     self.info.n_ctx
                 )));
             }
-            let features = self.vision.encode(&patches);
+            let features = vision.encode(&patches);
             let d = self.config.hidden_size;
             let marks = self.embed(&[IMAGE_START, IMAGE_BREAK, IMAGE_END])?;
             let mark = |i: usize| marks.clone().slice([i..i + 1, 0..d]);
@@ -409,89 +539,8 @@ impl DiffusionModel for Nemotron {
     }
 
     fn prefill(&mut self, parts: &[PromptPart], suffix: &[i32]) -> Result<usize> {
-        let start_time = Instant::now();
-        // Each segment: its position keys and where its rows come from.
-        enum Rows<'a> {
-            Tokens(&'a [i32]),
-            Image(usize),
-        }
-        let mut segments = Vec::with_capacity(parts.len() + 1);
-        for part in parts {
-            segments.push(match part {
-                PromptPart::Text(t) => Rows::Tokens(t),
-                PromptPart::Image { tokens, index } => match self.encoded.get(*index) {
-                    Some((rows, _)) if rows.dims()[0] == *tokens => Rows::Image(*index),
-                    _ => return Err(Error::InvalidInput("Unknown image part".into())),
-                },
-            });
-        }
-        segments.push(Rows::Tokens(suffix));
-        let mut keys = Vec::new();
-        for segment in &segments {
-            match segment {
-                Rows::Tokens(t) => keys.extend(t.iter().map(|&t| i64::from(t))),
-                Rows::Image(i) => {
-                    let (rows, key) = &self.encoded[*i];
-                    keys.extend(std::iter::repeat_n(*key, rows.dims()[0]));
-                }
-            }
-        }
-        if keys.len() > self.info.n_ctx {
-            return Err(Error::InvalidInput("Prompt exceeds context size".into()));
-        }
-        if !self.prompt_cache {
-            self.cached.clear();
-        }
-        let reused = keys
-            .iter()
-            .zip(&self.cached)
-            .take_while(|(a, b)| a == b)
-            .count();
-        self.cached.truncate(reused);
-        // Embedding rows of the uncached positions, then causal forwards in batches.
-        let mut pieces = Vec::new();
-        let mut position = 0;
-        for segment in &segments {
-            let len = match segment {
-                Rows::Tokens(t) => t.len(),
-                Rows::Image(i) => self.encoded[*i].0.dims()[0],
-            };
-            let (from, to) = (reused.max(position), position + len);
-            if from < to {
-                let (a, b) = (from - position, to - position);
-                pieces.push(match segment {
-                    Rows::Tokens(t) => self.embed(&t[a..b])?,
-                    Rows::Image(i) => {
-                        let d = self.config.hidden_size;
-                        self.encoded[*i].0.clone().slice([a..b, 0..d])
-                    }
-                });
-            }
-            position = to;
-        }
-        let mut batches = 0;
-        if !pieces.is_empty() {
-            let rows = Tensor::cat(pieces, 0);
-            let (total, d) = (keys.len() - reused, self.config.hidden_size);
-            for begin in (0..total).step_by(self.info.batch_size) {
-                let end = (begin + self.info.batch_size).min(total);
-                let start = self.cached.len();
-                self.forward(rows.clone().slice([begin..end, 0..d]), start, true)?;
-                self.cached.extend(&keys[reused + begin..reused + end]);
-                batches += 1;
-            }
-        }
-        self.device
-            .sync()
-            .map_err(|e| Error::Backend(format!("{e:?}")))?;
-        self.canvas = None;
-        self.logits = None;
-        self.profile.wall_ms += start_time.elapsed().as_secs_f64() * 1000.0;
-        self.profile.calls += 1;
-        self.profile.batches += batches;
-        self.profile.processed_tokens += keys.len() - reused;
-        self.profile.reused_tokens += reused;
-        Ok(keys.len())
+        self.prefill_rows(parts, suffix, 0)
+            .map(|(length, _)| length)
     }
 
     fn forward_canvas(
@@ -547,6 +596,36 @@ impl DiffusionModel for Nemotron {
         Ok(host_f32(logits.clone()))
     }
 
+    fn greedy_proposals(&mut self) -> Result<Vec<(i32, f64)>> {
+        let logits = self.logits.as_ref().ok_or(Error::MissingLogits)?;
+        Ok(greedy(logits.clone())
+            .into_iter()
+            .map(|(token, p)| (token, f64::from(p)))
+            .collect())
+    }
+
+    /// The same head predicts the next token under causal attention: the model is trained with
+    /// autoregressive and diffusion objectives.
+    fn prefill_predict(
+        &mut self,
+        parts: &[PromptPart],
+        suffix: &[i32],
+        rows: usize,
+    ) -> Result<(usize, Vec<i32>)> {
+        if rows == 0 {
+            return Err(Error::InvalidInput("no rows to predict".into()));
+        }
+        let (length, hidden) = self.prefill_rows(parts, suffix, rows)?;
+        let hidden = rms_norm(
+            hidden.ok_or(Error::MissingLogits)?,
+            &self.norm,
+            self.config.rms_norm_eps,
+        );
+        let n = hidden.dims()[0];
+        let logits = linear(hidden, &self.head).slice([0..n, 0..self.config.vocab_size]);
+        Ok((length, greedy(logits).into_iter().map(|(t, _)| t).collect()))
+    }
+
     fn profile(&mut self) -> &mut PrefillProfile {
         &mut self.profile
     }
@@ -557,13 +636,23 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    /// A file of the reference dump for the checkpoint under test: `NEMOTRON_GOLDEN` names its
+    /// directory (default `nemotron-diffusion-bf16`, the VLM) under the golden root.
     fn golden(name: &str) -> Vec<u8> {
         let root = std::env::var_os("JEVONS_GOLDEN_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
                 PathBuf::from(std::env::var_os("HOME").unwrap()).join(".cache/jevons/golden")
             });
-        std::fs::read(root.join("nemotron-diffusion-bf16").join(name)).unwrap()
+        let dump =
+            std::env::var("NEMOTRON_GOLDEN").unwrap_or_else(|_| "nemotron-diffusion-bf16".into());
+        std::fs::read(root.join(dump).join(name)).unwrap()
+    }
+
+    fn load_model() -> Nemotron {
+        let mut config = ModelConfig::new(std::env::var("NEMOTRON_MODEL").unwrap());
+        config.context_size = 4096;
+        Nemotron::load(&config).unwrap()
     }
 
     fn ints(name: &str) -> Vec<i32> {
@@ -654,7 +743,8 @@ mod tests {
         // BF16 reference itself is 20% off in the tower, whose activations reach the
         // thousands); produced by `nemotron_dump.py`.
         let rgb = decode_image(&fixture_image()).unwrap();
-        let tower = host_f32(model.vision.tower(&image::patches(&rgb)));
+        let vision = model.vision.as_ref().expect("a VLM checkpoint");
+        let tower = host_f32(vision.tower(&image::patches(&rgb)));
         let want = floats("image_tower_f32");
         let rms = (want.iter().map(|v| v * v).sum::<f32>() / want.len() as f32).sqrt();
         let err = (tower
@@ -725,13 +815,10 @@ mod tests {
         model.trace = Some(Vec::new());
         model.prefill(&[PromptPart::Text(prompt)], &[]).unwrap();
         let trace = model.trace.take().unwrap();
-        let last = trace.len() - 1;
-        for (layer, name) in [
-            (0, "prefill_l0_out"),
-            (last / 2, "prefill_l17_out"),
-            (last, "prefill_l33_out"),
-        ] {
-            let want = floats(name);
+        let n = trace.len();
+        // The layers the reference dump keeps.
+        for layer in [0, n / 2, n - 1] {
+            let want = floats(&format!("prefill_l{layer}_out"));
             let got = &trace[layer];
             let worst = got
                 .iter()
@@ -804,5 +891,41 @@ mod tests {
         model.profile = PrefillProfile::default();
         model.prefill(&[PromptPart::Text(prompt)], &[]).unwrap();
         assert_eq!(model.profile.processed_tokens, 0);
+    }
+
+    /// Causal predictions match the reference's greedy `ar_generate` from an opened thought,
+    /// teacher-forced over one 32-token block and free-running one token at a time. Text
+    /// checkpoints only: the VLM code has no `ar_generate` reference.
+    #[test]
+    #[ignore = "Requires NEMOTRON_MODEL (a text checkpoint), a HIP GPU and its reference dump"]
+    fn causal_predictions_follow_the_reference_greedy_thought() {
+        let mut model = load_model();
+        let parts = [PromptPart::Text(ints("think_prompt"))];
+        let want = ints("think_ar_ids");
+        let spec = ints("think_spec_ids");
+        let same = want.iter().zip(&spec).take_while(|(a, b)| a == b).count();
+        println!(
+            "reference: linear self-speculation matches ar_generate for {same} of {} tokens",
+            want.len()
+        );
+        let rows = want.len().min(32);
+        let (_, forced) = model
+            .prefill_predict(&parts, &want[..rows - 1], rows)
+            .unwrap();
+        let hits = forced.iter().zip(&want).filter(|(a, b)| a == b).count();
+        println!("teacher-forced block: {hits} of {rows} predictions match");
+        let mut generated = Vec::new();
+        for _ in 0..want.len() {
+            let (_, next) = model.prefill_predict(&parts, &generated, 1).unwrap();
+            generated.push(next[0]);
+        }
+        let agreed = generated
+            .iter()
+            .zip(&want)
+            .take_while(|(a, b)| a == b)
+            .count();
+        println!("free-running: {agreed} of {} tokens match", want.len());
+        assert!(hits + 1 >= rows, "{forced:?}");
+        assert!(agreed >= rows, "{generated:?}");
     }
 }

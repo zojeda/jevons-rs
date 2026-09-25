@@ -2,14 +2,32 @@
 
 use crate::error::ApiError;
 use axum::http::StatusCode;
-use jevons_engine::{Engine, Error, ModelConfig, ModelInfo};
+use jevons_engine::{
+    Decoding, Engine, Error, Generation, GenerationRequest, ModelConfig, ModelInfo,
+};
 use jevons_system_one::{Request, Response, ValidationError};
 use std::thread::JoinHandle;
 use tokio::sync::{mpsc, oneshot};
 
-pub(crate) struct Job {
-    pub request: Request,
-    pub reply: oneshot::Sender<Result<Response, ApiError>>,
+pub(crate) enum Job {
+    /// A System One read.
+    Read {
+        request: Request,
+        reply: oneshot::Sender<Result<Response, ApiError>>,
+    },
+    /// Free-form generation, streamed as [`Update`]s.
+    Generate {
+        request: GenerationRequest,
+        seed: Option<u64>,
+        updates: mpsc::UnboundedSender<Update>,
+    },
+}
+
+/// Progress of a generation job: answer text as it is decided, then the result.
+#[derive(Debug)]
+pub enum Update {
+    Text(String),
+    Done(Result<Generation, Error>),
 }
 
 #[derive(Clone)]
@@ -18,15 +36,32 @@ pub struct Client {
 }
 
 impl Client {
+    fn submit(&self, job: Job) -> Result<(), ApiError> {
+        self.sender.try_send(job).map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => ApiError::overloaded(),
+            mpsc::error::TrySendError::Closed(_) => ApiError::unavailable(),
+        })
+    }
+
     pub async fn read(&self, request: Request) -> Result<Response, ApiError> {
         let (reply, receiver) = oneshot::channel();
-        self.sender
-            .try_send(Job { request, reply })
-            .map_err(|error| match error {
-                mpsc::error::TrySendError::Full(_) => ApiError::overloaded(),
-                mpsc::error::TrySendError::Closed(_) => ApiError::unavailable(),
-            })?;
+        self.submit(Job::Read { request, reply })?;
         receiver.await.map_err(|_| ApiError::unavailable())?
+    }
+
+    /// Queues a generation. Dropping the receiver cancels it at the next decided text.
+    pub fn generate(
+        &self,
+        request: GenerationRequest,
+        seed: Option<u64>,
+    ) -> Result<mpsc::UnboundedReceiver<Update>, ApiError> {
+        let (updates, receiver) = mpsc::unbounded_channel();
+        self.submit(Job::Generate {
+            request,
+            seed,
+            updates,
+        })?;
+        Ok(receiver)
     }
 
     pub fn is_alive(&self) -> bool {
@@ -40,6 +75,7 @@ pub async fn start(
     model_id: String,
     seed: u64,
     capacity: usize,
+    decoding: Decoding,
 ) -> Result<(Client, JoinHandle<()>, ModelInfo), Box<dyn std::error::Error>> {
     if capacity == 0 {
         return Err("Queue capacity must be positive".into());
@@ -49,7 +85,10 @@ pub async fn start(
     let thread = std::thread::Builder::new()
         .name("diffusion-inference".into())
         .spawn(move || {
-            let mut engine = match Engine::load(&config) {
+            let mut engine = match Engine::load(&config).and_then(|mut engine| {
+                engine.set_decoding(decoding)?;
+                Ok(engine)
+            }) {
                 Ok(engine) => engine,
                 Err(error) => {
                     let _ = ready_sender.send(Err(error.to_string()));
@@ -60,11 +99,35 @@ pub async fn start(
                 return;
             }
             while let Some(job) = receiver.blocking_recv() {
-                if job.reply.is_closed() {
-                    continue;
+                match job {
+                    Job::Read { request, reply } => {
+                        if reply.is_closed() {
+                            continue;
+                        }
+                        let _ = reply.send(evaluate(&mut engine, &request, &model_id, seed));
+                    }
+                    Job::Generate {
+                        request,
+                        seed: request_seed,
+                        updates,
+                    } => {
+                        if updates.is_closed() {
+                            continue;
+                        }
+                        let result =
+                            engine.generate(&request, request_seed.unwrap_or(seed), &mut |text| {
+                                updates.send(Update::Text(text.into())).is_ok()
+                            });
+                        if let Ok(generation) = &result {
+                            tracing::info!(
+                                prompt_tokens = generation.prompt_tokens,
+                                completion_tokens = generation.completion_tokens,
+                                "Generation completed"
+                            );
+                        }
+                        let _ = updates.send(Update::Done(result));
+                    }
                 }
-                let result = evaluate(&mut engine, &job.request, &model_id, seed);
-                let _ = job.reply.send(result);
             }
         })?;
     let info = ready_receiver.await??;
@@ -155,7 +218,7 @@ mod tests {
         .unwrap();
         let (reply, _reply_receiver) = tokio::sync::oneshot::channel();
         sender
-            .try_send(Job {
+            .try_send(Job::Read {
                 request: request.clone(),
                 reply,
             })

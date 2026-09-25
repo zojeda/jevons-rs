@@ -51,8 +51,19 @@ pub struct ChatFormat {
     pub bos: bool,
     /// Opens the user turn, before any images and the prompt text.
     pub user_open: String,
-    /// Closes the user turn and opens the model turn.
+    /// Closes the user turn and opens the model turn: `turn_close` + `assistant_open`.
     pub model_open: String,
+    /// Opens a system (instructions) turn.
+    pub system_open: String,
+    /// Opens a model turn.
+    pub assistant_open: String,
+    /// Closes any turn.
+    pub turn_close: String,
+    /// Starts earlier model turns of a conversation (Nemotron's template states an empty
+    /// thought there).
+    pub history_prefix: String,
+    /// Single-token markers that end a generated answer.
+    pub answer_stops: Vec<String>,
     /// Opens a thought for bounded thinking.
     pub thought_open: String,
     /// Closes a thought; appended after generated thought tokens.
@@ -70,7 +81,12 @@ pub struct ChatFormat {
 impl ChatFormat {
     /// Checks that each stop marker is one token, so generation can stop on it.
     pub fn validate(&self, tokenizer: &dyn TextTokenizer) -> Result<()> {
-        for marker in &self.thought_stops {
+        if self.model_open != format!("{}{}", self.turn_close, self.assistant_open) {
+            return Err(Error::UnsupportedModel(
+                "the model turn must open with turn_close + assistant_open".into(),
+            ));
+        }
+        for marker in self.thought_stops.iter().chain(&self.answer_stops) {
             if tokenizer.tokenize(marker, false, true)?.len() != 1 {
                 return Err(Error::UnsupportedModel(format!(
                     "the tokenizer has no single token for the chat marker {marker}"
@@ -124,6 +140,9 @@ pub trait TextTokenizer {
     /// Decoded text of a non-control token if it is 1..=16 ASCII alphanumerics, ignoring one
     /// leading space.
     fn code_piece(&self, token: i32) -> Option<String>;
+    /// Text of generated tokens, without control tokens. Incomplete UTF-8 at the end decodes
+    /// to U+FFFD.
+    fn decode(&self, tokens: &[i32]) -> Result<String>;
 }
 
 pub trait DiffusionModel {
@@ -149,6 +168,61 @@ pub trait DiffusionModel {
     fn candidate_logits(&mut self, row: usize, candidates: &[i32]) -> Result<Vec<f64>>;
     /// All logits (canvas rows x vocab) of the last canvas forward with [`Logits::Full`].
     fn full_logits(&mut self) -> Result<Vec<f32>>;
+    /// Each canvas row's full-vocabulary argmax and that token's probability, for the last
+    /// canvas forward with [`Logits::Full`]. Models may compute this on the device; the default
+    /// reads [`Self::full_logits`].
+    fn greedy_proposals(&mut self) -> Result<Vec<(i32, f64)>> {
+        let vocab = self.info().n_vocab as usize;
+        let logits = self.full_logits()?;
+        if vocab == 0 || logits.is_empty() || !logits.len().is_multiple_of(vocab) {
+            return Err(Error::InvalidLogits);
+        }
+        logits.chunks(vocab).map(greedy).collect()
+    }
+    /// Like [`Self::prefill`], but always evaluates the last `rows` positions of
+    /// `parts + suffix` instead of serving them from the cache, and returns each one's greedy
+    /// causal next-token prediction, in order, with the resident prompt length. Only models
+    /// trained with a causal language-model objective support it.
+    fn prefill_predict(
+        &mut self,
+        parts: &[PromptPart],
+        suffix: &[i32],
+        rows: usize,
+    ) -> Result<(usize, Vec<i32>)> {
+        let _ = (parts, suffix, rows);
+        Err(Error::UnsupportedModel(
+            "this model has no causal next-token predictions".into(),
+        ))
+    }
     /// Prefill work counters, reset by the engine at the start of each read.
     fn profile(&mut self) -> &mut PrefillProfile;
+}
+
+/// The argmax of one logit row and its softmax probability. The first maximum wins ties.
+pub fn greedy(row: &[f32]) -> Result<(i32, f64)> {
+    if row.is_empty() || row.iter().any(|x| !x.is_finite()) {
+        return Err(Error::InvalidLogits);
+    }
+    let best = row
+        .iter()
+        .enumerate()
+        .fold(0, |best, (i, x)| if *x > row[best] { i } else { best });
+    let max = f64::from(row[best]);
+    let z: f64 = row.iter().map(|&x| (f64::from(x) - max).exp()).sum();
+    Ok((best as i32, 1.0 / z))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn greedy_takes_the_first_argmax_with_its_stable_probability() {
+        let (token, confidence) = greedy(&[1000.0, 1000.0 + 2f32.ln(), 0.0]).unwrap();
+        assert_eq!(token, 1);
+        assert!((confidence - 2.0 / 3.0).abs() < 1e-4);
+        assert_eq!(greedy(&[3.0, 3.0]).unwrap().0, 0);
+        assert!(greedy(&[f32::INFINITY]).is_err());
+        assert!(greedy(&[]).is_err());
+    }
 }

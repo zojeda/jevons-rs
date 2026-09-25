@@ -3883,15 +3883,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "jevons-openai"
+version = "0.1.0"
+dependencies = [
+ "jevons-core",
+ "serde_json",
+]
+
+[[package]]
 name = "jevons-rs"
 version = "0.1.0"
 dependencies = [
  "axum",
  "clap",
+ "futures-util",
  "jevons-engine",
+ "jevons-openai",
  "jevons-system-one",
+ "serde",
  "serde_json",
  "tokio",
+ "toml",
  "tower",
  "tracing",
  "tracing-subscriber",

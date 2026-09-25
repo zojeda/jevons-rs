@@ -16,6 +16,7 @@
 | `jevons-models` | Detect a model's architecture and load its `DiffusionModel` implementation (DiffusionGemma with feature `gemma4`). |
 | `jevons-engine` | Prepare tokens, frame chats, sample the canvas for each diffusion scheme, and provide the SCM CLI. |
 | `jevons-system-one` | Validate requests, compile questions into slots, and map answers. |
+| `jevons-openai` | Validate OpenAI Chat Completions, Completions and Responses requests; render responses and streaming events. |
 | `jevons-rs` | Serve HTTP, check authentication, and manage the inference queue. |
 
 The project was previously named `llama-cpp-system-one`, after its original llama.cpp backend, which has been removed. The server binary is `jevons-rs`; the SCM CLI binary is `jevons-scm`.
@@ -32,9 +33,10 @@ We keep model ownership on a dedicated worker thread and blocking inference off 
 | `jevons-burn` | `device`, `weights`, `layers`, `kernels` |
 | `jevons-nemotron-diffusion` | `config`, `rope`, `image`, `vision`, `model` |
 | `jevons-system-one` | `request`, `compiler`, `response`, `error` |
+| `jevons-openai` | `request`, `response`, `error` |
 | `jevons-rs` | `http`, `handlers`, `middleware`, `worker`, `error` |
 
-Keep protocol rules in `jevons-system-one`, HTTP policy in the server, token preparation and sampling in `jevons-engine`, and architecture specifics (chat markers, image encoding, weights) in the model implementation. The engine talks to the model through the `DiffusionModel` trait in `jevons-core/src/model.rs`; engine unit tests drive it with a scripted `FakeModel`, so sampling and framing are tested without a GPU. Put unit tests beside the responsible code. Router tests exercise the HTTP contract without a model. See the [CubeCL backend guide](cubecl.md) for kernel tests and design.
+Keep protocol rules in `jevons-system-one` and `jevons-openai`, HTTP policy in the server, token preparation and sampling in `jevons-engine`, and architecture specifics (chat markers, image encoding, weights) in the model implementation. The engine talks to the model through the `DiffusionModel` trait in `jevons-core/src/model.rs`; engine unit tests drive it with a scripted `FakeModel`, so sampling and framing are tested without a GPU. Put unit tests beside the responsible code. Router tests exercise the HTTP contract without a model. See the [CubeCL backend guide](cubecl.md) for kernel tests and design.
 
 ## Checks
 
@@ -64,9 +66,11 @@ cargo test --release -p jevons-burn --lib -- --ignored --test-threads=1        #
 cargo test --release -p jevons-nemotron-diffusion --lib -- --ignored --test-threads=1
 cargo test --release -p jevons-engine --lib -- --ignored --exact \
   engine::tests::nemotron_reads_are_calibrated_reproducible_and_support_extensions
+cargo test --release -p jevons-engine --lib -- --ignored --exact --nocapture \
+  engine::tests::nemotron_self_speculation_reproduces_autoregressive_thoughts
 ```
 
-The Nemotron parity tests compare against the reference dump from `scripts/reference/nemotron_dump.py --dtype bfloat16` in `$JEVONS_GOLDEN_DIR`. Against a running service, run `python3 scripts/smoke-test.py` with the server's `TYPESAFE_API_KEY` if configured.
+The Nemotron parity tests compare against the reference dump from `scripts/reference/nemotron_dump.py --dtype bfloat16` in `$JEVONS_GOLDEN_DIR`. `NEMOTRON_GOLDEN` names the dump directory for the checkpoint under test (default `nemotron-diffusion-bf16`, the VLM; for example `nemotron-diffusion-3b-bf16`). Image tests need the VLM, and `causal_predictions_follow_the_reference_greedy_thought` needs a text checkpoint, whose code has `ar_generate`. The self-speculation test prints tokens per forward and thought speed for each `--decoding` and checks that self-speculation reproduces autoregressive thoughts; the 3B closes thoughts at once, so use the VLM. Against a running service, run `python3 scripts/smoke-test.py` with the server's `TYPESAFE_API_KEY` if configured.
 
 Regular tests cover validation, probability math, error mapping, model aliases, request IDs, image preprocessing, and queue behavior. The ignored model tests check reproducibility, extension behavior, and image prefill (including exact reuse of a cached image) using real assets.
 

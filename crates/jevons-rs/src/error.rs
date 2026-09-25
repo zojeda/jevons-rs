@@ -37,6 +37,38 @@ impl ApiError {
     }
 }
 
+impl From<jevons_openai::OpenAiError> for ApiError {
+    fn from(error: jevons_openai::OpenAiError) -> Self {
+        Self {
+            status: StatusCode::from_u16(error.status).unwrap_or(StatusCode::BAD_REQUEST),
+            body: error.body(),
+        }
+    }
+}
+
+impl ApiError {
+    /// The same failure in the OpenAI error shape.
+    pub fn openai(self) -> Self {
+        if self.body.get("error").is_some() {
+            return self;
+        }
+        let message = self.body["detail"]["message"]
+            .as_str()
+            .unwrap_or("Request failed")
+            .to_string();
+        let kind = match self.status.as_u16() {
+            401 | 403 => "authentication_error",
+            404 => "not_found_error",
+            529 | 503 => "overloaded_error",
+            _ => "server_error",
+        };
+        Self {
+            status: self.status,
+            body: jevons_openai::OpenAiError::new(self.status.as_u16(), kind, message).body(),
+        }
+    }
+}
+
 impl From<ValidationError> for ApiError {
     fn from(error: ValidationError) -> Self {
         Self {

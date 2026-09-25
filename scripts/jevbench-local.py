@@ -47,6 +47,9 @@ def main():
     parser.add_argument("--port", type=int, default=8082)
     parser.add_argument("--think", type=int, default=0,
                         help="Thought token cap (0–4096); uses a 900s timeout when enabled")
+    parser.add_argument("--decoding",
+                        choices=["diffusion", "self-speculation", "autoregressive"],
+                        help="Server --decoding (default: the server's, diffusion)")
     args = parser.parse_args()
     if not 0 <= args.think <= 4096:
         parser.error("--think must be between 0 and 4096")
@@ -66,6 +69,8 @@ def main():
     # Exercise the service's context, seed, batch and inference defaults.
     command = [str(binary), "--model", str(model), "--model-id", args.model_id, "--bind",
                f"127.0.0.1:{args.port}"]
+    if args.decoding:
+        command += ["--decoding", args.decoding]
     env = dict(os.environ, PYTHONPATH=str(harness), PYTHONDONTWRITEBYTECODE="1",
                RUST_LOG="info")
     env.pop("TYPESAFE_API_KEY", None)
