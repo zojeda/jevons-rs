@@ -9,4 +9,8 @@ used through `[patch.crates-io]` in the workspace `Cargo.toml`. The only change 
 - the HIP SDK's versioned `hiprtcXXYY.dll`, in `HIP_PATH\bin`;
 - libraries bundled next to the executable.
 
+`src/hipconfig.rs` also takes the HIP install from `HIP_PATH` or `ROCM_PATH` when it has
+headers, before running `hipconfig`: the Windows HIP SDK sets `HIP_PATH` but does not put
+`hipconfig` on the PATH, and kernels compile against those headers at run time.
+
 Drop this copy once upstream loads these names.
