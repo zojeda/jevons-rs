@@ -164,7 +164,12 @@ fn run(
                 }
             }
             Mode::Embedded => {
-                let settings = match runtime_settings(&config.models, &file) {
+                let catalog_file = file.parent().unwrap_or(Path::new(".")).join("models.toml");
+                let (catalog, _) = jevons_desktop_core::catalog::load(&catalog_file);
+                let models = config
+                    .models
+                    .with_defaults(&config.models_folder(), &catalog);
+                let settings = match runtime_settings(&models, &file) {
                     Ok(Some(text)) => text,
                     Ok(None) => {
                         tokio.block_on(embedded.unload());

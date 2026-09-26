@@ -14,6 +14,7 @@ mod audio;
 mod platform;
 mod runtime;
 mod tray;
+mod tuning;
 mod ui;
 
 use agent::{Agent, Command, Layers, View};
@@ -51,18 +52,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing_subscriber::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| "info,wgpu_hal=warn,wgpu_core=warn,egui_wgpu=warn".into())
     };
-    match args.replay.is_none().then(log_file).flatten() {
-        // The tray app has no terminal: log to a file next to the data.
-        Some(file) => tracing_subscriber::fmt()
-            .with_env_filter(filter())
-            .with_ansi(false)
-            .with_writer(Mutex::new(file))
-            .init(),
-        // stdout carries the --replay trace.
-        None => tracing_subscriber::fmt()
-            .with_env_filter(filter())
-            .with_writer(std::io::stderr)
-            .init(),
+    {
+        use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
+        let output = match args.replay.is_none().then(log_file).flatten() {
+            // The tray app has no terminal: log to a file the user can find.
+            Some(file) => tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(Mutex::new(file))
+                .with_filter(filter())
+                .boxed(),
+            // stdout carries the --replay trace.
+            None => tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_filter(filter())
+                .boxed(),
+        };
+        tracing_subscriber::registry()
+            .with(output)
+            .with(tuning::Layer)
+            .init();
     }
     let config_file = args.config.clone().unwrap_or_else(default_config_file);
     let config = DesktopConfig::load(&config_file)?;

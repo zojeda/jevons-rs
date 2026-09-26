@@ -5530,6 +5530,7 @@ dependencies = [
  "directories",
  "futures-util",
  "globset",
+ "image",
  "jevons-audio",
  "regex",
  "reqwest",

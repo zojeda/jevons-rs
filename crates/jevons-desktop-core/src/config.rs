@@ -107,6 +107,32 @@ impl Default for Models {
     }
 }
 
+impl Models {
+    /// These selections with each unset service filled from the first downloaded catalog entry
+    /// that serves it, in catalog order (DiffusionGemma first for language, then Parakeet for
+    /// speech). Explicit selections are kept.
+    pub fn with_defaults(&self, folder: &Path, catalog: &[crate::catalog::CatalogEntry]) -> Self {
+        use crate::catalog::Service;
+        let pick = |service: Service| {
+            catalog
+                .iter()
+                .find(|e| e.serves(service) && e.is_ready(folder))
+                .map(|e| ModelRef {
+                    path: e.model_path(folder),
+                    mmproj: e.mmproj_path(folder),
+                    catalog: Some(e.id.clone()),
+                })
+        };
+        let mut models = self.clone();
+        if models.runtime_config.is_none() {
+            models.generative = models.generative.or_else(|| pick(Service::Generative));
+            models.decision = models.decision.or_else(|| pick(Service::Decision));
+            models.speech = models.speech.or_else(|| pick(Service::Speech));
+        }
+        models
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Dictation {
@@ -269,6 +295,48 @@ mod tests {
         config.save(&file).unwrap();
         assert_eq!(DesktopConfig::load(&file).unwrap(), config);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn downloaded_catalog_models_fill_unset_services_with_gemma_first() {
+        let folder = std::env::temp_dir().join(format!("jevons-defaults-{}", std::process::id()));
+        let catalog = crate::catalog::builtin();
+        for id in [
+            "diffusiongemma-26b-a4b-q4_k_m",
+            "nemotron-labs-diffusion-3b",
+            "parakeet-tdt-0.6b-v3",
+        ] {
+            let dir = folder.join(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(crate::download::COMPLETE_MARKER), b"").unwrap();
+        }
+        let chosen = Models {
+            speech: Some(ModelRef {
+                path: "/mine".into(),
+                mmproj: None,
+                catalog: None,
+            }),
+            ..Models::default()
+        }
+        .with_defaults(&folder, &catalog);
+        let generative = chosen.generative.unwrap();
+        assert_eq!(
+            generative.catalog.as_deref(),
+            Some("diffusiongemma-26b-a4b-q4_k_m")
+        );
+        assert!(
+            generative
+                .path
+                .ends_with("diffusiongemma-26B-A4B-it-Q4_K_M.gguf")
+        );
+        assert!(generative.mmproj.is_some());
+        assert_eq!(chosen.decision.unwrap().catalog, generative.catalog);
+        assert_eq!(
+            chosen.speech.unwrap().path,
+            Path::new("/mine"),
+            "explicit choices stay"
+        );
+        std::fs::remove_dir_all(folder).unwrap();
     }
 
     #[test]

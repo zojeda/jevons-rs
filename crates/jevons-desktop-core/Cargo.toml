@@ -29,6 +29,8 @@ tracing.workspace = true
 
 [dev-dependencies]
 axum = { workspace = true, features = ["ws"] }
+# The render_icons example.
+image.workspace = true
 
 [lints]
 workspace = true

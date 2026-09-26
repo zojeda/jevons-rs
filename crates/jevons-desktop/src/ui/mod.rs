@@ -146,6 +146,13 @@ impl App {
     fn status(&self, ui: &mut egui::Ui) {
         let view = self.view.lock().expect("the view lock");
         ui.horizontal_wrapped(|ui| {
+            if crate::tuning::active() {
+                ui.colored_label(
+                    egui::Color32::from_rgb(255, 180, 60),
+                    "Tuning GPU kernels for this model (first runs only; the results are saved)",
+                );
+                ui.separator();
+            }
             ui.label(view.tray.tooltip());
             ui.separator();
             if let Some(status) = &view.runtime {

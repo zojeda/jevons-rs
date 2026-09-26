@@ -1,8 +1,29 @@
+<p align="center"><img src="assets/jevons.png" alt="jevons" width="160"></p>
+
 # jevons-desktop
 
 Context-aware dictation from the tray. Press the hotkey in any application and speak. jevons-desktop reads where you are, transcribes you, picks a profile for that place, decides what to do with your words, and types the result into the field you started in.
 
 It runs the jevons models in-process, optionally exposing the API on a port, or uses a jevons server elsewhere. The platform-free behaviour lives in [`jevons-desktop-core`](../jevons-desktop-core). This crate adds the tray, the window and the per-OS layers. The full guide is [docs/desktop.md](../../docs/desktop.md).
+
+## The tray icon
+
+<img src="assets/tray.png" alt="Tray states: ready, tuning, not ready, failed, listening (quiet and loud), transcribing, writing" width="620">
+
+From left to right:
+- **Ready** (cyan): the models are loaded.
+- **Tuning** (amber): GPU kernels are being autotuned for this model. This only happens on the first runs on a machine, and the results are saved; the tooltip says so.
+- **Not ready** (grey): the models are still loading.
+- **Failed** (red): the last take failed; the inspector says why.
+- **Listening:** the waveform follows your voice.
+- **Transcribing:** green dots.
+- **Writing:** violet dots, while the decision and generation run.
+
+The tray and taskbar icon is drawn in code (`jevons-desktop-core::icons`), simplified from the [artwork](assets/jevons.png) so it stays legible at 16–32 px. To regenerate the images after changing it:
+
+```bash
+cargo run -p jevons-desktop-core --example render_icons -- crates/jevons-desktop/assets
+```
 
 ## From speech to inserted text
 

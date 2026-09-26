@@ -1,7 +1,9 @@
-//! Icons, drawn in code as RGBA. The app icon is a text cursor speaking (voice arcs) on a violet
-//! badge; the badge turns grey while the runtime is not ready and red after a failed take. While
-//! listening the tray shows a waveform that follows the microphone level, and while the take is
-//! transcribed or generated, advancing dots (both ported from bot-rs).
+//! Icons, drawn in code as RGBA. The app icon is the jevons alien: a dark head with headphones,
+//! glowing almond eyes and a waveform on its forehead, simplified from the artwork in
+//! `crates/jevons-desktop/assets/jevons.png` so it reads at tray size. It glows cyan when ready,
+//! amber while GPU kernels are being tuned, grey while the runtime is not ready and red after a
+//! failed take. While listening the tray shows a waveform that follows the microphone level, and
+//! while the take is transcribed or generated, advancing dots (both ported from bot-rs).
 
 use crate::levels::MAX_LEVEL;
 use std::time::Duration;
@@ -30,6 +32,8 @@ pub enum TrayState {
     Error,
     /// The runtime is loading models or unreachable.
     Offline,
+    /// GPU kernels are being autotuned for this model (first runs only).
+    Tuning,
 }
 
 impl TrayState {
@@ -42,6 +46,10 @@ impl TrayState {
             Self::Thinking { .. } => "jevons: writing…",
             Self::Error => "jevons: the last take failed",
             Self::Offline => "jevons: runtime not ready",
+            Self::Tuning => {
+                "jevons: tuning GPU kernels for this model. This happens on the first runs only; \
+                 the results are saved"
+            }
         }
     }
 
@@ -67,9 +75,10 @@ impl TrayState {
 /// Every distinct frame, so a tray can build its icons once and swap them.
 pub fn frames() -> Vec<(TrayState, Vec<u8>)> {
     let mut frames = vec![
-        (TrayState::Idle, badge(SIZE, VIOLET)),
-        (TrayState::Error, badge(SIZE, RED)),
-        (TrayState::Offline, badge(SIZE, GREY)),
+        (TrayState::Idle, alien(SIZE, CYAN)),
+        (TrayState::Error, alien(SIZE, RED)),
+        (TrayState::Offline, alien(SIZE, GREY)),
+        (TrayState::Tuning, alien(SIZE, AMBER)),
     ];
     frames.extend((0..=MAX_LEVEL).map(|level| (TrayState::Listening { level }, wave(level))));
     frames.extend((0..3).map(|frame| {
@@ -89,12 +98,13 @@ pub fn frames() -> Vec<(TrayState, Vec<u8>)> {
 
 /// The index of `state`'s frame in [`frames`].
 pub fn frame_index(state: TrayState) -> usize {
-    let listening = 3;
+    let listening = 4;
     let transcribing = listening + usize::from(MAX_LEVEL) + 1;
     match state {
         TrayState::Idle => 0,
         TrayState::Error => 1,
         TrayState::Offline => 2,
+        TrayState::Tuning => 3,
         TrayState::Listening { level } => listening + usize::from(level.min(MAX_LEVEL)),
         TrayState::Transcribing { frame } => transcribing + usize::from(frame % 3),
         TrayState::Thinking { frame } => transcribing + 3 + usize::from(frame % 3),
@@ -106,20 +116,32 @@ fn put(pixels: &mut [u8], x: usize, y: usize, color: [u8; 4]) {
     pixels[i..i + 4].copy_from_slice(&color);
 }
 
-/// Badge colours, top and bottom of the gradient.
-type Gradient = ([f32; 3], [f32; 3]);
-const VIOLET: Gradient = ([150.0, 116.0, 255.0], [88.0, 60.0, 214.0]);
-const RED: Gradient = ([236.0, 112.0, 104.0], [186.0, 58.0, 58.0]);
-const GREY: Gradient = ([128.0, 128.0, 140.0], [84.0, 84.0, 96.0]);
+/// Glow colours by state.
+const CYAN: [f32; 3] = [34.0, 230.0, 242.0];
+const AMBER: [f32; 3] = [255.0, 180.0, 60.0];
+const RED: [f32; 3] = [255.0, 92.0, 92.0];
+const GREY: [f32; 3] = [140.0, 150.0, 160.0];
+/// The head and ear cups.
+const DARK: [f32; 3] = [16.0, 28.0, 38.0];
 
 /// The app icon at `size`×`size`, for the window and the taskbar.
 pub fn app_icon(size: u32) -> Vec<u8> {
-    badge(size, VIOLET)
+    alien(size, CYAN)
 }
 
-/// A rounded badge with the speaking-cursor glyph, anti-aliased with 4×4 supersampling.
-fn badge(size: u32, (top, bottom): Gradient) -> Vec<u8> {
+/// What covers a point of the alien.
+#[derive(Clone, Copy, PartialEq)]
+enum Paint {
+    Glow,
+    Dark,
+    Clear,
+}
+
+/// The alien at `size`×`size` in `glow`, anti-aliased with 4×4 supersampling. Details thinner
+/// than a pixel (the smile, the nose line) appear only from 64 px up.
+fn alien(size: u32, glow: [f32; 3]) -> Vec<u8> {
     const SAMPLES: u32 = 4;
+    let detailed = size >= 64;
     let mut pixels = vec![0; (size * size * 4) as usize];
     for py in 0..size {
         for px in 0..size {
@@ -129,13 +151,11 @@ fn badge(size: u32, (top, bottom): Gradient) -> Vec<u8> {
                 for sx in 0..SAMPLES {
                     let x = (px as f32 + (sx as f32 + 0.5) / SAMPLES as f32) / size as f32;
                     let y = (py as f32 + (sy as f32 + 0.5) / SAMPLES as f32) / size as f32;
-                    if !rounded_square(x, y) {
-                        continue;
-                    }
-                    let color = if glyph(x, y) {
-                        [255.0, 255.0, 255.0]
-                    } else {
-                        std::array::from_fn(|i| top[i] + (bottom[i] - top[i]) * y)
+                    let color = match paint(x, y, detailed) {
+                        Paint::Glow => glow,
+                        // A faint tint of the glow keeps the head from reading as a hole.
+                        Paint::Dark => std::array::from_fn(|i| DARK[i] + glow[i] * 0.08),
+                        Paint::Clear => continue,
                     };
                     for i in 0..3 {
                         rgb[i] += color[i];
@@ -155,34 +175,69 @@ fn badge(size: u32, (top, bottom): Gradient) -> Vec<u8> {
     pixels
 }
 
-/// The badge: a square with rounded corners, filling the icon with a small margin.
-fn rounded_square(x: f32, y: f32) -> bool {
-    let (margin, radius) = (0.03, 0.24);
-    let (lo, hi) = (margin + radius, 1.0 - margin - radius);
-    let dx = (x.clamp(lo, hi) - x).abs();
-    let dy = (y.clamp(lo, hi) - y).abs();
-    x >= margin
-        && x <= 1.0 - margin
-        && y >= margin
-        && y <= 1.0 - margin
-        && dx * dx + dy * dy <= radius * radius
-}
+fn paint(x: f32, y: f32, detailed: bool) -> Paint {
+    // The head: an egg narrowing towards the chin, with a glowing rim.
+    let head = |margin: f32| {
+        let (cx, cy, rx, ry) = (0.5, 0.47, 0.30 - margin, 0.37 - margin);
+        let taper = 1.0 - 0.38 * ((y - cy) / ry).max(0.0);
+        let dx = (x - cx) / (rx * taper);
+        let dy = (y - cy) / ry;
+        dx * dx + dy * dy <= 1.0
+    };
+    let in_head = head(0.0);
+    let inside_rim = head(0.035);
 
-/// A text cursor (I-beam) with three voice arcs to its right.
-fn glyph(x: f32, y: f32) -> bool {
-    let stem_x = 0.34;
-    let stem = (x - stem_x).abs() <= 0.045 && (0.24..=0.76).contains(&y);
-    let serif =
-        (x - stem_x).abs() <= 0.12 && ((y - 0.24).abs() <= 0.04 || (y - 0.76).abs() <= 0.04);
-    let (cx, cy) = (0.40, 0.5);
-    let (dx, dy) = (x - cx, y - cy);
-    let r = (dx * dx + dy * dy).sqrt();
-    let within_angle = dx > 0.0 && dy.abs() <= dx * 1.1;
-    let arc = within_angle
-        && [0.2_f32, 0.31, 0.42]
-            .iter()
-            .any(|radius| (r - radius).abs() <= 0.035);
-    stem || serif || arc
+    // Almond eyes, tilted up and outwards.
+    let eye = |cx: f32, angle: f32| {
+        let (dx, dy) = (x - cx, y - 0.56);
+        let (s, c) = angle.sin_cos();
+        let u = (dx * c + dy * s) / 0.095;
+        let v = (-dx * s + dy * c) / 0.05;
+        u * u + v * v <= 1.0
+    };
+    let eyes = eye(0.385, 0.5) || eye(0.615, -0.5);
+
+    // The waveform on the forehead.
+    let bars = [(0.43, 0.06), (0.5, 0.11), (0.57, 0.06)]
+        .iter()
+        .any(|&(bx, half)| (x - bx).abs() <= 0.022 && (y - 0.33).abs() <= half);
+
+    // The nose line and smile, too thin for the tray.
+    let nose = detailed && (x - 0.5).abs() <= 0.009 && (0.46..=0.62).contains(&y);
+    let smile = detailed && {
+        let (dx, dy) = (x - 0.5, y - 0.63);
+        let r = (dx * dx + dy * dy).sqrt();
+        dy > 0.03 && (r - 0.085).abs() <= 0.013
+    };
+
+    // Headphones: a band over the head and a cup on each side, with a glowing bar.
+    let band = {
+        let (dx, dy) = (x - 0.5, y - 0.47);
+        let r = (dx * dx + dy * dy).sqrt();
+        dy < -0.02 && (r - 0.42).abs() <= 0.03
+    };
+    // Rounded rectangles: half extents `hx`, `hy` and corner radius `r` around (cx, 0.52).
+    let rounded = |cx: f32, hx: f32, hy: f32, r: f32| {
+        let dx = ((x - cx).abs() - (hx - r)).max(0.0);
+        let dy = ((y - 0.52).abs() - (hy - r)).max(0.0);
+        dx * dx + dy * dy <= r * r
+    };
+    let cups = rounded(0.18, 0.065, 0.15, 0.055) || rounded(0.82, 0.065, 0.15, 0.055);
+    let cup_bars = rounded(0.145, 0.016, 0.1, 0.016) || rounded(0.855, 0.016, 0.1, 0.016);
+
+    if in_head {
+        if !inside_rim || eyes || bars || nose || smile {
+            Paint::Glow
+        } else {
+            Paint::Dark
+        }
+    } else if cup_bars || band {
+        Paint::Glow
+    } else if cups {
+        Paint::Dark
+    } else {
+        Paint::Clear
+    }
 }
 
 fn wave(level: u8) -> Vec<u8> {
@@ -237,18 +292,30 @@ mod tests {
     }
 
     #[test]
-    fn the_app_icon_is_an_opaque_badge_with_transparent_corners() {
+    fn the_app_icon_glows_at_the_eyes_on_a_dark_head_with_clear_corners() {
         let size = 64;
         let icon = app_icon(size);
-        let alpha = |x: u32, y: u32| icon[((y * size + x) * 4 + 3) as usize];
-        assert_eq!(alpha(0, 0), 0);
-        assert_eq!(alpha(size / 2, size / 2 + 5), 255);
-        // The glyph is white on the violet badge.
-        let at = |x: u32, y: u32| {
-            &icon[((y * size + x) * 4) as usize..((y * size + x) * 4 + 3) as usize]
+        let at = |x: f32, y: f32| {
+            let i = (((y * size as f32) as u32 * size + (x * size as f32) as u32) * 4) as usize;
+            [icon[i], icon[i + 1], icon[i + 2], icon[i + 3]]
         };
-        assert_eq!(at((0.34 * size as f32) as u32, size / 2), [255, 255, 255]);
-        assert_ne!(at(size / 8 + 2, size / 2), [255, 255, 255]);
+        assert_eq!(at(0.02, 0.02)[3], 0, "corners are transparent");
+        assert_eq!(at(0.385, 0.56), [34, 230, 242, 255], "the eyes glow cyan");
+        let cheek = at(0.5, 0.75);
+        assert_eq!(cheek[3], 255);
+        assert!(cheek[1] < 60, "the head is dark: {cheek:?}");
+    }
+
+    #[test]
+    fn tuning_has_its_own_amber_frame_and_explains_itself() {
+        let frames = frames();
+        let (_, pixels) = &frames[frame_index(TrayState::Tuning)];
+        let lit = pixels
+            .chunks(4)
+            .find(|p| p[3] == 255 && p[0] > 200)
+            .unwrap();
+        assert!(lit[0] > lit[2], "amber: more red than blue");
+        assert!(TrayState::Tuning.tooltip().contains("first runs"));
     }
 
     #[test]

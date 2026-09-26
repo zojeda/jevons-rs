@@ -6,6 +6,8 @@ A personal inference runtime in Rust. jevons-rs runs language and speech models 
 - **Speech:** speech to text, through the OpenAI-compatible transcriptions API for uploads (subtitles and word timestamps included) and Realtime transcription over a WebSocket for live dictation.
 - **Decision:** typed, probabilistic answers (yes/no, choice, rubric scores) about a state and a set of questions, read from a diffusion model's masked canvas in one pass, through the [System One](https://docs.typesafe.ai/introduction) API.
 
+<img src="crates/jevons-desktop/assets/jevons.png" alt="jevons-desktop" width="72" align="left">
+
 **jevons-desktop** is a tray app on top: context-aware dictation that reads the focused application and field, picks a profile, and types, replaces or rewrites text where you are. It runs the models itself or uses a jevons server (see [Desktop dictation](docs/desktop.md)).
 
 Everything is Rust: model code, GPU kernels (written in CubeCL and compiled at runtime for the device), audio decoding and the HTTP server. There is no Python, llama.cpp or C/C++ build. Each model runs on its own worker thread with a bounded queue, so a transcription never waits behind a long generation.

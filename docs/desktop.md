@@ -1,5 +1,7 @@
 # Desktop dictation
 
+<img src="../crates/jevons-desktop/assets/jevons.png" alt="jevons" width="96" align="right">
+
 `jevons-desktop` is a tray app for context-aware dictation. Press the hotkey in any application and speak. The app reads which application and field you are in, transcribes you, picks a profile for that place, decides whether to insert, replace or rewrite, generates the text when it needs editing, and types it where you were.
 
 ```bash
@@ -17,7 +19,8 @@ The first run opens the window when no tray is available; otherwise use the tray
 
 The tray icon shows what is happening:
 
-- the jevons badge (a text cursor with voice arcs) when idle, grey while the runtime is not ready;
+- the jevons alien, glowing cyan when ready and grey while the models load;
+- amber while GPU kernels are being tuned for the model, which only happens on the first runs and can take minutes (the tooltip and the window say so);
 - a waveform that follows your voice while listening;
 - green dots while transcribing;
 - violet dots while deciding and writing;
@@ -97,8 +100,9 @@ The **Models** tab manages the models the app runs.
 
 - **Models folder.** Pick where models live (default: the platform data folder, such as `%LOCALAPPDATA%\jevons\data\models`). Each model goes in its own subfolder.
 - **Catalog.**
+  - When a service has no model selected, the first downloaded entry that serves it is used, in catalog order: DiffusionGemma for generative and decision, Parakeet for speech.
   - Built in: DiffusionGemma 26B-A4B Q4_K_M from [unsloth/diffusiongemma-26B-A4B-it-GGUF](https://huggingface.co/unsloth/diffusiongemma-26B-A4B-it-GGUF), Nemotron-Labs-Diffusion 3B and VLM 8B (generative and decision), and Parakeet TDT 0.6B v3 (speech).
-  - The DiffusionGemma repository has no vision projector, so the download is text-only. For image input, set `mmproj` on the model in `jevons-desktop.toml`, or load a `jevons.toml` that has one.
+  - The DiffusionGemma repository has no vision projector, so its entry also fetches `mmproj-diffusiongemma-26b-a4b-f16.gguf` from [FreedomAISVR/DiffusionGemma-26B-A4B-it-MXFP4-GGUF](https://huggingface.co/FreedomAISVR/DiffusionGemma-26B-A4B-it-MXFP4-GGUF) into the same folder.
   - **Download** fetches the files from Hugging Face. It resumes interrupted files with an HTTP range and checks each large file against the repository's SHA-256.
   - Nothing downloads unless you press the button. Set `HF_TOKEN` for gated repositories.
 - **Selected models.** **Use for …** assigns a downloaded model to a service. **Use existing…** points a service at a model already on disk (a GGUF file or a checkpoint folder) without copying it. Generative and decision on the same model share one engine.
@@ -119,7 +123,12 @@ The **Models** tab manages the models the app runs.
 
 The panel shows the approximate memory of the selected models. On an APU, GPU memory is system memory, so load one large model at a time.
 
-The app has no console window on Windows. It logs to `jevons-desktop.log` in the platform data folder (`%LOCALAPPDATA%\jevons\data` on Windows), replaced at every start; set `RUST_LOG` for more detail.
+The app has no console window on Windows. Everything to review is in the `jevons` folder in your home directory (`C:\Users\<you>\jevons`, `~/jevons`), which **Open logs and traces** in the tray menu opens:
+
+- `logs/jevons-desktop.log`: this run's log, with `jevons-desktop.previous.log` from the run before. Each take logs its steps and timings (transcribed, deciding, generating, delivered) but never your text. Set `RUST_LOG` for more detail.
+- `traces/<time>-take<n>.json`: the full trace of each take, the same one the Takes tab shows (context, rules checked, decision request and probabilities, prompt, output, delivery). The newest 200 are kept.
+
+The decision and generation have time limits (60 s and 120 s). When the model does not answer in time, the transcript is typed as heard and the trace says why. **Cancel the current take** in the tray menu abandons a take without typing anything.
 
 ## Headless replay
 

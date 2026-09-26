@@ -22,10 +22,13 @@ remote_url = "http://127.0.0.1:8080"
 # runtime_config = "jevons.toml"
 realtime = true
 
+# Unset services use the first downloaded catalog model that serves them: DiffusionGemma for
+# generative and decision, Parakeet for speech. Or choose a model on disk:
 # [models.generative]
-# path = "D:/models/nemotron-labs-diffusion-3b"
+# path = "D:/models/diffusiongemma/diffusiongemma-26B-A4B-it-Q4_K_M.gguf"
+# mmproj = "D:/models/diffusiongemma/mmproj-diffusiongemma-26b-a4b-f16.gguf"
 # [models.decision]
-# path = "D:/models/nemotron-labs-diffusion-3b"
+# path = "D:/models/diffusiongemma/diffusiongemma-26B-A4B-it-Q4_K_M.gguf"
 # [models.speech]
 # path = "D:/models/parakeet-tdt-0.6b-v3"
 

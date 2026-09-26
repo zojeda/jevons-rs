@@ -24,6 +24,8 @@ pub enum TrayMessage {
     Menu(MenuModel),
     /// Registers these hotkeys, replacing the previous ones.
     Hotkeys(Vec<Binding>),
+    /// Kernel autotuning started; the icon turns amber while it lasts.
+    Tuning,
     Quit,
 }
 
@@ -86,6 +88,13 @@ fn run(commands: UnboundedSender<Command>, ready: std::sync::mpsc::Sender<Result
     let _ = ready.send(Ok(Tray {
         proxy: event_loop.create_proxy(),
     }));
+    let tuning = std::sync::Mutex::new(event_loop.create_proxy());
+    crate::tuning::on_start(move || {
+        let _ = tuning
+            .lock()
+            .expect("the tray proxy lock")
+            .send_event(TrayMessage::Tuning);
+    });
 
     let hotkeys = match GlobalHotKeyManager::new() {
         Ok(manager) => Some(manager),
@@ -199,6 +208,7 @@ fn run(commands: UnboundedSender<Command>, ready: std::sync::mpsc::Sender<Result
                 }
                 let _ = commands.send(Command::HotkeysRegistered { actions, errors });
             }
+            Event::UserEvent(TrayMessage::Tuning) => {}
             Event::UserEvent(TrayMessage::Quit) => {
                 tray = None;
                 *control_flow = ControlFlow::Exit;
@@ -206,16 +216,28 @@ fn run(commands: UnboundedSender<Command>, ready: std::sync::mpsc::Sender<Result
             }
             _ => {}
         }
+        // Tuning outranks every state but listening, which must stay visible while speaking.
+        let tuning = crate::tuning::active();
+        let display = if tuning && !matches!(state, TrayState::Listening { .. }) {
+            TrayState::Tuning
+        } else {
+            state
+        };
         if let Some(icon) = &tray
-            && shown != Some(state)
+            && shown != Some(display)
         {
-            let _ = icon.set_icon(Some(frames[icons::frame_index(state)].clone()));
-            if shown.is_none_or(|s| std::mem::discriminant(&s) != std::mem::discriminant(&state)) {
-                let _ = icon.set_tooltip(Some(state.tooltip()));
+            let _ = icon.set_icon(Some(frames[icons::frame_index(display)].clone()));
+            if shown.is_none_or(|s| std::mem::discriminant(&s) != std::mem::discriminant(&display))
+            {
+                let _ = icon.set_tooltip(Some(display.tooltip()));
             }
-            shown = Some(state);
+            shown = Some(display);
         }
-        if state.animates() {
+        if tuning {
+            // Check again soon to notice when tuning ends.
+            *control_flow =
+                ControlFlow::WaitUntil(Instant::now() + std::time::Duration::from_millis(500));
+        } else if state.animates() {
             let now = Instant::now();
             let due = next_frame.filter(|t| *t > now).unwrap_or(now + FRAME);
             next_frame = Some(due);
