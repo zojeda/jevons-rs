@@ -32,6 +32,7 @@ pub struct App {
     profiles: profiles::State,
     settings: settings::State,
     models: models::State,
+    started: bool,
 }
 
 impl App {
@@ -50,6 +51,7 @@ impl App {
             profiles: profiles::State::default(),
             settings: settings::State::new(config),
             models: models::State::new(&config_file),
+            started: false,
         }
     }
 
@@ -60,6 +62,14 @@ impl App {
 
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.started {
+            // eframe shows the window after its first frame; the tray opens it instead.
+            self.started = true;
+            let tray = self.view.lock().expect("the view lock").tray_running;
+            if tray {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            }
+        }
         let (quit, show) = {
             let mut view = self.view.lock().expect("the view lock");
             (view.quit, std::mem::take(&mut view.show_window))

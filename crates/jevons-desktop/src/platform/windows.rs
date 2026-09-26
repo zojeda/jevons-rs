@@ -9,6 +9,7 @@ use jevons_desktop_core::platform::{
     ContextProvider, DeliveryOutcome, DeliveryRequest, PlatformError, SinkCapabilities, TextSink,
 };
 use jevons_desktop_core::profile::DeliveryMethod;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use uiautomation::patterns::{UITextPattern, UIValuePattern};
 use uiautomation::types::{ControlType, TextPatternRangeEndpoint};
@@ -28,6 +29,49 @@ fn failed(e: impl std::fmt::Display) -> PlatformError {
     PlatformError::Failed(e.to_string())
 }
 
+type Reply<T> = std::sync::mpsc::Sender<Result<T, PlatformError>>;
+
+enum Request {
+    Snapshot(Privacy, Reply<ContextSnapshot>),
+    SetValue(String, Reply<()>),
+}
+
+/// UI Automation calls, on one thread that owns its COM apartment: the threads that ask may
+/// already have COM initialized another way (audio does), which UI Automation cannot share.
+fn automation(request: Request) {
+    static WORKER: OnceLock<Mutex<std::sync::mpsc::Sender<Request>>> = OnceLock::new();
+    let worker = WORKER.get_or_init(|| {
+        let (sender, requests) = std::sync::mpsc::channel::<Request>();
+        std::thread::Builder::new()
+            .name("ui-automation".into())
+            .spawn(move || {
+                let automation = UIAutomation::new().map_err(failed);
+                for request in requests {
+                    let automation = automation.as_ref().map_err(failed);
+                    match request {
+                        Request::Snapshot(privacy, reply) => {
+                            let _ = reply.send(automation.and_then(|a| snapshot(a, &privacy)));
+                        }
+                        Request::SetValue(text, reply) => {
+                            let _ = reply.send(automation.and_then(|a| set_value(a, &text)));
+                        }
+                    }
+                }
+            })
+            .expect("the UI Automation thread starts");
+        Mutex::new(sender)
+    });
+    let _ = worker.lock().expect("the UI Automation lock").send(request);
+}
+
+fn ask<T>(request: impl FnOnce(Reply<T>) -> Request) -> Result<T, PlatformError> {
+    let (reply, answer) = std::sync::mpsc::channel();
+    automation(request(reply));
+    answer
+        .recv()
+        .map_err(|_| failed("the UI Automation thread stopped"))?
+}
+
 /// The focused element through UI Automation.
 pub struct UiaContext;
 
@@ -37,36 +81,47 @@ impl ContextProvider for UiaContext {
     }
 
     fn snapshot(&self, privacy: &Privacy) -> Result<ContextSnapshot, PlatformError> {
-        let mut snapshot = window_snapshot()?;
-        // COM objects stay on this thread: create the automation client per snapshot.
-        let automation = UIAutomation::new().map_err(failed)?;
-        match automation.get_focused_element() {
-            Ok(element) => {
-                let max = privacy.max_context_chars as i32;
-                let (focused, errors) = read_element(&element, max);
-                snapshot.errors.extend(errors);
-                if let Ok(class) = element.get_classname() {
-                    snapshot.extras.insert("class".into(), class);
-                }
-                snapshot.focused = Some(focused);
-            }
-            Err(e) => snapshot.errors.push(format!("No focused element: {e}")),
-        }
-        if BROWSERS.contains(&snapshot.app.process_name.to_lowercase().as_str()) {
-            match address_bar(&automation, snapshot.app.pid) {
-                Some(url) => snapshot.url = Some(url),
-                None => snapshot
-                    .errors
-                    .push("The browser address bar was not found".into()),
-            }
-        }
-        if privacy.read_clipboard
-            && let Ok(text) = arboard::Clipboard::new().and_then(|mut c| c.get_text())
-        {
-            snapshot.extras.insert("clipboard".into(), text);
-        }
-        Ok(snapshot.sanitized(privacy))
+        ask(|reply| Request::Snapshot(privacy.clone(), reply))
     }
+}
+
+fn snapshot(
+    automation: &UIAutomation,
+    privacy: &Privacy,
+) -> Result<ContextSnapshot, PlatformError> {
+    let mut snapshot = window_snapshot()?;
+    match automation.get_focused_element() {
+        Ok(element) => {
+            let max = privacy.max_context_chars as i32;
+            let (focused, errors) = read_element(&element, max);
+            snapshot.errors.extend(errors);
+            if let Ok(class) = element.get_classname() {
+                snapshot.extras.insert("class".into(), class);
+            }
+            snapshot.focused = Some(focused);
+        }
+        Err(e) => snapshot.errors.push(format!("No focused element: {e}")),
+    }
+    if BROWSERS.contains(&snapshot.app.process_name.to_lowercase().as_str()) {
+        match address_bar(automation, snapshot.app.pid) {
+            Some(url) => snapshot.url = Some(url),
+            None => snapshot
+                .errors
+                .push("The browser address bar was not found".into()),
+        }
+    }
+    if privacy.read_clipboard
+        && let Ok(text) = arboard::Clipboard::new().and_then(|mut c| c.get_text())
+    {
+        snapshot.extras.insert("clipboard".into(), text);
+    }
+    Ok(snapshot.sanitized(privacy))
+}
+
+fn set_value(automation: &UIAutomation, text: &str) -> Result<(), PlatformError> {
+    let element = automation.get_focused_element().map_err(failed)?;
+    let value = element.get_pattern::<UIValuePattern>().map_err(failed)?;
+    value.set_value(text).map_err(failed)
 }
 
 fn read_element(element: &UIElement, max: i32) -> (Element, Vec<String>) {
@@ -215,13 +270,6 @@ impl WindowsSink {
         }
         Ok(())
     }
-
-    fn set_value(&mut self, text: &str) -> Result<(), PlatformError> {
-        let automation = UIAutomation::new().map_err(failed)?;
-        let element = automation.get_focused_element().map_err(failed)?;
-        let value = element.get_pattern::<UIValuePattern>().map_err(failed)?;
-        value.set_value(text).map_err(failed)
-    }
 }
 
 impl TextSink for WindowsSink {
@@ -255,7 +303,9 @@ impl TextSink for WindowsSink {
                 }
                 enigo.text(&request.text).map_err(failed)?;
             }
-            DeliveryMethod::SetValue => self.set_value(&request.text)?,
+            DeliveryMethod::SetValue => {
+                ask(|reply| Request::SetValue(request.text.clone(), reply))?
+            }
             DeliveryMethod::Clipboard => {
                 self.copy(&request.text)?;
                 return Ok(DeliveryOutcome::OnClipboard {

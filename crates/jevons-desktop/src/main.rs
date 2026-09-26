@@ -187,7 +187,10 @@ fn start_agent(
     received: mpsc::UnboundedReceiver<Command>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let tray = match tray::spawn(commands.clone()) {
-        Ok(tray) => Some(tray),
+        Ok(tray) => {
+            view.lock().expect("the view lock").tray_running = true;
+            Some(tray)
+        }
         Err(e) => {
             tracing::warn!(error = %e, "Running without a tray icon");
             view.lock().expect("the view lock").show_window = true;

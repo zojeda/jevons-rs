@@ -64,6 +64,8 @@ pub struct View {
     pub config_file: PathBuf,
     /// Set when the window should show itself.
     pub show_window: bool,
+    /// Whether the tray icon runs (otherwise the window is the only way in).
+    pub tray_running: bool,
     pub quit: bool,
 }
 
