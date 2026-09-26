@@ -27,7 +27,9 @@ pub fn hip(index: usize) -> Device {
         let dir = cache_dir();
         jevons_kernels::discard_empty_caches(&dir);
         config.environment.path = CacheConfig::Directory(dir);
-        CubeClRuntimeConfig::set(config);
+        // Another model's runtime (DiffusionGemma's kernels) may have configured CubeCL first
+        // in this process; keep its configuration rather than panic.
+        CubeClRuntimeConfig::try_set(config);
     });
     Device::rocm(index)
 }

@@ -72,6 +72,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with(tuning::Layer)
             .init();
     }
+    // Without a console, a panic on a worker thread would vanish: log it.
+    std::panic::set_hook(Box::new(|info| {
+        let thread = std::thread::current();
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        tracing::error!(thread = thread.name().unwrap_or("unnamed"), %info, %backtrace, "Panic");
+    }));
     let config_file = args.config.clone().unwrap_or_else(default_config_file);
     let config = DesktopConfig::load(&config_file)?;
     match &args.replay {

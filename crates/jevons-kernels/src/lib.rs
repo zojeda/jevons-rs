@@ -114,16 +114,14 @@ fn configure_compilation_cache() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         use cubecl::config::{CubeClRuntimeConfig, RuntimeConfig, cache::CacheConfig};
-        if CubeClRuntimeConfig::storage().lock().is_some() {
-            return;
-        }
         let mut config = CubeClRuntimeConfig::from_current_dir().override_from_env();
         if let Some(dir) = cache_dir() {
             discard_empty_caches(&dir);
             config.compilation.cache = true;
             config.environment.path = CacheConfig::Directory(dir);
         }
-        CubeClRuntimeConfig::set(config);
+        // Keep a configuration another model's runtime (Burn) set first in this process.
+        CubeClRuntimeConfig::try_set(config);
     });
 }
 
