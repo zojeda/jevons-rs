@@ -1,0 +1,43 @@
+# jevons-desktop settings. The Settings panel writes this file; every field is optional.
+# Default location: the platform configuration folder (for example
+# %APPDATA%\jevons\config\jevons-desktop.toml or ~/.config/jevons/jevons-desktop.toml).
+
+[server]
+# "embedded" loads the models in the app; "remote" uses a jevons server elsewhere.
+mode = "embedded"
+# Serve the API to other clients. When false, the API listens on an ephemeral loopback port
+# with a key only the app knows.
+expose = false
+bind = "127.0.0.1"
+port = 8080
+# The key other clients send when exposed. Prefer TYPESAFE_API_KEY; never commit a key.
+# api_key = ""
+remote_url = "http://127.0.0.1:8080"
+# remote_key = ""
+
+[models]
+# Where downloads go (default: the platform data folder).
+# folder = "D:/models"
+# Load an existing jevons-rs settings file instead of the selections below.
+# runtime_config = "jevons.toml"
+realtime = true
+
+# [models.generative]
+# path = "D:/models/nemotron-labs-diffusion-3b"
+# [models.decision]
+# path = "D:/models/nemotron-labs-diffusion-3b"
+# [models.speech]
+# path = "D:/models/parakeet-tdt-0.6b-v3"
+
+[dictation]
+# Tap to toggle, hold to dictate.
+hotkey = "Ctrl+Alt+Space"
+# microphone = "Microphone Array"
+# language = "es"
+decide = true
+generation_threshold = 0.5
+max_output_tokens = 1024
+
+[privacy]
+max_context_chars = 2000
+read_clipboard = false

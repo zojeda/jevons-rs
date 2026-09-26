@@ -1,0 +1,258 @@
+//! `jevons-desktop.toml`: the runtime, models, dictation and privacy settings. The Settings
+//! panel edits and saves it; a missing file means defaults.
+
+use crate::context::Privacy;
+use serde::{Deserialize, Serialize};
+use std::net::IpAddr;
+use std::path::{Path, PathBuf};
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DesktopConfig {
+    pub server: Server,
+    pub models: Models,
+    pub dictation: Dictation,
+    pub privacy: Privacy,
+    /// The profiles folder; defaults to `profiles` next to this file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profiles_dir: Option<PathBuf>,
+}
+
+/// Where inference runs.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mode {
+    /// Load the models in this process.
+    #[default]
+    Embedded,
+    /// Use a jevons server elsewhere.
+    Remote,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Server {
+    pub mode: Mode,
+    /// Embedded: serve the API to other clients on `bind:port`. When off, the API listens on
+    /// an ephemeral loopback port with a key only this app knows.
+    pub expose: bool,
+    pub bind: IpAddr,
+    pub port: u16,
+    /// The key other clients use when exposed; `TYPESAFE_API_KEY` wins when set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// Remote: the server root.
+    pub remote_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_key: Option<String>,
+}
+
+impl Default for Server {
+    fn default() -> Self {
+        Self {
+            mode: Mode::Embedded,
+            expose: false,
+            bind: IpAddr::from([127, 0, 0, 1]),
+            port: 8080,
+            api_key: None,
+            remote_url: "http://127.0.0.1:8080".into(),
+            remote_key: None,
+        }
+    }
+}
+
+/// A model on disk.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelRef {
+    /// A GGUF file or a Hugging Face checkpoint directory.
+    pub path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mmproj: Option<PathBuf>,
+    /// The catalog entry it was downloaded from, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Models {
+    /// Where downloads go; defaults to the platform data folder.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folder: Option<PathBuf>,
+    /// An existing jevons-rs settings file to load instead of the selections below.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_config: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generative: Option<ModelRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision: Option<ModelRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speech: Option<ModelRef>,
+    /// Serve Realtime transcription (live text while speaking).
+    pub realtime: bool,
+}
+
+impl Default for Models {
+    fn default() -> Self {
+        Self {
+            folder: None,
+            runtime_config: None,
+            generative: None,
+            decision: None,
+            speech: None,
+            realtime: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Dictation {
+    /// Tap to toggle, hold to dictate.
+    pub hotkey: String,
+    /// The capture device name; the default device when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub microphone: Option<String>,
+    /// An ISO-639-1 code; detected when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// Ask the decision model which action to take and whether to rewrite.
+    pub decide: bool,
+    /// Below this probability that the text needs editing, the transcript is typed as is.
+    pub generation_threshold: f64,
+    /// The most tokens a rewrite may generate.
+    pub max_output_tokens: u32,
+}
+
+impl Default for Dictation {
+    fn default() -> Self {
+        Self {
+            hotkey: "Ctrl+Alt+Space".into(),
+            microphone: None,
+            language: None,
+            decide: true,
+            generation_threshold: 0.5,
+            max_output_tokens: 1024,
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("{file}: {message}")]
+    Invalid { file: PathBuf, message: String },
+    #[error("{file}: {source}")]
+    Io {
+        file: PathBuf,
+        source: std::io::Error,
+    },
+}
+
+/// Platform folders for configuration and data.
+pub fn project_dirs() -> Option<directories::ProjectDirs> {
+    directories::ProjectDirs::from("", "", "jevons")
+}
+
+/// `jevons-desktop.toml` in the platform configuration folder.
+pub fn default_config_file() -> PathBuf {
+    project_dirs()
+        .map(|d| d.config_dir().join("jevons-desktop.toml"))
+        .unwrap_or_else(|| PathBuf::from("jevons-desktop.toml"))
+}
+
+impl DesktopConfig {
+    /// Reads `file`; a missing file gives the defaults.
+    pub fn load(file: &Path) -> Result<Self, ConfigError> {
+        match std::fs::read_to_string(file) {
+            Ok(text) => toml::from_str(&text).map_err(|e| ConfigError::Invalid {
+                file: file.into(),
+                message: e.to_string(),
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(source) => Err(ConfigError::Io {
+                file: file.into(),
+                source,
+            }),
+        }
+    }
+
+    /// Writes `file`, creating its folder.
+    pub fn save(&self, file: &Path) -> Result<(), ConfigError> {
+        let io = |source| ConfigError::Io {
+            file: file.into(),
+            source,
+        };
+        if let Some(dir) = file.parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::create_dir_all(dir).map_err(io)?;
+        }
+        let text = toml::to_string_pretty(self).expect("the settings serialize");
+        std::fs::write(file, text).map_err(io)
+    }
+
+    pub fn profiles_dir(&self, config_file: &Path) -> PathBuf {
+        self.profiles_dir.clone().unwrap_or_else(|| {
+            config_file
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join("profiles")
+        })
+    }
+
+    pub fn models_folder(&self) -> PathBuf {
+        self.models.folder.clone().unwrap_or_else(|| {
+            project_dirs()
+                .map(|d| d.data_dir().join("models"))
+                .unwrap_or_else(|| PathBuf::from("models"))
+        })
+    }
+
+    /// The key for an exposed embedded API: `TYPESAFE_API_KEY`, then the settings.
+    pub fn exposed_key(&self) -> Option<String> {
+        std::env::var("TYPESAFE_API_KEY")
+            .ok()
+            .or_else(|| self.server.api_key.clone())
+            .filter(|k| !k.is_empty())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_example_settings_file_parses() {
+        let text = include_str!("../../../jevons-desktop.example.toml");
+        let config: DesktopConfig = toml::from_str(text).unwrap();
+        assert!(!config.server.expose);
+        assert_eq!(config.server.port, 8080);
+    }
+
+    #[test]
+    fn saved_settings_load_back_unchanged() {
+        let dir =
+            std::env::temp_dir().join(format!("jevons-desktop-config-{}", std::process::id()));
+        let file = dir.join("jevons-desktop.toml");
+        let mut config = DesktopConfig::default();
+        config.server.expose = true;
+        config.server.port = 8081;
+        config.models.speech = Some(ModelRef {
+            path: "/models/parakeet".into(),
+            mmproj: None,
+            catalog: Some("parakeet-tdt-0.6b-v3".into()),
+        });
+        config.save(&file).unwrap();
+        assert_eq!(DesktopConfig::load(&file).unwrap(), config);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_missing_file_gives_defaults_and_unknown_fields_are_errors() {
+        let missing = std::env::temp_dir().join("jevons-desktop-missing.toml");
+        assert_eq!(
+            DesktopConfig::load(&missing).unwrap(),
+            DesktopConfig::default()
+        );
+        assert!(toml::from_str::<DesktopConfig>("[server]\nprot = 1").is_err());
+    }
+}
