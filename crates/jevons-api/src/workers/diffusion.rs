@@ -106,6 +106,7 @@ pub async fn start(
                         if reply.is_closed() {
                             continue;
                         }
+                        tracing::info!("Restricted canvas read started");
                         let _ = reply.send(evaluate(&mut engine, &request, &model_id, seed));
                     }
                     Job::Generate {
@@ -116,6 +117,7 @@ pub async fn start(
                         if updates.is_closed() {
                             continue;
                         }
+                        tracing::info!("Generation started");
                         let result =
                             engine.generate(&request, request_seed.unwrap_or(seed), &mut |text| {
                                 updates.send(Update::Text(text.into())).is_ok()

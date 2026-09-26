@@ -178,6 +178,8 @@ pub enum HotkeyEvent {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MenuModel {
     pub dictating: bool,
+    /// Whether a take is running (and can be cancelled).
+    pub busy: bool,
     /// Whether live dictation runs.
     pub live: bool,
     /// Profile ids and names, in display order.
@@ -192,6 +194,10 @@ pub struct MenuModel {
 pub enum MenuCommand {
     ToggleDictation,
     ToggleLiveDictation,
+    /// Abandons the running take without delivering anything.
+    CancelTake,
+    /// Opens the folder with the logs and take traces.
+    OpenLogsFolder,
     ForceProfile(Option<String>),
     ShowInspector,
     ToggleContextPause,

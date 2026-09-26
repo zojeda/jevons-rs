@@ -89,6 +89,8 @@ struct Active {
     source: Option<u32>,
     capture: Option<Box<dyn CaptureHandle>>,
     finish: Option<oneshot::Sender<()>>,
+    /// The pipeline task, aborted when the take is cancelled.
+    task: Option<tokio::task::JoinHandle<()>>,
 }
 
 pub struct Agent {
@@ -196,6 +198,7 @@ impl Agent {
         };
         let live = self.active.as_ref().is_some_and(|a| a.live);
         let menu = MenuModel {
+            busy: self.active.is_some(),
             dictating: self.active.as_ref().is_some_and(|a| !a.live),
             live,
             profiles: self
@@ -278,6 +281,21 @@ impl Agent {
         match command {
             MenuCommand::ToggleDictation => self.toggle(),
             MenuCommand::ToggleLiveDictation => self.toggle_live(),
+            MenuCommand::CancelTake => {
+                if let Some(active) = &self.active {
+                    tracing::info!(take = active.id, "Take cancelled");
+                }
+                self.cancel_take();
+                self.view().dictating = false;
+                self.notice("The take was cancelled");
+                self.set_tray(TrayState::Idle);
+                self.publish_menu();
+            }
+            MenuCommand::OpenLogsFolder => {
+                let dir = jevons_desktop_core::config::user_dir();
+                let _ = std::fs::create_dir_all(dir.join("traces"));
+                open_folder(&dir);
+            }
             MenuCommand::ForceProfile(profile) => {
                 self.view().forced_profile = profile;
                 self.publish_menu();
@@ -448,6 +466,7 @@ impl Agent {
                 decide: dictation.decide,
                 generation_threshold: dictation.generation_threshold,
                 max_output_tokens: dictation.max_output_tokens,
+                ..pipeline::Settings::default()
             },
             sink: Some(self.sink.clone()),
         };
@@ -474,6 +493,7 @@ impl Agent {
             source,
             capture: Some(capture),
             finish: Some(finish),
+            task: None,
         });
         self.set_tray(TrayState::Listening { level: 0 });
         self.publish_menu();
@@ -518,7 +538,7 @@ impl Agent {
             }
         });
         let commands = self.commands.clone();
-        if live {
+        let task = if live {
             tokio::spawn(async move {
                 let turns = commands.clone();
                 let result =
@@ -530,12 +550,15 @@ impl Agent {
                     take: id,
                     error: result.err(),
                 });
-            });
+            })
         } else {
             tokio::spawn(async move {
                 let trace = pipeline::run_take(&env, start, audio_events, finished, &updates).await;
                 let _ = commands.send(Command::TakeFinished(Box::new(trace)));
-            });
+            })
+        };
+        if let Some(active) = &mut self.active {
+            active.task = Some(task);
         }
         self.repaint();
     }
@@ -556,14 +579,18 @@ impl Agent {
     }
 
     fn cancel_take(&mut self) {
-        if let Some(mut active) = self.active.take()
-            && let Some(capture) = active.capture.take()
-        {
-            capture.stop();
+        if let Some(mut active) = self.active.take() {
+            if let Some(capture) = active.capture.take() {
+                capture.stop();
+            }
+            if let Some(task) = active.task.take() {
+                task.abort();
+            }
         }
     }
 
     fn turn_finished(&mut self, trace: Trace) {
+        save_trace(&trace);
         let mut view = self.view();
         view.notice = trace.error.clone();
         view.traces.push_front(trace);
@@ -596,6 +623,7 @@ impl Agent {
     }
 
     fn finished(&mut self, trace: Trace) {
+        save_trace(&trace);
         if self.active.as_ref().is_some_and(|a| a.id == trace.take) {
             // The source may have ended by itself (a device error).
             if let Some(active) = self.active.take()
@@ -625,6 +653,40 @@ impl Agent {
         self.publish_menu();
         self.repaint();
     }
+}
+
+/// How many take traces `~/jevons/traces` keeps.
+const SAVED_TRACES: usize = 200;
+
+/// Writes `trace` to `~/jevons/traces` as JSON, keeping the newest [`SAVED_TRACES`].
+fn save_trace(trace: &Trace) {
+    let dir = jevons_desktop_core::config::user_dir().join("traces");
+    let turn = trace.turn.map_or(String::new(), |t| format!("-turn{t}"));
+    let file = dir.join(format!(
+        "{}-take{}{turn}.json",
+        trace.started_at_ms, trace.take
+    ));
+    let json = match serde_json::to_vec_pretty(trace) {
+        Ok(json) => json,
+        Err(e) => return tracing::warn!(error = %e, "Cannot serialize the trace"),
+    };
+    std::thread::spawn(move || {
+        if let Err(e) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&file, json)) {
+            return tracing::warn!(error = %e, "Cannot save the trace");
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return;
+        };
+        let mut traces: Vec<_> = entries
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "json"))
+            .collect();
+        traces.sort();
+        let excess = traces.len().saturating_sub(SAVED_TRACES);
+        for old in &traces[..excess] {
+            let _ = std::fs::remove_file(old);
+        }
+    });
 }
 
 fn watch(

@@ -167,6 +167,13 @@ pub fn project_dirs() -> Option<directories::ProjectDirs> {
     directories::ProjectDirs::from("", "", "jevons")
 }
 
+/// `~/jevons`: the logs and traces, in a folder the user can find and review.
+pub fn user_dir() -> PathBuf {
+    directories::UserDirs::new()
+        .map(|d| d.home_dir().join("jevons"))
+        .unwrap_or_else(|| PathBuf::from("jevons"))
+}
+
 /// `jevons-desktop.toml` in the platform configuration folder.
 pub fn default_config_file() -> PathBuf {
     project_dirs()

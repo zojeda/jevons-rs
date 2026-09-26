@@ -260,6 +260,7 @@ fn build_menu(model: &MenuModel) -> Menu {
     let _ = menu.append_items(&[
         &MenuItem::with_id("toggle", dictation, !model.live, None),
         &MenuItem::with_id("live", live, !model.dictating, None),
+        &MenuItem::with_id("cancel", "Cancel the current take", model.busy, None),
         &profiles,
         &PredefinedMenuItem::separator(),
         &MenuItem::with_id("inspector", "Show context inspector", true, None),
@@ -272,6 +273,7 @@ fn build_menu(model: &MenuModel) -> Menu {
         ),
         &MenuItem::with_id("reload", "Reload profiles", true, None),
         &MenuItem::with_id("config", "Open settings folder", true, None),
+        &MenuItem::with_id("logs", "Open logs and traces", true, None),
         &PredefinedMenuItem::separator(),
         &MenuItem::with_id("quit", "Quit", true, None),
     ]);
@@ -282,6 +284,8 @@ fn menu_command(id: &str) -> Option<MenuCommand> {
     Some(match id {
         "toggle" => MenuCommand::ToggleDictation,
         "live" => MenuCommand::ToggleLiveDictation,
+        "cancel" => MenuCommand::CancelTake,
+        "logs" => MenuCommand::OpenLogsFolder,
         "inspector" => MenuCommand::ShowInspector,
         "pause" => MenuCommand::ToggleContextPause,
         "reload" => MenuCommand::ReloadProfiles,

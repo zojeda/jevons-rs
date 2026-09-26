@@ -52,6 +52,10 @@ pub struct Settings {
     pub decide: bool,
     pub generation_threshold: f64,
     pub max_output_tokens: u32,
+    /// How long the decision may take before the transcript is typed as heard.
+    pub decision_timeout: Duration,
+    /// How long generation may take before the transcript is typed as heard.
+    pub generation_timeout: Duration,
 }
 
 impl Default for Settings {
@@ -63,6 +67,8 @@ impl Default for Settings {
             decide: true,
             generation_threshold: 0.5,
             max_output_tokens: 1024,
+            decision_timeout: Duration::from_secs(60),
+            generation_timeout: Duration::from_secs(120),
         }
     }
 }
@@ -186,9 +192,19 @@ pub async fn run_take(
     updates: &mpsc::UnboundedSender<Update>,
 ) -> Trace {
     let mut trace = Trace::new(&start);
+    let take = start.id;
+    tracing::info!(take, app = %start.context.app.process_name, "Take started");
     let begun = Instant::now();
     let transcript = transcribe(env, audio, finish, updates, &mut trace).await;
     trace.time("transcribe", begun);
+    tracing::info!(
+        take,
+        ms = begun.elapsed().as_millis() as u64,
+        audio_seconds = trace.audio_seconds,
+        path = ?trace.transcription,
+        ok = transcript.is_ok(),
+        "Transcribed"
+    );
     match transcript {
         Ok(_) if trace.audio_seconds < MIN_TAKE_SECONDS => {
             trace
@@ -217,6 +233,17 @@ pub async fn run_take(
         Err(e) => trace.error = Some(e),
     }
     trace.time("deliver", delivered);
+    tracing::info!(
+        take,
+        ms = delivered.elapsed().as_millis() as u64,
+        chars = trace.output.chars().count(),
+        outcome = ?trace.delivery.as_ref().map(|d| match d {
+            DeliveryOutcome::Delivered { method } => format!("{method:?}"),
+            DeliveryOutcome::OnClipboard { .. } => "clipboard".into(),
+        }),
+        error = trace.error.is_some(),
+        "Delivered"
+    );
     trace
 }
 
@@ -498,6 +525,7 @@ async fn process(
     let ask_profile = !resolution.tied.is_empty();
     let mut action_answer = None;
     let mut needs_generation = None;
+    let mut model_stalled = false;
     if let Some(model) = settings.models.decision.clone().filter(|_| settings.decide)
         && (ask_action || ask_generation || ask_profile)
     {
@@ -512,8 +540,28 @@ async fn process(
             ask_generation,
         );
         let began = Instant::now();
-        let response = env.client.decide(&request).await;
+        tracing::info!(take = start.id, model = %request.model, questions = request.questions.len(), "Deciding");
+        let response =
+            tokio::time::timeout(settings.decision_timeout, env.client.decide(&request)).await;
         trace.time("decide", began);
+        tracing::info!(
+            take = start.id,
+            ms = began.elapsed().as_millis() as u64,
+            ok = matches!(response, Ok(Ok(_))),
+            timed_out = response.is_err(),
+            "Decided"
+        );
+        let response = match response {
+            Ok(response) => response,
+            Err(_) => {
+                // The model is busy or stuck: generation would wait behind it too.
+                model_stalled = true;
+                Err(ClientError::Protocol(format!(
+                    "no answer within {} s",
+                    settings.decision_timeout.as_secs()
+                )))
+            }
+        };
         match response {
             Ok(response) => {
                 if let Some(Answer::Choice { choice, .. }) = response.answers.get("profile") {
@@ -553,6 +601,7 @@ async fn process(
     );
     let generate = match settings.models.generative {
         None => false,
+        Some(_) if model_stalled => false,
         Some(_) if action == Action::Rewrite => true,
         Some(_) => needs_generation.is_none_or(|p| p >= settings.generation_threshold),
     };
@@ -568,15 +617,43 @@ async fn process(
         let request =
             generation_request(model, env, context, &effective, action, &trace.transcript);
         let began = Instant::now();
-        let output = env
-            .client
-            .respond(&request, |delta| {
+        tracing::info!(take = start.id, model = %request.model, action = ?action, "Generating");
+        let generated = tokio::time::timeout(
+            settings.generation_timeout,
+            env.client.respond(&request, |delta| {
                 let _ = updates.send(Update::Output(delta.to_string()));
-            })
-            .await?;
+            }),
+        )
+        .await;
         trace.time("generate", began);
-        trace.output = output.trim().to_string();
-        trace.generation = Some(GenerationTrace { request, output });
+        tracing::info!(
+            take = start.id,
+            ms = began.elapsed().as_millis() as u64,
+            ok = matches!(generated, Ok(Ok(_))),
+            timed_out = generated.is_err(),
+            "Generated"
+        );
+        match generated {
+            Ok(output) => {
+                let output = output?;
+                trace.output = output.trim().to_string();
+                trace.generation = Some(GenerationTrace { request, output });
+            }
+            Err(_) => {
+                trace.notes.push(format!(
+                    "Generation gave no answer within {} s: typing the transcript as heard",
+                    settings.generation_timeout.as_secs()
+                ));
+                trace.generation = Some(GenerationTrace {
+                    request,
+                    output: String::new(),
+                });
+            }
+        }
+    } else if model_stalled {
+        trace
+            .notes
+            .push("The language model did not answer: typing the transcript as heard".into());
     }
     trace.effective = Some(effective);
     Ok(())
@@ -1144,6 +1221,54 @@ instructions = "Formal tone.""#,
         assert_eq!(delivered, ["hello there", " second phrase"]);
         // The selection belonged to the first turn only.
         assert!(traces[1].context.selection().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_stalled_decision_types_the_transcript_without_generating() {
+        let generations = Arc::new(Mutex::new(0));
+        let counted = generations.clone();
+        let app = axum::Router::new()
+            .route(
+                "/v1/audio/transcriptions",
+                post(|_upload: axum::body::Bytes| async { Json(json!({"text": "hello world"})) }),
+            )
+            .route(
+                "/v1/systemone",
+                post(|| async {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    Json(json!({}))
+                }),
+            )
+            .route(
+                "/v1/responses",
+                post(move || {
+                    *counted.lock().unwrap() += 1;
+                    async { "" }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let sink = RecordingSink::new(Some(7));
+        let env = Env {
+            client: Client::new(&base, None),
+            profiles: Arc::default(),
+            settings: Settings {
+                decision_timeout: Duration::from_millis(200),
+                ..settings()
+            },
+            sink: Some(sink.shared()),
+        };
+        let trace = take(&env, None).await;
+        assert_eq!(trace.error, None);
+        assert_eq!(trace.output, "hello world");
+        assert_eq!(*generations.lock().unwrap(), 0);
+        assert!(
+            trace.notes.iter().any(|n| n.contains("did not answer")),
+            "{:?}",
+            trace.notes
+        );
+        assert_eq!(sink.requests()[0].text, "hello world");
     }
 
     #[test]

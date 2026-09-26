@@ -72,13 +72,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-/// `jevons-desktop.log` in the platform data folder, replaced at every start.
+/// `~/jevons/logs/jevons-desktop.log`; the previous run's log is kept next to it.
 fn log_file() -> Option<std::fs::File> {
-    let dir = jevons_desktop_core::config::project_dirs()?
-        .data_local_dir()
-        .to_path_buf();
+    let dir = jevons_desktop_core::config::user_dir().join("logs");
     std::fs::create_dir_all(&dir).ok()?;
-    std::fs::File::create(dir.join("jevons-desktop.log")).ok()
+    let file = dir.join("jevons-desktop.log");
+    let _ = std::fs::rename(&file, dir.join("jevons-desktop.previous.log"));
+    std::fs::File::create(file).ok()
 }
 
 /// One headless take, for scripted end-to-end checks.
@@ -122,6 +122,7 @@ fn replay(
             decide: dictation.decide,
             generation_threshold: dictation.generation_threshold,
             max_output_tokens: dictation.max_output_tokens,
+            ..pipeline::Settings::default()
         },
         sink: args
             .deliver
