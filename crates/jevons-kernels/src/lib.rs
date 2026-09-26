@@ -88,6 +88,26 @@ pub fn cache_dir() -> Option<std::path::PathBuf> {
         })
 }
 
+/// Removes empty cache databases from `dir`. A process that stops before initializing its
+/// database leaves an empty file behind, which CubeCL then reads as a database without tables:
+/// every lookup fails and nothing tuned is ever saved, so each run autotunes again.
+pub fn discard_empty_caches(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for path in entries.filter_map(|e| e.ok().map(|e| e.path())) {
+        let empty = std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() == 0);
+        if empty && path.extension().is_some_and(|x| x == "db") {
+            let _ = std::fs::remove_file(&path);
+            for suffix in ["-wal", "-shm"] {
+                let mut side = path.clone().into_os_string();
+                side.push(suffix);
+                let _ = std::fs::remove_file(side);
+            }
+        }
+    }
+}
+
 /// Enables CubeCL's persistent kernel compilation cache (unless configured otherwise) so
 /// kernels compiled once are reused by later processes (see [`cache_dir`]).
 fn configure_compilation_cache() {
@@ -99,6 +119,7 @@ fn configure_compilation_cache() {
         }
         let mut config = CubeClRuntimeConfig::from_current_dir().override_from_env();
         if let Some(dir) = cache_dir() {
+            discard_empty_caches(&dir);
             config.compilation.cache = true;
             config.environment.path = CacheConfig::Directory(dir);
         }
@@ -233,4 +254,23 @@ impl Gpu {
 
 fn bytes_of_u32(data: &[u32]) -> &[u8] {
     bytemuck::cast_slice(data)
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    #[test]
+    fn empty_cache_databases_are_removed_and_others_kept() {
+        let dir = std::env::temp_dir().join(format!("jevons-cache-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("default.db"), b"").unwrap();
+        std::fs::write(dir.join("default.db-wal"), b"x").unwrap();
+        std::fs::write(dir.join("other.db"), b"SQLite format 3").unwrap();
+        discard_empty_caches(&dir);
+        assert!(!dir.join("default.db").exists());
+        assert!(!dir.join("default.db-wal").exists());
+        assert!(dir.join("other.db").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

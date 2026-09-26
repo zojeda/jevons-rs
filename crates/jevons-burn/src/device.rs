@@ -24,7 +24,9 @@ pub fn hip(index: usize) -> Device {
         use cubecl::config::{CubeClRuntimeConfig, RuntimeConfig, cache::CacheConfig};
         let mut config = CubeClRuntimeConfig::from_current_dir().override_from_env();
         config.compilation.cache = true;
-        config.environment.path = CacheConfig::Directory(cache_dir());
+        let dir = cache_dir();
+        jevons_kernels::discard_empty_caches(&dir);
+        config.environment.path = CacheConfig::Directory(dir);
         CubeClRuntimeConfig::set(config);
     });
     Device::rocm(index)
