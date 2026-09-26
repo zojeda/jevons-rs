@@ -1,0 +1,10 @@
+# Code editors: never rewrite code, and deliver by typing so editor auto-indent applies.
+id = "code"
+name = "Code editor"
+priority = 40
+action = "insert"
+delivery = "paste"
+instructions = "The user is writing code or a code comment. Output plain text with no Markdown fences; keep identifiers exactly as spoken, in their usual casing."
+
+[match]
+app = ["code.exe", "code", "zed*", "rustrover*", "idea64.exe", "devenv.exe"]

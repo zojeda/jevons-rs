@@ -1,0 +1,42 @@
+[package]
+name = "jevons-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Context-aware dictation from the tray, over the jevons runtime."
+
+[features]
+default = ["embedded"]
+# Load the models in the app (pulls in the inference stack). Without it, only a remote jevons
+# server can be used.
+embedded = ["dep:jevons-api"]
+
+[dependencies]
+jevons-api = { workspace = true, optional = true }
+jevons-audio.workspace = true
+jevons-desktop-core = { workspace = true, features = ["testing"] }
+active-win-pos-rs.workspace = true
+arboard.workspace = true
+clap.workspace = true
+cpal.workspace = true
+eframe.workspace = true
+global-hotkey.workspace = true
+notify.workspace = true
+rfd.workspace = true
+serde_json.workspace = true
+tao.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tray-icon.workspace = true
+uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+device_query.workspace = true
+enigo.workspace = true
+uiautomation = { workspace = true, features = ["pattern"] }
+
+[lints]
+workspace = true

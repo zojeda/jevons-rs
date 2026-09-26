@@ -1,0 +1,11 @@
+{
+  "app": { "process_name": "notepad.exe" },
+  "window": { "title": "meeting-notes.txt - Notepad", "handle": 2 },
+  "focused": {
+    "role": "Document",
+    "name": "Text editor",
+    "is_editable": true,
+    "selection": "we should maybe look at the costs again next week or so",
+    "value_excerpt": "Action items\nwe should maybe look at the costs again next week or so\n"
+  }
+}

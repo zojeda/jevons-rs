@@ -1,0 +1,607 @@
+//! The agent: hotkey gestures, context capture, microphone takes and the pipeline, with the
+//! tray and the inspector as views. It runs on its own thread; takes run on the runtime's
+//! workers so a slow generation never blocks the hotkey.
+
+use crate::runtime::{Runtime, Status};
+use crate::tray::Tray;
+use jevons_desktop_core::config::DesktopConfig;
+use jevons_desktop_core::context::ContextSnapshot;
+use jevons_desktop_core::gesture::{Gestures, Release, Take};
+use jevons_desktop_core::icons::TrayState;
+use jevons_desktop_core::pipeline::{self, Env, TakeStart, Trace, Update};
+use jevons_desktop_core::platform::{
+    AudioDevice, AudioSource, CaptureHandle, ContextProvider, HotkeyEvent, MenuCommand, MenuModel,
+    TextSink, TrayBackend,
+};
+use jevons_desktop_core::profile::{Profiles, Resolution};
+use std::collections::VecDeque;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tokio::sync::{mpsc, oneshot};
+
+/// How many takes the inspector keeps.
+const HISTORY: usize = 50;
+
+/// Requests to the agent, from the tray, hotkeys, the inspector and finished takes.
+#[derive(Debug)]
+pub enum Command {
+    Hotkey(HotkeyEvent),
+    HotkeyRegistered(Result<u32, String>),
+    Menu(MenuCommand),
+    /// Save and apply new settings.
+    Apply(Box<DesktopConfig>),
+    /// Read the context now, for the inspector.
+    RefreshContext,
+    /// Read the context after a delay, so the user can switch to the target application.
+    CaptureContextIn(Duration),
+    ReloadProfiles,
+    RuntimeChanged,
+    TakeFinished(Box<Trace>),
+}
+
+/// What the inspector shows; the agent writes it, the window reads it.
+#[derive(Default)]
+pub struct View {
+    pub tray: TrayState,
+    pub dictating: bool,
+    pub live_transcript: String,
+    pub live_output: String,
+    pub context: Option<ContextSnapshot>,
+    pub context_error: Option<String>,
+    pub resolution: Option<Resolution>,
+    pub traces: VecDeque<Trace>,
+    pub profiles: Arc<Profiles>,
+    pub forced_profile: Option<String>,
+    pub context_paused: bool,
+    pub hotkey_error: Option<String>,
+    pub notice: Option<String>,
+    pub runtime: Option<Status>,
+    pub context_backend: &'static str,
+    pub sink_backend: &'static str,
+    pub devices: Vec<AudioDevice>,
+    pub config: DesktopConfig,
+    pub config_file: PathBuf,
+    /// Set when the window should show itself.
+    pub show_window: bool,
+    pub quit: bool,
+}
+
+pub type SharedView = Arc<Mutex<View>>;
+
+struct Active {
+    id: u64,
+    capture: Option<Box<dyn CaptureHandle>>,
+    finish: Option<oneshot::Sender<()>>,
+}
+
+pub struct Agent {
+    config: DesktopConfig,
+    config_file: PathBuf,
+    runtime: Runtime,
+    tray: Option<Tray>,
+    context: Box<dyn ContextProvider>,
+    sink: Arc<Mutex<Box<dyn TextSink>>>,
+    audio: Box<dyn AudioSource>,
+    profiles: Arc<Profiles>,
+    gestures: Gestures,
+    hotkey: Option<u32>,
+    pressed_context: Option<ContextSnapshot>,
+    active: Option<Active>,
+    next_take: u64,
+    view: SharedView,
+    repaint: Arc<dyn Fn() + Send + Sync>,
+    commands: mpsc::UnboundedSender<Command>,
+    _watcher: Option<notify::RecommendedWatcher>,
+}
+
+/// The platform layers the agent drives.
+pub struct Layers {
+    pub context: Box<dyn ContextProvider>,
+    pub sink: Box<dyn TextSink>,
+    pub audio: Box<dyn AudioSource>,
+    pub tray: Option<Tray>,
+}
+
+impl Agent {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        config: DesktopConfig,
+        config_file: PathBuf,
+        layers: Layers,
+        runtime: Runtime,
+        view: SharedView,
+        repaint: Arc<dyn Fn() + Send + Sync>,
+        commands: mpsc::UnboundedSender<Command>,
+    ) -> Self {
+        let profiles_dir = config.profiles_dir(&config_file);
+        let _ = std::fs::create_dir_all(&profiles_dir);
+        let watcher = watch(&profiles_dir, commands.clone());
+        let mut agent = Self {
+            profiles: Arc::new(Profiles::load_dir(&profiles_dir)),
+            config,
+            config_file,
+            runtime,
+            tray: layers.tray,
+            context: layers.context,
+            sink: Arc::new(Mutex::new(layers.sink)),
+            audio: layers.audio,
+            gestures: Gestures::default(),
+            hotkey: None,
+            pressed_context: None,
+            active: None,
+            next_take: 1,
+            view,
+            repaint,
+            commands,
+            _watcher: watcher,
+        };
+        {
+            let mut view = agent.view.lock().expect("the view lock");
+            view.profiles = agent.profiles.clone();
+            view.context_backend = agent.context.name();
+            view.sink_backend = agent.sink.lock().expect("the sink lock").name();
+            view.devices = agent.audio.devices();
+            view.config = agent.config.clone();
+            view.config_file = agent.config_file.clone();
+        }
+        if let Some(tray) = &agent.tray {
+            tray.hotkey(&agent.config.dictation.hotkey);
+        }
+        agent.runtime.apply(&agent.config, &agent.config_file);
+        agent.publish_menu();
+        agent
+    }
+
+    /// Handles commands until Quit.
+    pub async fn run(mut self, mut commands: mpsc::UnboundedReceiver<Command>) {
+        loop {
+            let deadline = self.gestures.next_tick();
+            let command = tokio::select! {
+                command = commands.recv() => command,
+                () = async {
+                    match deadline {
+                        Some(at) => tokio::time::sleep_until(at.into()).await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    self.hold_due();
+                    continue;
+                }
+            };
+            let Some(command) = command else { break };
+            if !self.handle(command) {
+                break;
+            }
+        }
+    }
+
+    fn view(&self) -> std::sync::MutexGuard<'_, View> {
+        self.view.lock().expect("the view lock")
+    }
+
+    fn repaint(&self) {
+        (self.repaint)();
+    }
+
+    fn set_tray(&mut self, state: TrayState) {
+        self.view().tray = state;
+        if let Some(tray) = &mut self.tray {
+            tray.set_state(state);
+        }
+    }
+
+    fn publish_menu(&mut self) {
+        let (forced, paused) = {
+            let view = self.view();
+            (view.forced_profile.clone(), view.context_paused)
+        };
+        let menu = MenuModel {
+            dictating: self.active.is_some(),
+            profiles: self
+                .profiles
+                .iter()
+                .map(|p| (p.spec.id.clone(), p.display_name().to_string()))
+                .collect(),
+            forced,
+            context_paused: paused,
+        };
+        if let Some(tray) = &mut self.tray {
+            tray.set_menu(&menu);
+        }
+    }
+
+    /// Returns false to stop.
+    fn handle(&mut self, command: Command) -> bool {
+        match command {
+            Command::Hotkey(HotkeyEvent::Pressed(id)) if Some(id) == self.hotkey => {
+                if self.gestures.press(id, Instant::now()) && self.active.is_none() {
+                    // Read the context before the user's focus can move.
+                    self.pressed_context = self.snapshot().ok();
+                }
+            }
+            Command::Hotkey(HotkeyEvent::Released(id)) if Some(id) == self.hotkey => {
+                match self.gestures.release(id, Instant::now(), self.take_state()) {
+                    Release::Toggle => self.toggle(),
+                    Release::Finish => self.stop_take(),
+                    Release::None => {}
+                }
+            }
+            Command::Hotkey(_) => {}
+            Command::HotkeyRegistered(result) => {
+                match result {
+                    Ok(id) => {
+                        self.hotkey = Some(id);
+                        self.view().hotkey_error = None;
+                    }
+                    Err(e) => self.view().hotkey_error = Some(e),
+                }
+                self.repaint();
+            }
+            Command::Menu(menu) => return self.menu(menu),
+            Command::Apply(config) => self.apply(*config),
+            Command::RefreshContext => self.refresh_context(false),
+            Command::CaptureContextIn(delay) => {
+                let commands = self.commands.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(delay).await;
+                    let _ = commands.send(Command::RefreshContext);
+                });
+            }
+            Command::ReloadProfiles => self.reload_profiles(),
+            Command::RuntimeChanged => {
+                let status = self.runtime.status();
+                if self.active.is_none() {
+                    let state = match status {
+                        Status::Ready { .. } | Status::Remote { .. } => TrayState::Idle,
+                        Status::Failed(_) => TrayState::Error,
+                        _ => TrayState::Offline,
+                    };
+                    self.set_tray(state);
+                }
+                self.view().runtime = Some(status);
+                self.repaint();
+            }
+            Command::TakeFinished(trace) => self.finished(*trace),
+        }
+        true
+    }
+
+    fn menu(&mut self, command: MenuCommand) -> bool {
+        match command {
+            MenuCommand::ToggleDictation => self.toggle(),
+            MenuCommand::ForceProfile(profile) => {
+                self.view().forced_profile = profile;
+                self.publish_menu();
+                self.refresh_context(true);
+            }
+            MenuCommand::ShowInspector => {
+                self.view().show_window = true;
+                self.repaint();
+            }
+            MenuCommand::ToggleContextPause => {
+                {
+                    let mut view = self.view();
+                    view.context_paused = !view.context_paused;
+                }
+                self.publish_menu();
+                self.repaint();
+            }
+            MenuCommand::ReloadProfiles => self.reload_profiles(),
+            MenuCommand::OpenConfigFolder => {
+                if let Some(dir) = self.config_file.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                    open_folder(dir);
+                }
+            }
+            MenuCommand::Quit => {
+                self.cancel_take();
+                if let Some(tray) = &self.tray {
+                    tray.quit();
+                }
+                self.runtime.shutdown();
+                self.view().quit = true;
+                self.repaint();
+                return false;
+            }
+        }
+        true
+    }
+
+    fn take_state(&self) -> Take {
+        self.active.as_ref().map_or(Take::default(), |a| Take {
+            id: a.id,
+            capturing: a.capture.is_some(),
+        })
+    }
+
+    fn hold_due(&mut self) {
+        if let Some(source) = self.gestures.due(Instant::now())
+            && self.active.is_none()
+        {
+            self.start_take();
+            self.gestures.started(source, self.take_state());
+        }
+    }
+
+    fn toggle(&mut self) {
+        match &self.active {
+            Some(active) if active.capture.is_some() => self.stop_take(),
+            Some(_) => self.notice("The last take is still being processed"),
+            None => {
+                if self.pressed_context.is_none() {
+                    self.pressed_context = self.snapshot().ok();
+                }
+                self.start_take();
+            }
+        }
+    }
+
+    fn notice(&mut self, message: &str) {
+        self.view().notice = Some(message.into());
+        self.repaint();
+    }
+
+    fn snapshot(&self) -> Result<ContextSnapshot, String> {
+        if self.view().context_paused {
+            return Ok(ContextSnapshot {
+                errors: vec!["Context capture is paused".into()],
+                ..ContextSnapshot::default()
+            });
+        }
+        self.context
+            .snapshot(&self.config.privacy)
+            .map_err(|e| e.to_string())
+    }
+
+    fn refresh_context(&mut self, keep_snapshot: bool) {
+        let snapshot = if keep_snapshot {
+            self.view().context.clone().ok_or_else(String::new)
+        } else {
+            self.snapshot()
+        };
+        // Reading the context while the inspector has focus would describe the inspector.
+        if let Ok(s) = &snapshot
+            && s.app.pid == Some(std::process::id())
+        {
+            return;
+        }
+        let forced = self.view().forced_profile.clone();
+        let mut view = self.view();
+        match snapshot {
+            Ok(snapshot) => {
+                view.resolution = Some(self.profiles.resolve(&snapshot, forced.as_deref()));
+                view.context = Some(snapshot);
+                view.context_error = None;
+            }
+            Err(e) if !e.is_empty() => view.context_error = Some(e),
+            Err(_) => {}
+        }
+        drop(view);
+        self.repaint();
+    }
+
+    fn reload_profiles(&mut self) {
+        let dir = self.config.profiles_dir(&self.config_file);
+        self.profiles = Arc::new(Profiles::load_dir(&dir));
+        self.view().profiles = self.profiles.clone();
+        self.publish_menu();
+        self.refresh_context(true);
+    }
+
+    fn apply(&mut self, config: DesktopConfig) {
+        if let Err(e) = config.save(&self.config_file) {
+            self.notice(&e.to_string());
+            return;
+        }
+        let hotkey_changed = config.dictation.hotkey != self.config.dictation.hotkey;
+        let profiles_changed =
+            config.profiles_dir(&self.config_file) != self.config.profiles_dir(&self.config_file);
+        self.config = config;
+        if hotkey_changed && let Some(tray) = &self.tray {
+            tray.hotkey(&self.config.dictation.hotkey);
+        }
+        if profiles_changed {
+            let dir = self.config.profiles_dir(&self.config_file);
+            let _ = std::fs::create_dir_all(&dir);
+            self._watcher = watch(&dir, self.commands.clone());
+            self.reload_profiles();
+        }
+        self.runtime.apply(&self.config, &self.config_file);
+        self.view().config = self.config.clone();
+        self.repaint();
+    }
+
+    fn start_take(&mut self) {
+        let Some(connection) = self.runtime.connection() else {
+            let status = self.runtime.status().describe();
+            self.pressed_context = None;
+            self.notice(&format!("Dictation is unavailable: {status}"));
+            self.set_tray(TrayState::Error);
+            return;
+        };
+        let id = self.next_take;
+        self.next_take += 1;
+        let context = self
+            .pressed_context
+            .take()
+            .or_else(|| self.snapshot().ok())
+            .unwrap_or_default();
+        let (audio, audio_events) = mpsc::unbounded_channel();
+        let capture = match self
+            .audio
+            .start(self.config.dictation.microphone.as_deref(), audio)
+        {
+            Ok(capture) => capture,
+            Err(e) => {
+                self.notice(&format!("Cannot open the microphone: {e}"));
+                self.set_tray(TrayState::Error);
+                return;
+            }
+        };
+        let (finish, finished) = oneshot::channel();
+        let dictation = &self.config.dictation;
+        let env = Env {
+            client: connection.client,
+            profiles: self.profiles.clone(),
+            settings: pipeline::Settings {
+                models: connection.models,
+                realtime: connection.realtime,
+                language: dictation.language.clone(),
+                decide: dictation.decide,
+                generation_threshold: dictation.generation_threshold,
+                max_output_tokens: dictation.max_output_tokens,
+            },
+            sink: Some(self.sink.clone()),
+        };
+        let start = TakeStart {
+            id,
+            context: context.clone(),
+            forced_profile: self.view().forced_profile.clone(),
+        };
+        {
+            let mut view = self.view();
+            view.dictating = true;
+            view.live_transcript.clear();
+            view.live_output.clear();
+            view.notice = None;
+            view.resolution = Some(
+                self.profiles
+                    .resolve(&context, start.forced_profile.as_deref()),
+            );
+            view.context = Some(context);
+        }
+        self.active = Some(Active {
+            id,
+            capture: Some(capture),
+            finish: Some(finish),
+        });
+        self.set_tray(TrayState::Listening { level: 0 });
+        self.publish_menu();
+
+        let (updates, mut received) = mpsc::unbounded_channel();
+        let view = self.view.clone();
+        let mut tray = self.tray.clone();
+        let repaint = self.repaint.clone();
+        tokio::spawn(async move {
+            while let Some(update) = received.recv().await {
+                let state = {
+                    let mut view = view.lock().expect("the view lock");
+                    let state = match update {
+                        Update::Level(bands) => Some(TrayState::Listening {
+                            level: bands.into_iter().max().unwrap_or(0),
+                        }),
+                        Update::Delta(text) => {
+                            view.live_transcript.push_str(&text);
+                            None
+                        }
+                        Update::Transcribing => Some(TrayState::Transcribing { frame: 0 }),
+                        Update::Thinking => Some(TrayState::Thinking { frame: 0 }),
+                        Update::Output(text) => {
+                            view.live_output.push_str(&text);
+                            None
+                        }
+                    };
+                    if let Some(state) = state {
+                        view.tray = state;
+                    }
+                    state
+                };
+                if let (Some(state), Some(tray)) = (state, &mut tray) {
+                    tray.set_state(state);
+                }
+                repaint();
+            }
+        });
+        let commands = self.commands.clone();
+        tokio::spawn(async move {
+            let trace = pipeline::run_take(&env, start, audio_events, finished, &updates).await;
+            let _ = commands.send(Command::TakeFinished(Box::new(trace)));
+        });
+        self.repaint();
+    }
+
+    fn stop_take(&mut self) {
+        if let Some(active) = &mut self.active {
+            if let Some(capture) = active.capture.take() {
+                capture.stop();
+            }
+            if let Some(finish) = active.finish.take() {
+                let _ = finish.send(());
+            }
+        }
+        self.view().dictating = false;
+        self.set_tray(TrayState::Transcribing { frame: 0 });
+        self.publish_menu();
+        self.repaint();
+    }
+
+    fn cancel_take(&mut self) {
+        if let Some(mut active) = self.active.take()
+            && let Some(capture) = active.capture.take()
+        {
+            capture.stop();
+        }
+        self.gestures.cancel_capture();
+    }
+
+    fn finished(&mut self, trace: Trace) {
+        if self.active.as_ref().is_some_and(|a| a.id == trace.take) {
+            // The source may have ended by itself (a device error).
+            if let Some(active) = self.active.take()
+                && let Some(capture) = active.capture
+            {
+                capture.stop();
+            }
+        }
+        let failed = trace.error.is_some();
+        {
+            let mut view = self.view();
+            view.dictating = false;
+            view.notice = trace.error.clone().or_else(|| match &trace.delivery {
+                Some(jevons_desktop_core::platform::DeliveryOutcome::OnClipboard { reason }) => {
+                    Some(format!("The text is on the clipboard: {reason}"))
+                }
+                _ => None,
+            });
+            view.traces.push_front(trace);
+            view.traces.truncate(HISTORY);
+        }
+        self.set_tray(if failed {
+            TrayState::Error
+        } else {
+            TrayState::Idle
+        });
+        self.publish_menu();
+        self.repaint();
+    }
+}
+
+fn watch(
+    dir: &std::path::Path,
+    commands: mpsc::UnboundedSender<Command>,
+) -> Option<notify::RecommendedWatcher> {
+    use notify::Watcher;
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        if event.is_ok_and(|e| !e.kind.is_access()) {
+            let _ = commands.send(Command::ReloadProfiles);
+        }
+    })
+    .ok()?;
+    watcher
+        .watch(dir, notify::RecursiveMode::NonRecursive)
+        .ok()?;
+    Some(watcher)
+}
+
+/// Opens a folder in the platform file manager.
+pub fn open_folder(dir: &std::path::Path) {
+    let program = if cfg!(windows) {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let _ = std::process::Command::new(program).arg(dir).spawn();
+}

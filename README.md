@@ -6,6 +6,8 @@ A personal inference runtime in Rust. jevons-rs runs language and speech models 
 - **Speech:** speech to text, through the OpenAI-compatible transcriptions API for uploads (subtitles and word timestamps included) and Realtime transcription over a WebSocket for live dictation.
 - **Decision:** typed, probabilistic answers (yes/no, choice, rubric scores) about a state and a set of questions, read from a diffusion model's masked canvas in one pass, through the [System One](https://docs.typesafe.ai/introduction) API.
 
+**jevons-desktop** is a tray app on top: context-aware dictation that reads the focused application and field, picks a profile, and types, replaces or rewrites text where you are. It runs the models itself or uses a jevons server (see [Desktop dictation](docs/desktop.md)).
+
 Everything is Rust: model code, GPU kernels (written in CubeCL and compiled at runtime for the device), audio decoding and the HTTP server. There is no Python, llama.cpp or C/C++ build. Each model runs on its own worker thread with a bounded queue, so a transcription never waits behind a long generation.
 
 > [!IMPORTANT]
@@ -16,6 +18,7 @@ Everything is Rust: model code, GPU kernels (written in CubeCL and compiled at r
 ```mermaid
 flowchart TB
     clients["Clients: OpenAI SDKs · Open WebUI · TypeSafe SDKs · curl"]
+    desktop["jevons-desktop · tray dictation<br/>context · profiles · hotkey · microphone · text input"]
 
     subgraph api["API layer · jevons-api"]
         direction LR
@@ -50,6 +53,7 @@ flowchart TB
     foundation["Foundation: jevons-core (model contracts) · jevons-formats (GGUF, safetensors)<br/>jevons-tokenizer · jevons-audio (decoding, resampling, mel, VAD)"]
 
     clients -- "HTTP · SSE · WebSocket" --> api
+    desktop -- "embedded or remote" --> api
     openai --> generative
     openai --> speech
     systemone --> decision
@@ -65,6 +69,7 @@ flowchart TB
     burn --> gpu
 ```
 
+- **Desktop** (`jevons-desktop`, over the platform-free `jevons-desktop-core`): the dictation agent. Each platform layer (accessibility context, microphone, text input, hotkey, tray) is a trait with a per-OS implementation; the pipeline, profiles and tray states are shared. It loads the API layer in-process, optionally exposing it on a port.
 - **API layer** (`jevons-api`): routes, authentication, settings and the wire formats. OpenAI requests become Generative or Speech calls, and System One questions compile into Decision reads. Each loaded model gets one worker thread: the diffusion worker serves both Generative and Decision jobs on one engine, and the speech worker runs live Realtime passes ahead of queued uploads. The `jevons-rs` binary is a thin wrapper around it.
 - **Services** take typed Rust requests and return typed results, with no HTTP, JSON or async code:
   - **Generative** (`jevons-generative`) frames conversations, reserves an optional thought, and streams the answer while holding back text that could still become a stop sequence.
@@ -199,6 +204,7 @@ The [example](examples/system-one.json) asks three question types about a constr
 
 - **OpenAI SDKs** (Python, JavaScript and others): set `base_url` to `http://127.0.0.1:8080/v1`. Chat, Responses, Completions, transcriptions and Realtime transcription sessions all parse into the SDKs' own types.
 - **Open WebUI:** add an OpenAI connection with the base URL above for chat. For dictation and voice calls, set Admin Panel → Settings → Audio → Speech-to-Text to the *OpenAI* engine with the same URL and model `parakeet-tdt-0.6b-v3`, and use *Web API* for text to speech. The model selector picks the chat model; dictation always uses the Audio setting.
+- **jevons-desktop:** tray dictation into any application, with profiles per app, page and field (see [Desktop dictation](docs/desktop.md)).
 - **TypeSafe SDKs:** set `TYPESAFE_BASE_URL=http://127.0.0.1:8080` and use `jev-latest`. No connection to TypeSafe or Codiv infrastructure is needed.
 
 ## Performance
@@ -218,6 +224,7 @@ See [benchmarks](benchmarks/README.md) for methods, per-case results and compari
 
 | Guide | Contents |
 | --- | --- |
+| [Desktop dictation](docs/desktop.md) | The tray app: profiles, the context inspector, settings, model downloads, platform status |
 | [HTTP API](docs/api.md) | Routes, settings, OpenAI-compatible generation, speech to text, Realtime, limits, errors |
 | [System One](docs/system-one.md) | The masked canvas, text and image examples, extensions |
 | [Build and hardware](docs/build.md) | ROCm/WSL setup, hardware, runtime options, image input |

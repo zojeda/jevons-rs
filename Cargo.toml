@@ -42,8 +42,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 # Desktop agent.
+active-win-pos-rs = "0.11"
 arboard = "3.6"
 cpal = "0.18"
+device_query = "4"
 directories = "6"
 eframe = "0.36"
 enigo = "0.6"
@@ -51,10 +53,11 @@ global-hotkey = "0.8"
 globset = "0.4"
 notify = "8"
 regex = "1.11"
-reqwest = { version = "0.13", features = ["json", "multipart", "stream"] }
+# Native TLS: SChannel on Windows and Security.framework on macOS need no C toolchain.
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "charset", "json", "multipart", "stream"] }
 rfd = "0.17"
 sha2 = "0.10"
-sysinfo = "0.39"
+tao = "0.37"
 tokio-tungstenite = "0.29"
 tray-icon = "0.25"
 uiautomation = "0.25"

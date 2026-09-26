@@ -1,0 +1,11 @@
+{
+  "app": { "process_name": "slack.exe" },
+  "window": { "title": "general (Channel) - Acme - Slack", "handle": 1 },
+  "focused": {
+    "role": "Edit",
+    "name": "Reply to thread",
+    "is_editable": true,
+    "before_caret": "Thanks for the update! ",
+    "after_caret": ""
+  }
+}

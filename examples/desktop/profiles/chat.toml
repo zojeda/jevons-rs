@@ -1,0 +1,18 @@
+# Chat apps: short, casual messages.
+id = "chat"
+name = "Chat"
+priority = 20
+instructions = "Casual and concise. Keep emoji and names exactly as dictated. No sign-off."
+action = "auto"
+
+[match]
+app = ["slack.exe", "*teams*", "discord*", "whatsapp*", "telegram*"]
+
+# Thread replies stay short.
+[[destinations]]
+id = "thread-reply"
+priority = 10
+instructions = "One or two sentences."
+
+[destinations.match]
+element_name = "(?i)reply"

@@ -1,0 +1,9 @@
+# Plain-text notes: rewriting a selection is common here.
+id = "notes"
+name = "Notes"
+priority = 10
+action = "auto"
+instructions = "Tidy prose with correct punctuation. When rewriting, keep the author's voice."
+
+[match]
+app = ["notepad.exe", "obsidian*", "gedit", "gnome-text-editor"]

@@ -737,6 +737,21 @@ match = { window_title = "(" }"#,
     }
 
     #[test]
+    fn the_example_profiles_load_and_resolve_the_example_contexts() {
+        let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/desktop");
+        let profiles = Profiles::load_dir(&examples.join("profiles"));
+        assert!(profiles.errors.is_empty(), "{:?}", profiles.errors);
+        let context = |name: &str| -> ContextSnapshot {
+            serde_json::from_str(&std::fs::read_to_string(examples.join(name)).unwrap()).unwrap()
+        };
+        let slack = profiles.resolve(&context("context-slack.json"), None);
+        assert_eq!(slack.profile, "chat");
+        assert_eq!(slack.destination.as_deref(), Some("thread-reply"));
+        let notes = profiles.resolve(&context("context-notepad-selection.json"), None);
+        assert_eq!(notes.profile, "notes");
+    }
+
+    #[test]
     fn a_draft_from_the_context_matches_that_context() {
         let mut snapshot = slack();
         snapshot.url = Some("https://app.slack.com/client/T1/C2".into());

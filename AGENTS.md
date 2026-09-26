@@ -6,6 +6,7 @@ jevons-rs is a personal inference runtime: it serves OpenAI-compatible chat and 
 
 Crates are layered; each layer depends only on the ones below it (see the README's Architecture diagram):
 
+- **Desktop** — `jevons-desktop` (the tray dictation binary: eframe inspector and settings, tao/tray-icon tray and global hotkey, CPAL microphone, per-OS context and text input in `platform/`, the embedded or remote runtime) over `jevons-desktop-core` (platform-free: the platform traits, context snapshots, profiles and their resolver, the take pipeline, the typed API client, gestures, paste safety, tray icon frames, the model catalog and downloads). Only Windows reads the focused element (UI Automation) and types (SendInput) so far; other platforms read the active window and deliver to the clipboard.
 - **API** — `jevons-api`: Axum routes, authentication, the settings file (`jevons.example.toml`), the wire formats (`openai/`: Chat Completions, Completions, Responses, audio transcriptions, Realtime events; `system_one/`: validation, question compilation, answer mapping), the model workers (`workers/diffusion.rs` serves Generative and Decision jobs on one thread, `workers/speech.rs`) and the Realtime session. `jevons-rs` is the binary (`main.rs` only).
 - **Services**, synchronous and protocol-free:
   - `jevons-generative`: free-form answers with chat framing, streaming and stop sequences (`Generate` on `DiffusionEngine`).
@@ -16,13 +17,13 @@ Crates are layered; each layer depends only on the ones below it (see the README
 - **GPU runtimes** — `jevons-kernels` (shared tuned CubeCL kernels: device buffers, quantized / FP16-weight GEMM) and `jevons-burn` (Burn 0.22 runtime: HIP device, weight streaming, attention, KV cache, the tuned GEMM as a Burn extension).
 - **Foundation** — `jevons-core` (the `DiffusionModel` and `SpeechModel` contracts, errors, model configuration, image decoding), `jevons-formats` (GGUF and safetensors readers), `jevons-tokenizer` (Gemma 4 and Hugging Face tokenizers), `jevons-audio` (upload decoding, resampling, PCM16/G.711, log-mel features, voice activity detection).
 
-Unit tests live in each crate’s source modules. `examples/system-one.json`, `chat-completions.json`, `completions.json` and `responses.json` are request fixtures, and `examples/openai-sdk.py` runs every OpenAI-compatible API through the OpenAI SDK; `scripts/smoke-test.py` exercises a running service. `examples/speech-en.flac` (LibriSpeech, CC BY 4.0) and `examples/speech-es.flac` (LibriVox, public domain) are speech fixtures, with Opus copies (`speech-en.opus`, `speech-es.webm`, and `speech-es-browser.webm` recorded by Chrome's `MediaRecorder`), and `examples/realtime.py` streams one to a Realtime session. Models (DiffusionGemma GGUF files, Nemotron and Parakeet checkpoint directories) are external assets and are not downloaded automatically.
+Unit tests live in each crate’s source modules. `examples/desktop/` holds example profiles and context snapshots for `jevons-desktop --replay`. `examples/system-one.json`, `chat-completions.json`, `completions.json` and `responses.json` are request fixtures, and `examples/openai-sdk.py` runs every OpenAI-compatible API through the OpenAI SDK; `scripts/smoke-test.py` exercises a running service. `examples/speech-en.flac` (LibriSpeech, CC BY 4.0) and `examples/speech-es.flac` (LibriVox, public domain) are speech fixtures, with Opus copies (`speech-en.opus`, `speech-es.webm`, and `speech-es-browser.webm` recorded by Chrome's `MediaRecorder`), and `examples/realtime.py` streams one to a Realtime session. Models (DiffusionGemma GGUF files, Nemotron and Parakeet checkpoint directories) are external assets and are not downloaded automatically.
 
 ## Build, Test, and Development Commands
 
 Inference runs on AMD GPUs through CubeCL/HIP (RDNA3-class, 32-lane waves); the ROCm/HIP SDK is required, and kernels compile at runtime (cached in `~/.cache/diffusion-cubecl` for DiffusionGemma and `~/.cache/jevons-burn` for Burn models). There is no C/C++ build, CMake, or submodule. Follow [docs/build.md](docs/build.md) for ROCm setup.
 
-- `cargo build --workspace --locked`: build all crates.
+- `cargo build --workspace --locked`: build all crates. On Linux, `jevons-desktop` needs `libgtk-3-dev libxdo-dev libayatana-appindicator3-dev libasound2-dev libssl-dev`.
 - `cargo fmt --all -- --check`: check Rust formatting.
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`: run lint checks.
 - `cargo test --workspace --locked`: run regular tests without loading a model.
@@ -31,7 +32,7 @@ Inference runs on AMD GPUs through CubeCL/HIP (RDNA3-class, 32-lane waves); the 
 
 ## Coding Style & Naming Conventions
 
-Use rustfmt defaults, four-space indentation, `snake_case` functions/modules, `UpperCamelCase` types, and `SCREAMING_SNAKE_CASE` constants. Do not add unsafe code; the inference crates forbid it and CubeCL kernels launch in checked mode. Keep model ownership on the dedicated worker thread and blocking inference off Tokio executor threads. Keep wire formats in `jevons-api` and services free of HTTP, JSON and async code.
+Use rustfmt defaults, four-space indentation, `snake_case` functions/modules, `UpperCamelCase` types, and `SCREAMING_SNAKE_CASE` constants. Do not add unsafe code; the inference crates forbid it and CubeCL kernels launch in checked mode. Keep model ownership on the dedicated worker thread and blocking inference off Tokio executor threads. Keep wire formats in `jevons-api` and services free of HTTP, JSON and async code. In the desktop crates, platform code only goes through safe wrapper crates (no unsafe), shared behaviour belongs in `jevons-desktop-core`, and snapshots, transcripts and keys are never logged.
 
 ## Testing Guidelines
 
