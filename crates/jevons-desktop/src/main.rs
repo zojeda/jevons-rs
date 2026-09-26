@@ -48,6 +48,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
+        // stdout carries the --replay trace.
+        .with_writer(std::io::stderr)
         .init();
     let args = Args::parse();
     let config_file = args.config.clone().unwrap_or_else(default_config_file);

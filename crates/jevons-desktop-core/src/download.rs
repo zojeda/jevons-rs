@@ -43,6 +43,8 @@ pub enum DownloadError {
 /// A file to fetch.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RemoteFile {
+    pub repo: String,
+    pub revision: String,
     pub path: String,
     pub size: u64,
     pub sha256: Option<String>,
@@ -103,18 +105,37 @@ impl Hub {
         }
     }
 
-    /// The files of `entry` to fetch.
+    /// The files of `entry` to fetch, from its repository and any extra sources.
     pub async fn plan(&self, entry: &CatalogEntry) -> Result<Vec<RemoteFile>, DownloadError> {
-        let mut globs = GlobSetBuilder::new();
-        for glob in &entry.files {
-            globs.add(Glob::new(glob).map_err(|e| DownloadError::Invalid(e.to_string()))?);
+        let mut files = self
+            .list(&entry.repo, &entry.revision, &entry.files)
+            .await?;
+        for source in &entry.extra {
+            files.extend(
+                self.list(&source.repo, &source.revision, &source.files)
+                    .await?,
+            );
         }
-        let globs = globs
+        Ok(files)
+    }
+
+    /// The files of `repo` at `revision` matching `globs`; at least one.
+    async fn list(
+        &self,
+        repo: &str,
+        revision: &str,
+        globs: &[String],
+    ) -> Result<Vec<RemoteFile>, DownloadError> {
+        let mut set = GlobSetBuilder::new();
+        for glob in globs {
+            set.add(Glob::new(glob).map_err(|e| DownloadError::Invalid(e.to_string()))?);
+        }
+        let set = set
             .build()
             .map_err(|e| DownloadError::Invalid(e.to_string()))?;
         let url = format!(
-            "{}/api/models/{}/tree/{}?recursive=true",
-            self.base, entry.repo, entry.revision
+            "{}/api/models/{repo}/tree/{revision}?recursive=true",
+            self.base
         );
         let response = self.get(&url).send().await?;
         if !response.status().is_success() {
@@ -126,8 +147,10 @@ impl Hub {
         let items: Vec<TreeItem> = response.json().await?;
         let files: Vec<RemoteFile> = items
             .into_iter()
-            .filter(|i| i.kind == "file" && globs.is_match(&i.path))
+            .filter(|i| i.kind == "file" && set.is_match(&i.path))
             .map(|i| RemoteFile {
+                repo: repo.into(),
+                revision: revision.into(),
                 path: i.path,
                 size: i.size,
                 sha256: i.lfs.map(|l| l.oid),
@@ -135,8 +158,8 @@ impl Hub {
             .collect();
         if files.is_empty() {
             return Err(DownloadError::NothingToDownload {
-                repo: entry.repo.clone(),
-                globs: entry.files.clone(),
+                repo: repo.into(),
+                globs: globs.to_vec(),
             });
         }
         Ok(files)
@@ -163,7 +186,7 @@ impl Hub {
                 tokio::fs::create_dir_all(parent).await?;
             }
             if !is_complete(&target, file).await? {
-                self.fetch(entry, file, &target, &cancel, |done| {
+                self.fetch(file, &target, &cancel, |done| {
                     progress(Progress {
                         file: file.path.clone(),
                         done: done_before + done,
@@ -185,7 +208,6 @@ impl Hub {
 
     async fn fetch(
         &self,
-        entry: &CatalogEntry,
         file: &RemoteFile,
         target: &Path,
         cancel: &AtomicBool,
@@ -199,7 +221,7 @@ impl Hub {
         }
         let url = format!(
             "{}/{}/resolve/{}/{}",
-            self.base, entry.repo, entry.revision, file.path
+            self.base, file.repo, file.revision, file.path
         );
         let mut request = self.get(&url);
         if have > 0 {
@@ -332,17 +354,23 @@ mod tests {
                 {"type": "directory", "path": "extra"},
             ]))
         };
+        let projector = || async {
+            axum::Json(serde_json::json!([
+                {"type": "file", "path": "mmproj.gguf", "size": 4},
+                {"type": "file", "path": "other.gguf", "size": 9},
+            ]))
+        };
         let file = |State(hits): State<Hits>,
-                    UrlPath(path): UrlPath<String>,
+                    UrlPath((_, _, path)): UrlPath<(String, String, String)>,
                     headers: HeaderMap| async move {
             let range = headers
                 .get("range")
                 .map(|r| r.to_str().unwrap().to_string());
             hits.ranges.lock().unwrap().push(range.clone());
-            let body: &[u8] = if path.ends_with("config.json") {
-                b"{}"
-            } else {
-                WEIGHTS
+            let body: &[u8] = match path.as_str() {
+                "config.json" => b"{}",
+                "mmproj.gguf" => b"proj",
+                _ => WEIGHTS,
             };
             match range.and_then(|r| {
                 r.strip_prefix("bytes=")?
@@ -358,7 +386,8 @@ mod tests {
         };
         let app = axum::Router::new()
             .route("/api/models/org/model/tree/main", get(tree))
-            .route("/org/model/resolve/main/{*path}", get(file))
+            .route("/api/models/other/projector/tree/main", get(projector))
+            .route("/{owner}/{name}/resolve/main/{*path}", get(file))
             .with_state(hits.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -378,6 +407,7 @@ mod tests {
             mmproj_file: None,
             license: String::new(),
             memory_gb: 0.0,
+            extra: Vec::new(),
         }
     }
 
@@ -456,6 +486,30 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, DownloadError::Cancelled));
         assert!(!entry.is_ready(&folder));
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[tokio::test]
+    async fn extra_sources_download_into_the_same_folder() {
+        let (base, _) = serve(digest(WEIGHTS)).await;
+        let hub = Hub::new(&base, None);
+        let mut entry = entry();
+        entry.extra = vec![crate::catalog::Source {
+            repo: "other/projector".into(),
+            revision: "main".into(),
+            files: vec!["mmproj.gguf".into()],
+        }];
+        let files = hub.plan(&entry).await.unwrap();
+        assert_eq!(files.len(), 3);
+        assert_eq!(files[2].repo, "other/projector");
+        let folder = folder("extra");
+        hub.download(&entry, &files, &folder, Arc::default(), |_| {})
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(entry.dir(&folder).join("mmproj.gguf")).unwrap(),
+            b"proj"
+        );
         std::fs::remove_dir_all(folder).unwrap();
     }
 

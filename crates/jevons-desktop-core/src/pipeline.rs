@@ -695,7 +695,8 @@ mod tests {
             }
         };
         let s = seen.clone();
-        let transcribe = move || {
+        // Reading the upload keeps the connection reusable, as a real server does.
+        let transcribe = move |_upload: axum::body::Bytes| {
             let s = s.clone();
             async move {
                 *s.uploads.lock().unwrap() += 1;
@@ -840,7 +841,7 @@ instructions = "Formal tone.""#,
         };
         let trace = take(&env, Some("hi all")).await;
         assert_eq!(trace.error, None);
-        assert_eq!(trace.action, Some(Action::Rewrite));
+        assert_eq!(trace.action, Some(Action::Rewrite), "{:?}", trace.notes);
         assert_eq!(trace.output, "Dear team, hello world.");
         let generation = &seen.generations.lock().unwrap()[0];
         assert!(

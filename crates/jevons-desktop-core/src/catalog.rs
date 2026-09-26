@@ -44,6 +44,19 @@ pub struct CatalogEntry {
     /// Approximate memory while loaded, in GB.
     #[serde(default)]
     pub memory_gb: f32,
+    /// Files from other repositories, such as a vision projector published separately.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra: Vec<Source>,
+}
+
+/// Files to fetch from another Hugging Face repository.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Source {
+    pub repo: String,
+    #[serde(default = "main")]
+    pub revision: String,
+    pub files: Vec<String>,
 }
 
 fn main() -> String {
@@ -56,6 +69,9 @@ struct CatalogFile {
     #[serde(default)]
     models: Vec<CatalogEntry>,
 }
+
+const GEMMA_FILE: &str = "diffusiongemma-26B-A4B-it-Q4_K_M.gguf";
+const GEMMA_MMPROJ: &str = "mmproj-diffusiongemma-26b-a4b-f16.gguf";
 
 /// The models shipped with the app.
 pub fn builtin() -> Vec<CatalogEntry> {
@@ -78,8 +94,27 @@ pub fn builtin() -> Vec<CatalogEntry> {
         mmproj_file: None,
         license: "NVIDIA Open Model License".into(),
         memory_gb,
+        extra: Vec::new(),
     };
     vec![
+        CatalogEntry {
+            id: "diffusiongemma-26b-a4b-q4_k_m".into(),
+            name: "DiffusionGemma 26B-A4B Q4_K_M".into(),
+            services: vec![Service::Generative, Service::Decision],
+            repo: "unsloth/diffusiongemma-26B-A4B-it-GGUF".into(),
+            revision: main(),
+            files: vec![GEMMA_FILE.into()],
+            model_file: Some(GEMMA_FILE.into()),
+            mmproj_file: Some(GEMMA_MMPROJ.into()),
+            license: "Apache-2.0".into(),
+            memory_gb: 21.0,
+            // The unsloth repository has no vision projector.
+            extra: vec![Source {
+                repo: "FreedomAISVR/DiffusionGemma-26B-A4B-it-MXFP4-GGUF".into(),
+                revision: main(),
+                files: vec![GEMMA_MMPROJ.into()],
+            }],
+        },
         nemotron(
             "nemotron-labs-diffusion-3b",
             "Nemotron-Labs-Diffusion 3B",
@@ -112,6 +147,7 @@ pub fn builtin() -> Vec<CatalogEntry> {
             mmproj_file: None,
             license: "CC-BY-4.0".into(),
             memory_gb: 1.5,
+            extra: Vec::new(),
         },
     ]
 }
@@ -198,6 +234,14 @@ model_file = "diffusiongemma-26B-A4B-it-Q4_K_M.gguf"
             .find(|e| e.id == "parakeet-tdt-0.6b-v3")
             .unwrap();
         assert_eq!(parakeet.revision, "abc123");
+        let builtin_gemma = entries
+            .iter()
+            .find(|e| e.id == "diffusiongemma-26b-a4b-q4_k_m")
+            .unwrap();
+        assert_eq!(
+            builtin_gemma.model_path(Path::new("/m")),
+            Path::new("/m/diffusiongemma-26b-a4b-q4_k_m/diffusiongemma-26B-A4B-it-Q4_K_M.gguf")
+        );
         let gemma = entries.iter().find(|e| e.id == "gemma").unwrap();
         assert_eq!(
             gemma.model_path(Path::new("/m")),

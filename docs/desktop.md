@@ -96,7 +96,8 @@ The **Models** tab manages the models the app runs.
 
 - **Models folder.** Pick where models live (default: the platform data folder, such as `%LOCALAPPDATA%\jevons\data\models`). Each model goes in its own subfolder.
 - **Catalog.**
-  - Built in: Nemotron-Labs-Diffusion 3B and VLM 8B (generative and decision), and Parakeet TDT 0.6B v3 (speech).
+  - Built in: DiffusionGemma 26B-A4B Q4_K_M from [unsloth/diffusiongemma-26B-A4B-it-GGUF](https://huggingface.co/unsloth/diffusiongemma-26B-A4B-it-GGUF), Nemotron-Labs-Diffusion 3B and VLM 8B (generative and decision), and Parakeet TDT 0.6B v3 (speech).
+  - The DiffusionGemma repository has no vision projector, so the download is text-only. For image input, set `mmproj` on the model in `jevons-desktop.toml`, or load a `jevons.toml` that has one.
   - **Download** fetches the files from Hugging Face. It resumes interrupted files with an HTTP range and checks each large file against the repository's SHA-256.
   - Nothing downloads unless you press the button. Set `HF_TOKEN` for gated repositories.
 - **Selected models.** **Use for …** assigns a downloaded model to a service. **Use existing…** points a service at a model already on disk (a GGUF file or a checkpoint folder) without copying it. Generative and decision on the same model share one engine.
@@ -104,14 +105,13 @@ The **Models** tab manages the models the app runs.
 
   ```toml
   [[models]]
-  id = "diffusiongemma"
-  name = "DiffusionGemma 26B-A4B Q4_K_M"
+  id = "diffusiongemma-q8"
+  name = "DiffusionGemma 26B-A4B Q8_0"
   services = ["generative", "decision"]
-  repo = "owner/repository"
-  files = ["*Q4_K_M.gguf", "mmproj-*.gguf"]
-  model_file = "diffusiongemma-26B-A4B-it-Q4_K_M.gguf"
-  mmproj_file = "mmproj-diffusiongemma-26b-a4b-f16.gguf"
-  memory_gb = 20
+  repo = "unsloth/diffusiongemma-26B-A4B-it-GGUF"
+  files = ["*Q8_0.gguf"]
+  model_file = "diffusiongemma-26B-A4B-it-Q8_0.gguf"
+  memory_gb = 30
   ```
 
 - **Existing settings file.** `models.runtime_config` loads an existing `jevons.toml` instead of the selections.

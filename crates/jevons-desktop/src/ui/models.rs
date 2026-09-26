@@ -61,6 +61,7 @@ impl State {
                 mmproj_file: None,
                 license: String::new(),
                 memory_gb: 0.0,
+                extra: Vec::new(),
             },
             custom_files: "*.json, *.safetensors".into(),
             confirm_delete: None,
