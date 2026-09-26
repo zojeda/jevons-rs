@@ -115,6 +115,14 @@ fn run(
         .build()
         .expect("the Tokio runtime builds");
     let set = |status: Status, connection: Option<Connection>| {
+        let status = match status {
+            Status::Failed(e) => Status::Failed(explain(e)),
+            other => other,
+        };
+        match &status {
+            Status::Failed(_) => tracing::error!(status = %status.describe(), "Runtime"),
+            _ => tracing::info!(status = %status.describe(), "Runtime"),
+        }
         let mut shared = shared.lock().expect("the runtime lock");
         shared.status = status;
         shared.connection = connection;
@@ -179,6 +187,24 @@ fn run(
         }
     }
     tokio.block_on(embedded.unload());
+}
+
+/// Adds what to do about failures the user can fix outside the app.
+fn explain(error: String) -> String {
+    let gpu = [
+        "hipMemGetInfo",
+        "hipInit",
+        "Could not load HIP",
+        "DriverError",
+    ];
+    if gpu.iter().any(|marker| error.contains(marker)) {
+        format!(
+            "The GPU is not usable through HIP ({error}). Check that the AMD driver matches the \
+             HIP SDK: its hipInfo tool must run without errors."
+        )
+    } else {
+        error
+    }
 }
 
 /// The jevons-rs settings for the selected models, or `None` when none is selected.
@@ -454,6 +480,13 @@ mod tests {
             table["services"]["speech"]["realtime"].as_bool(),
             Some(false)
         );
+    }
+
+    #[test]
+    fn hip_failures_say_how_to_check_the_driver() {
+        let message = explain("DriverError { op: \"hipMemGetInfo\", status: 719 }".into());
+        assert!(message.contains("hipInfo"), "{message}");
+        assert_eq!(explain("models.x: not found".into()), "models.x: not found");
     }
 
     #[test]
