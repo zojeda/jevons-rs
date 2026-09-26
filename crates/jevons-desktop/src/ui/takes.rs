@@ -6,7 +6,7 @@ use eframe::egui;
 pub fn show(ui: &mut egui::Ui, view: &View) {
     if view.traces.is_empty() {
         ui.label(format!(
-            "No takes yet. Tap {} to toggle dictation, or hold it while speaking.",
+            "No takes yet. Hold {} while speaking; the text is inserted when you release it.",
             view.config.dictation.hotkey
         ));
         return;
@@ -16,13 +16,14 @@ pub fn show(ui: &mut egui::Ui, view: &View) {
             Some(e) => format!("✘ {e}"),
             None => format!("✔ {}", trace.output.chars().take(80).collect::<String>()),
         };
+        let turn = trace.turn.map_or(String::new(), |t| format!(".{t} (live)"));
         egui::CollapsingHeader::new(format!(
-            "#{} · {} · {:.1} s · {status}",
+            "#{}{turn} · {} · {:.1} s · {status}",
             trace.take, trace.context.app.process_name, trace.audio_seconds
         ))
-        .id_salt(("take", trace.take))
+        .id_salt(("take", trace.take, trace.turn))
         .show(ui, |ui| {
-            egui::Grid::new(("take-grid", trace.take))
+            egui::Grid::new(("take-grid", trace.take, trace.turn))
                 .num_columns(2)
                 .show(ui, |ui| {
                     let row = |ui: &mut egui::Ui, key: &str, value: String| {
@@ -63,8 +64,10 @@ pub fn show(ui: &mut egui::Ui, view: &View) {
             }
             let value = serde_json::to_value(trace).unwrap_or_default();
             egui::CollapsingHeader::new("Full trace (context, decision, prompt)")
-                .id_salt(("trace-json", trace.take))
-                .show(ui, |ui| super::json_tree(ui, ("trace", trace.take), &value));
+                .id_salt(("trace-json", trace.take, trace.turn))
+                .show(ui, |ui| {
+                    super::json_tree(ui, ("trace", trace.take, trace.turn), &value)
+                });
             if ui.button("Copy trace as JSON").clicked() {
                 ui.ctx()
                     .copy_text(serde_json::to_string_pretty(&value).unwrap_or_default());

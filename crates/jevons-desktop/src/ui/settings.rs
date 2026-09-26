@@ -98,8 +98,16 @@ impl State {
         egui::Grid::new("dictation").num_columns(2).show(ui, |ui| {
             let dictation = &mut draft.dictation;
             ui.label("Dictation hotkey")
-                .on_hover_text("Tap to toggle dictation, hold while speaking");
+                .on_hover_text("Hold while speaking; the text is inserted when you release it");
             super::hotkey::field(ui, "hotkey", &mut dictation.hotkey, false);
+            ui.end_row();
+            ui.label("Live dictation hotkey").on_hover_text(
+                "Press to start and again to stop; each phrase is typed after a pause",
+            );
+            let mut live = dictation.live_hotkey.clone().unwrap_or_default();
+            if super::hotkey::field(ui, "live-hotkey", &mut live, true) {
+                dictation.live_hotkey = Some(live).filter(|h| !h.is_empty());
+            }
             ui.end_row();
             ui.label("Inspector hotkey");
             let mut inspector = dictation.inspector_hotkey.clone().unwrap_or_default();

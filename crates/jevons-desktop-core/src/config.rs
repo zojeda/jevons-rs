@@ -110,8 +110,11 @@ impl Default for Models {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Dictation {
-    /// Tap to toggle, hold to dictate.
+    /// Push-to-talk: hold while speaking, release to insert.
     pub hotkey: String,
+    /// Starts and stops live dictation, typing each phrase after a pause.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_hotkey: Option<String>,
     /// Shows the inspector window.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inspector_hotkey: Option<String>,
@@ -136,6 +139,7 @@ impl Default for Dictation {
     fn default() -> Self {
         Self {
             hotkey: "Ctrl+Alt+Space".into(),
+            live_hotkey: Some("Ctrl+Alt+L".into()),
             inspector_hotkey: None,
             profile_hotkeys: BTreeMap::new(),
             microphone: None,

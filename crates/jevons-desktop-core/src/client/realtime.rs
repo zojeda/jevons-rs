@@ -38,13 +38,23 @@ pub enum RealtimeEvent {
     Other(String),
 }
 
+/// Who ends a turn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Turns {
+    /// The client commits the turn (push-to-talk).
+    Client,
+    /// The server ends a turn after this much silence (live dictation).
+    ServerVad { silence_ms: u32 },
+}
+
 impl Client {
-    /// Opens a transcription session: PCM16 at [`SAMPLE_RATE`], turns committed by the client.
+    /// Opens a transcription session with PCM16 at [`SAMPLE_RATE`].
     /// Returns [`ClientError::NotServed`] when the runtime has no Realtime endpoint.
     pub async fn realtime(
         &self,
         model: Option<&str>,
         language: Option<&str>,
+        turns: Turns,
     ) -> Result<(RealtimeWriter, RealtimeReader), ClientError> {
         let base = self
             .base
@@ -83,6 +93,13 @@ impl Client {
         };
         let (sink, stream) = socket.split();
         let mut writer = RealtimeWriter { sink };
+        let turn_detection = match turns {
+            Turns::Client => serde_json::Value::Null,
+            Turns::ServerVad { silence_ms } => json!({
+                "type": "server_vad",
+                "silence_duration_ms": silence_ms,
+            }),
+        };
         let session = json!({
             "type": "session.update",
             "session": {
@@ -90,7 +107,7 @@ impl Client {
                 "audio": {"input": {
                     "format": {"type": "audio/pcm", "rate": SAMPLE_RATE},
                     "transcription": {"model": model, "language": language},
-                    "turn_detection": null,
+                    "turn_detection": turn_detection,
                 }},
             },
         });

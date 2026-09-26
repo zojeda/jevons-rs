@@ -1,4 +1,4 @@
-//! The agent: hotkey gestures, context capture, microphone takes and the pipeline, with the
+//! The agent: hotkeys, context capture, microphone takes and the pipeline, with the
 //! tray and the inspector as views. It runs on its own thread; takes run on the runtime's
 //! workers so a slow generation never blocks the hotkey.
 
@@ -6,7 +6,6 @@ use crate::runtime::{Runtime, Status};
 use crate::tray::Tray;
 use jevons_desktop_core::config::DesktopConfig;
 use jevons_desktop_core::context::ContextSnapshot;
-use jevons_desktop_core::gesture::{Gestures, Release, Take};
 use jevons_desktop_core::icons::TrayState;
 use jevons_desktop_core::pipeline::{self, Env, TakeStart, Trace, Update};
 use jevons_desktop_core::platform::{
@@ -17,7 +16,7 @@ use jevons_desktop_core::profile::{Profiles, Resolution};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
 /// How many takes the inspector keeps.
@@ -42,6 +41,13 @@ pub enum Command {
     ReloadProfiles,
     RuntimeChanged,
     TakeFinished(Box<Trace>),
+    /// A live dictation turn was delivered; the take goes on.
+    TurnFinished(Box<Trace>),
+    /// Live dictation ended, with the reason when it failed.
+    LiveEnded {
+        take: u64,
+        error: Option<String>,
+    },
 }
 
 /// What the inspector shows; the agent writes it, the window reads it.
@@ -77,6 +83,10 @@ pub type SharedView = Arc<Mutex<View>>;
 
 struct Active {
     id: u64,
+    /// Live dictation rather than push-to-talk.
+    live: bool,
+    /// The hotkey that started it; its release ends a push-to-talk take.
+    source: Option<u32>,
     capture: Option<Box<dyn CaptureHandle>>,
     finish: Option<oneshot::Sender<()>>,
 }
@@ -90,9 +100,7 @@ pub struct Agent {
     sink: Arc<Mutex<Box<dyn TextSink>>>,
     audio: Box<dyn AudioSource>,
     profiles: Arc<Profiles>,
-    gestures: Gestures,
     hotkeys: std::collections::HashMap<u32, HotkeyAction>,
-    pressed_context: Option<ContextSnapshot>,
     active: Option<Active>,
     next_take: u64,
     view: SharedView,
@@ -132,9 +140,7 @@ impl Agent {
             context: layers.context,
             sink: Arc::new(Mutex::new(layers.sink)),
             audio: layers.audio,
-            gestures: Gestures::default(),
             hotkeys: std::collections::HashMap::new(),
-            pressed_context: None,
             active: None,
             next_take: 1,
             view,
@@ -161,21 +167,7 @@ impl Agent {
 
     /// Handles commands until Quit.
     pub async fn run(mut self, mut commands: mpsc::UnboundedReceiver<Command>) {
-        loop {
-            let deadline = self.gestures.next_tick();
-            let command = tokio::select! {
-                command = commands.recv() => command,
-                () = async {
-                    match deadline {
-                        Some(at) => tokio::time::sleep_until(at.into()).await,
-                        None => std::future::pending().await,
-                    }
-                } => {
-                    self.hold_due();
-                    continue;
-                }
-            };
-            let Some(command) = command else { break };
+        while let Some(command) = commands.recv().await {
             if !self.handle(command) {
                 break;
             }
@@ -202,8 +194,10 @@ impl Agent {
             let view = self.view();
             (view.forced_profile.clone(), view.context_paused)
         };
+        let live = self.active.as_ref().is_some_and(|a| a.live);
         let menu = MenuModel {
-            dictating: self.active.is_some(),
+            dictating: self.active.as_ref().is_some_and(|a| !a.live),
+            live,
             profiles: self
                 .profiles
                 .iter()
@@ -225,17 +219,23 @@ impl Agent {
                     self.view().show_window = true;
                     self.repaint();
                 }
-                Some(HotkeyAction::Dictate { .. }) => self.dictation_pressed(id),
+                Some(HotkeyAction::Dictate { profile }) => {
+                    // Key repeat and other keys while a take runs change nothing.
+                    if self.active.is_none() {
+                        let profile = profile.clone();
+                        self.begin(profile, Some(id), false);
+                    }
+                }
+                Some(HotkeyAction::LiveDictation) => self.toggle_live(),
                 None => {}
             },
             Command::Hotkey(HotkeyEvent::Released(id)) => {
-                let Some(HotkeyAction::Dictate { profile }) = self.hotkeys.get(&id).cloned() else {
-                    return true;
-                };
-                match self.gestures.release(id, Instant::now(), self.take_state()) {
-                    Release::Toggle => self.toggle(profile),
-                    Release::Finish => self.stop_take(),
-                    Release::None => {}
+                if self
+                    .active
+                    .as_ref()
+                    .is_some_and(|a| !a.live && a.source == Some(id) && a.capture.is_some())
+                {
+                    self.stop_take();
                 }
             }
             Command::HotkeysRegistered { actions, errors } => {
@@ -268,13 +268,16 @@ impl Agent {
                 self.repaint();
             }
             Command::TakeFinished(trace) => self.finished(*trace),
+            Command::TurnFinished(trace) => self.turn_finished(*trace),
+            Command::LiveEnded { take, error } => self.live_ended(take, error),
         }
         true
     }
 
     fn menu(&mut self, command: MenuCommand) -> bool {
         match command {
-            MenuCommand::ToggleDictation => self.toggle(None),
+            MenuCommand::ToggleDictation => self.toggle(),
+            MenuCommand::ToggleLiveDictation => self.toggle_live(),
             MenuCommand::ForceProfile(profile) => {
                 self.view().forced_profile = profile;
                 self.publish_menu();
@@ -313,44 +316,22 @@ impl Agent {
         true
     }
 
-    fn dictation_pressed(&mut self, id: u32) {
-        if self.gestures.press(id, Instant::now()) && self.active.is_none() {
-            // Read the context before the user's focus can move.
-            self.pressed_context = self.snapshot().ok();
-        }
-    }
-
-    fn take_state(&self) -> Take {
-        self.active.as_ref().map_or(Take::default(), |a| Take {
-            id: a.id,
-            capturing: a.capture.is_some(),
-        })
-    }
-
-    fn hold_due(&mut self) {
-        if let Some(source) = self.gestures.due(Instant::now())
-            && self.active.is_none()
-        {
-            let profile = match self.hotkeys.get(&source) {
-                Some(HotkeyAction::Dictate { profile }) => profile.clone(),
-                _ => None,
-            };
-            self.start_take(profile);
-            self.gestures.started(source, self.take_state());
-        }
-    }
-
-    /// Starts or stops dictation; `profile` forces a profile for a new take.
-    fn toggle(&mut self, profile: Option<String>) {
+    /// Starts or stops push-to-talk dictation from the menu.
+    fn toggle(&mut self) {
         match &self.active {
-            Some(active) if active.capture.is_some() => self.stop_take(),
+            Some(active) if !active.live && active.capture.is_some() => self.stop_take(),
+            Some(active) if active.live => self.notice("Live dictation is running"),
             Some(_) => self.notice("The last take is still being processed"),
-            None => {
-                if self.pressed_context.is_none() {
-                    self.pressed_context = self.snapshot().ok();
-                }
-                self.start_take(profile);
-            }
+            None => self.begin(None, None, false),
+        }
+    }
+
+    fn toggle_live(&mut self) {
+        match &self.active {
+            Some(active) if active.live && active.capture.is_some() => self.stop_take(),
+            Some(active) if active.live => {}
+            Some(_) => self.notice("Finish the current take first"),
+            None => self.begin(None, None, true),
         }
     }
 
@@ -430,21 +411,19 @@ impl Agent {
         self.repaint();
     }
 
-    fn start_take(&mut self, profile: Option<String>) {
+    /// Starts a take: push-to-talk, or live dictation when `live`. `source` is the hotkey
+    /// whose release ends a push-to-talk take.
+    fn begin(&mut self, profile: Option<String>, source: Option<u32>, live: bool) {
         let Some(connection) = self.runtime.connection() else {
             let status = self.runtime.status().describe();
-            self.pressed_context = None;
             self.notice(&format!("Dictation is unavailable: {status}"));
             self.set_tray(TrayState::Error);
             return;
         };
         let id = self.next_take;
         self.next_take += 1;
-        let context = self
-            .pressed_context
-            .take()
-            .or_else(|| self.snapshot().ok())
-            .unwrap_or_default();
+        // Read the context first, before the user's focus can move.
+        let context = self.snapshot().unwrap_or_default();
         let (audio, audio_events) = mpsc::unbounded_channel();
         let capture = match self
             .audio
@@ -491,6 +470,8 @@ impl Agent {
         }
         self.active = Some(Active {
             id,
+            live,
+            source,
             capture: Some(capture),
             finish: Some(finish),
         });
@@ -515,6 +496,11 @@ impl Agent {
                         }
                         Update::Transcribing => Some(TrayState::Transcribing { frame: 0 }),
                         Update::Thinking => Some(TrayState::Thinking { frame: 0 }),
+                        Update::Listening => {
+                            view.live_transcript.clear();
+                            view.live_output.clear();
+                            Some(TrayState::Listening { level: 0 })
+                        }
                         Update::Output(text) => {
                             view.live_output.push_str(&text);
                             None
@@ -532,10 +518,25 @@ impl Agent {
             }
         });
         let commands = self.commands.clone();
-        tokio::spawn(async move {
-            let trace = pipeline::run_take(&env, start, audio_events, finished, &updates).await;
-            let _ = commands.send(Command::TakeFinished(Box::new(trace)));
-        });
+        if live {
+            tokio::spawn(async move {
+                let turns = commands.clone();
+                let result =
+                    pipeline::run_live(&env, start, audio_events, finished, &updates, |trace| {
+                        let _ = turns.send(Command::TurnFinished(Box::new(trace)));
+                    })
+                    .await;
+                let _ = commands.send(Command::LiveEnded {
+                    take: id,
+                    error: result.err(),
+                });
+            });
+        } else {
+            tokio::spawn(async move {
+                let trace = pipeline::run_take(&env, start, audio_events, finished, &updates).await;
+                let _ = commands.send(Command::TakeFinished(Box::new(trace)));
+            });
+        }
         self.repaint();
     }
 
@@ -560,7 +561,38 @@ impl Agent {
         {
             capture.stop();
         }
-        self.gestures.cancel_capture();
+    }
+
+    fn turn_finished(&mut self, trace: Trace) {
+        let mut view = self.view();
+        view.notice = trace.error.clone();
+        view.traces.push_front(trace);
+        view.traces.truncate(HISTORY);
+        drop(view);
+        self.repaint();
+    }
+
+    fn live_ended(&mut self, take: u64, error: Option<String>) {
+        if self.active.as_ref().is_some_and(|a| a.id == take)
+            && let Some(active) = self.active.take()
+            && let Some(capture) = active.capture
+        {
+            capture.stop();
+        }
+        {
+            let mut view = self.view();
+            view.dictating = false;
+            if error.is_some() {
+                view.notice = error.clone();
+            }
+        }
+        self.set_tray(if error.is_some() {
+            TrayState::Error
+        } else {
+            TrayState::Idle
+        });
+        self.publish_menu();
+        self.repaint();
     }
 
     fn finished(&mut self, trace: Trace) {

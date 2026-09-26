@@ -8,7 +8,7 @@ It runs the jevons models in-process, optionally exposing the API on a port, or 
 
 ```mermaid
 flowchart TD
-    press(["Hotkey pressed<br/>tap to toggle · hold to dictate"])
+    press(["Hotkey held<br/>push-to-talk"])
     press --> snapshot["Context snapshot<br/>app · window · URL<br/>field role and name<br/>selection · text around the caret"]
     press --> mic["Microphone<br/>CPAL → 24 kHz PCM16<br/>100 ms chunks"]
 
@@ -17,7 +17,7 @@ flowchart TD
     mic --> realtime{"/v1/realtime<br/>served?"}
     realtime -- yes --> stream["Stream audio<br/>live text in the inspector"]
     realtime -- "no or failed" --> buffer["Buffer the take"]
-    release(["Hotkey released<br/>or tapped again"]) --> commit
+    release(["Hotkey released"]) --> commit
     stream --> commit["Commit the turn"]
     buffer --> upload["/v1/audio/transcriptions"]
     commit --> transcript["Transcript"]
@@ -50,6 +50,8 @@ flowchart TD
 4. **The decision model** answers only the open questions: which action (only when the profile says `auto` and there is text to act on), whether the words need editing, and which profile when two tie. Clean dictation skips generation entirely.
 5. **Generation** follows the base prompt, then the action, then the profile's and the destination's instructions.
 6. **Delivery** goes only into the window the take started in, once every key is released. Otherwise the text waits on the clipboard.
+
+In **live dictation** (its own hotkey, press to start and again to stop), the server ends a turn at each pause, and every turn goes from *Transcript* through the same steps while the microphone stays open.
 
 ## Threads
 

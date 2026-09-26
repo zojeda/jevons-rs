@@ -30,8 +30,13 @@ realtime = true
 # path = "D:/models/parakeet-tdt-0.6b-v3"
 
 [dictation]
-# Tap to toggle, hold to dictate.
+# Push-to-talk: hold while speaking; the text is inserted on release.
 hotkey = "Ctrl+Alt+Space"
+# Live dictation on and off: each phrase is typed after a pause.
+live_hotkey = "Ctrl+Alt+L"
+# inspector_hotkey = "Ctrl+Alt+I"
+# [dictation.profile_hotkeys]
+# chat = "Ctrl+Alt+C"
 # microphone = "Microphone Array"
 # language = "es"
 decide = true

@@ -10,8 +10,8 @@
 //! - [`pipeline`]: one dictation take, from transcript to decision, generation and delivery.
 //! - [`client`]: typed requests to the jevons API (Realtime, transcriptions, System One,
 //!   Responses).
-//! - [`gesture`], [`delivery`], [`levels`], [`icons`]: tap-or-hold hotkeys, paste safety, the
-//!   microphone meter and the animated tray frames.
+//! - [`delivery`], [`levels`], [`icons`]: paste safety, the microphone meter and the tray
+//!   frames.
 //! - [`catalog`] and [`download`]: the model catalog and resumable, verified downloads.
 #![forbid(unsafe_code)]
 
@@ -23,7 +23,6 @@ pub mod delivery;
 pub mod download;
 #[cfg(any(test, feature = "testing"))]
 pub mod fake;
-pub mod gesture;
 pub mod icons;
 pub mod levels;
 pub mod pipeline;

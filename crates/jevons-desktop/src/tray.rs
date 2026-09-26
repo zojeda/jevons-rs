@@ -252,8 +252,14 @@ fn build_menu(model: &MenuModel) -> Menu {
             None,
         ));
     }
+    let live = if model.live {
+        "Stop live dictation"
+    } else {
+        "Start live dictation"
+    };
     let _ = menu.append_items(&[
-        &MenuItem::with_id("toggle", dictation, true, None),
+        &MenuItem::with_id("toggle", dictation, !model.live, None),
+        &MenuItem::with_id("live", live, !model.dictating, None),
         &profiles,
         &PredefinedMenuItem::separator(),
         &MenuItem::with_id("inspector", "Show context inspector", true, None),
@@ -275,6 +281,7 @@ fn build_menu(model: &MenuModel) -> Menu {
 fn menu_command(id: &str) -> Option<MenuCommand> {
     Some(match id {
         "toggle" => MenuCommand::ToggleDictation,
+        "live" => MenuCommand::ToggleLiveDictation,
         "inspector" => MenuCommand::ShowInspector,
         "pause" => MenuCommand::ToggleContextPause,
         "reload" => MenuCommand::ReloadProfiles,

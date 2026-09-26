@@ -5,7 +5,7 @@
 
 use crate::client::{
     Answer, Client, ClientError, DecisionRequest, DecisionResponse, Question, RealtimeEvent,
-    ResponseRequest,
+    ResponseRequest, Turns,
 };
 use crate::context::ContextSnapshot;
 use crate::delivery::{Decision, Pending};
@@ -21,6 +21,12 @@ use tokio::sync::{mpsc, oneshot};
 
 /// The shortest audio worth transcribing (the server's minimum commit).
 const MIN_SAMPLES: usize = SAMPLE_RATE as usize / 10;
+/// A push-to-talk press shorter than this was not meant as speech: it is dropped quietly.
+const MIN_TAKE_SECONDS: f64 = 0.4;
+/// Live dictation: the pause that ends a turn.
+const LIVE_SILENCE_MS: u32 = 700;
+/// Live dictation: how long to wait for the last turn after stopping.
+const LIVE_DRAIN: Duration = Duration::from_secs(5);
 /// How long to wait for the final transcript after the take ends.
 const TRANSCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -87,6 +93,8 @@ pub enum Update {
     Delta(String),
     Transcribing,
     Thinking,
+    /// Live dictation is listening again after a turn.
+    Listening,
     /// Generated text.
     Output(String),
 }
@@ -114,6 +122,8 @@ pub struct DecisionTrace {
 #[derive(Clone, Debug, Serialize)]
 pub struct Trace {
     pub take: u64,
+    /// The turn within a live dictation take, from 1.
+    pub turn: Option<u32>,
     /// Unix milliseconds.
     pub started_at_ms: u64,
     pub context: ContextSnapshot,
@@ -139,6 +149,7 @@ impl Trace {
     fn new(start: &TakeStart) -> Self {
         Self {
             take: start.id,
+            turn: None,
             started_at_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |d| d.as_millis() as u64),
@@ -179,6 +190,12 @@ pub async fn run_take(
     let transcript = transcribe(env, audio, finish, updates, &mut trace).await;
     trace.time("transcribe", begun);
     match transcript {
+        Ok(_) if trace.audio_seconds < MIN_TAKE_SECONDS => {
+            trace
+                .notes
+                .push("Too short to hold speech: nothing was sent".into());
+            return trace;
+        }
         Ok(text) if text.trim().is_empty() => {
             trace.error = Some("No speech was recognized".into());
             return trace;
@@ -218,7 +235,7 @@ async fn transcribe(
     if settings.realtime {
         match env
             .client
-            .realtime(model, settings.language.as_deref())
+            .realtime(model, settings.language.as_deref(), Turns::Client)
             .await
         {
             Ok(opened) => session = Some(opened),
@@ -280,7 +297,7 @@ async fn transcribe(
         }
     }
     trace.audio_seconds = buffer.len() as f64 / f64::from(SAMPLE_RATE);
-    if buffer.len() < MIN_SAMPLES {
+    if buffer.len() < MIN_SAMPLES || trace.audio_seconds < MIN_TAKE_SECONDS {
         return Ok(String::new());
     }
     let _ = updates.send(Update::Transcribing);
@@ -322,6 +339,138 @@ async fn transcribe(
         .transcribe(&buffer, SAMPLE_RATE, model, settings.language.as_deref())
         .await?;
     Ok(transcription.text)
+}
+
+/// Live dictation: the audio streams with server turn detection, and each turn is processed
+/// and delivered while the user keeps talking, until `stop` fires. `on_turn` receives each
+/// turn's trace.
+pub async fn run_live(
+    env: &Env,
+    start: TakeStart,
+    mut audio: mpsc::UnboundedReceiver<AudioEvent>,
+    mut stop: oneshot::Receiver<()>,
+    updates: &mpsc::UnboundedSender<Update>,
+    mut on_turn: impl FnMut(Trace),
+) -> Result<(), String> {
+    let settings = &env.settings;
+    let (mut writer, mut reader) = env
+        .client
+        .realtime(
+            settings.models.speech.as_deref(),
+            settings.language.as_deref(),
+            Turns::ServerVad {
+                silence_ms: LIVE_SILENCE_MS,
+            },
+        )
+        .await
+        .map_err(|e| format!("Live dictation needs Realtime transcription: {e}"))?;
+    let mut turn = 0;
+    let mut deadline: Option<tokio::time::Instant> = None;
+    let result = loop {
+        tokio::select! {
+            event = audio.recv(), if deadline.is_none() => match event {
+                Some(AudioEvent::Chunk(samples)) => {
+                    if let Err(e) = writer.append(&samples).await {
+                        break Err(e.to_string());
+                    }
+                }
+                Some(AudioEvent::Level(bands)) => {
+                    let _ = updates.send(Update::Level(bands));
+                }
+                Some(AudioEvent::Failed(message)) => break Err(format!("Microphone: {message}")),
+                Some(AudioEvent::Ended) | None => {
+                    // Whatever is still buffered is the last turn.
+                    let _ = writer.commit().await;
+                    deadline = Some(tokio::time::Instant::now() + LIVE_DRAIN);
+                }
+            },
+            _ = &mut stop, if deadline.is_none() => {
+                while let Ok(event) = audio.try_recv() {
+                    if let AudioEvent::Chunk(samples) = event {
+                        let _ = writer.append(&samples).await;
+                    }
+                }
+                let _ = writer.commit().await;
+                deadline = Some(tokio::time::Instant::now() + LIVE_DRAIN);
+            }
+            event = reader.next() => match event {
+                Some(RealtimeEvent::Delta { delta, .. }) => {
+                    let _ = updates.send(Update::Delta(delta));
+                }
+                Some(RealtimeEvent::Completed { transcript, .. }) => {
+                    turn += 1;
+                    let trace = live_turn(env, &start, turn, &transcript, updates).await;
+                    on_turn(trace);
+                    match deadline {
+                        // After stopping, wait only briefly for a turn still in flight.
+                        Some(_) => {
+                            deadline = Some(tokio::time::Instant::now() + Duration::from_secs(1));
+                        }
+                        None => {
+                            let _ = updates.send(Update::Listening);
+                        }
+                    }
+                }
+                // After stopping, committing an empty buffer is an error: nothing was left.
+                Some(RealtimeEvent::Error { .. }) if deadline.is_some() => break Ok(()),
+                Some(RealtimeEvent::Error { message }) => break Err(message),
+                Some(RealtimeEvent::Other(_)) => {}
+                None => break Ok(()),
+            },
+            () = async {
+                match deadline {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            } => break Ok(()),
+        }
+    };
+    writer.close().await;
+    result
+}
+
+/// One live dictation turn: the same decision, generation and delivery as a take.
+async fn live_turn(
+    env: &Env,
+    start: &TakeStart,
+    turn: u32,
+    transcript: &str,
+    updates: &mpsc::UnboundedSender<Update>,
+) -> Trace {
+    let mut start = start.clone();
+    if turn > 1 {
+        // The selection belonged to the first turn; later turns continue after it.
+        if let Some(element) = &mut start.context.focused {
+            element.selection = None;
+        }
+    }
+    let mut trace = Trace::new(&start);
+    trace.turn = Some(turn);
+    trace.transcription = Some(TranscriptionPath::Realtime);
+    trace.transcript = transcript.trim().to_string();
+    if trace.transcript.is_empty() {
+        trace.notes.push("No speech in this turn".into());
+        return trace;
+    }
+    let _ = updates.send(Update::Thinking);
+    if let Err(e) = process(env, &start, updates, &mut trace).await {
+        trace.error = Some(e.to_string());
+        return trace;
+    }
+    if turn > 1
+        && !trace
+            .output
+            .starts_with(|c: char| c.is_whitespace() || ",.;:!?)".contains(c))
+    {
+        trace.output.insert(0, ' ');
+    }
+    let delivered = Instant::now();
+    match deliver(env, &start, &mut trace).await {
+        Ok(outcome) => trace.delivery = outcome,
+        Err(e) => trace.error = Some(e),
+    }
+    trace.time("deliver", delivered);
+    trace
 }
 
 /// Chooses the profile and action and produces the text, filling `trace`.
@@ -877,7 +1026,7 @@ instructions = "Formal tone.""#,
     }
 
     #[tokio::test]
-    async fn silence_ends_the_take_without_requests() {
+    async fn a_press_too_short_for_speech_is_dropped_without_requests() {
         let (client, seen) = server(noul(0.1), "unused").await;
         let env = Env {
             client,
@@ -896,8 +1045,105 @@ instructions = "Formal tone.""#,
             forced_profile: None,
         };
         let trace = run_take(&env, start, receiver, finished, &updates).await;
-        assert!(trace.error.is_some());
+        assert_eq!(trace.error, None);
+        assert!(
+            trace.notes.iter().any(|n| n.contains("Too short")),
+            "{:?}",
+            trace.notes
+        );
         assert_eq!(*seen.uploads.lock().unwrap(), 0);
+    }
+
+    /// A fake Realtime session: a turn completes after every second append, and a commit of
+    /// the (then empty) buffer is an error.
+    async fn realtime_server(turns: &'static [&'static str]) -> Client {
+        use axum::extract::ws::{Message, WebSocketUpgrade};
+        let session = move |upgrade: WebSocketUpgrade| async move {
+            upgrade.protocols(["realtime"]).on_upgrade(move |mut socket| async move {
+                let mut appends = 0;
+                let mut next = turns.iter();
+                while let Some(Ok(Message::Text(text))) = socket.recv().await {
+                    let event: Value = serde_json::from_str(&text).unwrap();
+                    let reply = match event["type"].as_str().unwrap() {
+                        "session.update" => {
+                            assert_eq!(event["session"]["audio"]["input"]["turn_detection"]["type"], "server_vad");
+                            None
+                        }
+                        "input_audio_buffer.append" => {
+                            appends += 1;
+                            (appends % 2 == 0).then(|| next.next()).flatten().map(|t| {
+                                json!({"type": "conversation.item.input_audio_transcription.completed",
+                                       "item_id": "i", "content_index": 0, "transcript": t})
+                            })
+                        }
+                        _ => Some(json!({"type": "error", "error": {"message": "buffer too small"}})),
+                    };
+                    if let Some(reply) = reply {
+                        socket.send(Message::Text(reply.to_string().into())).await.unwrap();
+                    }
+                }
+            })
+        };
+        let (client, _) = server(noul(0.1), "unused").await;
+        let app = axum::Router::new()
+            .route("/v1/realtime", get(session))
+            .fallback_service(axum::routing::any(
+                move |request: axum::extract::Request| {
+                    let base = client.base().to_string();
+                    async move {
+                        // Everything else goes to the scripted HTTP server.
+                        let url = format!("{base}{}", request.uri());
+                        let (parts, body) = request.into_parts();
+                        let body = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+                        let response = reqwest::Client::new()
+                            .request(parts.method, url)
+                            .header("content-type", "application/json")
+                            .body(body)
+                            .send()
+                            .await
+                            .unwrap();
+                        let status = response.status();
+                        (status, response.bytes().await.unwrap())
+                    }
+                },
+            ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        Client::new(&base, None)
+    }
+
+    #[tokio::test]
+    async fn live_dictation_types_each_turn_as_it_completes() {
+        let client = realtime_server(&["hello there", "second phrase"]).await;
+        let sink = RecordingSink::new(Some(7));
+        let env = Env {
+            client,
+            profiles: Arc::default(),
+            settings: settings(),
+            sink: Some(sink.shared()),
+        };
+        let (audio, received) = mpsc::unbounded_channel();
+        for _ in 0..4 {
+            audio.send(AudioEvent::Chunk(vec![500; 2400])).unwrap();
+        }
+        audio.send(AudioEvent::Ended).unwrap();
+        let (_stop, stopped) = oneshot::channel();
+        let (updates, _) = mpsc::unbounded_channel();
+        let start = TakeStart {
+            id: 3,
+            context: context(Some("old text")),
+            forced_profile: None,
+        };
+        let mut traces = Vec::new();
+        let result = run_live(&env, start, received, stopped, &updates, |t| traces.push(t)).await;
+        assert_eq!(result, Ok(()));
+        assert_eq!(traces.len(), 2);
+        assert_eq!(traces[1].turn, Some(2));
+        let delivered: Vec<String> = sink.requests().into_iter().map(|r| r.text).collect();
+        assert_eq!(delivered, ["hello there", " second phrase"]);
+        // The selection belonged to the first turn only.
+        assert!(traces[1].context.selection().is_none());
     }
 
     #[test]

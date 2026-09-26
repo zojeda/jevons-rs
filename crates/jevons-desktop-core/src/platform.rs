@@ -118,10 +118,13 @@ pub trait TextSink: Send {
 /// What a global hotkey does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HotkeyAction {
-    /// Tap to toggle dictation, hold to dictate; `profile` forces a profile for the take.
+    /// Push-to-talk: listening while held, the take runs on release. `profile` forces a
+    /// profile for the take.
     Dictate {
         profile: Option<String>,
     },
+    /// Starts or stops live dictation, where each pause ends a turn that is typed at once.
+    LiveDictation,
     ShowInspector,
 }
 
@@ -139,6 +142,12 @@ impl Binding {
             accelerator: dictation.hotkey.clone(),
             action: HotkeyAction::Dictate { profile: None },
         }];
+        if let Some(accelerator) = dictation.live_hotkey.clone().filter(|a| !a.is_empty()) {
+            bindings.push(Self {
+                accelerator,
+                action: HotkeyAction::LiveDictation,
+            });
+        }
         if let Some(accelerator) = dictation.inspector_hotkey.clone().filter(|a| !a.is_empty()) {
             bindings.push(Self {
                 accelerator,
@@ -169,6 +178,8 @@ pub enum HotkeyEvent {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MenuModel {
     pub dictating: bool,
+    /// Whether live dictation runs.
+    pub live: bool,
     /// Profile ids and names, in display order.
     pub profiles: Vec<(String, String)>,
     /// The profile forced from the menu; `None` chooses automatically.
@@ -180,6 +191,7 @@ pub struct MenuModel {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MenuCommand {
     ToggleDictation,
+    ToggleLiveDictation,
     ForceProfile(Option<String>),
     ShowInspector,
     ToggleContextPause,

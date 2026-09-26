@@ -10,8 +10,8 @@ The first run opens the window when no tray is available; otherwise use the tray
 
 ## Using it
 
-- **Tap** the hotkey (default `Ctrl+Alt+Space`) to start dictation, and tap again to finish.
-- **Hold** it while speaking; releasing it finishes the take.
+- **Push-to-talk:** hold the hotkey (default `Ctrl+Alt+Space`) while speaking. Listening starts on the press, and releasing it sends the take through the flow below. A press too short to hold speech (under 0.4 s) is dropped quietly.
+- **Live dictation:** press its hotkey (default `Ctrl+Alt+L`) to start, and again to stop. Audio streams with server-side turn detection. After each pause (0.7 s), that phrase goes through the same flow and is typed while you keep talking. A space goes between phrases, and a selection applies only to the first phrase. It is also in the tray menu.
 - **Left-click** the tray icon to toggle dictation.
 - **Other hotkeys** (set in Settings, by clicking a field and pressing the combination): one to show the inspector, and one per profile to dictate with that profile whatever the context matches.
 
@@ -88,7 +88,7 @@ The **Settings** tab edits the runtime, dictation and privacy settings. **Apply 
   - *Expose the API* serves it on the address and port you choose, so the OpenAI SDK, Open WebUI or `scripts/smoke-test.py` can use it. It takes the key from `TYPESAFE_API_KEY` or the settings; without a key the API is open.
   - Turning exposure on or off, or changing the port, rebinds the listener without reloading the models.
   - *Use a jevons server* skips local models and uses a server URL and key instead.
-- **Dictation.** The hotkeys (dictation, inspector, and per profile), the microphone, language (detected when empty), whether to ask the decision model, the rewrite threshold, and the most tokens a rewrite may generate.
+- **Dictation.** The hotkeys (push-to-talk, live dictation, inspector, and per profile), the microphone, language (detected when empty), whether to ask the decision model, the rewrite threshold, and the most tokens a rewrite may generate.
 - **Privacy.** How many characters of each field to keep, and whether to include the clipboard.
 
 ## Models
