@@ -6,6 +6,8 @@
 //!
 //! `--replay <audio> --context <json>` runs one take headless and prints its trace.
 #![forbid(unsafe_code)]
+// A tray app: no console window on Windows. Logs go to a file; --replay output can be redirected.
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod agent;
 mod audio;
@@ -44,20 +46,39 @@ struct Args {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        // stdout carries the --replay trace.
-        .with_writer(std::io::stderr)
-        .init();
     let args = Args::parse();
+    let filter = || {
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "info,wgpu_hal=warn,wgpu_core=warn,egui_wgpu=warn".into())
+    };
+    match args.replay.is_none().then(log_file).flatten() {
+        // The tray app has no terminal: log to a file next to the data.
+        Some(file) => tracing_subscriber::fmt()
+            .with_env_filter(filter())
+            .with_ansi(false)
+            .with_writer(Mutex::new(file))
+            .init(),
+        // stdout carries the --replay trace.
+        None => tracing_subscriber::fmt()
+            .with_env_filter(filter())
+            .with_writer(std::io::stderr)
+            .init(),
+    }
     let config_file = args.config.clone().unwrap_or_else(default_config_file);
     let config = DesktopConfig::load(&config_file)?;
     match &args.replay {
         Some(audio) => replay(&args, audio, config, config_file),
         None => desktop(config, config_file),
     }
+}
+
+/// `jevons-desktop.log` in the platform data folder, replaced at every start.
+fn log_file() -> Option<std::fs::File> {
+    let dir = jevons_desktop_core::config::project_dirs()?
+        .data_local_dir()
+        .to_path_buf();
+    std::fs::create_dir_all(&dir).ok()?;
+    std::fs::File::create(dir.join("jevons-desktop.log")).ok()
 }
 
 /// One headless take, for scripted end-to-end checks.
@@ -153,6 +174,11 @@ fn desktop(config: DesktopConfig, config_file: PathBuf) -> Result<(), Box<dyn st
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("jevons")
             .with_inner_size([760.0, 640.0])
+            .with_icon(eframe::egui::IconData {
+                rgba: jevons_desktop_core::icons::app_icon(256),
+                width: 256,
+                height: 256,
+            })
             .with_visible(false),
         ..Default::default()
     };

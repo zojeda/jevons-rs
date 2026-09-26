@@ -97,9 +97,15 @@ impl State {
         ui.heading("Dictation");
         egui::Grid::new("dictation").num_columns(2).show(ui, |ui| {
             let dictation = &mut draft.dictation;
-            ui.label("Hotkey");
-            ui.text_edit_singleline(&mut dictation.hotkey)
-                .on_hover_text("For example Ctrl+Alt+Space or F9: tap to toggle, hold to dictate");
+            ui.label("Dictation hotkey")
+                .on_hover_text("Tap to toggle dictation, hold while speaking");
+            super::hotkey::field(ui, "hotkey", &mut dictation.hotkey, false);
+            ui.end_row();
+            ui.label("Inspector hotkey");
+            let mut inspector = dictation.inspector_hotkey.clone().unwrap_or_default();
+            if super::hotkey::field(ui, "inspector-hotkey", &mut inspector, true) {
+                dictation.inspector_hotkey = Some(inspector).filter(|h| !h.is_empty());
+            }
             ui.end_row();
             ui.label("Microphone");
             egui::ComboBox::from_id_salt("microphone")
@@ -142,6 +148,25 @@ impl State {
             ui.label("Max output tokens");
             ui.add(egui::DragValue::new(&mut dictation.max_output_tokens).range(16..=8192));
             ui.end_row();
+        });
+
+        ui.collapsing("Dictate with a profile", |ui| {
+            ui.label("A hotkey per profile starts a take with that profile, whatever the context matches.");
+            egui::Grid::new("profile-hotkeys").num_columns(2).show(ui, |ui| {
+                for profile in view.profiles.iter() {
+                    let id = &profile.spec.id;
+                    ui.label(profile.display_name());
+                    let mut hotkey = draft.dictation.profile_hotkeys.get(id).cloned().unwrap_or_default();
+                    if super::hotkey::field(ui, ("profile-hotkey", id), &mut hotkey, true) {
+                        if hotkey.is_empty() {
+                            draft.dictation.profile_hotkeys.remove(id);
+                        } else {
+                            draft.dictation.profile_hotkeys.insert(id.clone(), hotkey);
+                        }
+                    }
+                    ui.end_row();
+                }
+            });
         });
 
         ui.separator();

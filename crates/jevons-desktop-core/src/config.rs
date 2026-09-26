@@ -3,6 +3,7 @@
 
 use crate::context::Privacy;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
@@ -111,6 +112,12 @@ impl Default for Models {
 pub struct Dictation {
     /// Tap to toggle, hold to dictate.
     pub hotkey: String,
+    /// Shows the inspector window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inspector_hotkey: Option<String>,
+    /// Dictate with a given profile, whatever the context matches: profile id → hotkey.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub profile_hotkeys: BTreeMap<String, String>,
     /// The capture device name; the default device when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub microphone: Option<String>,
@@ -129,6 +136,8 @@ impl Default for Dictation {
     fn default() -> Self {
         Self {
             hotkey: "Ctrl+Alt+Space".into(),
+            inspector_hotkey: None,
+            profile_hotkeys: BTreeMap::new(),
             microphone: None,
             language: None,
             decide: true,
@@ -236,6 +245,11 @@ mod tests {
         let mut config = DesktopConfig::default();
         config.server.expose = true;
         config.server.port = 8081;
+        config.dictation.inspector_hotkey = Some("Ctrl+Alt+I".into());
+        config
+            .dictation
+            .profile_hotkeys
+            .insert("chat".into(), "Ctrl+Alt+C".into());
         config.models.speech = Some(ModelRef {
             path: "/models/parakeet".into(),
             mmproj: None,

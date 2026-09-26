@@ -3,6 +3,7 @@
 //! tray keeps running.
 
 mod context;
+mod hotkey;
 mod models;
 mod profiles;
 mod settings;

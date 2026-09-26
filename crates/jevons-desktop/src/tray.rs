@@ -6,7 +6,9 @@ use crate::agent::Command;
 use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use jevons_desktop_core::icons::{self, FRAME, TrayState};
-use jevons_desktop_core::platform::{HotkeyEvent, MenuCommand, MenuModel, TrayBackend};
+use jevons_desktop_core::platform::{
+    Binding, HotkeyAction, HotkeyEvent, MenuCommand, MenuModel, TrayBackend,
+};
 use std::time::Instant;
 use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
@@ -20,8 +22,8 @@ use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, 
 pub enum TrayMessage {
     State(TrayState),
     Menu(MenuModel),
-    /// Registers this accelerator as the dictation hotkey, replacing the previous one.
-    Hotkey(String),
+    /// Registers these hotkeys, replacing the previous ones.
+    Hotkeys(Vec<Binding>),
     Quit,
 }
 
@@ -32,10 +34,8 @@ pub struct Tray {
 }
 
 impl Tray {
-    pub fn hotkey(&self, accelerator: &str) {
-        let _ = self
-            .proxy
-            .send_event(TrayMessage::Hotkey(accelerator.into()));
+    pub fn hotkeys(&self, bindings: Vec<Binding>) {
+        let _ = self.proxy.send_event(TrayMessage::Hotkeys(bindings));
     }
 
     pub fn quit(&self) {
@@ -128,7 +128,7 @@ fn run(commands: UnboundedSender<Command>, ready: std::sync::mpsc::Sender<Result
     let mut state = TrayState::Offline;
     let mut shown: Option<TrayState> = None;
     let mut menu = MenuModel::default();
-    let mut hotkey: Option<HotKey> = None;
+    let mut registered: Vec<HotKey> = Vec::new();
     let mut next_frame: Option<Instant> = None;
 
     event_loop.run_return(move |event, _, control_flow| {
@@ -165,30 +165,39 @@ fn run(commands: UnboundedSender<Command>, ready: std::sync::mpsc::Sender<Result
                     tray.set_menu(Some(Box::new(build_menu(&menu))));
                 }
             }
-            Event::UserEvent(TrayMessage::Hotkey(accelerator)) => {
-                if let Some(manager) = &hotkeys {
-                    if let Some(old) = hotkey.take() {
-                        let _ = manager.unregister(old);
-                    }
-                    match accelerator.parse::<HotKey>() {
-                        Ok(new) => match manager.register(new) {
+            Event::UserEvent(TrayMessage::Hotkeys(bindings)) => {
+                let Some(manager) = &hotkeys else {
+                    let _ = commands.send(Command::HotkeysRegistered {
+                        actions: Vec::new(),
+                        errors: vec!["Global hotkeys are unavailable".into()],
+                    });
+                    return;
+                };
+                let _ = manager.unregister_all(&registered);
+                registered.clear();
+                let mut actions: Vec<(u32, HotkeyAction)> = Vec::new();
+                let mut errors = Vec::new();
+                for binding in bindings {
+                    match binding.accelerator.parse::<HotKey>() {
+                        Ok(key) if actions.iter().any(|(id, _)| *id == key.id()) => {
+                            errors.push(format!("{} is assigned twice", binding.accelerator));
+                        }
+                        Ok(key) => match manager.register(key) {
                             Ok(()) => {
-                                hotkey = Some(new);
-                                let _ = commands.send(Command::HotkeyRegistered(Ok(new.id())));
+                                registered.push(key);
+                                actions.push((key.id(), binding.action));
                             }
                             Err(e) => {
-                                let _ = commands.send(Command::HotkeyRegistered(Err(format!(
-                                    "Cannot register {accelerator}: {e}"
-                                ))));
+                                errors
+                                    .push(format!("Cannot register {}: {e}", binding.accelerator));
                             }
                         },
                         Err(e) => {
-                            let _ = commands.send(Command::HotkeyRegistered(Err(format!(
-                                "Invalid hotkey {accelerator:?}: {e}"
-                            ))));
+                            errors.push(format!("Invalid hotkey {:?}: {e}", binding.accelerator))
                         }
                     }
                 }
+                let _ = commands.send(Command::HotkeysRegistered { actions, errors });
             }
             Event::UserEvent(TrayMessage::Quit) => {
                 tray = None;

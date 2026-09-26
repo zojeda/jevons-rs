@@ -115,22 +115,54 @@ pub trait TextSink: Send {
     fn copy(&mut self, text: &str) -> Result<(), PlatformError>;
 }
 
-/// A global shortcut, such as `Ctrl+Alt+Space`.
-#[derive(Clone, Debug, PartialEq)]
+/// What a global hotkey does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HotkeyAction {
+    /// Tap to toggle dictation, hold to dictate; `profile` forces a profile for the take.
+    Dictate {
+        profile: Option<String>,
+    },
+    ShowInspector,
+}
+
+/// A global shortcut, such as `Ctrl+Alt+Space`, and what it does.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Binding {
-    pub id: u32,
     pub accelerator: String,
+    pub action: HotkeyAction,
+}
+
+impl Binding {
+    /// Every hotkey the dictation settings define.
+    pub fn from_settings(dictation: &crate::config::Dictation) -> Vec<Self> {
+        let mut bindings = vec![Self {
+            accelerator: dictation.hotkey.clone(),
+            action: HotkeyAction::Dictate { profile: None },
+        }];
+        if let Some(accelerator) = dictation.inspector_hotkey.clone().filter(|a| !a.is_empty()) {
+            bindings.push(Self {
+                accelerator,
+                action: HotkeyAction::ShowInspector,
+            });
+        }
+        for (profile, accelerator) in &dictation.profile_hotkeys {
+            if !accelerator.is_empty() {
+                bindings.push(Self {
+                    accelerator: accelerator.clone(),
+                    action: HotkeyAction::Dictate {
+                        profile: Some(profile.clone()),
+                    },
+                });
+            }
+        }
+        bindings
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HotkeyEvent {
     Pressed(u32),
     Released(u32),
-}
-
-/// Global hotkey layer; events go to the channel the backend was built with.
-pub trait HotkeyBackend {
-    fn register(&mut self, bindings: &[Binding]) -> Result<(), PlatformError>;
 }
 
 /// The tray menu's contents.

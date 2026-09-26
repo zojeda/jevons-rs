@@ -73,10 +73,12 @@ cargo run -p jevons-desktop -- --replay examples/speech-en.flac \
 
 On Linux the build needs `libgtk-3-dev libxdo-dev libayatana-appindicator3-dev libasound2-dev libssl-dev`.
 
-To build the Windows app from WSL without the embedded runtime, use [cargo-xwin](https://github.com/rust-cross/cargo-xwin), with `clang-cl` and `lld-link` on `PATH`:
+The default build embeds the runtime and must be built on Windows (MSVC and the HIP SDK, as in CI). The embedded stack's `cubecl-llvm` links a prebuilt LLVM for the host, so it cannot cross-compile.
+
+For a quick remote-only Windows build from WSL, use [cargo-xwin](https://github.com/rust-cross/cargo-xwin) with clang 19 or newer (`clang-cl`, `lld-link`) on `PATH`:
 
 ```bash
-PATH=/usr/lib/llvm-18/bin:$PATH cargo xwin build --release -p jevons-desktop \
+PATH=/usr/lib/llvm-19/bin:$PATH cargo xwin build --release -p jevons-desktop \
   --no-default-features --target x86_64-pc-windows-msvc
 ```
 

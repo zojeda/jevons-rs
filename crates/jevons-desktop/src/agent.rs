@@ -10,8 +10,8 @@ use jevons_desktop_core::gesture::{Gestures, Release, Take};
 use jevons_desktop_core::icons::TrayState;
 use jevons_desktop_core::pipeline::{self, Env, TakeStart, Trace, Update};
 use jevons_desktop_core::platform::{
-    AudioDevice, AudioSource, CaptureHandle, ContextProvider, HotkeyEvent, MenuCommand, MenuModel,
-    TextSink, TrayBackend,
+    AudioDevice, AudioSource, Binding, CaptureHandle, ContextProvider, HotkeyAction, HotkeyEvent,
+    MenuCommand, MenuModel, TextSink, TrayBackend,
 };
 use jevons_desktop_core::profile::{Profiles, Resolution};
 use std::collections::VecDeque;
@@ -27,7 +27,11 @@ const HISTORY: usize = 50;
 #[derive(Debug)]
 pub enum Command {
     Hotkey(HotkeyEvent),
-    HotkeyRegistered(Result<u32, String>),
+    /// The hotkeys the tray registered, and those it could not.
+    HotkeysRegistered {
+        actions: Vec<(u32, HotkeyAction)>,
+        errors: Vec<String>,
+    },
     Menu(MenuCommand),
     /// Save and apply new settings.
     Apply(Box<DesktopConfig>),
@@ -87,7 +91,7 @@ pub struct Agent {
     audio: Box<dyn AudioSource>,
     profiles: Arc<Profiles>,
     gestures: Gestures,
-    hotkey: Option<u32>,
+    hotkeys: std::collections::HashMap<u32, HotkeyAction>,
     pressed_context: Option<ContextSnapshot>,
     active: Option<Active>,
     next_take: u64,
@@ -129,7 +133,7 @@ impl Agent {
             sink: Arc::new(Mutex::new(layers.sink)),
             audio: layers.audio,
             gestures: Gestures::default(),
-            hotkey: None,
+            hotkeys: std::collections::HashMap::new(),
             pressed_context: None,
             active: None,
             next_take: 1,
@@ -148,7 +152,7 @@ impl Agent {
             view.config_file = agent.config_file.clone();
         }
         if let Some(tray) = &agent.tray {
-            tray.hotkey(&agent.config.dictation.hotkey);
+            tray.hotkeys(Binding::from_settings(&agent.config.dictation));
         }
         agent.runtime.apply(&agent.config, &agent.config_file);
         agent.publish_menu();
@@ -216,28 +220,27 @@ impl Agent {
     /// Returns false to stop.
     fn handle(&mut self, command: Command) -> bool {
         match command {
-            Command::Hotkey(HotkeyEvent::Pressed(id)) if Some(id) == self.hotkey => {
-                if self.gestures.press(id, Instant::now()) && self.active.is_none() {
-                    // Read the context before the user's focus can move.
-                    self.pressed_context = self.snapshot().ok();
+            Command::Hotkey(HotkeyEvent::Pressed(id)) => match self.hotkeys.get(&id) {
+                Some(HotkeyAction::ShowInspector) => {
+                    self.view().show_window = true;
+                    self.repaint();
                 }
-            }
-            Command::Hotkey(HotkeyEvent::Released(id)) if Some(id) == self.hotkey => {
+                Some(HotkeyAction::Dictate { .. }) => self.dictation_pressed(id),
+                None => {}
+            },
+            Command::Hotkey(HotkeyEvent::Released(id)) => {
+                let Some(HotkeyAction::Dictate { profile }) = self.hotkeys.get(&id).cloned() else {
+                    return true;
+                };
                 match self.gestures.release(id, Instant::now(), self.take_state()) {
-                    Release::Toggle => self.toggle(),
+                    Release::Toggle => self.toggle(profile),
                     Release::Finish => self.stop_take(),
                     Release::None => {}
                 }
             }
-            Command::Hotkey(_) => {}
-            Command::HotkeyRegistered(result) => {
-                match result {
-                    Ok(id) => {
-                        self.hotkey = Some(id);
-                        self.view().hotkey_error = None;
-                    }
-                    Err(e) => self.view().hotkey_error = Some(e),
-                }
+            Command::HotkeysRegistered { actions, errors } => {
+                self.hotkeys = actions.into_iter().collect();
+                self.view().hotkey_error = (!errors.is_empty()).then(|| errors.join("; "));
                 self.repaint();
             }
             Command::Menu(menu) => return self.menu(menu),
@@ -271,7 +274,7 @@ impl Agent {
 
     fn menu(&mut self, command: MenuCommand) -> bool {
         match command {
-            MenuCommand::ToggleDictation => self.toggle(),
+            MenuCommand::ToggleDictation => self.toggle(None),
             MenuCommand::ForceProfile(profile) => {
                 self.view().forced_profile = profile;
                 self.publish_menu();
@@ -310,6 +313,13 @@ impl Agent {
         true
     }
 
+    fn dictation_pressed(&mut self, id: u32) {
+        if self.gestures.press(id, Instant::now()) && self.active.is_none() {
+            // Read the context before the user's focus can move.
+            self.pressed_context = self.snapshot().ok();
+        }
+    }
+
     fn take_state(&self) -> Take {
         self.active.as_ref().map_or(Take::default(), |a| Take {
             id: a.id,
@@ -321,12 +331,17 @@ impl Agent {
         if let Some(source) = self.gestures.due(Instant::now())
             && self.active.is_none()
         {
-            self.start_take();
+            let profile = match self.hotkeys.get(&source) {
+                Some(HotkeyAction::Dictate { profile }) => profile.clone(),
+                _ => None,
+            };
+            self.start_take(profile);
             self.gestures.started(source, self.take_state());
         }
     }
 
-    fn toggle(&mut self) {
+    /// Starts or stops dictation; `profile` forces a profile for a new take.
+    fn toggle(&mut self, profile: Option<String>) {
         match &self.active {
             Some(active) if active.capture.is_some() => self.stop_take(),
             Some(_) => self.notice("The last take is still being processed"),
@@ -334,7 +349,7 @@ impl Agent {
                 if self.pressed_context.is_none() {
                     self.pressed_context = self.snapshot().ok();
                 }
-                self.start_take();
+                self.start_take(profile);
             }
         }
     }
@@ -396,12 +411,13 @@ impl Agent {
             self.notice(&e.to_string());
             return;
         }
-        let hotkey_changed = config.dictation.hotkey != self.config.dictation.hotkey;
+        let hotkeys_changed = Binding::from_settings(&config.dictation)
+            != Binding::from_settings(&self.config.dictation);
         let profiles_changed =
             config.profiles_dir(&self.config_file) != self.config.profiles_dir(&self.config_file);
         self.config = config;
-        if hotkey_changed && let Some(tray) = &self.tray {
-            tray.hotkey(&self.config.dictation.hotkey);
+        if hotkeys_changed && let Some(tray) = &self.tray {
+            tray.hotkeys(Binding::from_settings(&self.config.dictation));
         }
         if profiles_changed {
             let dir = self.config.profiles_dir(&self.config_file);
@@ -414,7 +430,7 @@ impl Agent {
         self.repaint();
     }
 
-    fn start_take(&mut self) {
+    fn start_take(&mut self, profile: Option<String>) {
         let Some(connection) = self.runtime.connection() else {
             let status = self.runtime.status().describe();
             self.pressed_context = None;
@@ -459,7 +475,7 @@ impl Agent {
         let start = TakeStart {
             id,
             context: context.clone(),
-            forced_profile: self.view().forced_profile.clone(),
+            forced_profile: profile.or_else(|| self.view().forced_profile.clone()),
         };
         {
             let mut view = self.view();
