@@ -22,4 +22,4 @@ pub mod workers;
 pub use http::{
     AppState, DiffusionService, MAX_AUDIO_BYTES, MAX_BODY_BYTES, SpeechService, router,
 };
-pub use server::run;
+pub use server::{Workers, load, run, serve};

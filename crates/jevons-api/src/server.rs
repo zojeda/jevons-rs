@@ -16,6 +16,48 @@ type Error = Box<dyn std::error::Error>;
 /// Loads the configured models, starts their workers and serves until SIGINT or SIGTERM.
 pub async fn run(settings: Settings) -> Result<(), Error> {
     let listener = tokio::net::TcpListener::bind(settings.server.bind).await?;
+    let (state, workers) = load(&settings).await?;
+    tracing::info!(address = %settings.server.bind, "jevons-rs is ready");
+    let result = serve(listener, state, shutdown()).await;
+    workers.join().await?;
+    result?;
+    Ok(())
+}
+
+/// The threads that own the loaded models. They end once every [`AppState`] clone holding their
+/// queues is dropped.
+#[must_use = "join the workers after the last AppState is dropped"]
+pub struct Workers {
+    threads: Vec<JoinHandle<()>>,
+}
+
+impl Workers {
+    /// Waits for the model threads to end; drop every [`AppState`] clone first.
+    pub async fn join(self) -> Result<(), Error> {
+        for thread in self.threads {
+            tokio::task::spawn_blocking(move || thread.join())
+                .await?
+                .map_err(|_| "Inference worker panicked")?;
+        }
+        Ok(())
+    }
+}
+
+/// Serves the API on `listener` until `shutdown` completes, then finishes pending requests.
+/// The models stay loaded: serve the same `state` again on another listener to rebind.
+pub async fn serve(
+    listener: tokio::net::TcpListener,
+    state: AppState,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> std::io::Result<()> {
+    axum::serve(listener, router(state))
+        .with_graceful_shutdown(shutdown)
+        .await
+}
+
+/// Loads the configured models once and starts their workers. `server.api_key` becomes the
+/// state's key; override it per listener with struct update syntax.
+pub async fn load(settings: &Settings) -> Result<(AppState, Workers), Error> {
     let mut threads = Vec::new();
     let services = &settings.services;
     let diffusion_models = settings.diffusion_models();
@@ -67,26 +109,16 @@ pub async fn run(settings: Settings) -> Result<(), Error> {
     {
         return Err(format!("Two models answer to {name:?}; give them different ids").into());
     }
-    // The router owns the only queue handles from here on: when it is dropped at shutdown, the
-    // workers see their queues close and their threads end.
+    // The state owns the only queue handles from here on: when its last clone is dropped at
+    // shutdown, the workers see their queues close and their threads end.
     drop(engines);
-    let app = router(AppState {
+    let state = AppState {
         generative,
         decision,
         speech,
         api_key: settings.server.api_key.clone().map(Arc::from),
-    });
-    tracing::info!(address = %settings.server.bind, "jevons-rs is ready");
-    let result = axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown())
-        .await;
-    for thread in threads {
-        tokio::task::spawn_blocking(move || thread.join())
-            .await?
-            .map_err(|_| "Inference worker panicked")?;
-    }
-    result?;
-    Ok(())
+    };
+    Ok((state, Workers { threads }))
 }
 
 /// Loads a diffusion language model once for the services in `uses`.
@@ -217,4 +249,91 @@ async fn shutdown() {
     #[cfg(not(unix))]
     let _ = tokio::signal::ctrl_c().await;
     tracing::info!("Stopping after pending requests finish");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::sync::{mpsc, oneshot};
+
+    fn state(key: Option<&str>) -> (AppState, mpsc::Receiver<worker::Job>) {
+        let (sender, receiver) = mpsc::channel(1);
+        let local = DiffusionService {
+            worker: worker::Client { sender },
+            model_id: "local".into(),
+            aliases: Arc::from([]),
+            description: "Local test model.".into(),
+        };
+        let state = AppState {
+            generative: Some(local.clone()),
+            decision: Some(local),
+            speech: None,
+            api_key: key.map(Arc::from),
+        };
+        (state, receiver)
+    }
+
+    async fn get(address: std::net::SocketAddr, path: &str, key: Option<&str>) -> String {
+        let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        let auth = key.map_or(String::new(), |k| format!("Authorization: Bearer {k}\r\n"));
+        let request =
+            format!("GET {path} HTTP/1.1\r\nHost: test\r\n{auth}Connection: close\r\n\r\n");
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        response
+    }
+
+    #[tokio::test]
+    async fn rebinding_the_listener_keeps_models_loaded() {
+        let (state, mut receiver) = state(None);
+        let first = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let first_address = first.local_addr().unwrap();
+        let (stop, stopped) = oneshot::channel::<()>();
+        let server = tokio::spawn(serve(first, state.clone(), async {
+            let _ = stopped.await;
+        }));
+        assert!(
+            get(first_address, "/health", None)
+                .await
+                .contains("\"local\"")
+        );
+        stop.send(()).unwrap();
+        server.await.unwrap().unwrap();
+        assert!(tokio::net::TcpStream::connect(first_address).await.is_err());
+
+        let second = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let second_address = second.local_addr().unwrap();
+        let server = tokio::spawn(serve(second, state, std::future::pending()));
+        assert!(
+            get(second_address, "/health", None)
+                .await
+                .contains("\"local\"")
+        );
+        // The worker queue is still open: a live state holds its sender.
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_listener_can_override_the_api_key() {
+        let (state, _receiver) = state(Some("from-settings"));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let state = AppState {
+            api_key: Some(Arc::from("per-launch")),
+            ..state
+        };
+        let server = tokio::spawn(serve(listener, state, std::future::pending()));
+        let rejected = get(address, "/v1/models", Some("from-settings")).await;
+        assert!(rejected.starts_with("HTTP/1.1 401"), "{rejected}");
+        let accepted = get(address, "/v1/models", Some("per-launch")).await;
+        assert!(accepted.starts_with("HTTP/1.1 200"), "{accepted}");
+        server.abort();
+    }
 }
