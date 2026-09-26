@@ -6,22 +6,9 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-jevons-engine.workspace = true
-jevons-system-one.workspace = true
-jevons-openai.workspace = true
-axum.workspace = true
-clap.workspace = true
-futures-util.workspace = true
-serde.workspace = true
-toml.workspace = true
-serde_json.workspace = true
+jevons-api.workspace = true
 tokio.workspace = true
-tracing.workspace = true
 tracing-subscriber.workspace = true
-uuid.workspace = true
-
-[dev-dependencies]
-tower.workspace = true
 
 [lints]
 workspace = true

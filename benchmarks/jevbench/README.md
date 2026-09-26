@@ -142,7 +142,7 @@ Validation of the 2026-09-21 llama.cpp runs used the HIP/native release configur
 cargo fmt --all -- --check
 cargo test --release --workspace --locked --features hip,native
 cargo clippy --release --workspace --all-targets --locked --features hip,native -- -D warnings
-cargo test --release -p jevons-engine --locked --features hip,native -- --ignored --nocapture --test-threads=1
+cargo test --release -p jevons-decision --locked -- --ignored --nocapture --test-threads=1
 ```
 
 The four ignored native tests require `DIFFUSION_MODEL`, and the image test also requires `DIFFUSION_MMPROJ`. The local benchmark wrapper ran `scripts/smoke-test.py` after the timed cases and then stopped its service.

@@ -10,6 +10,29 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
+def transcribe(url, headers):
+    """Transcribes the Spanish fixture through the multipart transcription route."""
+    audio = (Path(__file__).resolve().parents[1] / "examples/speech-es.flac").read_bytes()
+    boundary = "jevons-smoke-test"
+    parts = [
+        f'--{boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nparakeet-latest\r\n'.encode(),
+        f'--{boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\nverbose_json\r\n'.encode(),
+        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="speech-es.flac"\r\n'
+        "Content-Type: audio/flac\r\n\r\n".encode()
+        + audio
+        + b"\r\n",
+        f"--{boundary}--\r\n".encode(),
+    ]
+    request_headers = {k: v for k, v in headers.items() if k != "Content-Type"}
+    request_headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+    request = Request(url + "/v1/audio/transcriptions", data=b"".join(parts), headers=request_headers)
+    with urlopen(request, timeout=180) as response:
+        assert response.headers.get("x-typesafe-request-id"), "Missing request ID"
+        body = json.load(response)
+    assert "grabación" in body["text"].lower(), body["text"]
+    assert body["segments"] and 15 < body["duration"] < 17, body
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:8080")
@@ -34,7 +57,12 @@ def main():
 
     status, models = call("/v1/models")
     assert status == 200, models
-    assert any(model["name"] == "jev-latest" for model in models["models"])
+    names = {model["name"] for model in models["models"]}
+    if "parakeet-latest" in names:
+        transcribe(args.url, headers)
+    if "jev-latest" not in names:
+        print("Speech model OK; no language model is loaded")
+        return
     example = Path(__file__).resolve().parents[1] / "examples/system-one.json"
     request = json.loads(example.read_text())
     # The generic alias is served by every architecture.

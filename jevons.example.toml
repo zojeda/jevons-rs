@@ -1,27 +1,51 @@
 # Settings for the jevons-rs server. Copy to ./jevons.toml or ~/.config/jevons/config.toml, or
-# pass --config PATH (JEVONS_CONFIG). Every key is optional and named after its long flag;
-# command-line flags and environment variables override the file. Relative paths resolve
-# against this file's directory, and `~/` against the home directory.
+# pass --config PATH (JEVONS_CONFIG). Declare each model once under [models.<name>], then enable
+# services that use it under [services.*]; services that name the same model share one loaded
+# engine. Relative paths resolve against this file's directory, `~/` against the home
+# directory, and unknown keys are errors. `--bind` and TYPESAFE_API_KEY override the file.
 
-# GGUF file (DiffusionGemma) or Hugging Face checkpoint directory (Nemotron-Labs-Diffusion).
-model = "~/models/nemotron-labs-diffusion-vlm-8b"
-# arch = "auto"                  # or gemma4-diffusion, nemotron-diffusion
-# mmproj = "~/models/diffusiongemma/mmproj.gguf"   # DiffusionGemma image input only
+[server]
 bind = "127.0.0.1:8080"
-# model_id = "nemotron-diffusion-8b"   # defaults to the model's own ID
-
 # Bearer key for every endpoint except /health. Prefer TYPESAFE_API_KEY in the environment;
 # never commit a key.
 # api_key = ""
 
+# A diffusion language model: a GGUF file (DiffusionGemma) or a Hugging Face checkpoint
+# directory (Nemotron-Labs-Diffusion).
+[models.nemotron]
+path = "~/models/nemotron-labs-diffusion-3b"
+# id = "nemotron-diffusion-3b"   # served model ID; defaults to the model's own
+# arch = "nemotron-diffusion"    # detected from the files by default
+# mmproj = "~/models/diffusiongemma/mmproj.gguf"   # DiffusionGemma image input only
 # main_gpu = 0
 context_size = 8192
 # batch_size = 512
 # prompt_cache = true
 # seed = 42
 # queue_capacity = 8
-
-# How thoughts and OpenAI-compatible answers are generated: "diffusion", "self-speculation"
-# (Nemotron: diffusion drafts verified causally, the greedy autoregressive text, about twice
-# as fast as diffusion) or "autoregressive".
+# How thoughts and answers are generated: "diffusion", "self-speculation" (Nemotron: diffusion
+# drafts verified causally, the greedy autoregressive text, about twice as fast as diffusion)
+# or "autoregressive".
 decoding = "self-speculation"
+
+# A speech-to-text model (Parakeet TDT checkpoint directory). Only path, id, main_gpu and
+# queue_capacity apply.
+[models.parakeet]
+path = "~/models/parakeet-tdt-0.6b-v3"
+# id = "parakeet-tdt-0.6b-v3"
+# queue_capacity = 8
+
+# OpenAI Chat Completions, Completions and Responses.
+[services.generative]
+model = "nemotron"
+
+# The System One API. Pointing it at the same model as generative loads it once; another
+# [models.*] entry gives it its own model and worker.
+[services.decision]
+model = "nemotron"
+
+# OpenAI audio transcriptions and Realtime transcription sessions.
+[services.speech]
+model = "parakeet"
+# max_audio_seconds = 3600.0   # longest upload or Realtime buffer
+# realtime = true              # serve /v1/realtime

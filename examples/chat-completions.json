@@ -1,0 +1,8 @@
+{
+  "model": "jev-latest",
+  "messages": [
+    {"role": "system", "content": "You are a concise assistant."},
+    {"role": "user", "content": "In two sentences, why do bridges have expansion joints?"}
+  ],
+  "max_tokens": 128
+}

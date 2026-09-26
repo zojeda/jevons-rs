@@ -46,7 +46,7 @@ flowchart LR
     S --> A[Probabilities and typed answers]
 ```
 
-The [compiler](../crates/jevons-system-one/src/compiler.rs) constructs the prompt and slot prefixes. The [inference engine](../crates/jevons-engine/src/engine.rs), with default text options, then:
+The [compiler](../crates/jevons-api/src/system_one/compiler.rs) constructs the prompt and slot prefixes. The [Decision service](../crates/jevons-decision/src/read.rs), with default text options, then:
 
 1. Wraps the prompt in DiffusionGemma's text chat markers and tokenizes it. With `think=0`, it appends an empty, closed thought channel (`<|channel>thought\n<channel|>`) to the model-turn prefill.
 2. Appends fixed prefixes and one seeded random token per answer slot to the canvas.

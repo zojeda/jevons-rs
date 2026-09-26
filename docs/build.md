@@ -22,34 +22,34 @@ For the development machine's ROCm/WSL setup:
 export ROCM_PATH=/opt/rocm-7.2.1
 export HSA_ENABLE_DXG_DETECTION=1
 export LD_LIBRARY_PATH="$ROCM_PATH/lib:${LD_LIBRARY_PATH:-}"
-export DIFFUSION_MODEL="$HOME/models/diffusiongemma/diffusiongemma-26B-A4B-it-Q4_K_M.gguf"
-cargo run --release --locked -p jevons-rs -- --bind 127.0.0.1:8080
+cp jevons.example.toml jevons.toml   # then set the model paths
+cargo run --release --locked -p jevons-rs -- --config jevons.toml
 ```
 
-Adjust the SDK path and model path to your machine. Keep the runtime environment set in the shell that starts the service.
+Adjust the SDK path and the model paths in `jevons.toml` to your machine. Keep the runtime environment set in the shell that starts the service.
 
 The first start on a GPU compiles kernels and measures launch plans (a few minutes on the test machine). Compiled kernels and plans are cached in `~/.cache/diffusion-cubecl` (override with `DIFFUSION_CUBECL_CACHE`), so later starts take about 35 s to load the weights. See [device tuning](cubecl.md#device-tuning).
 
 ## Runtime settings
 
-Both inference binaries accept these options:
+The server takes each model's settings from its `[models.<name>]` section in the [settings file](api.md#settings-file). The `jevons-scm` CLI takes the same options as flags:
 
-| Option | Default | Purpose |
-| --- | --- | --- |
-| `-m`, `--model` | `DIFFUSION_MODEL` | Model GGUF file or Hugging Face checkpoint directory. |
-| `--arch` | `auto` (`JEVONS_ARCH`) | Architecture: `auto`, `gemma4-diffusion` or `nemotron-diffusion`. `auto` detects it from the files; an explicit value must match them. |
-| `--main-gpu` | `0` | Select the HIP device. |
-| `--context-size` | `8192` | Limit prompt, thought framing/budget, and canvas tokens. |
-| `--batch-size` | `512` | Limit each prefill chunk and the full canvas (at most 1024). |
-| `--seed` | `42` | Seed the initial answer-slot noise. |
-| `--no-prompt-cache` | Off | Recompute every prompt instead of reusing its cached prefix. |
-| `--mmproj` | None | DiffusionGemma vision projector GGUF for image input (server only). |
-| `--model-id` | Per architecture | Served model ID (server only), such as `gemmadiffusion-0.1`. |
+| Model key | CLI flag | Default | Purpose |
+| --- | --- | --- | --- |
+| `path` | `-m`, `--model` (`DIFFUSION_MODEL`) | Required | Model GGUF file or Hugging Face checkpoint directory. |
+| `arch` | `--arch` | Detected | Architecture: `gemma4-diffusion` or `nemotron-diffusion`; an explicit value must match the files. |
+| `main_gpu` | `--main-gpu` | `0` | Select the HIP device. |
+| `context_size` | `--context-size` | `8192` | Limit prompt, thought framing/budget, and canvas tokens. |
+| `batch_size` | `--batch-size` | `512` | Limit each prefill chunk and the full canvas (at most 1024). |
+| `seed` | `--seed` | `42` | Seed the initial answer-slot noise. |
+| `prompt_cache` | `--no-prompt-cache` | On | Reuse the longest cached prompt prefix. |
+| `mmproj` | — | None | DiffusionGemma vision projector GGUF for image input. |
+| `id` | — | Per architecture | Served model ID, such as `gemmadiffusion-0.1`. |
 
 ## Image input
 
 Supply a `gemma4v` vision-projector GGUF compatible with DiffusionGemma's Gemma 4 26B-A4B vision encoder and the text model's embedding width. The text GGUF alone cannot process images. Projectors and model weights are external assets and are never downloaded automatically.
 
-Set `DIFFUSION_MMPROJ=/path/to/mmproj.gguf` or pass `--mmproj /path/to/mmproj.gguf` to the server. The CubeCL vision encoder resizes each image to 70–280 image tokens (48-pixel cells) and prefills it as one block that attends bidirectionally within itself, as in llama.cpp's DiffusionGemma integration. An image must fit in one `--batch-size` chunk.
+Set `mmproj = "/path/to/mmproj.gguf"` in the model's settings. The CubeCL vision encoder resizes each image to 70–280 image tokens (48-pixel cells) and prefills it as one block that attends bidirectionally within itself, as in llama.cpp's DiffusionGemma integration. An image must fit in one `batch_size` chunk.
 
 Image decoder dependencies are Rust crates; WebP support does not require ffmpeg. See the [API examples](api.md#extensions) for payload formats and image limits.

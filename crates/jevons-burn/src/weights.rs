@@ -22,7 +22,7 @@ impl std::fmt::Display for WeightError {
                 expected,
                 found,
             } => write!(f, "{name}: expected shape {expected:?}, found {found:?}"),
-            Self::Dtype(name) => write!(f, "{name}: expected BF16 weights"),
+            Self::Dtype(name) => write!(f, "{name}: unsupported weight dtype"),
         }
     }
 }
@@ -39,26 +39,51 @@ pub struct Loader<'a> {
 }
 
 impl Loader<'_> {
-    fn bytes(&self, name: &str, rows: usize, cols: usize) -> Result<Vec<u8>, WeightError> {
+    /// Raw bytes of `name`, which must have exactly `shape`.
+    fn raw(&self, name: &str, shape: &[usize]) -> Result<(Dtype, Vec<u8>), WeightError> {
         let info = self.checkpoint.tensor(name)?;
-        let expected = if cols == 0 {
+        if info.shape != shape {
+            return Err(WeightError::Shape {
+                name: name.into(),
+                expected: shape.to_vec(),
+                found: info.shape.clone(),
+            });
+        }
+        let mut bytes = vec![0; info.byte_len()];
+        self.checkpoint.read_into(info, &mut bytes)?;
+        Ok((info.dtype, bytes))
+    }
+
+    fn bytes(&self, name: &str, rows: usize, cols: usize) -> Result<Vec<u8>, WeightError> {
+        let shape = if cols == 0 {
             vec![rows]
         } else {
             vec![rows, cols]
         };
-        if info.shape != expected {
-            return Err(WeightError::Shape {
-                name: name.into(),
-                expected,
-                found: info.shape.clone(),
-            });
+        match self.raw(name, &shape)? {
+            (Dtype::BF16, bytes) => Ok(bytes),
+            _ => Err(WeightError::Dtype(name.into())),
         }
-        if info.dtype != Dtype::BF16 {
-            return Err(WeightError::Dtype(name.into()));
-        }
-        let mut bytes = vec![0; info.byte_len()];
-        self.checkpoint.read_into(info, &mut bytes)?;
-        Ok(bytes)
+    }
+
+    /// A BF16, FP16 or F32 tensor of exactly `shape`, widened to f32 on the host.
+    pub fn host_f32(&self, name: &str, shape: &[usize]) -> Result<Vec<f32>, WeightError> {
+        let (dtype, bytes) = self.raw(name, shape)?;
+        widen(dtype, &bytes).ok_or_else(|| WeightError::Dtype(name.into()))
+    }
+
+    /// Host f32 values uploaded as an f32 tensor.
+    pub fn upload_f32<const D: usize>(&self, values: Vec<f32>, shape: [usize; D]) -> Tensor<D> {
+        self.persistent(TensorData::new(values, shape), DType::F32)
+    }
+
+    /// A BF16, FP16 or F32 tensor of exactly `shape`, as f32 on the device.
+    pub fn tensor_f32<const D: usize>(
+        &self,
+        name: &str,
+        shape: [usize; D],
+    ) -> Result<Tensor<D>, WeightError> {
+        Ok(self.upload_f32(self.host_f32(name, &shape)?, shape))
     }
 
     fn persistent<const D: usize>(&self, data: TensorData, dtype: DType) -> Tensor<D> {
@@ -82,8 +107,8 @@ impl Loader<'_> {
         Ok(self.persistent(data, DType::BF16))
     }
 
-    /// BF16 matrices stacked by rows and converted to FP16 for the tuned GEMM, with zero rows
-    /// appended up to a multiple of `row_multiple`.
+    /// BF16, FP16 or F32 matrices stacked by rows and converted to FP16 for the tuned GEMM,
+    /// with zero rows appended up to a multiple of `row_multiple`.
     pub fn stacked_f16(
         &self,
         parts: &[(&str, usize)],
@@ -94,18 +119,50 @@ impl Loader<'_> {
         let padded = rows.next_multiple_of(row_multiple);
         let mut halves = Vec::with_capacity(padded * cols * 2);
         for (name, r) in parts {
-            let bytes = self.bytes(name, *r, cols)?;
-            halves.extend(bytes.as_chunks::<2>().0.iter().flat_map(|c| {
-                half::f16::from_f32(half::bf16::from_le_bytes(*c).to_f32()).to_le_bytes()
-            }));
+            match self.raw(name, &[*r, cols])? {
+                (Dtype::BF16, bytes) => {
+                    halves.extend(bytes.as_chunks::<2>().0.iter().flat_map(|c| {
+                        half::f16::from_f32(half::bf16::from_le_bytes(*c).to_f32()).to_le_bytes()
+                    }))
+                }
+                (Dtype::F16, bytes) => halves.extend(bytes),
+                (Dtype::F32, bytes) => {
+                    halves.extend(
+                        bytes.as_chunks::<4>().0.iter().flat_map(|c| {
+                            half::f16::from_f32(f32::from_le_bytes(*c)).to_le_bytes()
+                        }),
+                    )
+                }
+                _ => return Err(WeightError::Dtype((*name).into())),
+            }
         }
         halves.resize(padded * cols * 2, 0);
         let data = TensorData::from_bytes_vec(halves, [padded, cols], DType::F16);
         Ok(self.persistent(data, DType::F16))
     }
 
-    /// A BF16 tensor of any rank whose first dimension is `rows`, flattened to `[rows, cols]`
-    /// and widened to f32 (such as a convolution kernel used as a matrix).
+    /// Host f32 matrix values `[rows, cols]` converted to FP16 for the tuned GEMM, with zero
+    /// rows appended up to a multiple of `row_multiple`.
+    pub fn upload_f16(
+        &self,
+        values: &[f32],
+        rows: usize,
+        cols: usize,
+        row_multiple: usize,
+    ) -> Tensor<2> {
+        assert_eq!(values.len(), rows * cols, "matrix values");
+        let padded = rows.next_multiple_of(row_multiple);
+        let mut halves: Vec<u8> = values
+            .iter()
+            .flat_map(|&v| half::f16::from_f32(v).to_le_bytes())
+            .collect();
+        halves.resize(padded * cols * 2, 0);
+        let data = TensorData::from_bytes_vec(halves, [padded, cols], DType::F16);
+        self.persistent(data, DType::F16)
+    }
+
+    /// A BF16, FP16 or F32 tensor of any rank whose first dimension is `rows`, flattened to
+    /// `[rows, cols]` and widened to f32 (such as a convolution kernel used as a matrix).
     pub fn reshaped_f32(
         &self,
         name: &str,
@@ -120,31 +177,39 @@ impl Loader<'_> {
                 found: info.shape.clone(),
             });
         }
-        if info.dtype != Dtype::BF16 {
-            return Err(WeightError::Dtype(name.into()));
-        }
-        let mut bytes = vec![0; info.byte_len()];
-        self.checkpoint.read_into(info, &mut bytes)?;
-        let values: Vec<f32> = bytes
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|c| half::bf16::from_le_bytes(*c).to_f32())
-            .collect();
-        Ok(self.persistent(TensorData::new(values, [rows, cols]), DType::F32))
+        let values = self.host_f32(name, &info.shape.clone())?;
+        Ok(self.upload_f32(values, [rows, cols]))
     }
 
-    /// A BF16 vector widened to f32, such as a norm weight.
+    /// A BF16, FP16 or F32 vector widened to f32, such as a norm weight.
     pub fn vector_f32(&self, name: &str, len: usize) -> Result<Tensor<1>, WeightError> {
-        let bytes = self.bytes(name, len, 0)?;
-        let values: Vec<f32> = bytes
+        self.tensor_f32(name, [len])
+    }
+}
+
+/// Little-endian BF16, FP16 or F32 values as f32.
+fn widen(dtype: Dtype, bytes: &[u8]) -> Option<Vec<f32>> {
+    Some(match dtype {
+        Dtype::BF16 => bytes
             .as_chunks::<2>()
             .0
             .iter()
             .map(|c| half::bf16::from_le_bytes(*c).to_f32())
-            .collect();
-        Ok(self.persistent(TensorData::new(values, [len]), DType::F32))
-    }
+            .collect(),
+        Dtype::F16 => bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| half::f16::from_le_bytes(*c).to_f32())
+            .collect(),
+        Dtype::F32 => bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
+            .collect(),
+        _ => return None,
+    })
 }
 
 #[cfg(test)]

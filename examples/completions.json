@@ -1,0 +1,6 @@
+{
+  "model": "jev-latest",
+  "prompt": "The three primary colors of light are",
+  "max_tokens": 24,
+  "stop": ["\n"]
+}

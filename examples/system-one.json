@@ -1,5 +1,5 @@
 {
-  "model": "gemmadiffusion-latest",
+  "model": "jev-latest",
   "state": "Ground granulated blast furnace slag is used in concrete.",
   "questions": {
     "is_scm": {

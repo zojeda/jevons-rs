@@ -12,4 +12,6 @@ pub mod layers;
 pub mod weights;
 
 pub use burn::tensor::activation;
+pub use burn::tensor::module;
+pub use burn::tensor::ops::ConvOptions;
 pub use burn::tensor::{Bool, DType, Device, Int, Tensor, TensorData};

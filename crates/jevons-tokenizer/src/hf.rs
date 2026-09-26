@@ -61,6 +61,11 @@ impl HfTokenizer {
         u32::try_from(token).is_ok_and(|t| self.added.contains(&t))
     }
 
+    /// The vocabulary piece of `token`, as stored (such as `▁word` for SentencePiece).
+    pub fn piece(&self, token: u32) -> Option<String> {
+        self.framing.id_to_token(token)
+    }
+
     /// The single token `text` encodes to with markers parsed, if it is one.
     pub fn single_token(&self, text: &str) -> Option<i32> {
         match self.tokenize(text, false, true).ok()?[..] {

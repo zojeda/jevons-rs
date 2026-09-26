@@ -6,17 +6,20 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
-default = ["gemma4", "nemotron"]
+default = ["gemma4", "nemotron", "parakeet"]
 # DiffusionGemma on the CubeCL/HIP runtime.
 gemma4 = ["dep:jevons-gemma4-diffusion"]
 # Nemotron-Labs-Diffusion on Burn (HIP).
 nemotron = ["dep:jevons-nemotron-diffusion"]
+# Parakeet TDT speech-to-text on Burn (HIP).
+parakeet = ["dep:jevons-parakeet"]
 
 [dependencies]
 jevons-core.workspace = true
 jevons-formats.workspace = true
 jevons-gemma4-diffusion = { workspace = true, optional = true }
 jevons-nemotron-diffusion = { workspace = true, optional = true }
+jevons-parakeet = { workspace = true, optional = true }
 serde_json.workspace = true
 
 [lints]

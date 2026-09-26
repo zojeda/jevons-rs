@@ -1,0 +1,6 @@
+{
+  "model": "jev-latest",
+  "instructions": "Answer in Spanish.",
+  "input": "What is the capital of Uruguay, and what is it known for?",
+  "max_output_tokens": 160
+}

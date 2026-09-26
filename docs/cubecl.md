@@ -175,7 +175,7 @@ cargo test --locked --release -p jevons-gemma4-diffusion --lib -- --include-igno
 for t in model_reads_preserve_reproducibility_across_requests \
          model_extensions_average_refine_think_and_chunk \
          model_images_prefill_and_preserve_text_reproducibility; do
-  cargo test --locked --release -p jevons-engine --lib -- --ignored --exact "engine::tests::$t"
+  cargo test --locked --release -p jevons-decision --lib -- --ignored --exact "read::tests::$t"
 done
 ```
 
