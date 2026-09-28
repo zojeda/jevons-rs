@@ -29,6 +29,19 @@ struct Download {
 
 type Downloads = HashMap<String, Arc<Mutex<Download>>>;
 
+/// The downloads of this run, outside the page: leaving the Models tab unmounts the page while
+/// the downloads go on, and coming back must still show their progress.
+static DOWNLOADS: std::sync::LazyLock<Mutex<Downloads>> =
+    std::sync::LazyLock::new(|| Mutex::new(Downloads::new()));
+
+fn download_state(id: &str) -> Option<Arc<Mutex<Download>>> {
+    DOWNLOADS
+        .lock()
+        .expect("the downloads lock")
+        .get(id)
+        .cloned()
+}
+
 fn catalog_file(config_file: &Path) -> PathBuf {
     config_file
         .parent()
@@ -52,10 +65,14 @@ fn selection_mut(config: &mut DesktopConfig, service: Service) -> &mut Option<Mo
     }
 }
 
-/// Downloads `entry` on its own thread, waking the window as it progresses.
-fn start(downloads: &mut Downloads, entry: CatalogEntry, folder: PathBuf) {
+/// Downloads `entry` on its own thread, waking the window as it progresses. When it finishes, the
+/// runtime reloads, so the new model is used without a restart.
+fn start(ctx: Ctx, entry: CatalogEntry, folder: PathBuf) {
     let download = Arc::new(Mutex::new(Download::default()));
-    downloads.insert(entry.id.clone(), download.clone());
+    DOWNLOADS
+        .lock()
+        .expect("the downloads lock")
+        .insert(entry.id.clone(), download.clone());
     let cancel = download.lock().expect("the download lock").cancel.clone();
     std::thread::spawn(move || {
         let result = tokio::runtime::Builder::new_current_thread()
@@ -79,10 +96,14 @@ fn start(downloads: &mut Downloads, entry: CatalogEntry, folder: PathBuf) {
                         .map_err(|e| e.to_string())
                 })
             });
+        let succeeded = result.is_ok();
         {
             let mut download = download.lock().expect("the download lock");
             download.finished = true;
             download.error = result.err();
+        }
+        if succeeded {
+            ctx.send(Command::ReloadRuntime);
         }
         super::wake();
     });
@@ -94,7 +115,6 @@ pub fn ModelsPage(rev: u64) -> Element {
     let ctx = use_context::<Ctx>();
     let config_file = ctx.view.lock().expect("the view lock").config_file.clone();
     let mut entries = use_signal(|| catalog::load(&catalog_file(&config_file)));
-    let mut downloads = use_signal(Downloads::new);
     let mut confirm_delete = use_signal(|| None::<CatalogEntry>);
     let mut repo = use_signal(String::new);
     let mut revision = use_signal(|| "main".to_string());
@@ -234,7 +254,7 @@ pub fn ModelsPage(rev: u64) -> Element {
                 {catalog.iter().map(|entry| {
                     let services: Vec<&str> = SERVICES.iter().filter(|(s, _)| entry.serves(*s)).map(|(_, n)| *n).collect();
                     let services = services.join(", ");
-                    let state = downloads.read().get(&entry.id).cloned();
+                    let state = download_state(&entry.id);
                     // Also downloading when the runtime fetches it as a default model at startup.
                     let running = state.as_ref().is_some_and(|d| !d.lock().expect("the download lock").finished)
                         || jevons_desktop_core::download::is_running(entry, &folder);
@@ -247,6 +267,7 @@ pub fn ModelsPage(rev: u64) -> Element {
                     let partial = !ready && entry.dir(&folder).exists();
                     let percent = (fraction * 100.0).round();
                     let download_entry = entry.clone();
+                    let download_ctx = ctx.clone();
                     let download_folder = folder.clone();
                     let cancel = state.clone();
                     let delete_entry = entry.clone();
@@ -283,7 +304,7 @@ pub fn ModelsPage(rev: u64) -> Element {
                                 div { class: "row",
                                     if !ready && !running {
                                         button { class: "dx-button", "data-style": "accent", "data-size": "sm",
-                                            onclick: move |_| start(&mut downloads.write(), download_entry.clone(), download_folder.clone()),
+                                            onclick: move |_| start(download_ctx.clone(), download_entry.clone(), download_folder.clone()),
                                             if partial { "Resume download" } else { "Download" }
                                         }
                                     }

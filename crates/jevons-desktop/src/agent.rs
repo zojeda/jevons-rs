@@ -40,6 +40,8 @@ pub enum Command {
     CaptureContextIn(Duration),
     ReloadProfiles,
     RuntimeChanged,
+    /// Apply the settings to the runtime again, such as after a model finished downloading.
+    ReloadRuntime,
     TakeFinished(Box<Trace>),
     /// A live dictation turn was delivered; the take goes on.
     TurnFinished(Box<Trace>),
@@ -277,6 +279,7 @@ impl Agent {
                 });
             }
             Command::ReloadProfiles => self.reload_profiles(),
+            Command::ReloadRuntime => self.runtime.apply(&self.config, &self.config_file),
             Command::RuntimeChanged => {
                 let status = self.runtime.status();
                 if self.active.is_none() {
