@@ -207,6 +207,121 @@ mod tests {
         folder
     }
 
+    /// A finished take numbered `take`, like the agent records.
+    fn trace(take: u64, context: &ContextSnapshot, profiles: &Profiles) -> Trace {
+        let resolution = profiles.resolve(context, None);
+        Trace {
+            take,
+            turn: None,
+            started_at_ms: take,
+            context: context.clone(),
+            audio_seconds: 1.5,
+            transcription: Some(TranscriptionPath::Realtime),
+            transcript: "hello world".into(),
+            resolution: Some(resolution),
+            effective: Some(profiles.effective("default", None)),
+            decision: None,
+            action: Some(Action::Insert),
+            generation: None,
+            output: "Hello world.".into(),
+            delivery: Some(DeliveryOutcome::Delivered {
+                method: DeliveryMethod::Paste,
+            }),
+            timings: vec![("transcribe".into(), 800)],
+            notes: vec!["a note".into()],
+            error: None,
+        }
+    }
+
+    /// Re-render counter for [`takes_root`], as the window's App passes a new revision each time.
+    static REV: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn takes_root() -> Element {
+        let rev = REV.fetch_add(1, Ordering::Relaxed);
+        rsx! { takes::TakesPage { rev } }
+    }
+
+    #[test]
+    fn new_takes_arriving_while_the_takes_page_shows_rebuild_in_blitz() {
+        let folder = std::env::temp_dir().join(format!("jevons-ui-takes-{}", std::process::id()));
+        let view = Arc::new(Mutex::new(view(&folder)));
+        let (commands, _received) = tokio::sync::mpsc::unbounded_channel();
+        let mut vdom = VirtualDom::new(takes_root);
+        vdom.insert_any_root_context(Box::new(Ctx {
+            view: view.clone(),
+            commands,
+        }));
+        let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("style.css"));
+        doc.initial_build();
+        let profiles = Profiles::default();
+        // New takes go on top, as the agent adds them, and the oldest fall off after 50.
+        for take in 2..80 {
+            {
+                let mut view = view.lock().unwrap();
+                let context = view.context.clone().unwrap();
+                view.traces.push_front(trace(take, &context, &profiles));
+                view.traces.truncate(50);
+            }
+            doc.vdom.mark_dirty(ScopeId::APP);
+            doc.poll(None);
+        }
+    }
+
+    fn context_root() -> Element {
+        let rev = REV.fetch_add(1, Ordering::Relaxed);
+        let frozen = use_signal(|| false);
+        rsx! { context::ContextPage { rev, frozen } }
+    }
+
+    #[test]
+    fn profiles_reordering_as_the_focused_app_changes_rebuild_in_blitz() {
+        use jevons_desktop_core::profile::ProfileSpec;
+        let folder = std::env::temp_dir().join(format!("jevons-ui-order-{}", std::process::id()));
+        let spec = |id: &str, app: &str| -> (ProfileSpec, Option<std::path::PathBuf>) {
+            let text = format!("id = \"{id}\"\npriority = 10\nmatch = {{ app = [\"{app}\"] }}");
+            (toml::from_str(&text).unwrap(), None)
+        };
+        // Each app makes a different profile win, so the resolution list reorders.
+        let profiles = Profiles::new([
+            spec("mail", "outlook.exe"),
+            spec("chat", "slack.exe"),
+            spec("code", "code.exe"),
+        ]);
+        let view = Arc::new(Mutex::new(View {
+            profiles: Arc::new(profiles.clone()),
+            ..view(&folder)
+        }));
+        let (commands, _received) = tokio::sync::mpsc::unbounded_channel();
+        let mut vdom = VirtualDom::new(context_root);
+        vdom.insert_any_root_context(Box::new(Ctx {
+            view: view.clone(),
+            commands,
+        }));
+        let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+        doc.initial_build();
+        for app in [
+            "outlook.exe",
+            "slack.exe",
+            "code.exe",
+            "notepad.exe",
+            "slack.exe",
+            "outlook.exe",
+        ]
+        .repeat(3)
+        {
+            {
+                let mut view = view.lock().unwrap();
+                let mut context = view.context.clone().unwrap();
+                context.app.process_name = app.into();
+                view.resolution = Some(profiles.resolve(&context, None));
+                view.context = Some(context);
+            }
+            doc.vdom.mark_dirty(ScopeId::APP);
+            doc.poll(None);
+        }
+    }
+
     /// A view with a context, its resolution and a finished take, so every section renders.
     fn view(folder: &std::path::Path) -> View {
         let mut config = DesktopConfig::default();

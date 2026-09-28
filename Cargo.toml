@@ -88,3 +88,5 @@ cubecl-hip-sys = { path = "third_party/cubecl-hip-sys" }
 stylo = { path = "third_party/stylo" }
 # Stale ElementId mappings that drop live nodes; see third_party/dioxus-native-dom/README.jevons.md.
 dioxus-native-dom = { path = "third_party/dioxus-native-dom" }
+# Moving a node within its parent dropped it; see third_party/blitz-dom/README.jevons.md.
+blitz-dom = { path = "third_party/blitz-dom" }
