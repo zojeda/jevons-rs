@@ -94,7 +94,7 @@ cargo run -p jevons-desktop -- --replay examples/speech-en.flac \
   --context examples/desktop/context-slack.json               # one take, trace as JSON
 ```
 
-On Linux the build needs `libgtk-3-dev libxdo-dev libayatana-appindicator3-dev libasound2-dev libssl-dev`.
+Building needs Python 3: Blitz's CSS engine (stylo) generates code with it at build time. On Windows, install it from python.org or with `winget install Python.Python.3.12` (the Microsoft Store `python.exe` alias is not enough; set `PYTHON3` to the real interpreter if needed), and turn Smart App Control off, since it blocks the unsigned build scripts cargo compiles. On Linux the build also needs `libgtk-3-dev libxdo-dev libayatana-appindicator3-dev libasound2-dev libssl-dev`.
 
 The default build embeds the runtime and must be built on Windows (MSVC and the HIP SDK, as in CI). The embedded stack's `cubecl-llvm` links a prebuilt LLVM for the host, so it cannot cross-compile.
 

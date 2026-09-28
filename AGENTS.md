@@ -23,7 +23,7 @@ Unit tests live in each crate’s source modules. `examples/desktop/` holds exam
 
 Inference runs on AMD GPUs through CubeCL/HIP (RDNA3-class, 32-lane waves); the ROCm/HIP SDK is required, and kernels compile at runtime (cached in `~/.cache/diffusion-cubecl` for DiffusionGemma and `~/.cache/jevons-burn` for Burn models). There is no C/C++ build, CMake, or submodule. Follow [docs/build.md](docs/build.md) for ROCm setup.
 
-- `cargo build --workspace --locked`: build all crates. On Linux, `jevons-desktop` needs `libgtk-3-dev libxdo-dev libayatana-appindicator3-dev libasound2-dev libssl-dev`.
+- `cargo build --workspace --locked`: build all crates. `jevons-desktop` needs Python 3 at build time (stylo); on Linux also `libgtk-3-dev libxdo-dev libayatana-appindicator3-dev libasound2-dev libssl-dev`.
 - `cargo fmt --all -- --check`: check Rust formatting.
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`: run lint checks.
 - `cargo test --workspace --locked`: run regular tests without loading a model.
