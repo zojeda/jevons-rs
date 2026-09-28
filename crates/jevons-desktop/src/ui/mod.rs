@@ -1,234 +1,164 @@
-//! The inspector window: the live context and why a profile matches, the recent takes, the
-//! profiles, and the settings (runtime, models, dictation, privacy). Closing it hides it; the
-//! tray keeps running.
+//! The inspector and settings window, on dioxus-native (Blitz): the live context and why a
+//! profile matches, the recent takes, the profiles, the settings and the models. Closing it hides
+//! it; the tray reopens it.
+//!
+//! The window lives on the main thread's winit loop. The agent and background work call [`wake`],
+//! which re-renders from the shared [`View`](crate::agent::View).
 
+mod app;
+mod components;
 mod context;
-mod hotkey;
 mod models;
 mod profiles;
 mod settings;
 mod takes;
 
 use crate::agent::{Command, SharedView};
-use eframe::egui;
-use std::time::{Duration, Instant};
+use anyrender_vello::{VelloRendererOptions, VelloWindowRenderer};
+use blitz_shell::{BlitzApplication, BlitzShellEvent, WindowConfig};
+use dioxus::prelude::*;
+use dioxus_native::{DioxusDocument, DocumentConfig};
+use std::sync::{Mutex, OnceLock};
 use tokio::sync::mpsc::UnboundedSender;
+use winit::application::ApplicationHandler;
+use winit::dpi::LogicalSize;
+use winit::event::WindowEvent;
+use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
+use winit::window::{Window, WindowId};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Tab {
-    Context,
-    Takes,
-    Profiles,
-    Settings,
-    Models,
-}
+/// Asks the window to re-render from the shared view.
+#[derive(Debug)]
+struct Refresh;
 
-pub struct App {
-    view: SharedView,
-    commands: UnboundedSender<Command>,
-    tab: Tab,
-    frozen: bool,
-    last_refresh: Instant,
-    context: context::State,
-    profiles: profiles::State,
-    settings: settings::State,
-    models: models::State,
-    started: bool,
-}
+static PROXY: OnceLock<Mutex<EventLoopProxy<BlitzShellEvent>>> = OnceLock::new();
 
-impl App {
-    pub fn new(view: SharedView, commands: UnboundedSender<Command>) -> Self {
-        let (config, config_file) = {
-            let view = view.lock().expect("the view lock");
-            (view.config.clone(), view.config_file.clone())
-        };
-        Self {
-            view,
-            commands,
-            tab: Tab::Context,
-            frozen: false,
-            last_refresh: Instant::now() - Duration::from_secs(1),
-            context: context::State::default(),
-            profiles: profiles::State::default(),
-            settings: settings::State::new(config),
-            models: models::State::new(&config_file),
-            started: false,
-        }
+/// Re-renders the window (and shows or closes it when the view asks); callable from any thread.
+pub fn wake() {
+    if let Some(proxy) = PROXY.get() {
+        let _ = proxy
+            .lock()
+            .expect("the window proxy lock")
+            .send_event(BlitzShellEvent::embedder_event(Refresh));
     }
+}
 
-    fn send(&self, command: Command) {
+/// What the window's components share.
+#[derive(Clone)]
+pub struct Ctx {
+    pub view: SharedView,
+    pub commands: UnboundedSender<Command>,
+}
+
+impl Ctx {
+    pub fn send(&self, command: Command) {
         let _ = self.commands.send(command);
     }
 }
 
-impl eframe::App for App {
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if !self.started {
-            // eframe shows the window after its first frame; the tray opens it instead.
-            self.started = true;
-            let tray = self.view.lock().expect("the view lock").tray_running;
-            if tray {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-            }
-        }
+/// Runs the window on this (the main) thread until Quit. `start` runs once the event loop exists,
+/// so the agent it starts can already [`wake`] the window.
+pub fn run(
+    view: SharedView,
+    commands: UnboundedSender<Command>,
+    start: impl FnOnce(),
+) -> Result<(), Box<dyn std::error::Error>> {
+    let event_loop = blitz_shell::create_default_event_loop::<BlitzShellEvent>();
+    let proxy = event_loop.create_proxy();
+    let _ = PROXY.set(Mutex::new(proxy.clone()));
+    start();
+
+    let visible = !view.lock().expect("the view lock").tray_running;
+    let mut vdom = VirtualDom::new(app::App);
+    vdom.insert_any_root_context(Box::new(Ctx {
+        view: view.clone(),
+        commands,
+    }));
+    let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+    doc.add_user_agent_stylesheet(include_str!("style.css"));
+    doc.initial_build();
+    let renderer = VelloWindowRenderer::with_options(VelloRendererOptions {
+        base_color: peniko::Color::from_rgb8(10, 10, 10),
+        ..Default::default()
+    });
+    let icon =
+        winit::window::Icon::from_rgba(jevons_desktop_core::icons::app_icon(64), 64, 64).ok();
+    let attributes = Window::default_attributes()
+        .with_title("jevons")
+        .with_inner_size(LogicalSize::new(860.0, 700.0))
+        .with_min_inner_size(LogicalSize::new(560.0, 420.0))
+        .with_visible(visible)
+        .with_window_icon(icon);
+    let mut inner = BlitzApplication::new(proxy);
+    inner.add_window(WindowConfig::with_attributes(
+        Box::new(doc),
+        renderer,
+        attributes,
+    ));
+    view.lock().expect("the view lock").window_visible = visible;
+    let mut shell = Shell { inner, view };
+    event_loop.run_app(&mut shell)?;
+    Ok(())
+}
+
+struct Shell {
+    inner: BlitzApplication<VelloWindowRenderer>,
+    view: SharedView,
+}
+
+impl Shell {
+    fn refresh(&mut self, event_loop: &ActiveEventLoop) {
         let (quit, show) = {
             let mut view = self.view.lock().expect("the view lock");
             (view.quit, std::mem::take(&mut view.show_window))
         };
         if quit {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            event_loop.exit();
             return;
         }
-        if show {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-        }
-        if ctx.input(|i| i.viewport().close_requested()) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        for window in self.inner.windows.values_mut() {
+            if show {
+                window.window.set_visible(true);
+                window.window.set_minimized(false);
+                window.window.focus_window();
+                self.view.lock().expect("the view lock").window_visible = true;
+            }
+            let doc = window.downcast_doc_mut::<DioxusDocument>();
+            doc.vdom.mark_dirty(ScopeId::APP);
+            window.poll();
+            window.request_redraw();
         }
     }
+}
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        if self.tab == Tab::Context
-            && !self.frozen
-            && self.last_refresh.elapsed() >= Duration::from_millis(500)
+impl ApplicationHandler<BlitzShellEvent> for Shell {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        self.inner.resumed(event_loop);
+        self.refresh(event_loop);
+    }
+
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        self.inner.suspended(event_loop);
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if matches!(event, WindowEvent::CloseRequested) {
+            // Hide instead of closing: the tray keeps running and reopens the window.
+            if let Some(window) = self.inner.windows.get(&id) {
+                window.window.set_visible(false);
+            }
+            self.view.lock().expect("the view lock").window_visible = false;
+            return;
+        }
+        self.inner.window_event(event_loop, id, event);
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: BlitzShellEvent) {
+        if let BlitzShellEvent::Embedder(payload) = &event
+            && payload.is::<Refresh>()
         {
-            self.last_refresh = Instant::now();
-            self.send(Command::RefreshContext);
+            self.refresh(event_loop);
+            return;
         }
-        ui.ctx().request_repaint_after(Duration::from_millis(500));
-
-        egui::Panel::top("tabs").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                for (tab, label) in [
-                    (Tab::Context, "Context"),
-                    (Tab::Takes, "Takes"),
-                    (Tab::Profiles, "Profiles"),
-                    (Tab::Settings, "Settings"),
-                    (Tab::Models, "Models"),
-                ] {
-                    ui.selectable_value(&mut self.tab, tab, label);
-                }
-            });
-        });
-        egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
-        egui::CentralPanel::default().show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| match self.tab {
-                Tab::Context => {
-                    let view = self.view.lock().expect("the view lock");
-                    let commands = &self.commands;
-                    context::show(ui, &view, &mut self.frozen, &mut self.context, commands);
-                }
-                Tab::Takes => {
-                    let view = self.view.lock().expect("the view lock");
-                    takes::show(ui, &view);
-                }
-                Tab::Profiles => {
-                    let view = self.view.lock().expect("the view lock");
-                    profiles::show(ui, &view, &mut self.profiles, &self.commands);
-                }
-                Tab::Settings => {
-                    let view = self.view.lock().expect("the view lock");
-                    self.settings.show(ui, &view, &self.commands);
-                }
-                Tab::Models => {
-                    let config = self.view.lock().expect("the view lock").config.clone();
-                    self.models.show(ui, &config, &self.commands);
-                }
-            });
-        });
+        self.inner.user_event(event_loop, event);
     }
-}
-
-impl App {
-    fn status(&self, ui: &mut egui::Ui) {
-        let view = self.view.lock().expect("the view lock");
-        ui.horizontal_wrapped(|ui| {
-            if crate::tuning::active() {
-                ui.colored_label(
-                    egui::Color32::from_rgb(255, 180, 60),
-                    "Tuning GPU kernels for this model (first runs only; the results are saved)",
-                );
-                ui.separator();
-            }
-            ui.label(view.tray.tooltip());
-            ui.separator();
-            if let Some(status) = &view.runtime {
-                ui.label(status.describe());
-                ui.separator();
-            }
-            ui.label(format!("hotkey {}", view.config.dictation.hotkey));
-            if let Some(error) = &view.hotkey_error {
-                ui.colored_label(ui.visuals().error_fg_color, error);
-            }
-            if let Some(notice) = &view.notice {
-                ui.separator();
-                ui.colored_label(ui.visuals().warn_fg_color, notice);
-            }
-        });
-        if view.dictating || !view.live_transcript.is_empty() {
-            ui.horizontal_wrapped(|ui| {
-                ui.strong("Hearing:");
-                ui.label(&view.live_transcript);
-            });
-        }
-        if !view.live_output.is_empty() {
-            ui.horizontal_wrapped(|ui| {
-                ui.strong("Writing:");
-                ui.label(&view.live_output);
-            });
-        }
-    }
-}
-
-/// A JSON value as a collapsible tree.
-pub(crate) fn json_tree(
-    ui: &mut egui::Ui,
-    id: impl std::hash::Hash + std::fmt::Debug,
-    value: &serde_json::Value,
-) {
-    use serde_json::Value;
-    fn node(ui: &mut egui::Ui, key: &str, value: &Value, path: String) {
-        match value {
-            Value::Object(map) if !map.is_empty() => {
-                egui::CollapsingHeader::new(key)
-                    .id_salt(&path)
-                    .default_open(path.matches('/').count() < 2)
-                    .show(ui, |ui| {
-                        for (k, v) in map {
-                            node(ui, k, v, format!("{path}/{k}"));
-                        }
-                    });
-            }
-            Value::Array(items) if !items.is_empty() => {
-                egui::CollapsingHeader::new(format!("{key} [{}]", items.len()))
-                    .id_salt(&path)
-                    .show(ui, |ui| {
-                        for (i, v) in items.iter().enumerate() {
-                            node(ui, &i.to_string(), v, format!("{path}/{i}"));
-                        }
-                    });
-            }
-            Value::String(s) => {
-                ui.horizontal_wrapped(|ui| {
-                    ui.monospace(format!("{key}:"));
-                    ui.label(s);
-                });
-            }
-            other => {
-                ui.monospace(format!("{key}: {other}"));
-            }
-        }
-    }
-    ui.push_id(id, |ui| {
-        if let Value::Object(map) = value {
-            for (k, v) in map {
-                node(ui, k, v, k.clone());
-            }
-        } else {
-            node(ui, "value", value, "value".into());
-        }
-    });
 }

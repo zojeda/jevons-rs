@@ -76,6 +76,10 @@ pub struct View {
     pub show_window: bool,
     /// Whether the tray icon runs (otherwise the window is the only way in).
     pub tray_running: bool,
+    /// Whether the window is on screen.
+    pub window_visible: bool,
+    /// Whether the window shows the live context, which the agent then reads twice a second.
+    pub watch_context: bool,
     pub quit: bool,
 }
 
@@ -169,9 +173,25 @@ impl Agent {
 
     /// Handles commands until Quit.
     pub async fn run(mut self, mut commands: mpsc::UnboundedReceiver<Command>) {
-        while let Some(command) = commands.recv().await {
-            if !self.handle(command) {
-                break;
+        let mut watch = tokio::time::interval(Duration::from_millis(500));
+        watch.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                command = commands.recv() => {
+                    let Some(command) = command else { break };
+                    if !self.handle(command) {
+                        break;
+                    }
+                }
+                _ = watch.tick() => {
+                    let watching = {
+                        let view = self.view();
+                        view.window_visible && view.watch_context
+                    };
+                    if watching {
+                        self.refresh_context(false);
+                    }
+                }
             }
         }
     }

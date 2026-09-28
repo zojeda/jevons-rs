@@ -159,7 +159,7 @@ Platform code uses safe wrapper crates only; the desktop crates forbid `unsafe`.
 ```mermaid
 flowchart LR
     hotkey["Hotkey · tray<br/>tao thread"] --> agent
-    inspector["Inspector · settings<br/>eframe window"] <--> agent
+    inspector["Inspector · settings<br/>dioxus-native window"] <--> agent
     agent["Agent thread<br/>gestures · takes"] --> context["ContextProvider<br/>UIA · AT-SPI · AX"]
     agent --> mic["AudioSource<br/>CPAL"]
     agent --> pipeline["Pipeline<br/>jevons-desktop-core"]
@@ -168,7 +168,7 @@ flowchart LR
     pipeline --> sink["TextSink<br/>SendInput · clipboard"]
 ```
 
-- **Main thread:** the eframe window, which hides instead of closing.
+- **Main thread:** the dioxus-native (Blitz) window, styled after [Dioxus Components](https://dioxuslabs.com/components/), which hides instead of closing.
 - **Tray thread:** a tao event loop that owns the tray icon, menu and global hotkey, and animates the icon.
 - **Agent thread:** handles hotkey gestures, reads the context, opens the microphone and starts takes. Takes run on its Tokio workers.
 - **Runtime thread:** owns the loaded models (through `jevons_api::load`) and the listener (`jevons_api::serve`), so it can rebind without reloading.

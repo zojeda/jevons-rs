@@ -1,129 +1,146 @@
 //! The loaded profiles, their errors, and new profiles drafted from the current context.
 
-use crate::agent::{Command, View, open_folder};
-use eframe::egui;
+use super::Ctx;
+use super::components::{Collapsible, badge};
+use crate::agent::{Command, open_folder};
+use dioxus::prelude::*;
 use jevons_desktop_core::profile::draft;
-use tokio::sync::mpsc::UnboundedSender;
 
-#[derive(Default)]
-pub struct State {
-    new_id: String,
-    message: Option<String>,
-}
-
-pub fn show(
-    ui: &mut egui::Ui,
-    view: &View,
-    state: &mut State,
-    commands: &UnboundedSender<Command>,
-) {
+#[component]
+pub fn ProfilesPage(rev: u64) -> Element {
+    let _ = rev;
+    let ctx = use_context::<Ctx>();
+    let mut new_id = use_signal(String::new);
+    let mut message = use_signal(|| None::<String>);
+    let view = ctx.view.lock().expect("the view lock");
     let dir = view.config.profiles_dir(&view.config_file);
-    ui.horizontal(|ui| {
-        ui.label(format!("Folder: {}", dir.display()));
-        if ui.button("Open folder").clicked() {
-            let _ = std::fs::create_dir_all(&dir);
-            open_folder(&dir);
-        }
-        if ui.button("Reload").clicked() {
-            let _ = commands.send(Command::ReloadProfiles);
-        }
-    });
-    for error in &view.profiles.errors {
-        ui.colored_label(
-            ui.visuals().error_fg_color,
-            format!("{}: {}", error.file.display(), error.message),
-        );
-    }
-    ui.separator();
-    ui.heading("New profile from the current context");
-    match &view.context {
-        Some(context) => {
-            ui.label(format!(
-                "Matches {} · {}",
-                context.app.process_name, context.window.title
-            ));
-            ui.horizontal(|ui| {
-                ui.label("id");
-                ui.text_edit_singleline(&mut state.new_id);
-                let valid = !state.new_id.is_empty()
-                    && state
-                        .new_id
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-                if ui.add_enabled(valid, egui::Button::new("Create")).clicked() {
-                    let file = dir.join(format!("{}.toml", state.new_id));
-                    state.message = Some(if file.exists() {
-                        format!("{} already exists", file.display())
-                    } else {
-                        let _ = std::fs::create_dir_all(&dir);
-                        match std::fs::write(&file, draft(context, &state.new_id)) {
-                            Ok(()) => {
-                                let _ = commands.send(Command::ReloadProfiles);
-                                open_folder(&file);
-                                format!(
-                                    "Created {}; edit its instructions and rules",
-                                    file.display()
-                                )
-                            }
-                            Err(e) => e.to_string(),
-                        }
-                    });
-                }
-            });
-            ui.collapsing("Preview", |ui| {
-                let mut text = draft(
-                    context,
-                    if state.new_id.is_empty() {
-                        "new"
-                    } else {
-                        &state.new_id
+    let errors: Vec<String> = view
+        .profiles
+        .errors
+        .iter()
+        .map(|e| format!("{}: {}", e.file.display(), e.message))
+        .collect();
+    let profiles: Vec<(String, String, i32, Option<std::path::PathBuf>, String)> = view
+        .profiles
+        .iter()
+        .map(|p| {
+            (
+                p.spec.id.clone(),
+                p.display_name().to_string(),
+                p.spec.priority,
+                p.source.clone(),
+                toml::to_string_pretty(&p.spec).unwrap_or_default(),
+            )
+        })
+        .collect();
+    let context = view.context.clone();
+    drop(view);
+
+    let id = new_id();
+    let valid = !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    let preview = context
+        .as_ref()
+        .map(|c| draft(c, if id.is_empty() { "new" } else { &id }));
+    let open_dir = dir.clone();
+    let reload = ctx.clone();
+
+    rsx! {
+        div { class: "spread",
+            div { class: "stack",
+                h2 { "Profiles" }
+                span { class: "muted mono", "{dir.display()}" }
+            }
+            div { class: "row",
+                button { class: "dx-button", "data-style": "outline", "data-size": "sm",
+                    onclick: move |_| {
+                        let _ = std::fs::create_dir_all(&open_dir);
+                        open_folder(&open_dir);
                     },
-                );
-                ui.add(
-                    egui::TextEdit::multiline(&mut text)
-                        .code_editor()
-                        .desired_width(f32::INFINITY),
-                );
-            });
-        }
-        None => {
-            ui.label("Open the Context tab and capture the application first.");
-        }
-    }
-    if let Some(message) = &state.message {
-        ui.label(message);
-    }
-    ui.separator();
-    ui.heading("Profiles");
-    for profile in view.profiles.iter() {
-        let spec = &profile.spec;
-        egui::CollapsingHeader::new(format!(
-            "{} ({}) · priority {}",
-            profile.display_name(),
-            spec.id,
-            if spec.priority == i32::MIN {
-                "lowest".into()
-            } else {
-                spec.priority.to_string()
+                    "Open folder"
+                }
+                button { class: "dx-button", "data-style": "secondary", "data-size": "sm",
+                    onclick: move |_| reload.send(Command::ReloadProfiles),
+                    "Reload"
+                }
             }
-        ))
-        .id_salt(("profiles", &spec.id))
-        .show(ui, |ui| {
-            match &profile.source {
-                Some(file) => {
-                    ui.horizontal(|ui| {
-                        ui.label(file.display().to_string());
-                        if ui.small_button("Open").clicked() {
-                            open_folder(file);
+        }
+        {errors.iter().map(|e| rsx! { p { class: "error-text", "{e}" } })}
+
+        div { class: "dx-card",
+            div { class: "dx-card-header",
+                div {
+                    div { class: "dx-card-title", "New profile from the current context" }
+                    div { class: "dx-card-description", "Its rules match the application, page and field the Context tab shows" }
+                }
+            }
+            div { class: "dx-card-content",
+                match (context, preview) {
+                    (Some(context), Some(preview)) => {
+                        let create_ctx = ctx.clone();
+                        let dir = dir.clone();
+                        rsx! {
+                            p { class: "muted", "Matches {context.app.process_name} · {context.window.title}" }
+                            div { class: "row",
+                                input { class: "dx-input", placeholder: "profile id, such as slack", value: "{id}",
+                                    oninput: move |e| new_id.set(e.value()) }
+                                button { class: "dx-button", "data-style": "accent", "data-size": "sm", disabled: !valid,
+                                    onclick: move |_| {
+                                        let id = new_id();
+                                        let file = dir.join(format!("{id}.toml"));
+                                        message.set(Some(if file.exists() {
+                                            format!("{} already exists", file.display())
+                                        } else {
+                                            let _ = std::fs::create_dir_all(&dir);
+                                            match std::fs::write(&file, draft(&context, &id)) {
+                                                Ok(()) => {
+                                                    create_ctx.send(Command::ReloadProfiles);
+                                                    open_folder(&file);
+                                                    format!("Created {}; add its instructions and adjust its rules", file.display())
+                                                }
+                                                Err(e) => e.to_string(),
+                                            }
+                                        }));
+                                    },
+                                    "Create"
+                                }
+                            }
+                            pre { class: "code", "{preview}" }
                         }
-                    });
+                    }
+                    _ => rsx! { p { class: "muted", "Capture an application in the Context tab first." } },
                 }
-                None => {
-                    ui.label("Built in: matches everything, at the lowest priority.");
+                if let Some(message) = message() {
+                    p { class: "ok-text", "{message}" }
                 }
             }
-            let text = toml::to_string_pretty(spec).unwrap_or_default();
-            ui.monospace(text);
-        });
+        }
+
+        div { class: "dx-accordion",
+            {profiles.into_iter().map(|(id, name, priority, source, text)| {
+                let priority = if priority == i32::MIN { "lowest".to_string() } else { priority.to_string() };
+                let subtitle = format!("{id} · priority {priority}");
+                rsx! {
+                    Collapsible { key: "{id}", title: name, subtitle: Some(subtitle), open: false,
+                        match source {
+                            Some(file) => {
+                                let shown = file.display().to_string();
+                                rsx! {
+                                    div { class: "row",
+                                        span { class: "muted mono grow", "{shown}" }
+                                        button { class: "dx-button", "data-style": "outline", "data-size": "xs",
+                                            onclick: move |_| open_folder(&file), "Open" }
+                                    }
+                                }
+                            }
+                            None => rsx! { div { class: "row", {badge("built in", "secondary")} span { class: "muted", "Matches everything, at the lowest priority." } } },
+                        }
+                        pre { class: "code", "{text}" }
+                    }
+                }
+            })}
+        }
     }
 }

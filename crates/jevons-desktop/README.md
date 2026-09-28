@@ -79,7 +79,7 @@ In **live dictation** (its own hotkey, press to start and again to stop), the se
 ```mermaid
 flowchart LR
     tray["Tray thread · tao<br/>icon animation · menu · global hotkey"] -- commands --> agent
-    window["Main thread · eframe<br/>inspector · settings · models"] <-- "view · commands" --> agent
+    window["Main thread · dioxus-native (Blitz)<br/>inspector · settings · models"] <-- "view · commands" --> agent
     agent["Agent thread<br/>gestures · context · takes"] --> takes["Takes on Tokio workers<br/>pipeline"]
     takes -- "HTTP · WebSocket" --> runtime["Runtime thread<br/>jevons_api::load + serve<br/>or a remote server"]
     takes --> sink["TextSink<br/>SendInput · clipboard"]
@@ -114,4 +114,4 @@ PATH=/usr/lib/llvm-19/bin:$PATH cargo xwin build --release -p jevons-desktop \
 | `audio` | CPAL capture: downmix, resample to 24 kHz, 100 ms chunks, meter |
 | `runtime` | Embedded models (private loopback or exposed port) or a remote server |
 | `platform` | Per-OS `ContextProvider` and `TextSink`; `windows` uses UI Automation, enigo and the clipboard |
-| `ui` | Context and resolution, takes, profiles, settings, models (catalog and downloads) |
+| `ui` | The dioxus-native window: context and resolution, takes, profiles, settings, models (catalog and downloads); `components.rs` and `style.css` follow [Dioxus Components](https://dioxuslabs.com/components/), written for Blitz (in-window overlays instead of popovers, no JavaScript) |

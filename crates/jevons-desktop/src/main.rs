@@ -50,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let filter = || {
         tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| "info,wgpu_hal=warn,wgpu_core=warn,egui_wgpu=warn".into())
+            .unwrap_or_else(|_| "info,wgpu_hal=warn,wgpu_core=warn,naga=warn".into())
     };
     {
         use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
@@ -185,38 +185,21 @@ fn replay(
 fn desktop(config: DesktopConfig, config_file: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let view = Arc::new(Mutex::new(View::default()));
     let (commands, received) = mpsc::unbounded_channel::<Command>();
-    let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_title("jevons")
-            .with_inner_size([760.0, 640.0])
-            .with_icon(eframe::egui::IconData {
-                rgba: jevons_desktop_core::icons::app_icon(256),
-                width: 256,
-                height: 256,
-            })
-            .with_visible(false),
-        ..Default::default()
-    };
-    let app_view = view.clone();
-    let app_commands = commands.clone();
-    eframe::run_native(
-        "jevons",
-        options,
-        Box::new(move |cc| {
-            let ctx = cc.egui_ctx.clone();
-            let repaint: Arc<dyn Fn() + Send + Sync> = Arc::new(move || ctx.request_repaint());
-            start_agent(
-                config,
-                config_file,
-                app_view.clone(),
-                repaint,
-                app_commands.clone(),
-                received,
-            )?;
-            Ok(Box::new(ui::App::new(app_view, app_commands)))
-        }),
-    )?;
-    Ok(())
+    let agent_view = view.clone();
+    let agent_commands = commands.clone();
+    ui::run(view, commands, move || {
+        let repaint: Arc<dyn Fn() + Send + Sync> = Arc::new(ui::wake);
+        if let Err(e) = start_agent(
+            config,
+            config_file,
+            agent_view,
+            repaint,
+            agent_commands,
+            received,
+        ) {
+            tracing::error!(error = %e, "Cannot start the agent");
+        }
+    })
 }
 
 fn start_agent(

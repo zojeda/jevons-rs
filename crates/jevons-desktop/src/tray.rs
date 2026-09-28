@@ -1,5 +1,5 @@
 //! The tray icon, its menu and the global hotkey, on their own thread with a tao event loop
-//! (the eframe window keeps the main thread). The icon animates here: the waveform follows the
+//! (the dioxus-native window keeps the main thread). The icon animates here: the waveform follows the
 //! microphone level the agent reports, and the processing dots advance on a timer.
 
 use crate::agent::Command;

@@ -47,7 +47,13 @@ arboard = "3.6"
 cpal = "0.18"
 device_query = "4"
 directories = "6"
-eframe = "0.36"
+anyrender_vello = { version = "=0.6.2", default-features = false }
+blitz-shell = { version = "=0.2.3", default-features = false }
+dioxus = { version = "=0.7.10", default-features = false, features = ["macro", "html", "signals", "hooks"] }
+# `hot-reload` is required: 0.7.10 does not build without it.
+dioxus-native = { version = "=0.7.10", default-features = false, features = ["hot-reload", "system-fonts"] }
+peniko = "=0.5.0"
+winit = "=0.30.13"
 enigo = "0.6"
 global-hotkey = "0.8"
 globset = "0.4"
@@ -75,3 +81,6 @@ codegen-units = 1
 # Windows HIP library names; see third_party/cubecl-hip-sys/README.jevons.md.
 [patch.crates-io]
 cubecl-hip-sys = { path = "third_party/cubecl-hip-sys" }
+# derive_more imports that clash with cubecl's derive_more features; see
+# third_party/stylo/README.jevons.md.
+stylo = { path = "third_party/stylo" }
