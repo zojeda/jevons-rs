@@ -77,6 +77,8 @@ undocumented_unsafe_blocks = "deny"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+# File and line in panic backtraces (in a separate .pdb on Windows, so the binaries stay small).
+debug = "line-tables-only"
 
 # Windows HIP library names; see third_party/cubecl-hip-sys/README.jevons.md.
 [patch.crates-io]
