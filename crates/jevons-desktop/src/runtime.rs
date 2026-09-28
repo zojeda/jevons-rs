@@ -16,6 +16,12 @@ pub enum Status {
     /// No models are selected.
     NoModels,
     Loading,
+    /// Fetching a default model before loading.
+    Downloading {
+        model: String,
+        done: u64,
+        total: u64,
+    },
     /// The embedded API is serving on `base_url`; `exposed` when other clients may use it.
     #[cfg_attr(not(feature = "embedded"), allow(dead_code))]
     Ready {
@@ -34,6 +40,13 @@ impl Status {
         match self {
             Self::NoModels => "No models selected: choose them in Settings".into(),
             Self::Loading => "Loading models…".into(),
+            Self::Downloading { model, done, total } => {
+                let percent = if *total > 0 { *done * 100 / *total } else { 0 };
+                format!(
+                    "Downloading {model}: {percent}% of {:.1} GB",
+                    *total as f64 / 1e9
+                )
+            }
             Self::Ready {
                 base_url,
                 exposed: true,
@@ -121,6 +134,8 @@ fn run(
         };
         match &status {
             Status::Failed(_) => tracing::error!(status = %status.describe(), "Runtime"),
+            // Download progress is shown, not logged.
+            Status::Downloading { .. } => {}
             _ => tracing::info!(status = %status.describe(), "Runtime"),
         }
         let mut shared = shared.lock().expect("the runtime lock");
@@ -166,9 +181,18 @@ fn run(
             Mode::Embedded => {
                 let catalog_file = file.parent().unwrap_or(Path::new(".")).join("models.toml");
                 let (catalog, _) = jevons_desktop_core::catalog::load(&catalog_file);
-                let models = config
-                    .models
-                    .with_defaults(&config.models_folder(), &catalog);
+                let folder = config.models_folder();
+                if config.models.download_missing {
+                    let missing = config.models.missing_defaults(&folder, &catalog);
+                    if let Err(e) = download(&tokio, &missing, &folder, &set) {
+                        set(
+                            Status::Failed(format!("Downloading the default models: {e}")),
+                            None,
+                        );
+                        continue;
+                    }
+                }
+                let models = config.models.with_defaults(&folder, &catalog);
                 let settings = match runtime_settings(&models, &file) {
                     Ok(Some(text)) => text,
                     Ok(None) => {
@@ -192,6 +216,49 @@ fn run(
         }
     }
     tokio.block_on(embedded.unload());
+}
+
+/// Downloads `entries` into `folder`, reporting progress as [`Status::Downloading`].
+fn download(
+    tokio: &tokio::runtime::Runtime,
+    entries: &[jevons_desktop_core::catalog::CatalogEntry],
+    folder: &Path,
+    set: &dyn Fn(Status, Option<Connection>),
+) -> Result<(), String> {
+    use jevons_desktop_core::download::Hub;
+    let hub = Hub::default();
+    for entry in entries {
+        tracing::info!(model = %entry.id, folder = %folder.display(), "Downloading a default model");
+        set(
+            Status::Downloading {
+                model: entry.name.clone(),
+                done: 0,
+                total: 0,
+            },
+            None,
+        );
+        let files = tokio.block_on(hub.plan(entry)).map_err(|e| e.to_string())?;
+        let mut reported = std::time::Instant::now();
+        tokio
+            .block_on(
+                hub.download(entry, &files, folder, Default::default(), |p| {
+                    if reported.elapsed() >= std::time::Duration::from_millis(500) {
+                        reported = std::time::Instant::now();
+                        set(
+                            Status::Downloading {
+                                model: entry.name.clone(),
+                                done: p.done,
+                                total: p.total,
+                            },
+                            None,
+                        );
+                    }
+                }),
+            )
+            .map_err(|e| e.to_string())?;
+        tracing::info!(model = %entry.id, "Downloaded");
+    }
+    Ok(())
 }
 
 /// Adds what to do about failures the user can fix outside the app.

@@ -98,7 +98,8 @@ The **Settings** tab edits the runtime, dictation and privacy settings. **Apply 
 
 The **Models** tab manages the models the app runs.
 
-- **Models folder.** Pick where models live (default: the platform data folder, such as `%LOCALAPPDATA%\jevons\data\models`). Each model goes in its own subfolder.
+- **Models folder.** Models live in `~/jevons/models` (`C:\Users\<you>\jevons\models`) unless you choose another folder. Each model goes in its own subfolder.
+- **First start.** When a service has no model and none of its catalog models is downloaded, the app downloads the default one before loading: DiffusionGemma (about 18 GB with its vision projector) for generative and decision, Parakeet (2.5 GB) for speech. The window and tray show the progress. Turn this off with `models.download_missing = false`.
 - **Catalog.**
   - When a service has no model selected, the first downloaded entry that serves it is used, in catalog order: DiffusionGemma for generative and decision, Parakeet for speech.
   - Built in: DiffusionGemma 26B-A4B Q4_K_M from [unsloth/diffusiongemma-26B-A4B-it-GGUF](https://huggingface.co/unsloth/diffusiongemma-26B-A4B-it-GGUF), Nemotron-Labs-Diffusion 3B and VLM 8B (generative and decision), and Parakeet TDT 0.6B v3 (speech).

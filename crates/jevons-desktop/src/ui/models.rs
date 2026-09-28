@@ -121,6 +121,8 @@ pub fn ModelsPage(rev: u64) -> Element {
     let open = folder.clone();
     let realtime_ctx = ctx.clone();
     let realtime_config = config.clone();
+    let download_ctx = ctx.clone();
+    let download_config = config.clone();
 
     rsx! {
         div { class: "spread",
@@ -216,6 +218,12 @@ pub fn ModelsPage(rev: u64) -> Element {
                         let mut config = realtime_config.clone();
                         config.models.realtime = on;
                         apply(&realtime_ctx, config);
+                    } }
+                Switch { checked: config.models.download_missing, label: "Download the default models at startup when missing".to_string(),
+                    onchange: move |on| {
+                        let mut config = download_config.clone();
+                        config.models.download_missing = on;
+                        apply(&download_ctx, config);
                     } }
             }
         }
