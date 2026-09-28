@@ -125,7 +125,8 @@ pub enum HotkeyAction {
     Dictate {
         profile: Option<String>,
     },
-    /// Starts or stops live dictation, where each pause ends a turn that is typed at once.
+    /// Live dictation while held (from the tray, a start/stop toggle): words are typed as they
+    /// are recognized.
     LiveDictation,
     ShowInspector,
 }

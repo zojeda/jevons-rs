@@ -132,7 +132,7 @@ pub fn SettingsPage(rev: u64) -> Element {
                 div { class: "field",
                     div { class: "stack",
                         span { class: "field-label", "Live dictation" }
-                        span { class: "field-hint", "Press to start and stop" }
+                        span { class: "field-hint", "Hold while speaking" }
                     }
                     HotkeyField { value: d.dictation.live_hotkey.clone().unwrap_or_default(), optional: true,
                         onchange: move |h: String| draft.write().dictation.live_hotkey = Some(h).filter(|h| !h.is_empty()) }

@@ -72,7 +72,7 @@ flowchart TD
 5. **Generation** follows the base prompt, then the action, then the profile's and the destination's instructions.
 6. **Delivery** goes only into the window the take started in, once every key is released. Otherwise the text waits on the clipboard.
 
-In **live dictation** (its own hotkey, press to start and again to stop), the server ends a turn at each pause, and every turn goes from *Transcript* through the same steps while the microphone stays open.
+In **live dictation** (its own hotkey, held while speaking), words are typed as they are recognized; the server ends a phrase at each pause, and its final transcript replaces the phrase when recognition revised it. A setting switches it to phrase by phrase, where each phrase goes from *Transcript* through the steps above.
 
 ## Threads
 

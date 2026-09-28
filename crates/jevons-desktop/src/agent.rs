@@ -251,14 +251,18 @@ impl Agent {
                         self.begin(profile, Some(id), false);
                     }
                 }
-                Some(HotkeyAction::LiveDictation) => self.toggle_live(),
+                // Hold to dictate live, like push-to-talk; the release below stops it.
+                Some(HotkeyAction::LiveDictation) if self.active.is_none() => {
+                    self.begin(None, Some(id), true);
+                }
+                Some(HotkeyAction::LiveDictation) => {}
                 None => {}
             },
             Command::Hotkey(HotkeyEvent::Released(id)) => {
                 if self
                     .active
                     .as_ref()
-                    .is_some_and(|a| !a.live && a.source == Some(id) && a.capture.is_some())
+                    .is_some_and(|a| a.source == Some(id) && a.capture.is_some())
                 {
                     self.stop_take();
                 }
