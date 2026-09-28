@@ -491,28 +491,21 @@ fn starts_with_punctuation(text: &str) -> bool {
     text.starts_with(|c: char| ",.;:!?)".contains(c))
 }
 
-/// Types `text` into the window the take started in, after deleting `erase` characters. Waits
-/// briefly while keys are held; refuses when the focus moved to another window.
+/// Types `text` into the window the take started in, after deleting `erase` characters; refuses
+/// when the focus moved to another window. It does not wait for keys to be released: live
+/// dictation types while its hotkey is held, and typed characters are delivered as Unicode input,
+/// which held modifiers do not turn into shortcuts.
 async fn type_now(env: &Env, window: u64, text: &str, erase: usize) -> Result<(), String> {
     let Some(sink) = &env.sink else {
         return Ok(());
     };
-    let deadline = Instant::now() + crate::delivery::WAIT;
-    loop {
-        let (foreground, keys_down) = {
-            let sink = sink.lock().expect("the sink lock is not poisoned");
-            (sink.foreground_window().unwrap_or(0), sink.keys_down())
-        };
-        if window == 0 || foreground != window {
-            return Err("the focused window changed".into());
-        }
-        if !keys_down {
-            break;
-        }
-        if Instant::now() >= deadline {
-            return Err("keys were held too long".into());
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
+    let foreground = sink
+        .lock()
+        .expect("the sink lock is not poisoned")
+        .foreground_window()
+        .unwrap_or(0);
+    if window == 0 || foreground != window {
+        return Err("the focused window changed".into());
     }
     let request = DeliveryRequest {
         action: Action::Insert,
@@ -1402,7 +1395,8 @@ instructions = "Formal tone.""#,
             (&["sekond", " phrase"], "second phrase."),
         ])
         .await;
-        let sink = RecordingSink::new(Some(7));
+        // The live hotkey is held the whole time: typing must not wait for it.
+        let sink = RecordingSink::new(Some(7)).holding_keys();
         let env = Env {
             client,
             profiles: Arc::default(),

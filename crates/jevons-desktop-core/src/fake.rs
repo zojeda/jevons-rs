@@ -98,6 +98,7 @@ struct Recorded {
 #[derive(Clone)]
 pub struct RecordingSink {
     foreground: Option<u64>,
+    keys_down: bool,
     recorded: Arc<Mutex<Recorded>>,
 }
 
@@ -105,8 +106,15 @@ impl RecordingSink {
     pub fn new(foreground: Option<u64>) -> Self {
         Self {
             foreground,
+            keys_down: false,
             recorded: Arc::default(),
         }
+    }
+
+    /// Reports keys as held, like a hotkey held while dictating.
+    pub fn holding_keys(mut self) -> Self {
+        self.keys_down = true;
+        self
     }
 
     pub fn shared(&self) -> Arc<Mutex<Box<dyn TextSink>>> {
@@ -140,7 +148,7 @@ impl TextSink for RecordingSink {
     }
 
     fn keys_down(&self) -> bool {
-        false
+        self.keys_down
     }
 
     fn deliver(&mut self, request: &DeliveryRequest) -> Result<DeliveryOutcome, PlatformError> {
