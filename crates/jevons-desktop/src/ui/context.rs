@@ -1,7 +1,7 @@
 //! The live context and the profile resolution for it.
 
 use super::Ctx;
-use super::components::{Collapsible, JsonTree, Switch, badge};
+use super::components::{Collapsible, Icon, JsonTree, Switch, badge, icon};
 use crate::agent::Command;
 use dioxus::prelude::*;
 use jevons_desktop_core::profile::{Check, Resolution};
@@ -176,22 +176,23 @@ pub fn resolution_card(resolution: &Resolution) -> Element {
                 }
                 div { class: "dx-accordion",
                     {resolution.trace.iter().map(|profile| {
-                        let mark = if profile.matched { "✔" } else { "✘" };
                         let priority = if profile.priority == i32::MIN {
                             "lowest".to_string()
                         } else {
                             profile.priority.to_string()
                         };
-                        let title = format!("{mark} {}", profile.id);
+                        let title = profile.id.clone();
                         let subtitle = format!("priority {priority} · {} rules", profile.specificity);
                         let open = profile.id == resolution.profile;
                         rsx! {
-                            Collapsible { key: "{profile.id}", title, subtitle: Some(subtitle), open,
+                            Collapsible { key: "{profile.id}", title, subtitle: Some(subtitle), open, status: Some(profile.matched),
                                 {checks(&profile.checks)}
                                 {profile.destinations.iter().map(|d| {
-                                    let mark = if d.matched { "✔" } else { "✘" };
                                     rsx! {
-                                        p { class: "muted", "{mark} destination {d.id} · priority {d.priority}" }
+                                        div { class: "row",
+                                            {icon(if d.matched { Icon::Check } else { Icon::Cross })}
+                                            span { class: "muted", "destination {d.id} · priority {d.priority}" }
+                                        }
                                         {checks(&d.checks)}
                                     }
                                 })}
@@ -211,11 +212,11 @@ fn checks(checks: &[Check]) -> Element {
     rsx! {
         div {
             {checks.iter().map(|check| {
-                let (mark, class) = if check.passed { ("✔", "pass") } else { ("✘", "fail") };
+                let mark = icon(if check.passed { Icon::Check } else { Icon::Cross });
                 let value = check.value.clone().unwrap_or_else(|| "(nothing)".into());
                 rsx! {
                     div { class: "check",
-                        span { class: "{class}", "{mark}" }
+                        span { {mark} }
                         span { class: "mono", "{check.rule}" }
                         span { class: "mono", "{check.pattern}" }
                         span { "{value}" }

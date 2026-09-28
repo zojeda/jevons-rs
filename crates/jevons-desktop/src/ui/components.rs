@@ -5,6 +5,40 @@
 use dioxus::prelude::*;
 use serde_json::Value;
 
+/// An icon, drawn as SVG: Blitz has no fallback font for symbol glyphs such as ▾ or ✔.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Icon {
+    ChevronDown,
+    ChevronUp,
+    ChevronRight,
+    Check,
+    Cross,
+}
+
+pub fn icon(icon: Icon) -> Element {
+    let (path, color) = match icon {
+        Icon::ChevronDown => ("M6 9l6 6 6-6", "#a1a1a1"),
+        Icon::ChevronUp => ("M6 15l6-6 6 6", "#a1a1a1"),
+        Icon::ChevronRight => ("M9 6l6 6-6 6", "#a1a1a1"),
+        Icon::Check => ("M5 12.5l4.5 4.5L19 7.5", "#b6fae3"),
+        Icon::Cross => ("M7 7l10 10M17 7L7 17", "#ffb4b4"),
+    };
+    rsx! {
+        svg {
+            class: "icon",
+            width: "14",
+            height: "14",
+            view_box: "0 0 24 24",
+            fill: "none",
+            stroke: color,
+            stroke_width: "2.5",
+            stroke_linecap: "round",
+            stroke_linejoin: "round",
+            path { d: path }
+        }
+    }
+}
+
 /// A labelled on/off switch.
 #[component]
 pub fn Switch(checked: bool, label: String, onchange: EventHandler<bool>) -> Element {
@@ -47,7 +81,7 @@ pub fn Select(
                 "data-size": "sm",
                 onclick: move |_| open.set(!open()),
                 span { "{current}" }
-                span { class: "chevron", if open() { "▴" } else { "▾" } }
+                {icon(if open() { Icon::ChevronUp } else { Icon::ChevronDown })}
             }
             if open() {
                 div { class: "select-list",
@@ -160,12 +194,14 @@ pub fn accelerator(code: Code, modifiers: Modifiers) -> Option<String> {
     )
 }
 
-/// A section that opens and closes; `open` is its initial state.
+/// A section that opens and closes; `open` is its initial state, and `status` adds a check or a
+/// cross before the title.
 #[component]
 pub fn Collapsible(
     title: String,
     subtitle: Option<String>,
     open: bool,
+    #[props(default)] status: Option<bool>,
     children: Element,
 ) -> Element {
     let mut expanded = use_signal(|| open);
@@ -174,7 +210,10 @@ pub fn Collapsible(
             button {
                 class: "dx-accordion-trigger",
                 onclick: move |_| expanded.set(!expanded()),
-                span { class: "chevron", if expanded() { "▾" } else { "▸" } }
+                {icon(if expanded() { Icon::ChevronDown } else { Icon::ChevronRight })}
+                if let Some(passed) = status {
+                    {icon(if passed { Icon::Check } else { Icon::Cross })}
+                }
                 span { class: "grow", "{title}" }
                 if let Some(subtitle) = &subtitle {
                     span { class: "muted", "{subtitle}" }
@@ -276,7 +315,7 @@ fn JsonNode(label: String, value: Value, depth: usize) -> Element {
             rsx! {
                 div {
                     button { class: "tree-toggle", onclick: move |_| open.set(!open()),
-                        if open() { "▾ " } else { "▸ " }
+                        {icon(if open() { Icon::ChevronDown } else { Icon::ChevronRight })}
                         span { class: "tree-key", "{label}" }
                         "{count}"
                     }

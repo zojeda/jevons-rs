@@ -258,7 +258,7 @@ p { margin: 0; }
 }
 .dx-accordion-trigger:hover { background: var(--primary-color-4); }
 .dx-accordion-content { display: flex; flex-direction: column; padding: 4px 12px 12px 30px; gap: 8px; }
-.chevron { width: 14px; color: var(--secondary-color-5); }
+.icon { flex-shrink: 0; width: 14px; height: 14px; }
 
 /* Key-value grid */
 .kv { display: grid; grid-template-columns: 150px 1fr; gap: 6px 12px; font-size: 13px; }
@@ -349,5 +349,5 @@ p { margin: 0; }
 .tree-row { display: flex; gap: 6px; padding: 1px 0; }
 .tree-key { color: var(--accent); font-family: "Cascadia Code", "Consolas", monospace; }
 .tree-value { color: var(--secondary-color-3); overflow-wrap: anywhere; }
-.tree-toggle { border: none; background: none; color: var(--secondary-color-4); padding: 1px 0; text-align: left; cursor: pointer; font-family: "Cascadia Code", "Consolas", monospace; font-size: 12px; }
+.tree-toggle { display: flex; align-items: center; gap: 4px; border: none; background: none; color: var(--secondary-color-4); padding: 1px 0; text-align: left; cursor: pointer; font-family: "Cascadia Code", "Consolas", monospace; font-size: 12px; }
 .tree-children { padding-left: 16px; }
