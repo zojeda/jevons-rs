@@ -162,3 +162,127 @@ impl ApplicationHandler<BlitzShellEvent> for Shell {
         self.inner.user_event(event_loop, event);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::View;
+    use blitz_dom::Document as _;
+    use jevons_desktop_core::config::DesktopConfig;
+    use jevons_desktop_core::context::{AppInfo, ContextSnapshot, Element as Focused, WindowInfo};
+    use jevons_desktop_core::pipeline::{Trace, TranscriptionPath};
+    use jevons_desktop_core::platform::{Action, DeliveryOutcome};
+    use jevons_desktop_core::profile::{DeliveryMethod, Profiles};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU8, Ordering};
+
+    /// Which page the test root shows; switching it re-renders like changing tabs.
+    static PAGE: AtomicU8 = AtomicU8::new(0);
+
+    fn root() -> Element {
+        let frozen = use_signal(|| false);
+        match PAGE.load(Ordering::Relaxed) {
+            0 => rsx! { context::ContextPage { rev: 0, frozen } },
+            1 => rsx! { models::ModelsPage { rev: 1 } },
+            2 => rsx! { settings::SettingsPage { rev: 2 } },
+            3 => rsx! { takes::TakesPage { rev: 3 } },
+            4 => rsx! { profiles::ProfilesPage { rev: 4 } },
+            _ => rsx! { app::App {} },
+        }
+    }
+
+    /// A models folder like the one on a machine mid-download: Parakeet ready, Gemma partial.
+    fn models_folder() -> std::path::PathBuf {
+        let folder = std::env::temp_dir().join(format!("jevons-ui-{}", std::process::id()));
+        let parakeet = folder.join("parakeet-tdt-0.6b-v3");
+        std::fs::create_dir_all(&parakeet).unwrap();
+        std::fs::write(
+            parakeet.join(jevons_desktop_core::download::COMPLETE_MARKER),
+            b"",
+        )
+        .unwrap();
+        let gemma = folder.join("diffusiongemma-26b-a4b-q4_k_m");
+        std::fs::create_dir_all(&gemma).unwrap();
+        std::fs::write(gemma.join("model.gguf.part"), b"partial").unwrap();
+        folder
+    }
+
+    /// A view with a context, its resolution and a finished take, so every section renders.
+    fn view(folder: &std::path::Path) -> View {
+        let mut config = DesktopConfig::default();
+        config.models.folder = Some(folder.to_path_buf());
+        let context = ContextSnapshot {
+            app: AppInfo {
+                process_name: "notepad.exe".into(),
+                ..AppInfo::default()
+            },
+            window: WindowInfo {
+                title: "notes.txt - Notepad".into(),
+                handle: Some(1),
+                ..WindowInfo::default()
+            },
+            focused: Some(Focused {
+                role: "Document".into(),
+                selection: Some("hello".into()),
+                ..Focused::default()
+            }),
+            ..ContextSnapshot::default()
+        };
+        let profiles = Profiles::default();
+        let resolution = profiles.resolve(&context, None);
+        let trace = Trace {
+            take: 1,
+            turn: None,
+            started_at_ms: 1,
+            context: context.clone(),
+            audio_seconds: 1.5,
+            transcription: Some(TranscriptionPath::Realtime),
+            transcript: "hello world".into(),
+            resolution: Some(resolution.clone()),
+            effective: Some(profiles.effective("default", None)),
+            decision: None,
+            action: Some(Action::Insert),
+            generation: None,
+            output: "Hello world.".into(),
+            delivery: Some(DeliveryOutcome::Delivered {
+                method: DeliveryMethod::Paste,
+            }),
+            timings: vec![("transcribe".into(), 800)],
+            notes: vec!["a note".into()],
+            error: None,
+        };
+        View {
+            config,
+            context: Some(context),
+            resolution: Some(resolution),
+            traces: [trace].into(),
+            profiles: Arc::new(profiles),
+            ..View::default()
+        }
+    }
+
+    #[test]
+    fn switching_between_every_page_rebuilds_in_blitz() {
+        let folder = models_folder();
+        let view = Arc::new(Mutex::new(view(&folder)));
+        let (commands, _received) = tokio::sync::mpsc::unbounded_channel();
+        let mut vdom = VirtualDom::new(root);
+        vdom.insert_any_root_context(Box::new(Ctx { view, commands }));
+        let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("style.css"));
+        doc.initial_build();
+        // Every page after every other, and back: pages are removed and rebuilt as with tabs.
+        let mut sequence = Vec::new();
+        for a in 0..=5 {
+            for b in 0..=5 {
+                sequence.extend([a, b, a]);
+            }
+        }
+        for page in sequence {
+            PAGE.store(page, Ordering::Relaxed);
+            doc.vdom.mark_dirty(ScopeId::APP);
+            doc.poll(None);
+        }
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+}
