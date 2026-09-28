@@ -138,6 +138,16 @@ pub fn SettingsPage(rev: u64) -> Element {
                         onchange: move |h: String| draft.write().dictation.live_hotkey = Some(h).filter(|h| !h.is_empty()) }
                 }
                 div { class: "field",
+                    span { class: "field-label", "Live dictation types" }
+                    Switch { checked: d.dictation.live_stream,
+                        label: if d.dictation.live_stream {
+                            "Words as you speak, as recognized".to_string()
+                        } else {
+                            "Each phrase after a pause, edited by the profile".to_string()
+                        },
+                        onchange: move |on| draft.write().dictation.live_stream = on }
+                }
+                div { class: "field",
                     span { class: "field-label", "Show this window" }
                     HotkeyField { value: d.dictation.inspector_hotkey.clone().unwrap_or_default(), optional: true,
                         onchange: move |h: String| draft.write().dictation.inspector_hotkey = Some(h).filter(|h| !h.is_empty()) }

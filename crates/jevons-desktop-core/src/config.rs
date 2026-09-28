@@ -138,9 +138,12 @@ impl Models {
 pub struct Dictation {
     /// Push-to-talk: hold while speaking, release to insert.
     pub hotkey: String,
-    /// Starts and stops live dictation, typing each phrase after a pause.
+    /// Starts and stops live dictation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live_hotkey: Option<String>,
+    /// Live dictation types the words as they are recognized. When off, it types each phrase
+    /// after a pause, once the profile's decision and generation have edited it.
+    pub live_stream: bool,
     /// Shows the inspector window.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inspector_hotkey: Option<String>,
@@ -166,6 +169,7 @@ impl Default for Dictation {
         Self {
             hotkey: "Ctrl+Alt+Space".into(),
             live_hotkey: Some("Ctrl+Alt+L".into()),
+            live_stream: true,
             inspector_hotkey: None,
             profile_hotkeys: BTreeMap::new(),
             microphone: None,

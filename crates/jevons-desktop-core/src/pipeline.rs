@@ -56,6 +56,8 @@ pub struct Settings {
     pub decision_timeout: Duration,
     /// How long generation may take before the transcript is typed as heard.
     pub generation_timeout: Duration,
+    /// Live dictation types words as they are recognized, instead of each edited phrase.
+    pub live_stream: bool,
 }
 
 impl Default for Settings {
@@ -69,6 +71,7 @@ impl Default for Settings {
             max_output_tokens: 1024,
             decision_timeout: Duration::from_secs(60),
             generation_timeout: Duration::from_secs(120),
+            live_stream: true,
         }
     }
 }
@@ -393,6 +396,10 @@ pub async fn run_live(
         .map_err(|e| format!("Live dictation needs Realtime transcription: {e}"))?;
     let mut turn = 0;
     let mut deadline: Option<tokio::time::Instant> = None;
+    // Streaming: what this turn has typed so far, and why typing stopped, if it did.
+    let mut typed = String::new();
+    let mut halted: Option<String> = None;
+    let window = start.context.window.handle.unwrap_or(0);
     let result = loop {
         tokio::select! {
             event = audio.recv(), if deadline.is_none() => match event {
@@ -422,11 +429,35 @@ pub async fn run_live(
             }
             event = reader.next() => match event {
                 Some(RealtimeEvent::Delta { delta, .. }) => {
+                    if settings.live_stream && halted.is_none() {
+                        let text = if typed.is_empty() {
+                            let words = delta.trim_start();
+                            if turn > 0 && !starts_with_punctuation(words) {
+                                format!(" {words}")
+                            } else {
+                                words.to_string()
+                            }
+                        } else {
+                            delta.clone()
+                        };
+                        if !text.is_empty() {
+                            match type_now(env, window, &text, 0).await {
+                                Ok(()) => typed.push_str(&text),
+                                Err(reason) => halted = Some(reason),
+                            }
+                        }
+                    }
                     let _ = updates.send(Update::Delta(delta));
                 }
                 Some(RealtimeEvent::Completed { transcript, .. }) => {
                     turn += 1;
-                    let trace = live_turn(env, &start, turn, &transcript, updates).await;
+                    let trace = if settings.live_stream {
+                        let trace = streamed_turn(env, &start, turn, &transcript, &typed, halted.take()).await;
+                        typed.clear();
+                        trace
+                    } else {
+                        live_turn(env, &start, turn, &transcript, updates).await
+                    };
                     on_turn(trace);
                     match deadline {
                         // After stopping, wait only briefly for a turn still in flight.
@@ -454,6 +485,133 @@ pub async fn run_live(
     };
     writer.close().await;
     result
+}
+
+fn starts_with_punctuation(text: &str) -> bool {
+    text.starts_with(|c: char| ",.;:!?)".contains(c))
+}
+
+/// Types `text` into the window the take started in, after deleting `erase` characters. Waits
+/// briefly while keys are held; refuses when the focus moved to another window.
+async fn type_now(env: &Env, window: u64, text: &str, erase: usize) -> Result<(), String> {
+    let Some(sink) = &env.sink else {
+        return Ok(());
+    };
+    let deadline = Instant::now() + crate::delivery::WAIT;
+    loop {
+        let (foreground, keys_down) = {
+            let sink = sink.lock().expect("the sink lock is not poisoned");
+            (sink.foreground_window().unwrap_or(0), sink.keys_down())
+        };
+        if window == 0 || foreground != window {
+            return Err("the focused window changed".into());
+        }
+        if !keys_down {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err("keys were held too long".into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let request = DeliveryRequest {
+        action: Action::Insert,
+        text: text.to_string(),
+        method: DeliveryMethod::Type,
+        select_all: false,
+        erase,
+    };
+    sink.lock()
+        .expect("the sink lock is not poisoned")
+        .deliver(&request)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Finishes a streamed live dictation turn: what was typed while speaking becomes the final
+/// transcript, retyping the phrase when recognition revised it. `halted` says why typing stopped
+/// mid-turn; the phrase then goes to the clipboard instead.
+async fn streamed_turn(
+    env: &Env,
+    start: &TakeStart,
+    turn: u32,
+    transcript: &str,
+    typed: &str,
+    halted: Option<String>,
+) -> Trace {
+    let mut start = start.clone();
+    if turn > 1
+        && let Some(element) = &mut start.context.focused
+    {
+        element.selection = None;
+    }
+    let mut trace = Trace::new(&start);
+    trace.turn = Some(turn);
+    trace.transcription = Some(TranscriptionPath::Realtime);
+    trace.transcript = transcript.trim().to_string();
+    trace.action = Some(Action::Insert);
+    let words = transcript.trim();
+    let expected = if words.is_empty() {
+        String::new()
+    } else if turn > 1 && !starts_with_punctuation(words) {
+        format!(" {words}")
+    } else {
+        words.to_string()
+    };
+    trace.output = expected.clone();
+    let began = Instant::now();
+    if let Some(reason) = halted {
+        trace.delivery = match &env.sink {
+            Some(sink) => match sink
+                .lock()
+                .expect("the sink lock is not poisoned")
+                .copy(expected.trim_start())
+            {
+                Ok(()) => Some(DeliveryOutcome::OnClipboard { reason }),
+                Err(e) => {
+                    trace.error = Some(e.to_string());
+                    None
+                }
+            },
+            None => None,
+        };
+    } else if typed != expected {
+        // Recognition revised the words already typed: replace the phrase.
+        let erase = typed.chars().count();
+        match type_now(
+            env,
+            start.context.window.handle.unwrap_or(0),
+            &expected,
+            erase,
+        )
+        .await
+        {
+            Ok(()) => {
+                if erase > 0 {
+                    trace
+                        .notes
+                        .push(format!("Retyped the phrase over {erase} typed characters"));
+                }
+                trace.delivery = Some(DeliveryOutcome::Delivered {
+                    method: DeliveryMethod::Type,
+                });
+            }
+            Err(e) => trace.error = Some(e),
+        }
+    } else {
+        trace.delivery = Some(DeliveryOutcome::Delivered {
+            method: DeliveryMethod::Type,
+        });
+    }
+    trace.time("deliver", began);
+    tracing::info!(
+        take = start.id,
+        turn,
+        chars = expected.chars().count(),
+        retyped = typed != expected,
+        "Streamed a live phrase"
+    );
+    trace
 }
 
 /// One live dictation turn: the same decision, generation and delivery as a take.
@@ -832,6 +990,7 @@ async fn deliver(
         text: trace.output.clone(),
         method: effective.delivery,
         select_all: action == Action::Rewrite && start.context.selection().is_none(),
+        erase: 0,
     };
     let copy = |reason: String| -> Result<Option<DeliveryOutcome>, String> {
         sink.lock()
@@ -1131,9 +1290,12 @@ instructions = "Formal tone.""#,
         assert_eq!(*seen.uploads.lock().unwrap(), 0);
     }
 
-    /// A fake Realtime session: a turn completes after every second append, and a commit of
-    /// the (then empty) buffer is an error.
-    async fn realtime_server(turns: &'static [&'static str]) -> Client {
+    /// A live turn in a fake Realtime session: its live deltas, then its final transcript.
+    type Turn = (&'static [&'static str], &'static str);
+
+    /// A fake Realtime session: a turn (its deltas, then its transcript) completes after every
+    /// second append, and a commit of the (then empty) buffer is an error.
+    async fn realtime_server(turns: &'static [Turn]) -> Client {
         use axum::extract::ws::{Message, WebSocketUpgrade};
         let session = move |upgrade: WebSocketUpgrade| async move {
             upgrade.protocols(["realtime"]).on_upgrade(move |mut socket| async move {
@@ -1141,21 +1303,27 @@ instructions = "Formal tone.""#,
                 let mut next = turns.iter();
                 while let Some(Ok(Message::Text(text))) = socket.recv().await {
                     let event: Value = serde_json::from_str(&text).unwrap();
-                    let reply = match event["type"].as_str().unwrap() {
+                    let replies: Vec<Value> = match event["type"].as_str().unwrap() {
                         "session.update" => {
                             assert_eq!(event["session"]["audio"]["input"]["turn_detection"]["type"], "server_vad");
-                            None
+                            Vec::new()
                         }
                         "input_audio_buffer.append" => {
                             appends += 1;
-                            (appends % 2 == 0).then(|| next.next()).flatten().map(|t| {
-                                json!({"type": "conversation.item.input_audio_transcription.completed",
-                                       "item_id": "i", "content_index": 0, "transcript": t})
-                            })
+                            match (appends % 2 == 0).then(|| next.next()).flatten() {
+                                Some((deltas, transcript)) => deltas
+                                    .iter()
+                                    .map(|d| json!({"type": "conversation.item.input_audio_transcription.delta",
+                                                    "item_id": "i", "content_index": 0, "delta": d}))
+                                    .chain([json!({"type": "conversation.item.input_audio_transcription.completed",
+                                                   "item_id": "i", "content_index": 0, "transcript": transcript})])
+                                    .collect(),
+                                None => Vec::new(),
+                            }
                         }
-                        _ => Some(json!({"type": "error", "error": {"message": "buffer too small"}})),
+                        _ => vec![json!({"type": "error", "error": {"message": "buffer too small"}})],
                     };
-                    if let Some(reply) = reply {
+                    for reply in replies {
                         socket.send(Message::Text(reply.to_string().into())).await.unwrap();
                     }
                 }
@@ -1191,13 +1359,16 @@ instructions = "Formal tone.""#,
     }
 
     #[tokio::test]
-    async fn live_dictation_types_each_turn_as_it_completes() {
-        let client = realtime_server(&["hello there", "second phrase"]).await;
+    async fn live_dictation_by_phrase_types_each_turn_as_it_completes() {
+        let client = realtime_server(&[(&[], "hello there"), (&[], "second phrase")]).await;
         let sink = RecordingSink::new(Some(7));
         let env = Env {
             client,
             profiles: Arc::default(),
-            settings: settings(),
+            settings: Settings {
+                live_stream: false,
+                ..settings()
+            },
             sink: Some(sink.shared()),
         };
         let (audio, received) = mpsc::unbounded_channel();
@@ -1221,6 +1392,65 @@ instructions = "Formal tone.""#,
         assert_eq!(delivered, ["hello there", " second phrase"]);
         // The selection belonged to the first turn only.
         assert!(traces[1].context.selection().is_none());
+    }
+
+    #[tokio::test]
+    async fn streamed_live_dictation_types_words_as_they_come_and_fixes_revisions() {
+        // The second phrase is revised at the end: "sekond" becomes "second".
+        let client = realtime_server(&[
+            (&["hello", " there"], "hello there"),
+            (&["sekond", " phrase"], "second phrase."),
+        ])
+        .await;
+        let sink = RecordingSink::new(Some(7));
+        let env = Env {
+            client,
+            profiles: Arc::default(),
+            settings: settings(),
+            sink: Some(sink.shared()),
+        };
+        let (audio, received) = mpsc::unbounded_channel();
+        for _ in 0..4 {
+            audio.send(AudioEvent::Chunk(vec![500; 2400])).unwrap();
+        }
+        audio.send(AudioEvent::Ended).unwrap();
+        let (_stop, stopped) = oneshot::channel();
+        let (updates, _) = mpsc::unbounded_channel();
+        let start = TakeStart {
+            id: 4,
+            context: context(None),
+            forced_profile: None,
+        };
+        let mut traces = Vec::new();
+        let result = run_live(&env, start, received, stopped, &updates, |t| traces.push(t)).await;
+        assert_eq!(result, Ok(()));
+        let typed: Vec<(usize, String)> = sink
+            .requests()
+            .into_iter()
+            .map(|r| {
+                assert_eq!(r.method, DeliveryMethod::Type);
+                (r.erase, r.text)
+            })
+            .collect();
+        assert_eq!(
+            typed,
+            [
+                (0, "hello".to_string()),
+                (0, " there".to_string()),
+                (0, " sekond".to_string()),
+                (0, " phrase".to_string()),
+                // " sekond phrase" is 14 characters.
+                (14, " second phrase.".to_string()),
+            ]
+        );
+        assert_eq!(traces[1].output, " second phrase.");
+        assert!(traces[1].notes[0].contains("Retyped"));
+        // No decision or generation while streaming.
+        assert!(
+            traces
+                .iter()
+                .all(|t| t.decision.is_none() && t.generation.is_none())
+        );
     }
 
     #[tokio::test]

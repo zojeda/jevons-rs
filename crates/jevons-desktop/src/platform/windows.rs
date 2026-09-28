@@ -301,6 +301,12 @@ impl TextSink for WindowsSink {
                 if request.select_all {
                     Self::chord(&mut enigo, 'a')?;
                 }
+                // Live dictation replacing words it typed that recognition revised.
+                for _ in 0..request.erase {
+                    enigo
+                        .key(Key::Backspace, Direction::Click)
+                        .map_err(failed)?;
+                }
                 enigo.text(&request.text).map_err(failed)?;
             }
             DeliveryMethod::SetValue => {

@@ -81,6 +81,8 @@ pub struct DeliveryRequest {
     pub method: DeliveryMethod,
     /// Whether the field's text must be selected first (a rewrite with nothing selected).
     pub select_all: bool,
+    /// Characters to delete before the caret first (live dictation correcting what it typed).
+    pub erase: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
