@@ -41,7 +41,7 @@ impl Status {
             Self::NoModels => "No models selected: choose them in Settings".into(),
             Self::Loading => "Loading models…".into(),
             Self::Downloading { model, done, total } => {
-                let percent = if *total > 0 { *done * 100 / *total } else { 0 };
+                let percent = (*done * 100).checked_div(*total).unwrap_or(0);
                 format!(
                     "Downloading {model}: {percent}% of {:.1} GB",
                     *total as f64 / 1e9

@@ -24,6 +24,8 @@
 //! [selectors]: ../selectors/index.html
 
 #![deny(missing_docs)]
+// jevons: newer rustc warns about lifetime syntax in this release; keep the vendored copy quiet.
+#![allow(mismatched_lifetime_syntaxes)]
 
 #[macro_use]
 extern crate bitflags;

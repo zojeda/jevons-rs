@@ -10,4 +10,6 @@ inference stack (cubecl) enables derive_more's `debug` and `eq` features; the gl
 brings derive_more's `Debug` and `PartialEq` derives into stylo, shadowing the standard ones, and
 compilation fails with E0275 (overflow evaluating `Debug`/`PartialEq` for recursive types).
 
+`lib.rs` also allows `mismatched_lifetime_syntaxes`, a lint newer rustc versions raise on this release.
+
 Drop this copy when Blitz moves to a stylo release without the glob import.
