@@ -10,4 +10,6 @@ keyed list reordering, such as the profile resolution list when the focused appl
 The child kept `parent` pointing at a parent that no longer listed it, and the next
 `insert_nodes_before` it anchored panicked (`mutator.rs:411`, `unwrap()` on `None`).
 
+`src/lib.rs` also allows `unused_assignments`, a lint newer rustc versions raise on this release.
+
 Drop this copy when Blitz fixes the reparenting upstream.

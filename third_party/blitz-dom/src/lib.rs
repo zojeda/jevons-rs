@@ -21,6 +21,8 @@
 //! they want.
 //!
 
+// jevons: newer rustc warns about an assignment in this release; keep the vendored copy quiet.
+#![allow(unused_assignments)]
 // TODO: Document features
 // ## Feature flags
 //  - `default`: Enables the features listed below.
