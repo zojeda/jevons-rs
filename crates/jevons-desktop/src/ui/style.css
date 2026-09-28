@@ -277,24 +277,20 @@ p { margin: 0; }
 .stepper { display: flex; align-items: center; gap: 6px; }
 .stepper .value { width: 48px; text-align: center; font-family: "Cascadia Code", "Consolas", monospace; }
 
-/* Select (listbox) */
-.select { position: relative; }
-.select-trigger { justify-content: space-between; min-width: 220px; }
+/* Select (listbox): the options open in the page flow, below the trigger. Blitz does not stack
+   positioned elements over later siblings, so a floating list would be painted over. */
+.select { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.select-trigger { justify-content: space-between; min-width: 260px; }
 .select-list {
-  position: absolute;
-  top: 2.5rem;
-  left: 0;
-  z-index: 20;
   display: flex;
   flex-direction: column;
   min-width: 260px;
-  max-height: 260px;
+  max-height: 220px;
   overflow-y: scroll;
   padding: 4px;
   border: 1px solid var(--primary-color-7);
   border-radius: var(--radius);
   background: var(--primary-color-4);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 40%);
 }
 .select-option {
   padding: 6px 10px;
