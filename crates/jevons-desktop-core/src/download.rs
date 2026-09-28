@@ -38,6 +38,8 @@ pub enum DownloadError {
     Invalid(String),
     #[error("cancelled")]
     Cancelled,
+    #[error("this model is already being downloaded")]
+    AlreadyRunning,
 }
 
 /// A file to fetch.
@@ -177,6 +179,8 @@ impl Hub {
         mut progress: impl FnMut(Progress),
     ) -> Result<PathBuf, DownloadError> {
         let dir = entry.dir(folder);
+        // One download per model folder in this process: two would write the same part files.
+        let _claim = Claim::take(&dir).ok_or(DownloadError::AlreadyRunning)?;
         tokio::fs::create_dir_all(&dir).await?;
         let total: u64 = files.iter().map(|f| f.size).sum();
         let mut done_before = 0;
@@ -275,6 +279,41 @@ impl Hub {
         tokio::fs::rename(&part, target).await?;
         Ok(())
     }
+}
+
+static RUNNING: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// A model folder being downloaded; released when dropped.
+struct Claim(PathBuf);
+
+impl Claim {
+    fn take(dir: &Path) -> Option<Self> {
+        let mut running = RUNNING.lock().expect("the download registry lock");
+        if running.iter().any(|d| d == dir) {
+            return None;
+        }
+        running.push(dir.to_path_buf());
+        Some(Self(dir.to_path_buf()))
+    }
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        RUNNING
+            .lock()
+            .expect("the download registry lock")
+            .retain(|d| d != &self.0);
+    }
+}
+
+/// Whether `entry` is being downloaded into `folder` by this process.
+pub fn is_running(entry: &CatalogEntry, folder: &Path) -> bool {
+    let dir = entry.dir(folder);
+    RUNNING
+        .lock()
+        .expect("the download registry lock")
+        .iter()
+        .any(|d| d == &dir)
 }
 
 /// `dir/path`, refusing paths that would leave `dir`.
@@ -511,6 +550,22 @@ mod tests {
             b"proj"
         );
         std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_model_being_downloaded_cannot_be_downloaded_twice() {
+        let entry = entry();
+        let folder = folder("twice");
+        let claim = Claim::take(&entry.dir(&folder)).unwrap();
+        assert!(is_running(&entry, &folder));
+        let hub = Hub::new("http://127.0.0.1:9", None);
+        let error = hub
+            .download(&entry, &[], &folder, Arc::default(), |_| {})
+            .await
+            .unwrap_err();
+        assert!(matches!(error, DownloadError::AlreadyRunning), "{error}");
+        drop(claim);
+        assert!(!is_running(&entry, &folder));
     }
 
     #[test]

@@ -18,8 +18,6 @@ remote_url = "http://127.0.0.1:8080"
 [models]
 # Where models live (default: ~/jevons/models, such as C:\Users\<you>\jevons\models).
 # folder = "D:/models"
-# Download the default models (DiffusionGemma, Parakeet) at startup for services without one.
-download_missing = true
 # Load an existing jevons-rs settings file instead of the selections below.
 # runtime_config = "jevons.toml"
 realtime = true

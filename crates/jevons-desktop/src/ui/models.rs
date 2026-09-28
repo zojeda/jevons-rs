@@ -121,8 +121,6 @@ pub fn ModelsPage(rev: u64) -> Element {
     let open = folder.clone();
     let realtime_ctx = ctx.clone();
     let realtime_config = config.clone();
-    let download_ctx = ctx.clone();
-    let download_config = config.clone();
 
     rsx! {
         div { class: "spread",
@@ -219,12 +217,6 @@ pub fn ModelsPage(rev: u64) -> Element {
                         config.models.realtime = on;
                         apply(&realtime_ctx, config);
                     } }
-                Switch { checked: config.models.download_missing, label: "Download the default models at startup when missing".to_string(),
-                    onchange: move |on| {
-                        let mut config = download_config.clone();
-                        config.models.download_missing = on;
-                        apply(&download_ctx, config);
-                    } }
             }
         }
 
@@ -243,7 +235,9 @@ pub fn ModelsPage(rev: u64) -> Element {
                     let services: Vec<&str> = SERVICES.iter().filter(|(s, _)| entry.serves(*s)).map(|(_, n)| *n).collect();
                     let services = services.join(", ");
                     let state = downloads.read().get(&entry.id).cloned();
-                    let running = state.as_ref().is_some_and(|d| !d.lock().expect("the download lock").finished);
+                    // Also downloading when the runtime fetches it as a default model at startup.
+                    let running = state.as_ref().is_some_and(|d| !d.lock().expect("the download lock").finished)
+                        || jevons_desktop_core::download::is_running(entry, &folder);
                     let (fraction, file, error) = state.as_ref().map_or((0.0, String::new(), None), |d| {
                         let d = d.lock().expect("the download lock");
                         let fraction = if d.progress.total > 0 { d.progress.done as f32 / d.progress.total as f32 } else { 0.0 };

@@ -92,8 +92,6 @@ pub struct Models {
     pub speech: Option<ModelRef>,
     /// Serve Realtime transcription (live text while speaking).
     pub realtime: bool,
-    /// Download the default catalog models for services without a model, at startup.
-    pub download_missing: bool,
 }
 
 impl Default for Models {
@@ -105,7 +103,6 @@ impl Default for Models {
             decision: None,
             speech: None,
             realtime: true,
-            download_missing: true,
         }
     }
 }
@@ -114,39 +111,6 @@ impl Models {
     /// These selections with each unset service filled from the first downloaded catalog entry
     /// that serves it, in catalog order (DiffusionGemma first for language, then Parakeet for
     /// speech). Explicit selections are kept.
-    /// The catalog entries to download so every service has a model: for each unset service
-    /// without a downloaded entry, the first entry that serves it. Empty with `runtime_config`.
-    pub fn missing_defaults(
-        &self,
-        folder: &Path,
-        catalog: &[crate::catalog::CatalogEntry],
-    ) -> Vec<crate::catalog::CatalogEntry> {
-        use crate::catalog::Service;
-        if self.runtime_config.is_some() {
-            return Vec::new();
-        }
-        let mut missing: Vec<crate::catalog::CatalogEntry> = Vec::new();
-        for (service, selected) in [
-            (Service::Generative, &self.generative),
-            (Service::Decision, &self.decision),
-            (Service::Speech, &self.speech),
-        ] {
-            let covered = selected.is_some()
-                || catalog
-                    .iter()
-                    .any(|e| e.serves(service) && e.is_ready(folder));
-            if covered {
-                continue;
-            }
-            if let Some(entry) = catalog.iter().find(|e| e.serves(service))
-                && !missing.iter().any(|m| m.id == entry.id)
-            {
-                missing.push(entry.clone());
-            }
-        }
-        missing
-    }
-
     pub fn with_defaults(&self, folder: &Path, catalog: &[crate::catalog::CatalogEntry]) -> Self {
         use crate::catalog::Service;
         let pick = |service: Service| {
@@ -372,37 +336,6 @@ mod tests {
             Path::new("/mine"),
             "explicit choices stay"
         );
-        std::fs::remove_dir_all(folder).unwrap();
-    }
-
-    #[test]
-    fn missing_defaults_are_the_first_catalog_models_for_unset_services() {
-        let folder = std::env::temp_dir().join(format!("jevons-missing-{}", std::process::id()));
-        let catalog = crate::catalog::builtin();
-        let ids = |models: &Models| -> Vec<String> {
-            models
-                .missing_defaults(&folder, &catalog)
-                .into_iter()
-                .map(|e| e.id)
-                .collect()
-        };
-        assert_eq!(
-            ids(&Models::default()),
-            ["diffusiongemma-26b-a4b-q4_k_m", "parakeet-tdt-0.6b-v3"]
-        );
-        let speech = Models {
-            speech: Some(ModelRef {
-                path: "/mine".into(),
-                mmproj: None,
-                catalog: None,
-            }),
-            ..Models::default()
-        };
-        assert_eq!(ids(&speech), ["diffusiongemma-26b-a4b-q4_k_m"]);
-        let dir = folder.join("parakeet-tdt-0.6b-v3");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(crate::download::COMPLETE_MARKER), b"").unwrap();
-        assert_eq!(ids(&Models::default()), ["diffusiongemma-26b-a4b-q4_k_m"]);
         std::fs::remove_dir_all(folder).unwrap();
     }
 
