@@ -1,21 +1,114 @@
+<p align="center"><img src="crates/jevons-desktop/assets/jevons.png" alt="jevons" width="140"></p>
+
 # jevons-rs
 
-A personal inference runtime in Rust. jevons-rs runs language and speech models on your own AMD GPU with [Burn](https://github.com/tracel-ai/burn) and [CubeCL](https://github.com/tracel-ai/cubecl), and serves them as three services behind APIs that existing tools already speak:
+**Context-aware dictation for your desktop, on models that run on your own GPU.**
+
+jevons is a tray app. Press a hotkey in any application and speak. It reads where you are (the application, the page, the field, the selection), transcribes you, picks a profile for that place, and decides whether to insert your words, replace the selection or rewrite the field. When the text needs editing, a language model writes it with that profile's instructions. Then jevons types the result into the field you started in.
+
+Everything runs locally. The speech, decision and language models run inside the app on an AMD GPU, through a Rust inference runtime built on [Burn](https://github.com/tracel-ai/burn) and [CubeCL](https://github.com/tracel-ai/cubecl). That runtime is also a server with OpenAI-compatible and [System One](https://docs.typesafe.ai/introduction) APIs (see [The runtime](#the-runtime)).
+
+> [!IMPORTANT]
+> **Hardware:** an AMD RDNA3-class GPU (32-lane waves with WMMA, such as the Radeon 8060S / `gfx1151`) and ROCm/HIP; NVIDIA (CUDA) GPUs and CPU inference are not supported yet. The default models need about 20 GB of GPU memory for DiffusionGemma and 1.2 GB for Parakeet. The desktop app is complete on Windows; Linux has the basics, and macOS has no tray or hotkey yet (see [Platform status](#platform-status)). All figures here come from one machine, a Radeon 8060S (ROCm 7.2.1).
+
+## The desktop app
+
+- **Context-aware.** On Windows, UI Automation gives the focused field's role and name, the selection, the text around the caret and the browser's address. Password fields are never read, text is truncated, and the clipboard is read only if you allow it.
+- **Profiles and destinations.** A profile is a small TOML file: rules that match an application, window, page or field, a priority, the action, how to deliver the text, and instructions for the rewrite. Destinations refine a profile for one field, such as a thread reply. Files reload as soon as you save them.
+- **Decides what to do.** The decision model answers only what the rules leave open: insert, replace or rewrite; whether the words need editing beyond punctuation; and which profile wins a tie. Below a threshold, your words are typed as heard, with no generation.
+- **Push-to-talk and live dictation.** Each has its own hotkey, and each either listens while held or toggles with a press. In live dictation the app ends a phrase at each pause and keeps all the audio. When you stop, the whole transcript is edited and inserted once.
+- **Live feedback.** A bubble above the tray icon shows the words as they are recognized, then the profile chosen, the action, a rewrite, and whether the text was inserted. It never takes the focus. Turn it off from the tray menu.
+- **Safe delivery.** Text goes only into the window the take started in, once every key is released. It is pasted with your clipboard restored, typed, set through the accessibility API, or left on the clipboard, as the profile says. If the focus moved, the text waits on the clipboard.
+- **An inspector for everything.** The window shows the live context and why each profile matched or not, every take with its decision probabilities, prompt and timings, the profiles, the settings and the models. **New profile from the current context** writes a profile whose rules match what you are looking at.
+- **Private by default.** The models run in the app, and its API listens on a loopback port with a random key. You can expose it on a port for other clients, or use a jevons server on another machine instead. Logs never contain your text; full traces stay in `~/jevons/traces`.
+
+### From speech to inserted text
+
+```mermaid
+flowchart LR
+    hotkey(["Hotkey"]) --> context["Context<br/>app · window · URL<br/>field · selection"]
+    hotkey --> speech["Speech<br/>Realtime transcription<br/>live words in the bubble"]
+    context --> profile["Profile<br/>rules · priority<br/>destination"]
+    speech --> profile
+    profile --> decide{"Decision<br/>insert · replace · rewrite<br/>needs editing?"}
+    decide -- "as heard" --> deliver["Delivery<br/>same window, keys released<br/>paste · type · set value"]
+    decide -- "edit" --> generate["Generation<br/>profile instructions"]
+    generate --> deliver
+    deliver --> trace[("Trace<br/>Takes tab · ~/jevons/traces")]
+```
+
+### Getting started
+
+jevons builds from source. On Windows you need:
+
+- [Rust](https://rustup.rs) 1.95 or newer, with the MSVC build tools.
+- The AMD HIP SDK ([build guide](docs/build.md#rocmhip)).
+- Python 3 from python.org or `winget install Python.Python.3.12`. The Blitz CSS engine generates code with it at build time; the Microsoft Store alias is not enough.
+- Smart App Control turned off, because it blocks the unsigned build scripts cargo compiles.
+
+```bash
+cargo run --release --locked -p jevons-desktop
+```
+
+The app starts in the tray, with no console window.
+
+1. **Download the models.** Open the window (**Show context inspector** in the tray menu) and go to **Models**. Press **Download** on DiffusionGemma (about 18 GB, with its vision projector) and Parakeet (2.5 GB). They go to `~/jevons/models`, or to a folder you choose. Nothing downloads by itself, and **Use existing…** points at models already on disk.
+2. **Wait for the first load.** The icon is blue while the models load. On the first runs on a machine it turns amber while GPU kernels are tuned, which takes a few minutes and is cached for later runs.
+3. **Dictate.** When the icon glows cyan, hold `Ctrl+Alt+Space` in any text field and speak. Hold `F9` for live dictation. **Settings** changes the hotkeys, the hold-or-toggle mode, the microphone and the language. Set the language if you always speak one: the transcript then stays in that language's alphabet.
+
+Settings are in `%APPDATA%\jevons\config\jevons-desktop.toml` (see [jevons-desktop.example.toml](jevons-desktop.example.toml)). Profiles are in the `profiles` folder next to it. Logs and traces are in `~/jevons`, which the tray's **Open logs and traces** opens.
+
+### Profiles
+
+```toml
+id = "chat"
+name = "Chat"
+priority = 20                   # higher wins among matching profiles
+action = "auto"                 # insert | replace | rewrite | auto
+delivery = "paste"              # paste | type | set_value | clipboard
+instructions = "Casual and concise. No sign-off."
+
+[match]                         # every rule that is set must match
+app = ["slack.exe", "*teams*"]
+url = ["https://app.slack.com/*"]
+
+[[destinations]]
+id = "thread-reply"
+instructions = "One or two sentences."
+[destinations.match]
+element_name = "(?i)reply"
+```
+
+The built-in `default` profile matches everything at the lowest priority. The tray's **Profile** menu forces one, and a hotkey per profile dictates with it. [examples/desktop/profiles](examples/desktop/profiles) has profiles for chat apps, web mail, code editors and notes.
+
+### The tray icon
+
+<img src="crates/jevons-desktop/assets/tray.png" alt="Tray states: ready, loading, tuning, no models, failed, listening (quiet and loud), transcribing, writing" width="680">
+
+From left to right: ready (cyan), models loading (blue), kernels tuning (amber), no models (grey), a failed take (red), listening (the waveform follows your voice), transcribing and writing.
+
+### Platform status
+
+| Layer | Windows | Linux | macOS |
+| --- | --- | --- | --- |
+| Context | UI Automation: role, name, selection, caret text, browser address | active window only | active window only |
+| Text input | paste, type (SendInput) or set value (UI Automation) | clipboard | clipboard |
+| Microphone | CPAL (WASAPI) | CPAL (ALSA/PulseAudio) | CPAL (CoreAudio) |
+| Hotkey, tray | global-hotkey, tray-icon | global-hotkey (X11), tray-icon (AppIndicator) | not yet |
+
+Every platform layer is a trait in `jevons-desktop-core`, with the pipeline, profiles and tray states shared across platforms. The [desktop guide](docs/desktop.md) covers profiles, the inspector, settings, models, headless replay and the app's threads.
+
+## The runtime
+
+The app's models run on a Rust inference runtime, which is also a server for other tools. It offers three services behind APIs that existing clients already speak:
 
 - **Generative:** free-form chat and text from diffusion language models, through the OpenAI-compatible Chat Completions, Completions and Responses APIs (streaming included), for OpenAI SDKs, Open WebUI and other clients.
 - **Speech:** speech to text, through the OpenAI-compatible transcriptions API for uploads (subtitles and word timestamps included) and Realtime transcription over a WebSocket for live dictation.
 - **Decision:** typed, probabilistic answers (yes/no, choice, rubric scores) about a state and a set of questions, read from a diffusion model's masked canvas in one pass, through the [System One](https://docs.typesafe.ai/introduction) API.
 
-<img src="crates/jevons-desktop/assets/jevons.png" alt="jevons-desktop" width="72" align="left">
-
-**jevons-desktop** is a tray app on top: context-aware dictation that reads the focused application and field, picks a profile, and types, replaces or rewrites text where you are. It runs the models itself or uses a jevons server (see [Desktop dictation](docs/desktop.md)).
-
 Everything is Rust: model code, GPU kernels (written in CubeCL and compiled at runtime for the device), audio decoding and the HTTP server. There is no Python, llama.cpp or C/C++ build. Each model runs on its own worker thread with a bounded queue, so a transcription never waits behind a long generation.
 
-> [!IMPORTANT]
-> **Hardware:** an AMD RDNA3-class GPU (32-lane waves with WMMA, such as the Radeon 8060S / `gfx1151`) and ROCm/HIP; NVIDIA (CUDA) GPUs and CPU inference are not supported yet. GPU memory needed depends on the models you load: about 20 GB for DiffusionGemma, 18 GB for Nemotron-Labs-Diffusion 8B, 7 GB for its 3B, and 1.2 GB for Parakeet. All figures here come from one machine, a Radeon 8060S (ROCm 7.2.1 under WSL2).
-
-## Architecture
+### Architecture
 
 ```mermaid
 flowchart TB
@@ -80,7 +173,7 @@ flowchart TB
 - **Diffusion layer** (`jevons-diffusion`): the part Generative and Decision share. `DiffusionEngine` owns a loaded diffusion model with its chat framing, verified answer codes and context limits, and generates bounded token runs (thoughts and answers) with masked or uniform-noise diffusion, self-speculation or autoregressive decoding.
 - **Models** implement the contracts in `jevons-core` (`DiffusionModel`, `SpeechModel`), and `jevons-models` detects which one a model file holds. DiffusionGemma runs on hand-tuned CubeCL kernels, while Nemotron-Labs-Diffusion and Parakeet run on Burn, all on the same CubeCL runtime and HIP device.
 
-## Models
+### Models
 
 | Model | Kind | Runtime | Services |
 | --- | --- | --- | --- |
@@ -90,9 +183,9 @@ flowchart TB
 
 A settings file declares each model once and points services at it: Generative and Decision usually share one loaded diffusion model (one engine and queue, the masked canvas used or not per request), and can also use two different ones. The architecture is detected from the model files. Obtain the models yourself and check their licenses.
 
-## Quick start
+### Running the server
 
-You need Rust 1.95+, ROCm/HIP ([build guide](docs/build.md#rocmhip)) and at least one model. Describe the models and the services that use them in `jevons.toml`:
+The desktop app embeds the runtime, so this is only needed to serve other clients or a remote desktop app. You need Rust 1.95+, ROCm/HIP ([build guide](docs/build.md#rocmhip)) and at least one model. Describe the models and the services that use them in `jevons.toml`:
 
 ```toml
 [server]
@@ -121,11 +214,11 @@ Without `--config`, the server reads `./jevons.toml` or `~/.config/jevons/config
 
 The first start on a new GPU compiles and tunes kernels for a few minutes; later starts reuse the caches in `~/.cache/diffusion-cubecl` (DiffusionGemma) and `~/.cache/jevons-burn` (Burn models). Every loaded model is listed by `GET /v1/models`, under its ID and aliases: the language model also answers to `jev-latest`, and Parakeet to `parakeet-latest`, which the examples below use.
 
-## API examples
+### API examples
 
 Run these from the repository root against the server above. [examples/openai-sdk.py](examples/openai-sdk.py) runs the OpenAI-compatible ones through the official Python SDK (`uv run examples/openai-sdk.py`).
 
-### Generative: Chat Completions
+#### Generative: Chat Completions
 
 ```bash
 curl http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" \
@@ -145,7 +238,7 @@ print(reply.choices[0].message.content)
 
 Add `"stream": true` for server-sent events. `reasoning_effort` lets the model think before it answers. Decoding is greedy; tools, several choices and log probabilities are rejected with `400`.
 
-### Generative: Responses and Completions
+#### Generative: Responses and Completions
 
 ```bash
 curl http://127.0.0.1:8080/v1/responses -H "Content-Type: application/json" \
@@ -156,7 +249,7 @@ curl http://127.0.0.1:8080/v1/completions -H "Content-Type: application/json" \
 
 Responses takes `instructions`, text `input` or messages, and `reasoning.effort`; nothing is stored. Completions continues raw text without chat markers. See [OpenAI-compatible generation](docs/api.md#openai-compatible-generation).
 
-### Speech: transcriptions
+#### Speech: transcriptions
 
 ```bash
 curl http://127.0.0.1:8080/v1/audio/transcriptions \
@@ -172,7 +265,7 @@ with open("examples/speech-es-browser.webm", "rb") as audio:
 
 The server accepts WAV, FLAC, MP3, OGG Vorbis or Opus, WebM/Opus (what browsers record) and M4A. Responses come as `json`, `text`, `srt`, `vtt` or `verbose_json` with segment and word timestamps, optionally streamed. Recordings longer than two minutes are transcribed in overlapping windows. See [speech to text](docs/api.md#speech-to-text).
 
-### Speech: Realtime transcription
+#### Speech: Realtime transcription
 
 ```bash
 uv run examples/realtime.py examples/speech-es.flac --url ws://127.0.0.1:8080/v1/realtime --language es
@@ -180,7 +273,7 @@ uv run examples/realtime.py examples/speech-es.flac --url ws://127.0.0.1:8080/v1
 
 `GET /v1/realtime` speaks the OpenAI Realtime protocol for transcription sessions (the GA events and the beta `transcription_session.*` ones). Clients stream PCM16 (or G.711) audio. A server-side turn detector commits each turn at a pause, or the client commits it. Words agreed by consecutive passes arrive as deltas while the user speaks, and the final transcript follows each turn. The example script streams a file at real-time pace; the OpenAI SDK's `client.realtime.connect(...)` works too.
 
-### Decision: System One
+#### Decision: System One
 
 ```bash
 curl http://127.0.0.1:8080/v1/systemone -H "Content-Type: application/json" \
@@ -202,14 +295,14 @@ With Nemotron-Labs-Diffusion 3B, abbreviated:
 
 The [example](examples/system-one.json) asks three question types about a construction material; [hotdog.json](examples/hotdog.json) asks about a photo. The [System One guide](docs/system-one.md) explains the masked canvas, extensions (`steps`, `samples`, `think`, `sequential`, `images`) and the image example. [JavaScript SDK examples](examples/javascript/README.md) show application code.
 
-## Clients
+### Clients
 
 - **OpenAI SDKs** (Python, JavaScript and others): set `base_url` to `http://127.0.0.1:8080/v1`. Chat, Responses, Completions, transcriptions and Realtime transcription sessions all parse into the SDKs' own types.
 - **Open WebUI:** add an OpenAI connection with the base URL above for chat. For dictation and voice calls, set Admin Panel → Settings → Audio → Speech-to-Text to the *OpenAI* engine with the same URL and model `parakeet-tdt-0.6b-v3`, and use *Web API* for text to speech. The model selector picks the chat model; dictation always uses the Audio setting.
 - **jevons-desktop:** tray dictation into any application, with profiles per app, page and field (see [Desktop dictation](docs/desktop.md)).
 - **TypeSafe SDKs:** set `TYPESAFE_BASE_URL=http://127.0.0.1:8080` and use `jev-latest`. No connection to TypeSafe or Codiv infrastructure is needed.
 
-## Performance
+### Performance
 
 On the Radeon 8060S, measured when warm:
 
