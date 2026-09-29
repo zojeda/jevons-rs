@@ -36,11 +36,7 @@ pub fn SettingsPage(rev: u64) -> Element {
     let config_file = view.config_file.display().to_string();
     let status = view.runtime.clone();
     let devices = view.devices.clone();
-    let profiles: Vec<(String, String)> = view
-        .profiles
-        .iter()
-        .map(|p| (p.spec.id.clone(), p.display_name().to_string()))
-        .collect();
+    let entries = view.flows.entries();
     drop(view);
 
     let d = draft();
@@ -54,7 +50,6 @@ pub fn SettingsPage(rev: u64) -> Element {
         value: Some(m.name.clone()),
         label: m.name.clone(),
     }));
-    let threshold = format!("{:.2}", d.dictation.generation_threshold);
     let apply = ctx.clone();
 
     rsx! {
@@ -141,7 +136,7 @@ pub fn SettingsPage(rev: u64) -> Element {
                 div { class: "field",
                     div { class: "stack",
                         span { class: "field-label", "Push-to-talk" }
-                        span { class: "field-hint", "Also the profile hotkeys" }
+                        span { class: "field-hint", "Also the branch hotkeys" }
                     }
                     HotkeyField { value: d.dictation.hotkey.clone(), optional: false,
                         onchange: move |h: String| if !h.is_empty() { draft.write().dictation.hotkey = h } }
@@ -190,21 +185,8 @@ pub fn SettingsPage(rev: u64) -> Element {
                 }
                 div { class: "field",
                     span { class: "field-label", "Decide" }
-                    Switch { checked: d.dictation.decide, label: "Ask the decision model which action to take".to_string(),
+                    Switch { checked: d.dictation.decide, label: "Ask the decision model at the flow tree's decisions (off: their fallbacks)".to_string(),
                         onchange: move |on| draft.write().dictation.decide = on }
-                }
-                div { class: "field",
-                    div { class: "stack",
-                        span { class: "field-label", "Rewrite threshold" }
-                        span { class: "field-hint", "Below it, text is typed as heard" }
-                    }
-                    div { class: "stepper",
-                        button { class: "dx-button", "data-style": "outline", "data-size": "xs",
-                            onclick: move |_| { let mut c = draft.write(); c.dictation.generation_threshold = (c.dictation.generation_threshold - 0.05).max(0.0); }, "−" }
-                        span { class: "value", "{threshold}" }
-                        button { class: "dx-button", "data-style": "outline", "data-size": "xs",
-                            onclick: move |_| { let mut c = draft.write(); c.dictation.generation_threshold = (c.dictation.generation_threshold + 0.05).min(1.0); }, "+" }
-                    }
                 }
                 div { class: "field",
                     span { class: "field-label", "Max output tokens" }
@@ -217,24 +199,27 @@ pub fn SettingsPage(rev: u64) -> Element {
         div { class: "dx-card",
             div { class: "dx-card-header",
                 div {
-                    div { class: "dx-card-title", "Dictate with a profile" }
-                    div { class: "dx-card-description", "A push-to-talk hotkey that uses this profile, whatever the context matches" }
+                    div { class: "dx-card-title", "Start at a branch" }
+                    div { class: "dx-card-description", "A push-to-talk hotkey that starts the take at this branch of the flow tree instead of its root" }
                 }
             }
             div { class: "dx-card-content",
-                {profiles.into_iter().map(|(id, name)| {
-                    let value = d.dictation.profile_hotkeys.get(&id).cloned().unwrap_or_default();
+                {entries.into_iter().map(|(id, description)| {
+                    let value = d.dictation.branch_hotkeys.get(&id).cloned().unwrap_or_default();
                     let key = id.clone();
                     rsx! {
                         div { class: "field", key: "{id}",
-                            span { class: "field-label", "{name}" }
+                            div { class: "stack",
+                                span { class: "field-label mono", "{id}" }
+                                span { class: "field-hint", "{description}" }
+                            }
                             HotkeyField { value, optional: true,
                                 onchange: move |h: String| {
                                     let mut c = draft.write();
                                     if h.is_empty() {
-                                        c.dictation.profile_hotkeys.remove(&key);
+                                        c.dictation.branch_hotkeys.remove(&key);
                                     } else {
-                                        c.dictation.profile_hotkeys.insert(key.clone(), h);
+                                        c.dictation.branch_hotkeys.insert(key.clone(), h);
                                     }
                                 } }
                         }

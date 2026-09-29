@@ -14,9 +14,9 @@ pub struct DesktopConfig {
     pub models: Models,
     pub dictation: Dictation,
     pub privacy: Privacy,
-    /// The profiles folder; defaults to `profiles` next to this file.
+    /// The flow tree's folder; defaults to `flows` next to this file.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub profiles_dir: Option<PathBuf>,
+    pub flows_dir: Option<PathBuf>,
 }
 
 /// Where inference runs.
@@ -147,7 +147,7 @@ pub enum HotkeyMode {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Dictation {
-    /// Push-to-talk, and the per-profile hotkeys, which work the same way.
+    /// Push-to-talk, and the branch hotkeys, which work the same way.
     pub hotkey: String,
     /// Whether the push-to-talk hotkeys are held while speaking or pressed to start and stop.
     pub hotkey_mode: HotkeyMode,
@@ -156,28 +156,25 @@ pub struct Dictation {
     pub live_hotkey: Option<String>,
     pub live_hotkey_mode: HotkeyMode,
     /// A bubble by the tray icon shows what dictation hears and does: the words as they are
-    /// recognized, the profile chosen, and the text delivered.
+    /// recognized, the route through the flow tree, and the text delivered.
     pub live_feedback: bool,
-    /// Ignored: live dictation used to type while speaking.
-    #[serde(rename = "live_stream", skip_serializing)]
-    pub legacy_live_stream: Option<bool>,
     /// Shows the inspector window.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inspector_hotkey: Option<String>,
-    /// Dictate with a given profile, whatever the context matches: profile id → hotkey.
+    /// Push-to-talk hotkeys that start the take at a branch of the flow tree instead of its
+    /// root: branch path (such as `ask`) → hotkey.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub profile_hotkeys: BTreeMap<String, String>,
+    pub branch_hotkeys: BTreeMap<String, String>,
     /// The capture device name; the default device when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub microphone: Option<String>,
     /// An ISO-639-1 code; detected when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
-    /// Ask the decision model which action to take and whether to rewrite.
+    /// Ask the decision model at the flow tree's model decisions; when off, they take their
+    /// fallback (or the best-ranked branch).
     pub decide: bool,
-    /// Below this probability that the text needs editing, the transcript is typed as is.
-    pub generation_threshold: f64,
-    /// The most tokens a rewrite may generate.
+    /// The most tokens a generation writes, unless a flow node sets its own.
     pub max_output_tokens: u32,
 }
 
@@ -189,13 +186,11 @@ impl Default for Dictation {
             live_hotkey: Some("F9".into()),
             live_hotkey_mode: HotkeyMode::Hold,
             live_feedback: true,
-            legacy_live_stream: None,
             inspector_hotkey: None,
-            profile_hotkeys: BTreeMap::new(),
+            branch_hotkeys: BTreeMap::new(),
             microphone: None,
             language: None,
             decide: true,
-            generation_threshold: 0.5,
             max_output_tokens: 1024,
         }
     }
@@ -260,13 +255,10 @@ impl DesktopConfig {
         std::fs::write(file, text).map_err(io)
     }
 
-    pub fn profiles_dir(&self, config_file: &Path) -> PathBuf {
-        self.profiles_dir.clone().unwrap_or_else(|| {
-            config_file
-                .parent()
-                .unwrap_or(Path::new("."))
-                .join("profiles")
-        })
+    pub fn flows_dir(&self, config_file: &Path) -> PathBuf {
+        self.flows_dir
+            .clone()
+            .unwrap_or_else(|| config_file.parent().unwrap_or(Path::new(".")).join("flows"))
     }
 
     /// The models folder: the configured one, else `~/jevons/models`.
@@ -308,14 +300,6 @@ mod tests {
     }
 
     #[test]
-    fn settings_saved_before_live_feedback_still_load() {
-        let config: DesktopConfig = toml::from_str("[dictation]\nlive_stream = true\n").unwrap();
-        assert!(config.dictation.live_feedback);
-        let saved = toml::to_string(&config).unwrap();
-        assert!(!saved.contains("live_stream"), "{saved}");
-    }
-
-    #[test]
     fn saved_settings_load_back_unchanged() {
         let dir =
             std::env::temp_dir().join(format!("jevons-desktop-config-{}", std::process::id()));
@@ -326,8 +310,8 @@ mod tests {
         config.dictation.inspector_hotkey = Some("Ctrl+Alt+I".into());
         config
             .dictation
-            .profile_hotkeys
-            .insert("chat".into(), "Ctrl+Alt+C".into());
+            .branch_hotkeys
+            .insert("ask".into(), "Ctrl+Alt+A".into());
         config.models.speech = Some(ModelRef {
             path: "/models/parakeet".into(),
             mmproj: None,

@@ -1,20 +1,22 @@
-//! One dictation take: stream the microphone to the transcriber, choose a profile, ask the
-//! decision model what to do, generate the text when it needs editing, and deliver it.
+//! One take: stream the microphone to the transcriber, walk the flow tree to a leaf, and send
+//! the leaf's text where it says: into the application, the bubble or the clipboard.
 //!
 //! Every step is recorded in a [`Trace`] for the inspector.
 
 use crate::client::{
-    Answer, Client, ClientError, DecisionRequest, DecisionResponse, Question, RealtimeEvent,
-    ResponseRequest, Turns,
+    Client, ClientError, DecisionRequest, DecisionResponse, RealtimeEvent, ResponseRequest, Turns,
 };
 use crate::context::ContextSnapshot;
 use crate::delivery::{Decision, Pending};
+use crate::flow::FlowTree;
+use crate::flow::frame::Frame;
+use crate::flow::investigate::Investigate;
+use crate::flow::spec::Output;
+use crate::flow::walk::{self, FlowStep, Leaf};
 use crate::platform::{
-    Action, AudioEvent, DeliveryOutcome, DeliveryRequest, SAMPLE_RATE, TextSink,
+    Action, AudioEvent, DeliveryMethod, DeliveryOutcome, DeliveryRequest, SAMPLE_RATE, TextSink,
 };
-use crate::profile::{ActionPreference, DeliveryMethod, Effective, Profiles, Resolution};
 use serde::Serialize;
-use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, oneshot};
@@ -110,11 +112,6 @@ const LIVE_DRAIN: Duration = Duration::from_secs(5);
 /// How long to wait for the final transcript after the take ends.
 const TRANSCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
 
-const BASE_INSTRUCTIONS: &str = "You turn dictated speech into the exact text to type into the \
-focused field of the user's application. Output only that text: no quotes, no preamble, no \
-commentary. Fix punctuation, capitalization and obvious recognition errors, and keep the \
-user's language and meaning.";
-
 /// The model ids to request; each is `None` when that service is not available.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct ServiceModels {
@@ -129,8 +126,9 @@ pub struct Settings {
     /// Try Realtime first; uploads are the fallback.
     pub realtime: bool,
     pub language: Option<String>,
+    /// Ask the decision model at model decisions; when off, they take their fallback.
     pub decide: bool,
-    pub generation_threshold: f64,
+    /// The most tokens a generation writes, unless a flow node sets its own.
     pub max_output_tokens: u32,
     /// How long the decision may take before the transcript is typed as heard.
     pub decision_timeout: Duration,
@@ -145,7 +143,6 @@ impl Default for Settings {
             realtime: true,
             language: None,
             decide: true,
-            generation_threshold: 0.5,
             max_output_tokens: 1024,
             decision_timeout: Duration::from_secs(60),
             generation_timeout: Duration::from_secs(120),
@@ -156,10 +153,13 @@ impl Default for Settings {
 /// What the pipeline needs from the app.
 pub struct Env {
     pub client: Client,
-    pub profiles: Arc<Profiles>,
+    /// The flow tree takes walk (the last one that loaded without errors).
+    pub flows: Arc<FlowTree>,
     pub settings: Settings,
     /// `None` for a dry run: the text is only recorded.
     pub sink: Option<Arc<Mutex<Box<dyn TextSink>>>>,
+    /// Answers `[investigate]` questions; without it their answers are empty.
+    pub investigator: Option<Arc<dyn Investigate>>,
 }
 
 /// A take as it starts.
@@ -167,8 +167,8 @@ pub struct Env {
 pub struct TakeStart {
     pub id: u64,
     pub context: ContextSnapshot,
-    /// The profile forced from the tray.
-    pub forced_profile: Option<String>,
+    /// The branch of the flow tree to start at, such as `ask`; `None` starts at the root.
+    pub entry: Option<String>,
 }
 
 /// Live updates for the tray and inspector.
@@ -181,7 +181,7 @@ pub enum Update {
     Heard(String),
     Transcribing,
     Thinking,
-    /// A step of processing, such as the profile chosen or the action decided.
+    /// A step of processing, such as the route through the flow tree.
     Step(String),
     /// Generated text.
     Output(String),
@@ -218,10 +218,12 @@ pub struct Trace {
     pub audio_seconds: f64,
     pub transcription: Option<TranscriptionPath>,
     pub transcript: String,
-    pub resolution: Option<Resolution>,
-    pub effective: Option<Effective>,
-    pub decision: Option<DecisionTrace>,
-    pub action: Option<Action>,
+    /// Where the walk started: `/` for the root, or a branch a hotkey starts at.
+    pub entry: String,
+    /// Every node the walk went through, with the guards, decisions and investigations.
+    pub flow: Vec<FlowStep>,
+    /// Where the walk ended and where its text goes.
+    pub leaf: Option<Leaf>,
     pub generation: Option<GenerationTrace>,
     /// The text delivered (or that would be, in a dry run).
     pub output: String,
@@ -245,10 +247,9 @@ impl Trace {
             audio_seconds: 0.0,
             transcription: None,
             transcript: String::new(),
-            resolution: None,
-            effective: None,
-            decision: None,
-            action: None,
+            entry: start.entry.clone().unwrap_or_else(|| "/".into()),
+            flow: Vec::new(),
+            leaf: None,
             generation: None,
             output: String::new(),
             delivery: None,
@@ -261,6 +262,16 @@ impl Trace {
     fn time(&mut self, step: &str, since: Instant) {
         self.timings
             .push((step.into(), since.elapsed().as_millis() as u64));
+    }
+
+    /// The branches taken, such as `dictate/notes → _actions/rewrite`.
+    pub fn route(&self) -> String {
+        self.flow
+            .iter()
+            .filter(|s| s.node != "/")
+            .map(|s| s.node.as_str())
+            .collect::<Vec<_>>()
+            .join(" → ")
     }
 }
 
@@ -308,7 +319,7 @@ pub async fn run_take(
     finish_take(env, &start, updates, trace).await
 }
 
-/// Chooses the profile and action for a transcribed take, produces its text and delivers it.
+/// Walks the flow tree for a transcribed take and sends the leaf's text where it goes.
 async fn finish_take(
     env: &Env,
     start: &TakeStart,
@@ -316,15 +327,63 @@ async fn finish_take(
     mut trace: Trace,
 ) -> Trace {
     let take = start.id;
-    if let Err(e) = process(env, start, updates, &mut trace).await {
-        trace.error = Some(e.to_string());
-        return trace;
-    }
+    let tree = env.flows.clone();
+    let entry = match start.entry.as_deref() {
+        Some(path) => tree.find(path).unwrap_or_else(|| {
+            trace.notes.push(format!(
+                "The flow tree has no branch {path}: starting at the root"
+            ));
+            tree.root()
+        }),
+        None => tree.root(),
+    };
+    trace.entry = tree.node(entry).label().to_string();
+    let frame = Frame::new(start.context.clone(), trace.transcript.clone());
+    let walked = Instant::now();
+    let leaf = walk::run(env, &tree, entry, frame, updates, &mut trace).await;
+    trace.time("walk", walked);
+    let leaf = match leaf {
+        Ok(leaf) => leaf,
+        Err(e) => {
+            trace.error = Some(e.to_string());
+            return trace;
+        }
+    };
+    tracing::info!(take, leaf = %leaf.node, output = ?leaf.output, "Walked the flow tree");
+    trace.output = leaf.text.clone();
     let delivered = Instant::now();
-    match deliver(env, start, &mut trace).await {
-        Ok(outcome) => trace.delivery = outcome,
-        Err(e) => trace.error = Some(e),
+    if leaf.text.trim().is_empty() {
+        trace
+            .notes
+            .push("The text is empty: nothing was delivered".into());
+    } else {
+        match leaf.output {
+            Output::Target => match deliver(env, start, &leaf).await {
+                Ok(outcome) => trace.delivery = outcome,
+                Err(e) => trace.error = Some(e),
+            },
+            Output::Clipboard => {
+                if let Some(sink) = &env.sink {
+                    trace.delivery = match sink
+                        .lock()
+                        .expect("the sink lock is not poisoned")
+                        .copy(&leaf.text)
+                    {
+                        Ok(()) => Some(DeliveryOutcome::OnClipboard {
+                            reason: "the flow sends it to the clipboard".into(),
+                        }),
+                        Err(e) => {
+                            trace.error = Some(e.to_string());
+                            None
+                        }
+                    };
+                }
+            }
+            Output::Bubble => trace.delivery = Some(DeliveryOutcome::Shown),
+            Output::None | Output::Next => {}
+        }
     }
+    trace.leaf = Some(leaf);
     trace.time("deliver", delivered);
     tracing::info!(
         take,
@@ -333,6 +392,7 @@ async fn finish_take(
         outcome = ?trace.delivery.as_ref().map(|d| match d {
             DeliveryOutcome::Delivered { method } => format!("{method:?}"),
             DeliveryOutcome::OnClipboard { .. } => "clipboard".into(),
+            DeliveryOutcome::Shown => "bubble".into(),
         }),
         error = trace.error.is_some(),
         "Delivered"
@@ -459,6 +519,24 @@ async fn transcribe(
         .transcribe(&buffer, SAMPLE_RATE, model, settings.language.as_deref())
         .await?;
     Ok(transcription.text)
+}
+
+/// Runs a take from text instead of audio, as if it had been said: the headless `--transcript`
+/// mode, and a way to test a flow tree without speaking.
+pub async fn run_transcript(
+    env: &Env,
+    start: TakeStart,
+    transcript: &str,
+    updates: &mpsc::UnboundedSender<Update>,
+) -> Trace {
+    let mut trace = Trace::new(&start);
+    trace.transcript = transcript.trim().to_string();
+    if trace.transcript.is_empty() {
+        trace.error = Some("The transcript is empty".into());
+        return trace;
+    }
+    let _ = updates.send(Update::Thinking);
+    finish_take(env, &start, updates, trace).await
 }
 
 /// Live dictation: the audio streams to Realtime until `stop` fires, the app ending a phrase
@@ -631,351 +709,20 @@ fn starts_with_punctuation(text: &str) -> bool {
     text.starts_with(|c: char| ",.;:!?)".contains(c))
 }
 
-/// Chooses the profile and action and produces the text, filling `trace`.
-async fn process(
-    env: &Env,
-    start: &TakeStart,
-    updates: &mpsc::UnboundedSender<Update>,
-    trace: &mut Trace,
-) -> Result<(), ClientError> {
-    let settings = &env.settings;
-    let context = &start.context;
-    let mut resolution = env
-        .profiles
-        .resolve(context, start.forced_profile.as_deref());
-    let mut effective = env
-        .profiles
-        .effective(&resolution.profile, resolution.destination.as_deref());
-
-    // Ask the decision model what only it can tell.
-    let has_text = context.has_text();
-    let has_selection = context.selection().is_some();
-    let ask_action = effective.action == ActionPreference::Auto && has_text;
-    let ask_generation =
-        settings.models.generative.is_some() && effective.action != ActionPreference::Rewrite;
-    let ask_profile = !resolution.tied.is_empty();
-    let mut action_answer = None;
-    let mut needs_generation = None;
-    let mut model_stalled = false;
-    if let Some(model) = settings.models.decision.clone().filter(|_| settings.decide)
-        && (ask_action || ask_generation || ask_profile)
-    {
-        let request = decision_request(
-            model,
-            env,
-            context,
-            &resolution,
-            &effective,
-            &trace.transcript,
-            ask_action.then_some(has_selection),
-            ask_generation,
-        );
-        let began = Instant::now();
-        tracing::info!(take = start.id, model = %request.model, questions = request.questions.len(), "Deciding");
-        let response =
-            tokio::time::timeout(settings.decision_timeout, env.client.decide(&request)).await;
-        trace.time("decide", began);
-        tracing::info!(
-            take = start.id,
-            ms = began.elapsed().as_millis() as u64,
-            ok = matches!(response, Ok(Ok(_))),
-            timed_out = response.is_err(),
-            "Decided"
-        );
-        let response = match response {
-            Ok(response) => response,
-            Err(_) => {
-                // The model is busy or stuck: generation would wait behind it too.
-                model_stalled = true;
-                Err(ClientError::Protocol(format!(
-                    "no answer within {} s",
-                    settings.decision_timeout.as_secs()
-                )))
-            }
-        };
-        match response {
-            Ok(response) => {
-                if let Some(Answer::Choice { choice, .. }) = response.answers.get("profile") {
-                    let destination = env.profiles.resolve(context, Some(choice)).destination;
-                    resolution.profile = choice.clone();
-                    resolution.destination = destination;
-                    effective = env
-                        .profiles
-                        .effective(&resolution.profile, resolution.destination.as_deref());
-                }
-                if let Some(Answer::Choice { choice, .. }) = response.answers.get("action") {
-                    action_answer = Some(choice.clone());
-                }
-                if let Some(Answer::Noul { noul }) = response.answers.get("needs_generation") {
-                    needs_generation = Some(*noul);
-                }
-                trace.decision = Some(DecisionTrace {
-                    request,
-                    response: Some(response),
-                });
-            }
-            Err(e) => {
-                trace.notes.push(format!("Skipped the decision: {e}"));
-                trace.decision = Some(DecisionTrace {
-                    request,
-                    response: None,
-                });
-            }
-        }
-    }
-
-    let action = choose_action(
-        effective.action,
-        action_answer.as_deref(),
-        has_text,
-        has_selection,
-    );
-    let generate = match settings.models.generative {
-        None => false,
-        Some(_) if model_stalled => false,
-        Some(_) if action == Action::Rewrite => true,
-        Some(_) => needs_generation.is_none_or(|p| p >= settings.generation_threshold),
-    };
-    let _ = updates.send(Update::Step(match &resolution.destination {
-        Some(destination) => format!("Profile {} → {destination}", resolution.profile),
-        None => format!("Profile {}", resolution.profile),
-    }));
-    let _ = updates.send(Update::Step(
-        match action {
-            Action::Insert => "Insert at the caret",
-            Action::Replace => "Replace the selection",
-            Action::Rewrite => "Rewrite the field",
-        }
-        .into(),
-    ));
-    trace.action = Some(action);
-    trace.resolution = Some(resolution);
-    trace.output = trace.transcript.clone();
-    if action == Action::Rewrite && settings.models.generative.is_none() {
-        trace
-            .notes
-            .push("No generative model: inserting the transcript instead of rewriting".into());
-        trace.action = Some(Action::Insert);
-    } else if generate && let Some(model) = &settings.models.generative {
-        let request =
-            generation_request(model, env, context, &effective, action, &trace.transcript);
-        let began = Instant::now();
-        let _ = updates.send(Update::Step("Editing with the language model".into()));
-        tracing::info!(take = start.id, model = %request.model, action = ?action, "Generating");
-        let generated = tokio::time::timeout(
-            settings.generation_timeout,
-            env.client.respond(&request, |delta| {
-                let _ = updates.send(Update::Output(delta.to_string()));
-            }),
-        )
-        .await;
-        trace.time("generate", began);
-        tracing::info!(
-            take = start.id,
-            ms = began.elapsed().as_millis() as u64,
-            ok = matches!(generated, Ok(Ok(_))),
-            timed_out = generated.is_err(),
-            "Generated"
-        );
-        match generated {
-            Ok(output) => {
-                let output = output?;
-                trace.output = output.trim().to_string();
-                trace.generation = Some(GenerationTrace { request, output });
-            }
-            Err(_) => {
-                trace.notes.push(format!(
-                    "Generation gave no answer within {} s: typing the transcript as heard",
-                    settings.generation_timeout.as_secs()
-                ));
-                trace.generation = Some(GenerationTrace {
-                    request,
-                    output: String::new(),
-                });
-            }
-        }
-    } else if model_stalled {
-        trace
-            .notes
-            .push("The language model did not answer: typing the transcript as heard".into());
-    }
-    trace.effective = Some(effective);
-    Ok(())
-}
-
-fn choose_action(
-    preference: ActionPreference,
-    answer: Option<&str>,
-    has_text: bool,
-    has_selection: bool,
-) -> Action {
-    let wanted = match preference {
-        ActionPreference::Insert => Action::Insert,
-        ActionPreference::Replace => Action::Replace,
-        ActionPreference::Rewrite => Action::Rewrite,
-        ActionPreference::Auto => match answer {
-            Some("replace") => Action::Replace,
-            Some("rewrite") => Action::Rewrite,
-            _ => Action::Insert,
-        },
-    };
-    match wanted {
-        Action::Replace if !has_selection => Action::Insert,
-        Action::Rewrite if !has_text => Action::Insert,
-        other => other,
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn decision_request(
-    model: String,
-    env: &Env,
-    context: &ContextSnapshot,
-    resolution: &Resolution,
-    effective: &Effective,
-    transcript: &str,
-    action_with_selection: Option<bool>,
-    ask_generation: bool,
-) -> DecisionRequest {
-    let mut state = context.describe();
-    if !effective.instructions.is_empty() {
-        state.push_str(&format!(
-            "Instructions for this field: {}\n",
-            effective.instructions.join(" ")
-        ));
-    }
-    state.push_str(&format!("The user dictated: {transcript:?}\n"));
-    let mut questions = BTreeMap::new();
-    if let Some(has_selection) = action_with_selection {
-        let mut criteria = BTreeMap::from([
-            (
-                "insert".to_string(),
-                "Add the dictated text at the cursor, keeping the existing text".to_string(),
-            ),
-            (
-                "rewrite".to_string(),
-                "The dictation is an instruction to edit the existing or selected text".to_string(),
-            ),
-        ]);
-        if has_selection {
-            criteria.insert(
-                "replace".into(),
-                "Replace the selected text with the dictated text".into(),
-            );
-        }
-        questions.insert(
-            "action".into(),
-            Question::Choice {
-                instructions: Some("What should happen with the dictation?".into()),
-                criteria,
-            },
-        );
-    }
-    if ask_generation {
-        questions.insert(
-            "needs_generation".into(),
-            Question::Noul {
-                instructions: Some(
-                    "Does the dictated text need editing beyond punctuation and capitalization \
-                     to fit this field and its instructions (formatting, tone, translation, or \
-                     a spoken command)?"
-                        .into(),
-                ),
-                criteria: None,
-            },
-        );
-    }
-    if !resolution.tied.is_empty() {
-        let criteria = std::iter::once(&resolution.profile)
-            .chain(&resolution.tied)
-            .filter_map(|id| env.profiles.get(id))
-            .map(|p| {
-                let description = match &p.spec.instructions {
-                    Some(i) => format!("{}: {i}", p.display_name()),
-                    None => p.display_name().to_string(),
-                };
-                (p.spec.id.clone(), description)
-            })
-            .collect();
-        questions.insert(
-            "profile".into(),
-            Question::Choice {
-                instructions: Some("Which profile fits where the user is writing?".into()),
-                criteria,
-            },
-        );
-    }
-    DecisionRequest {
-        model,
-        state,
-        questions,
-        steps: None,
-        samples: None,
-        think: None,
-    }
-}
-
-fn generation_request(
-    model: &str,
-    env: &Env,
-    context: &ContextSnapshot,
-    effective: &Effective,
-    action: Action,
-    transcript: &str,
-) -> ResponseRequest {
-    let mut instructions = vec![BASE_INSTRUCTIONS.to_string()];
-    instructions.push(match action {
-        Action::Insert => {
-            "The text is inserted at the cursor; fit it to the text around it.".into()
-        }
-        Action::Replace => "The text replaces the selected text.".into(),
-        Action::Rewrite => "The dictation is an instruction: rewrite the given text accordingly \
-                            and output the complete rewritten text."
-            .into(),
-    });
-    instructions.extend(effective.instructions.iter().cloned());
-    let mut input = context.describe();
-    if action == Action::Rewrite {
-        let text = context
-            .selection()
-            .or(context
-                .focused
-                .as_ref()
-                .and_then(|e| e.value_excerpt.as_deref()))
-            .unwrap_or_default();
-        input.push_str(&format!(
-            "\nText to rewrite:\n{text}\n\nInstruction: {transcript}"
-        ));
-    } else {
-        input.push_str(&format!("\nDictation: {transcript}"));
-    }
-    ResponseRequest {
-        model: model.into(),
-        instructions: Some(instructions.join("\n\n")),
-        input,
-        max_output_tokens: Some(env.settings.max_output_tokens),
-    }
-}
-
-/// Delivers the output once it is safe, or leaves it on the clipboard.
+/// Delivers a leaf's text into the application once it is safe, or leaves it on the clipboard.
 async fn deliver(
     env: &Env,
     start: &TakeStart,
-    trace: &mut Trace,
+    leaf: &Leaf,
 ) -> Result<Option<DeliveryOutcome>, String> {
     let Some(sink) = &env.sink else {
         return Ok(None);
     };
-    let effective = trace
-        .effective
-        .as_ref()
-        .expect("processed takes have settings");
-    let action = trace.action.unwrap_or(Action::Insert);
     let request = DeliveryRequest {
-        action,
-        text: trace.output.clone(),
-        method: effective.delivery,
-        select_all: action == Action::Rewrite && start.context.selection().is_none(),
+        action: leaf.action,
+        text: leaf.text.clone(),
+        method: leaf.delivery,
+        select_all: leaf.action == Action::Rewrite && start.context.selection().is_none(),
         erase: 0,
     };
     let copy = |reason: String| -> Result<Option<DeliveryOutcome>, String> {
@@ -986,7 +733,7 @@ async fn deliver(
         Ok(Some(DeliveryOutcome::OnClipboard { reason }))
     };
     if request.method == DeliveryMethod::Clipboard {
-        return copy("the profile delivers to the clipboard".into());
+        return copy("the flow delivers to the clipboard".into());
     }
     let window = start.context.window.handle.unwrap_or(0);
     let pending = Pending::new(start.id, window, Instant::now());
@@ -1024,7 +771,7 @@ mod tests {
     use super::*;
     use crate::context::{AppInfo, Element, WindowInfo};
     use crate::fake::RecordingSink;
-    use crate::profile::ProfileSpec;
+    use crate::flow::{Catalog, Memory};
     use axum::Json;
     use axum::routing::{get, post};
     use serde_json::{Value, json};
@@ -1036,16 +783,48 @@ mod tests {
         uploads: Arc<Mutex<usize>>,
     }
 
+    type Decider = Arc<dyn Fn(&Value) -> Value + Send + Sync>;
+
+    /// A decision model that answers every question with the first of `labels` it offers (else
+    /// its first choice), at 0.9.
+    fn prefer(labels: &'static [&'static str]) -> Decider {
+        prefer_with(labels, 0.9)
+    }
+
+    fn prefer_with(labels: &'static [&'static str], confidence: f64) -> Decider {
+        Arc::new(move |request: &Value| {
+            let answers: serde_json::Map<String, Value> = request["questions"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(key, question)| {
+                    let offered: Vec<&String> =
+                        question["criteria"].as_object().unwrap().keys().collect();
+                    let choice = labels
+                        .iter()
+                        .find(|l| offered.iter().any(|o| o == *l))
+                        .map(|l| l.to_string())
+                        .unwrap_or_else(|| offered[0].clone());
+                    let answer = json!({"type": "choice", "choice": choice,
+                        "probabilities": {choice.clone(): confidence}, "confidence": confidence});
+                    (key.clone(), answer)
+                })
+                .collect();
+            json!({"model": "jev", "usage": {"input_tokens": 1, "output_tokens": 1}, "answers": answers})
+        })
+    }
+
     /// A fake jevons server: no Realtime route, a scripted decision and generation.
-    async fn server(decision: Value, output: &'static str) -> (Client, Seen) {
+    async fn server(decide: Decider, output: &'static str) -> (Client, Seen) {
         let seen = Seen::default();
         let s = seen.clone();
         let decide = move |Json(body): Json<Value>| {
             let s = s.clone();
-            let decision = decision.clone();
+            let decide = decide.clone();
             async move {
+                let answer = decide(&body);
                 s.decisions.lock().unwrap().push(body);
-                Json(decision)
+                Json(answer)
             }
         };
         let s = seen.clone();
@@ -1099,6 +878,22 @@ mod tests {
         }
     }
 
+    fn builtin() -> Arc<FlowTree> {
+        let tree = FlowTree::load(&crate::flow::defaults::builtin(), &Catalog::default());
+        assert!(tree.is_valid(), "{:?}", tree.errors);
+        Arc::new(tree)
+    }
+
+    fn env(client: Client, sink: Option<&RecordingSink>) -> Env {
+        Env {
+            client,
+            flows: builtin(),
+            settings: settings(),
+            sink: sink.map(RecordingSink::shared),
+            investigator: None,
+        }
+    }
+
     fn context(selection: Option<&str>) -> ContextSnapshot {
         ContextSnapshot {
             app: AppInfo {
@@ -1131,33 +926,26 @@ mod tests {
         (receiver, finished)
     }
 
-    fn noul(p: f64) -> Value {
-        json!({"model": "jev", "usage": {"input_tokens": 1, "output_tokens": 1},
-               "answers": {"needs_generation": {"type": "noul", "noul": p}}})
-    }
-
-    async fn take(env: &Env, selection: Option<&str>) -> Trace {
+    async fn take_at(env: &Env, selection: Option<&str>, entry: Option<&str>) -> Trace {
         let (audio, finish) = one_second_of_audio();
         let (updates, _) = mpsc::unbounded_channel();
         let start = TakeStart {
             id: 1,
             context: context(selection),
-            forced_profile: None,
+            entry: entry.map(String::from),
         };
         run_take(env, start, audio, finish, &updates).await
     }
 
+    async fn take(env: &Env, selection: Option<&str>) -> Trace {
+        take_at(env, selection, None).await
+    }
+
     #[tokio::test]
     async fn realtime_404_falls_back_to_batch_upload() {
-        let (client, seen) = server(noul(0.1), "unused").await;
+        let (client, seen) = server(prefer(&["dictate", "verbatim"]), "unused").await;
         let sink = RecordingSink::new(Some(7));
-        let env = Env {
-            client,
-            profiles: Arc::default(),
-            settings: settings(),
-            sink: Some(sink.shared()),
-        };
-        let trace = take(&env, None).await;
+        let trace = take(&env(client, Some(&sink)), None).await;
         assert_eq!(trace.error, None, "{:?}", trace.notes);
         assert_eq!(trace.transcription, Some(TranscriptionPath::Upload));
         assert_eq!(*seen.uploads.lock().unwrap(), 1);
@@ -1166,60 +954,60 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clean_dictation_is_typed_without_generating() {
-        let (client, seen) = server(noul(0.1), "unused").await;
+    async fn words_needing_no_edits_are_typed_after_one_merged_decision() {
+        let (client, seen) = server(prefer(&["dictate", "verbatim"]), "unused").await;
         let sink = RecordingSink::new(Some(7));
-        let env = Env {
-            client,
-            profiles: Arc::default(),
-            settings: settings(),
-            sink: Some(sink.shared()),
-        };
-        let trace = take(&env, None).await;
+        let trace = take(&env(client, Some(&sink)), None).await;
+        assert_eq!(trace.error, None, "{:?}", trace.notes);
         assert!(seen.generations.lock().unwrap().is_empty());
         assert_eq!(trace.output, "hello world");
         let delivered = sink.requests();
         assert_eq!(delivered.len(), 1);
         assert_eq!(delivered[0].action, Action::Insert);
         assert_eq!(delivered[0].text, "hello world");
-        // No text in the field: the action is not asked, only whether to edit.
-        let asked = &seen.decisions.lock().unwrap()[0]["questions"];
-        assert!(asked.get("action").is_none());
-        assert!(asked.get("needs_generation").is_some());
+        assert_eq!(trace.route(), "dictate → dictate/notes → _actions/verbatim");
+        // The root and the action are asked together: one decision call for the take.
+        let decisions = seen.decisions.lock().unwrap();
+        assert_eq!(decisions.len(), 1);
+        let questions = decisions[0]["questions"].as_object().unwrap();
+        assert_eq!(questions.len(), 2);
+        let actions = &questions["q01"]["criteria"];
+        assert!(actions.get("verbatim").is_some() && actions.get("insert").is_some());
+        assert!(
+            actions.get("replace").is_none(),
+            "nothing is selected: {actions}"
+        );
+        let notes = trace
+            .flow
+            .iter()
+            .find(|s| s.node == "dictate/notes")
+            .unwrap();
+        assert!(
+            notes.how.as_deref().unwrap().starts_with("asked ahead"),
+            "{:?}",
+            notes.how
+        );
     }
 
     #[tokio::test]
-    async fn a_rewrite_of_the_selection_generates_with_profile_instructions() {
-        let decision = json!({"model": "jev", "usage": {"input_tokens": 1, "output_tokens": 1},
-            "answers": {"action": {"type": "choice", "choice": "rewrite",
-                                   "probabilities": {"rewrite": 0.9}, "confidence": 0.9}}});
-        let (client, seen) = server(decision, "Dear team, hello world.").await;
-        let profiles = Profiles::new([(
-            toml::from_str::<ProfileSpec>(
-                r#"id = "notes"
-match = { app = ["notepad.exe"] }
-instructions = "Formal tone.""#,
-            )
-            .unwrap(),
-            None,
-        )]);
+    async fn a_rewrite_of_the_selection_generates_with_the_branch_instructions() {
+        let (client, seen) =
+            server(prefer(&["dictate", "rewrite"]), "Dear team, hello world.").await;
         let sink = RecordingSink::new(Some(7));
-        let env = Env {
-            client,
-            profiles: Arc::new(profiles),
-            settings: settings(),
-            sink: Some(sink.shared()),
-        };
-        let trace = take(&env, Some("hi all")).await;
-        assert_eq!(trace.error, None);
-        assert_eq!(trace.action, Some(Action::Rewrite), "{:?}", trace.notes);
+        let trace = take(&env(client, Some(&sink)), Some("hi all")).await;
+        assert_eq!(trace.error, None, "{:?}", trace.notes);
+        assert_eq!(trace.leaf.as_ref().unwrap().action, Action::Rewrite);
         assert_eq!(trace.output, "Dear team, hello world.");
         let generation = &seen.generations.lock().unwrap()[0];
+        let instructions = generation["instructions"].as_str().unwrap();
+        assert!(instructions.contains("Tidy prose"), "{instructions}");
         assert!(
-            generation["instructions"]
-                .as_str()
-                .unwrap()
-                .contains("Formal tone.")
+            instructions.contains("exact text to type"),
+            "{instructions}"
+        );
+        assert!(
+            instructions.contains("rewrite the given text"),
+            "{instructions}"
         );
         assert!(generation["input"].as_str().unwrap().contains("hi all"));
         assert_eq!(generation["stream"], true);
@@ -1229,16 +1017,68 @@ instructions = "Formal tone.""#,
     }
 
     #[tokio::test]
+    async fn a_question_is_answered_in_the_bubble_and_never_typed() {
+        let (client, seen) = server(prefer(&["ask"]), "It is five o'clock.").await;
+        let sink = RecordingSink::new(Some(7));
+        let trace = take(&env(client, Some(&sink)), None).await;
+        assert_eq!(trace.error, None, "{:?}", trace.notes);
+        let leaf = trace.leaf.as_ref().unwrap();
+        assert_eq!(
+            (leaf.node.as_str(), leaf.output),
+            ("ask/any", Output::Bubble)
+        );
+        assert_eq!(trace.delivery, Some(DeliveryOutcome::Shown));
+        assert!(sink.requests().is_empty());
+        assert!(sink.clipboard().is_none());
+        let generation = &seen.generations.lock().unwrap()[0];
+        assert!(
+            generation["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("small bubble")
+        );
+        assert!(
+            generation["input"]
+                .as_str()
+                .unwrap()
+                .contains("The user asked: hello world")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_hotkey_entry_starts_below_the_root_without_its_decision() {
+        let (client, seen) = server(prefer(&["dictate"]), "An answer.").await;
+        let trace = take_at(&env(client, None), None, Some("ask")).await;
+        assert_eq!(trace.error, None, "{:?}", trace.notes);
+        assert_eq!(trace.entry, "ask");
+        assert_eq!(trace.leaf.as_ref().unwrap().node, "ask/any");
+        assert!(
+            seen.decisions.lock().unwrap().is_empty(),
+            "ask chooses by rules"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unsure_root_decision_takes_the_fallback() {
+        let (client, _) = server(prefer_with(&["ask", "verbatim"], 0.3), "unused").await;
+        let sink = RecordingSink::new(Some(7));
+        let trace = take(&env(client, Some(&sink)), None).await;
+        assert_eq!(trace.error, None, "{:?}", trace.notes);
+        let root = &trace.flow[0];
+        assert_eq!(root.chosen.as_deref(), Some("dictate"));
+        assert!(
+            root.how.as_deref().unwrap().contains("unsure"),
+            "{:?}",
+            root.how
+        );
+        assert_eq!(sink.requests()[0].text, "hello world");
+    }
+
+    #[tokio::test]
     async fn a_changed_window_leaves_the_text_on_the_clipboard() {
-        let (client, _) = server(noul(0.1), "unused").await;
+        let (client, _) = server(prefer(&["dictate", "verbatim"]), "unused").await;
         let sink = RecordingSink::new(Some(99));
-        let env = Env {
-            client,
-            profiles: Arc::default(),
-            settings: settings(),
-            sink: Some(sink.shared()),
-        };
-        let trace = take(&env, None).await;
+        let trace = take(&env(client, Some(&sink)), None).await;
         assert!(matches!(
             trace.delivery,
             Some(DeliveryOutcome::OnClipboard { .. })
@@ -1249,13 +1089,8 @@ instructions = "Formal tone.""#,
 
     #[tokio::test]
     async fn a_press_too_short_for_speech_is_dropped_without_requests() {
-        let (client, seen) = server(noul(0.1), "unused").await;
-        let env = Env {
-            client,
-            profiles: Arc::default(),
-            settings: settings(),
-            sink: None,
-        };
+        let (client, seen) = server(prefer(&["dictate"]), "unused").await;
+        let env = env(client, None);
         let (audio, receiver) = mpsc::unbounded_channel();
         audio.send(AudioEvent::Chunk(vec![0; 100])).unwrap();
         audio.send(AudioEvent::Ended).unwrap();
@@ -1264,7 +1099,7 @@ instructions = "Formal tone.""#,
         let start = TakeStart {
             id: 1,
             context: context(None),
-            forced_profile: None,
+            entry: None,
         };
         let trace = run_take(&env, start, receiver, finished, &updates).await;
         assert_eq!(trace.error, None);
@@ -1274,6 +1109,46 @@ instructions = "Formal tone.""#,
             trace.notes
         );
         assert_eq!(*seen.uploads.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_guarded_branch_catches_its_keyword_and_lazy_values_stay_unasked() {
+        let tree = FlowTree::load(
+            &Memory::new(
+                "test",
+                [
+                    ("decide.toml", "fallback = \"type\""),
+                    ("type/transcript.toml", "description = \"Dictation\""),
+                    (
+                        "note/transcript.toml",
+                        "description = \"Notes\"\noutput = \"clipboard\"\n[when]\ntranscript = \"(?i)^note\"",
+                    ),
+                ],
+            ),
+            &Catalog::default(),
+        );
+        assert!(tree.is_valid(), "{:?}", tree.errors);
+        let (client, seen) = server(prefer(&["note"]), "unused").await;
+        let sink = RecordingSink::new(Some(7));
+        let env = Env {
+            flows: Arc::new(tree),
+            ..env(client, Some(&sink))
+        };
+        // "hello world" does not start with "note": only one branch applies, so no model call.
+        let trace = take(&env, None).await;
+        assert_eq!(trace.leaf.as_ref().unwrap().node, "type");
+        assert!(seen.decisions.lock().unwrap().is_empty());
+        assert_eq!(
+            trace.flow[0].how.as_deref(),
+            Some("the only branch that applies")
+        );
+        let note = trace.flow[0]
+            .branches
+            .iter()
+            .find(|b| b.name == "note")
+            .unwrap();
+        assert!(!note.passed);
+        assert_eq!(note.checks[0].value.as_deref(), Some("hello world"));
     }
 
     /// A live turn in a fake Realtime session: its live deltas, then its final transcript.
@@ -1317,7 +1192,7 @@ instructions = "Formal tone.""#,
                 }
             })
         };
-        let (client, _) = server(noul(0.1), "unused").await;
+        let (client, _) = server(prefer(&["dictate", "verbatim"]), "unused").await;
         let app = axum::Router::new()
             .route("/v1/realtime", get(session))
             .fallback_service(axum::routing::any(
@@ -1358,7 +1233,7 @@ instructions = "Formal tone.""#,
         let start = TakeStart {
             id: 3,
             context: context(Some("old text")),
-            forced_profile: None,
+            entry: None,
         };
         let trace = run_live(env, start, received, stopped, &updates).await;
         let mut shown = Vec::new();
@@ -1376,12 +1251,7 @@ instructions = "Formal tone.""#,
         ])
         .await;
         let sink = RecordingSink::new(Some(7));
-        let env = Env {
-            client,
-            profiles: Arc::default(),
-            settings: settings(),
-            sink: Some(sink.shared()),
-        };
+        let env = env(client, Some(&sink));
         let speech = [[6000; 4].as_slice(), &[30; 8], &[6000; 4]].concat();
         let (trace, shown) = live(&env, &speech).await;
         assert_eq!(trace.error, None);
@@ -1405,7 +1275,7 @@ instructions = "Formal tone.""#,
         assert!(
             shown
                 .iter()
-                .any(|u| matches!(u, Update::Step(s) if s.starts_with("Profile")))
+                .any(|u| matches!(u, Update::Step(s) if s.starts_with("Route")))
         );
     }
 
@@ -1413,12 +1283,7 @@ instructions = "Formal tone.""#,
     async fn live_dictation_without_speech_types_nothing() {
         let client = realtime_server(&[]).await;
         let sink = RecordingSink::new(Some(7));
-        let env = Env {
-            client,
-            profiles: Arc::default(),
-            settings: settings(),
-            sink: Some(sink.shared()),
-        };
+        let env = env(client, Some(&sink));
         let (trace, _) = live(&env, &[30; 12]).await;
         assert_eq!(trace.error.as_deref(), Some("No speech was recognized"));
         assert!(sink.requests().is_empty());
@@ -1452,13 +1317,11 @@ instructions = "Formal tone.""#,
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let sink = RecordingSink::new(Some(7));
         let env = Env {
-            client: Client::new(&base, None),
-            profiles: Arc::default(),
             settings: Settings {
                 decision_timeout: Duration::from_millis(200),
                 ..settings()
             },
-            sink: Some(sink.shared()),
+            ..env(Client::new(&base, None), Some(&sink))
         };
         let trace = take(&env, None).await;
         assert_eq!(trace.error, None);
@@ -1515,23 +1378,5 @@ instructions = "Formal tone.""#,
         assert!(!results.contains(&Phrase::Commit));
         assert_eq!(results.iter().filter(|p| **p == Phrase::Clear).count(), 1);
         assert!(!phrases.heard());
-    }
-
-    #[test]
-    fn replace_needs_a_selection_and_rewrite_needs_text() {
-        use ActionPreference::*;
-        assert_eq!(choose_action(Replace, None, true, false), Action::Insert);
-        assert_eq!(
-            choose_action(Auto, Some("rewrite"), false, false),
-            Action::Insert
-        );
-        assert_eq!(
-            choose_action(Auto, Some("rewrite"), true, false),
-            Action::Rewrite
-        );
-        assert_eq!(
-            choose_action(Auto, Some("replace"), true, true),
-            Action::Replace
-        );
     }
 }

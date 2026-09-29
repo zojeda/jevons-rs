@@ -1,7 +1,7 @@
 //! The window: a top bar with the tabs, the page, and a status bar with the live text.
 
 use super::components::badge;
-use super::{Ctx, context, models, profiles, settings, takes};
+use super::{Ctx, context, flows, models, settings, takes};
 use crate::runtime::Status;
 use dioxus::prelude::*;
 
@@ -9,7 +9,7 @@ use dioxus::prelude::*;
 enum Tab {
     Context,
     Takes,
-    Profiles,
+    Flows,
     Settings,
     Models,
 }
@@ -17,7 +17,7 @@ enum Tab {
 const TABS: [(Tab, &str); 5] = [
     (Tab::Context, "Context"),
     (Tab::Takes, "Takes"),
-    (Tab::Profiles, "Profiles"),
+    (Tab::Flows, "Flows"),
     (Tab::Settings, "Settings"),
     (Tab::Models, "Models"),
 ];
@@ -84,7 +84,7 @@ pub fn App() -> Element {
                 match tab() {
                     Tab::Context => rsx! { context::ContextPage { rev, frozen } },
                     Tab::Takes => rsx! { takes::TakesPage { rev } },
-                    Tab::Profiles => rsx! { profiles::ProfilesPage { rev } },
+                    Tab::Flows => rsx! { flows::FlowsPage { rev } },
                     Tab::Settings => rsx! { settings::SettingsPage { rev } },
                     Tab::Models => rsx! { models::ModelsPage { rev } },
                 }

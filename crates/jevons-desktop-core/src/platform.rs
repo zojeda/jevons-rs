@@ -1,5 +1,6 @@
 //! The platform layers, one trait each. Every desktop implements these; the behaviour around
-//! them ([`pipeline`](crate::pipeline), profiles, gestures, tray states) is the same everywhere.
+//! them ([`pipeline`](crate::pipeline), the flow tree, gestures, tray states) is the same
+//! everywhere.
 //! [`Unsupported`] stands in for layers a platform does not have yet.
 
 use crate::context::{ContextSnapshot, Privacy};
@@ -111,6 +112,8 @@ pub enum DeliveryOutcome {
     OnClipboard {
         reason: String,
     },
+    /// Shown in the feedback bubble, where the user can copy or insert it.
+    Shown,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
@@ -136,10 +139,10 @@ pub trait TextSink: Send {
 /// What a global hotkey does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HotkeyAction {
-    /// Push-to-talk: listening while held, the take runs on release. `profile` forces a
-    /// profile for the take.
+    /// Push-to-talk: listening while held, the take runs on release. `entry` starts the take at
+    /// that branch of the flow tree instead of its root.
     Dictate {
-        profile: Option<String>,
+        entry: Option<String>,
     },
     /// Live dictation while held (from the tray, a start/stop toggle): words are typed as they
     /// are recognized.
@@ -159,7 +162,7 @@ impl Binding {
     pub fn from_settings(dictation: &crate::config::Dictation) -> Vec<Self> {
         let mut bindings = vec![Self {
             accelerator: dictation.hotkey.clone(),
-            action: HotkeyAction::Dictate { profile: None },
+            action: HotkeyAction::Dictate { entry: None },
         }];
         if let Some(accelerator) = dictation.live_hotkey.clone().filter(|a| !a.is_empty()) {
             bindings.push(Self {
@@ -173,12 +176,12 @@ impl Binding {
                 action: HotkeyAction::ShowInspector,
             });
         }
-        for (profile, accelerator) in &dictation.profile_hotkeys {
+        for (entry, accelerator) in &dictation.branch_hotkeys {
             if !accelerator.is_empty() {
                 bindings.push(Self {
                     accelerator: accelerator.clone(),
                     action: HotkeyAction::Dictate {
-                        profile: Some(profile.clone()),
+                        entry: Some(entry.clone()),
                     },
                 });
             }
@@ -201,10 +204,10 @@ pub struct MenuModel {
     pub busy: bool,
     /// Whether live dictation runs.
     pub live: bool,
-    /// Profile ids and names, in display order.
-    pub profiles: Vec<(String, String)>,
-    /// The profile forced from the menu; `None` chooses automatically.
-    pub forced: Option<String>,
+    /// The flow tree's top-level branches (path and description), where a take may start.
+    pub entries: Vec<(String, String)>,
+    /// The branch every take starts at, chosen from the menu; `None` starts at the root.
+    pub start: Option<String>,
     pub context_paused: bool,
     /// Whether the feedback bubble shows.
     pub feedback: bool,
@@ -219,12 +222,13 @@ pub enum MenuCommand {
     CancelTake,
     /// Opens the folder with the logs and take traces.
     OpenLogsFolder,
-    ForceProfile(Option<String>),
+    /// Starts every take at this top-level branch, or at the root.
+    StartAt(Option<String>),
     ShowInspector,
     ToggleContextPause,
     /// Shows or hides the feedback bubble by the tray icon.
     ToggleFeedback,
-    ReloadProfiles,
+    ReloadFlows,
     OpenConfigFolder,
     Quit,
 }

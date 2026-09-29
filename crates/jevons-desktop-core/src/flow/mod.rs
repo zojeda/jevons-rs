@@ -7,13 +7,18 @@
 //! - [`tree`]: loading and validating a tree, on disk or in memory.
 //! - [`shape`] and [`template`]: structured answers and `{placeholders}`.
 //! - [`defaults`]: the built-in tree and the files jevons writes for editors and agents.
+//! - [`walk`] and [`frame`]: one take through the tree, and what it carries down.
+//! - [`investigate`]: the contract of the built-in context investigator.
 
 pub mod defaults;
+pub mod frame;
 pub mod guard;
+pub mod investigate;
 pub mod shape;
 pub mod spec;
 pub mod template;
 pub mod tree;
+pub mod walk;
 
 pub use guard::{Check, Guard, When};
 pub use tree::{Catalog, CatalogTool, Disk, FlowError, FlowTree, Kind, Memory, Node, NodeId};

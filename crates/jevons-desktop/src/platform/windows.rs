@@ -6,9 +6,9 @@ use device_query::{DeviceQuery, DeviceState};
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use jevons_desktop_core::context::{ContextSnapshot, Element, Privacy};
 use jevons_desktop_core::platform::{
-    ContextProvider, DeliveryOutcome, DeliveryRequest, PlatformError, SinkCapabilities, TextSink,
+    ContextProvider, DeliveryMethod, DeliveryOutcome, DeliveryRequest, PlatformError,
+    SinkCapabilities, TextSink,
 };
-use jevons_desktop_core::profile::DeliveryMethod;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use uiautomation::patterns::{UITextPattern, UIValuePattern};
@@ -324,7 +324,7 @@ impl TextSink for WindowsSink {
             DeliveryMethod::Clipboard => {
                 self.copy(&request.text)?;
                 return Ok(DeliveryOutcome::OnClipboard {
-                    reason: "the profile delivers to the clipboard".into(),
+                    reason: "the flow delivers to the clipboard".into(),
                 });
             }
         }

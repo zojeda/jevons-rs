@@ -438,6 +438,23 @@ impl FlowTree {
         self.nodes.iter().find(|n| n.path == path).map(|n| n.id)
     }
 
+    /// Every node from the root down with its depth, for display: shared branches appear under
+    /// each decision that uses them.
+    pub fn outline(&self) -> Vec<(usize, NodeId)> {
+        let mut rows = Vec::new();
+        if self.nodes.is_empty() {
+            return rows;
+        }
+        let mut stack = vec![(0, self.root())];
+        while let Some((depth, id)) = stack.pop() {
+            rows.push((depth, id));
+            if depth < MAX_DEPTH * 2 {
+                stack.extend(self.node(id).children.iter().rev().map(|c| (depth + 1, *c)));
+            }
+        }
+        rows
+    }
+
     /// The root's branches: where a hotkey may start.
     pub fn entries(&self) -> Vec<(String, String)> {
         if self.nodes.is_empty() {

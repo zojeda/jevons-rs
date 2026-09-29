@@ -7,7 +7,7 @@ mod systemone;
 mod transcriptions;
 
 pub use realtime::{RealtimeEvent, RealtimeReader, RealtimeWriter, Turns};
-pub use responses::ResponseRequest;
+pub use responses::{Reasoning, ResponseRequest};
 pub use systemone::{Answer, DecisionRequest, DecisionResponse, NoulCriteria, Question, Usage};
 pub use transcriptions::Transcription;
 

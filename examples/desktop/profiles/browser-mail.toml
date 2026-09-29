@@ -1,9 +1,0 @@
-# Web mail in any browser: a URL rule is more specific than the app.
-id = "web-mail"
-name = "Web mail"
-priority = 30
-instructions = "Write a clear, polite email in paragraphs. Start with a greeting only when the text is the start of the message."
-
-[match]
-app = ["chrome.exe", "msedge.exe", "firefox*"]
-url = ["https://mail.google.com/*", "https://outlook.office.com/*", "https://outlook.live.com/*"]

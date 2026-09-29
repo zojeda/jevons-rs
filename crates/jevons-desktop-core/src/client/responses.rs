@@ -12,6 +12,31 @@ pub struct ResponseRequest {
     pub input: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<Reasoning>,
+}
+
+/// `reasoning.effort`: the server thinks up to 64 (minimal), 256 (low), 1024 (medium) or 4096
+/// (high) tokens before answering.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Reasoning {
+    pub effort: String,
+}
+
+impl Reasoning {
+    /// The smallest effort whose thought budget covers `tokens`.
+    pub fn for_budget(tokens: u32) -> Self {
+        let effort = match tokens {
+            0 => "none",
+            1..=64 => "minimal",
+            65..=256 => "low",
+            257..=1024 => "medium",
+            _ => "high",
+        };
+        Self {
+            effort: effort.into(),
+        }
+    }
 }
 
 #[derive(Serialize)]

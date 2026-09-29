@@ -283,21 +283,21 @@ fn build_menu(model: &MenuModel) -> Menu {
     } else {
         "Start dictation"
     };
-    let profiles = Submenu::with_id("profiles", "Profile", true);
-    let _ = profiles.append(&CheckMenuItem::with_id(
-        "profile:",
-        "Automatic",
+    let start = Submenu::with_id("start", "Start takes at", true);
+    let _ = start.append(&CheckMenuItem::with_id(
+        "start:",
+        "The root (automatic)",
         true,
-        model.forced.is_none(),
+        model.start.is_none(),
         None,
     ));
-    let _ = profiles.append(&PredefinedMenuItem::separator());
-    for (id, name) in &model.profiles {
-        let _ = profiles.append(&CheckMenuItem::with_id(
-            format!("profile:{id}"),
-            name,
+    let _ = start.append(&PredefinedMenuItem::separator());
+    for (path, _) in &model.entries {
+        let _ = start.append(&CheckMenuItem::with_id(
+            format!("start:{path}"),
+            path,
             true,
-            model.forced.as_ref() == Some(id),
+            model.start.as_ref() == Some(path),
             None,
         ));
     }
@@ -310,7 +310,7 @@ fn build_menu(model: &MenuModel) -> Menu {
         &MenuItem::with_id("toggle", dictation, !model.live, None),
         &MenuItem::with_id("live", live, !model.dictating, None),
         &MenuItem::with_id("cancel", "Cancel the current take", model.busy, None),
-        &profiles,
+        &start,
         &PredefinedMenuItem::separator(),
         &MenuItem::with_id("inspector", "Show context inspector", true, None),
         &CheckMenuItem::with_id("feedback", "Live feedback", true, model.feedback, None),
@@ -321,7 +321,7 @@ fn build_menu(model: &MenuModel) -> Menu {
             model.context_paused,
             None,
         ),
-        &MenuItem::with_id("reload", "Reload profiles", true, None),
+        &MenuItem::with_id("reload", "Reload the flow tree", true, None),
         &MenuItem::with_id("config", "Open settings folder", true, None),
         &MenuItem::with_id("logs", "Open logs and traces", true, None),
         &PredefinedMenuItem::separator(),
@@ -339,12 +339,12 @@ fn menu_command(id: &str) -> Option<MenuCommand> {
         "inspector" => MenuCommand::ShowInspector,
         "pause" => MenuCommand::ToggleContextPause,
         "feedback" => MenuCommand::ToggleFeedback,
-        "reload" => MenuCommand::ReloadProfiles,
+        "reload" => MenuCommand::ReloadFlows,
         "config" => MenuCommand::OpenConfigFolder,
         "quit" => MenuCommand::Quit,
         other => {
-            let profile = other.strip_prefix("profile:")?;
-            MenuCommand::ForceProfile((!profile.is_empty()).then(|| profile.to_string()))
+            let branch = other.strip_prefix("start:")?;
+            MenuCommand::StartAt((!branch.is_empty()).then(|| branch.to_string()))
         }
     })
 }
@@ -356,15 +356,12 @@ mod tests {
     #[test]
     fn menu_ids_map_to_commands() {
         assert_eq!(menu_command("toggle"), Some(MenuCommand::ToggleDictation));
+        assert_eq!(menu_command("start:"), Some(MenuCommand::StartAt(None)));
         assert_eq!(
-            menu_command("profile:"),
-            Some(MenuCommand::ForceProfile(None))
+            menu_command("start:ask"),
+            Some(MenuCommand::StartAt(Some("ask".into())))
         );
-        assert_eq!(
-            menu_command("profile:slack"),
-            Some(MenuCommand::ForceProfile(Some("slack".into())))
-        );
-        assert_eq!(menu_command("profiles"), None);
+        assert_eq!(menu_command("start"), None);
         assert_eq!(menu_command("feedback"), Some(MenuCommand::ToggleFeedback));
     }
 }

@@ -1,6 +1,8 @@
 # jevons-desktop settings. The Settings panel writes this file; every field is optional.
 # Default location: the platform configuration folder (for example
 # %APPDATA%\jevons\config\jevons-desktop.toml or ~/.config/jevons/jevons-desktop.toml).
+# The flow tree that routes each take is in the flows folder next to it; set flows_dir to move it.
+# flows_dir = "D:/jevons/flows"
 
 [server]
 # "embedded" loads the models in the app; "remote" uses a jevons server elsewhere.
@@ -33,7 +35,7 @@ realtime = true
 # path = "D:/models/parakeet-tdt-0.6b-v3"
 
 [dictation]
-# Push-to-talk (and the profile hotkeys); the text is inserted when you finish.
+# Push-to-talk (and the branch hotkeys); the take runs when you finish.
 hotkey = "Ctrl+Alt+Space"
 # "hold": listen while the hotkey is held. "toggle": press to start, press again to finish.
 hotkey_mode = "hold"
@@ -43,12 +45,13 @@ live_hotkey_mode = "hold"
 # A bubble above the tray icon shows what dictation hears and does.
 live_feedback = true
 # inspector_hotkey = "Ctrl+Alt+I"
-# [dictation.profile_hotkeys]
-# chat = "Ctrl+Alt+C"
+# Hotkeys that start the take at a branch of the flow tree instead of its root:
+# [dictation.branch_hotkeys]
+# ask = "Ctrl+Alt+A"
 # microphone = "Microphone Array"
 # language = "es"
+# Ask the decision model at the flow tree's model decisions (off: take their fallbacks).
 decide = true
-generation_threshold = 0.5
 max_output_tokens = 1024
 
 [privacy]

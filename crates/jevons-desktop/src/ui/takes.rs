@@ -54,6 +54,7 @@ fn TakeItem(trace: TraceProp) -> Element {
         None if matches!(trace.delivery, Some(DeliveryOutcome::OnClipboard { .. })) => {
             ("clipboard", "warning")
         }
+        None if trace.delivery == Some(DeliveryOutcome::Shown) => ("answered", "success"),
         None if trace.output.is_empty() => ("nothing typed", "secondary"),
         None => ("typed", "success"),
     };
@@ -69,17 +70,12 @@ fn TakeItem(trace: TraceProp) -> Element {
     if let Some(path) = trace.transcription {
         rows.push(("Transcribed by", format!("{path:?}")));
     }
-    if let Some(resolution) = &trace.resolution {
+    rows.push(("Route", trace.route()));
+    if let Some(leaf) = &trace.leaf {
         rows.push((
-            "Profile",
-            match &resolution.destination {
-                Some(d) => format!("{} → {d}", resolution.profile),
-                None => resolution.profile.clone(),
-            },
+            "Leaf",
+            format!("{} → {:?}, {:?}", leaf.node, leaf.output, leaf.action).to_lowercase(),
         ));
-    }
-    if let Some(action) = trace.action {
-        rows.push(("Action", format!("{action:?}")));
     }
     rows.push(("Output", trace.output.clone()));
     if let Some(delivery) = &trace.delivery {
@@ -88,6 +84,7 @@ fn TakeItem(trace: TraceProp) -> Element {
             match delivery {
                 DeliveryOutcome::Delivered { method } => format!("{method:?}"),
                 DeliveryOutcome::OnClipboard { reason } => format!("on the clipboard: {reason}"),
+                DeliveryOutcome::Shown => "shown in the bubble".into(),
             },
         ));
     }
@@ -122,7 +119,7 @@ fn TakeItem(trace: TraceProp) -> Element {
                     "Copy trace as JSON"
                 }
             }
-            Collapsible { title: "Full trace: context, decision, prompt".to_string(), subtitle: None, open: false,
+            Collapsible { title: "Full trace: context, route, decisions, prompt".to_string(), subtitle: None, open: false,
                 JsonTree { value }
             }
         }

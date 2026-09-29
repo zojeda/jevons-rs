@@ -1,6 +1,6 @@
-//! The inspector and settings window, on dioxus-native (Blitz): the live context and why a
-//! profile matches, the recent takes, the profiles, the settings and the models. Closing it hides
-//! it; the tray reopens it.
+//! The inspector and settings window, on dioxus-native (Blitz): the live context and the route it
+//! takes through the flow tree, the recent takes, the flow tree, the settings and the models.
+//! Closing it hides it; the tray reopens it.
 //!
 //! The window lives on the main thread's winit loop, with the feedback bubble while a take runs.
 //! The agent and background work call [`wake`], which re-renders from the shared
@@ -10,8 +10,8 @@ mod app;
 mod bubble;
 mod components;
 mod context;
+mod flows;
 mod models;
-mod profiles;
 mod settings;
 mod takes;
 
@@ -299,9 +299,11 @@ mod tests {
     use blitz_dom::Document as _;
     use jevons_desktop_core::config::DesktopConfig;
     use jevons_desktop_core::context::{AppInfo, ContextSnapshot, Element as Focused, WindowInfo};
+    use jevons_desktop_core::flow::spec::Output;
+    use jevons_desktop_core::flow::walk::{self, Leaf};
+    use jevons_desktop_core::flow::{Catalog, FlowTree, defaults};
     use jevons_desktop_core::pipeline::{Trace, TranscriptionPath};
-    use jevons_desktop_core::platform::{Action, DeliveryOutcome};
-    use jevons_desktop_core::profile::{DeliveryMethod, Profiles};
+    use jevons_desktop_core::platform::{Action, DeliveryMethod, DeliveryOutcome};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -315,7 +317,7 @@ mod tests {
             1 => rsx! { models::ModelsPage { rev: 1 } },
             2 => rsx! { settings::SettingsPage { rev: 2 } },
             3 => rsx! { takes::TakesPage { rev: 3 } },
-            4 => rsx! { profiles::ProfilesPage { rev: 4 } },
+            4 => rsx! { flows::FlowsPage { rev: 4 } },
             _ => rsx! { app::App {} },
         }
     }
@@ -336,9 +338,12 @@ mod tests {
         folder
     }
 
+    fn flows() -> Arc<FlowTree> {
+        Arc::new(FlowTree::load(&defaults::builtin(), &Catalog::default()))
+    }
+
     /// A finished take numbered `take`, like the agent records.
-    fn trace(take: u64, context: &ContextSnapshot, profiles: &Profiles) -> Trace {
-        let resolution = profiles.resolve(context, None);
+    fn trace(take: u64, context: &ContextSnapshot, flows: &FlowTree) -> Trace {
         Trace {
             take,
             turn: None,
@@ -347,10 +352,15 @@ mod tests {
             audio_seconds: 1.5,
             transcription: Some(TranscriptionPath::Realtime),
             transcript: "hello world".into(),
-            resolution: Some(resolution),
-            effective: Some(profiles.effective("default", None)),
-            decision: None,
-            action: Some(Action::Insert),
+            entry: "/".into(),
+            flow: walk::preview(flows, context, flows.root()),
+            leaf: Some(Leaf {
+                node: "_actions/insert".into(),
+                text: "Hello world.".into(),
+                output: Output::Target,
+                action: Action::Insert,
+                delivery: DeliveryMethod::Paste,
+            }),
             generation: None,
             output: "Hello world.".into(),
             delivery: Some(DeliveryOutcome::Delivered {
@@ -383,13 +393,13 @@ mod tests {
         let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
         doc.add_user_agent_stylesheet(include_str!("style.css"));
         doc.initial_build();
-        let profiles = Profiles::default();
+        let flows = flows();
         // New takes go on top, as the agent adds them, and the oldest fall off after 50.
         for take in 2..80 {
             {
                 let mut view = view.lock().unwrap();
                 let context = view.context.clone().unwrap();
-                view.traces.push_front(trace(take, &context, &profiles));
+                view.traces.push_front(trace(take, &context, &flows));
                 view.traces.truncate(50);
             }
             doc.vdom.mark_dirty(ScopeId::APP);
@@ -430,7 +440,7 @@ mod tests {
                 f.heard = "Hello there.".into();
                 f.partial.clear();
             }),
-            Box::new(|f| f.steps.push("Profile default".into())),
+            Box::new(|f| f.steps.push("Route dictate".into())),
             Box::new(|f| f.output = "Hello there!".into()),
             Box::new(|f| {
                 f.done = true;
@@ -445,7 +455,7 @@ mod tests {
         }
         let text = doc.root_element().text_content();
         assert!(text.contains("Hello there."), "{text}");
-        assert!(text.contains("Profile default"), "{text}");
+        assert!(text.contains("Route dictate"), "{text}");
         assert!(text.contains("Inserted"), "{text}");
         // The take ends and the bubble empties.
         view.lock().unwrap().feedback = None;
@@ -460,23 +470,10 @@ mod tests {
     }
 
     #[test]
-    fn profiles_reordering_as_the_focused_app_changes_rebuild_in_blitz() {
-        use jevons_desktop_core::profile::ProfileSpec;
+    fn routes_changing_as_the_focused_app_changes_rebuild_in_blitz() {
         let folder = std::env::temp_dir().join(format!("jevons-ui-order-{}", std::process::id()));
-        let spec = |id: &str, app: &str| -> (ProfileSpec, Option<std::path::PathBuf>) {
-            let text = format!("id = \"{id}\"\npriority = 10\nmatch = {{ app = [\"{app}\"] }}");
-            (toml::from_str(&text).unwrap(), None)
-        };
-        // Each app makes a different profile win, so the resolution list reorders.
-        let profiles = Profiles::new([
-            spec("mail", "outlook.exe"),
-            spec("chat", "slack.exe"),
-            spec("code", "code.exe"),
-        ]);
-        let view = Arc::new(Mutex::new(View {
-            profiles: Arc::new(profiles.clone()),
-            ..view(&folder)
-        }));
+        let flows = flows();
+        let view = Arc::new(Mutex::new(view(&folder)));
         let (commands, _received) = tokio::sync::mpsc::unbounded_channel();
         let mut vdom = VirtualDom::new(context_root);
         vdom.insert_any_root_context(Box::new(Ctx {
@@ -485,6 +482,7 @@ mod tests {
         }));
         let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
         doc.initial_build();
+        // Each app takes another branch of dictate, so the route and its checks change.
         for app in [
             "outlook.exe",
             "slack.exe",
@@ -499,7 +497,8 @@ mod tests {
                 let mut view = view.lock().unwrap();
                 let mut context = view.context.clone().unwrap();
                 context.app.process_name = app.into();
-                view.resolution = Some(profiles.resolve(&context, None));
+                let dictate = flows.find("dictate").unwrap();
+                view.route = walk::preview(&flows, &context, dictate);
                 view.context = Some(context);
             }
             doc.vdom.mark_dirty(ScopeId::APP);
@@ -507,7 +506,7 @@ mod tests {
         }
     }
 
-    /// A view with a context, its resolution and a finished take, so every section renders.
+    /// A view with a context, its route and a finished take, so every section renders.
     fn view(folder: &std::path::Path) -> View {
         let mut config = DesktopConfig::default();
         config.models.folder = Some(folder.to_path_buf());
@@ -528,35 +527,14 @@ mod tests {
             }),
             ..ContextSnapshot::default()
         };
-        let profiles = Profiles::default();
-        let resolution = profiles.resolve(&context, None);
-        let trace = Trace {
-            take: 1,
-            turn: None,
-            started_at_ms: 1,
-            context: context.clone(),
-            audio_seconds: 1.5,
-            transcription: Some(TranscriptionPath::Realtime),
-            transcript: "hello world".into(),
-            resolution: Some(resolution.clone()),
-            effective: Some(profiles.effective("default", None)),
-            decision: None,
-            action: Some(Action::Insert),
-            generation: None,
-            output: "Hello world.".into(),
-            delivery: Some(DeliveryOutcome::Delivered {
-                method: DeliveryMethod::Paste,
-            }),
-            timings: vec![("transcribe".into(), 800)],
-            notes: vec!["a note".into()],
-            error: None,
-        };
+        let flows = flows();
+        let route = walk::preview(&flows, &context, flows.root());
         View {
             config,
+            traces: [trace(1, &context, &flows)].into(),
             context: Some(context),
-            resolution: Some(resolution),
-            traces: [trace].into(),
-            profiles: Arc::new(profiles),
+            route,
+            flows,
             ..View::default()
         }
     }

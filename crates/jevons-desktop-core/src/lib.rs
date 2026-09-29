@@ -1,13 +1,13 @@
-//! The platform-free core of `jevons-desktop`, a context-aware dictation agent.
+//! The platform-free core of `jevons-desktop`, a context-aware desktop agent.
 //!
 //! Everything platform-specific sits behind the traits in [`platform`]: context capture
 //! (accessibility APIs), microphone capture, text delivery, global hotkeys and the tray. The
 //! behaviour shared by every platform lives here:
 //!
 //! - [`context`]: the snapshot of the focused app and element, with privacy limits.
-//! - [`profile`]: pluggable profiles with priorities and destinations, and the resolver that
-//!   explains why each one matched.
-//! - [`pipeline`]: one dictation take, from transcript to decision, generation and delivery.
+//! - [`flow`]: the flow tree, folders of TOML files that route each take through guards and
+//!   decisions to a leaf that writes, answers or calls a tool; its loader explains every error.
+//! - [`pipeline`]: one take, from the microphone and transcript through the flow tree to delivery.
 //! - [`client`]: typed requests to the jevons API (Realtime, transcriptions, System One,
 //!   Responses).
 //! - [`delivery`], [`levels`], [`icons`]: paste safety, the microphone meter and the tray
@@ -28,4 +28,3 @@ pub mod icons;
 pub mod levels;
 pub mod pipeline;
 pub mod platform;
-pub mod profile;

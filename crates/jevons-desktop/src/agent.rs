@@ -6,13 +6,14 @@ use crate::runtime::{Runtime, Status};
 use crate::tray::Tray;
 use jevons_desktop_core::config::{DesktopConfig, HotkeyMode};
 use jevons_desktop_core::context::ContextSnapshot;
+use jevons_desktop_core::flow::walk::{self, FlowStep};
+use jevons_desktop_core::flow::{Catalog, FlowError, FlowTree, defaults};
 use jevons_desktop_core::icons::TrayState;
 use jevons_desktop_core::pipeline::{self, Env, TakeStart, Trace, Update};
 use jevons_desktop_core::platform::{
-    AudioDevice, AudioSource, Binding, CaptureHandle, ContextProvider, HotkeyAction, HotkeyEvent,
-    MenuCommand, MenuModel, TextSink, TrayBackend,
+    AudioDevice, AudioSource, Binding, CaptureHandle, ContextProvider, DeliveryOutcome,
+    HotkeyAction, HotkeyEvent, MenuCommand, MenuModel, TextSink, TrayBackend,
 };
-use jevons_desktop_core::profile::{Profiles, Resolution};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -38,7 +39,7 @@ pub enum Command {
     RefreshContext,
     /// Read the context after a delay, so the user can switch to the target application.
     CaptureContextIn(Duration),
-    ReloadProfiles,
+    ReloadFlows,
     RuntimeChanged,
     /// Apply the settings to the runtime again, such as after a model finished downloading.
     ReloadRuntime,
@@ -58,10 +59,12 @@ pub struct Feedback {
     pub heard: String,
     /// Words of the phrase being spoken.
     pub partial: String,
-    /// The profile chosen, the action and the other steps taken.
+    /// The route through the flow tree and the other steps taken.
     pub steps: Vec<String>,
-    /// The text a rewrite produced.
+    /// The text a generation produced.
     pub output: String,
+    /// The output is an answer for the user to read, not text typed into the application.
+    pub answer: bool,
     /// The take ended; the bubble hides shortly.
     pub done: bool,
     pub failed: bool,
@@ -92,7 +95,6 @@ impl Feedback {
 
     /// The take's outcome.
     fn finish(&mut self, trace: &Trace) {
-        use jevons_desktop_core::platform::DeliveryOutcome;
         self.done = true;
         self.partial.clear();
         if !trace.transcript.is_empty() {
@@ -104,12 +106,17 @@ impl Feedback {
             String::new()
         };
         self.failed = trace.error.is_some();
+        self.answer = trace.delivery == Some(DeliveryOutcome::Shown);
+        if self.answer {
+            self.output = trace.output.clone();
+        }
         self.status = match (&trace.error, &trace.delivery) {
             (Some(error), _) => error.clone(),
             (None, Some(DeliveryOutcome::Delivered { .. })) => "Inserted".into(),
             (None, Some(DeliveryOutcome::OnClipboard { reason })) => {
                 format!("On the clipboard: {reason}")
             }
+            (None, Some(DeliveryOutcome::Shown)) => "Answer".into(),
             (None, None) if trace.notes.iter().any(|n| n.starts_with("Too short")) => {
                 "Too short to hold speech".into()
             }
@@ -127,10 +134,17 @@ pub struct View {
     pub live_output: String,
     pub context: Option<ContextSnapshot>,
     pub context_error: Option<String>,
-    pub resolution: Option<Resolution>,
+    /// The route the window in front takes through the flow tree before any model decision.
+    pub route: Vec<FlowStep>,
     pub traces: VecDeque<Trace>,
-    pub profiles: Arc<Profiles>,
-    pub forced_profile: Option<String>,
+    /// The flow tree in use: the last one that loaded without errors.
+    pub flows: Arc<FlowTree>,
+    /// The problems of the flows folder as it is now; empty when it loads cleanly.
+    pub flow_errors: Vec<FlowError>,
+    /// Notes from preparing the flows folder, such as an `AGENTS.md` jevons no longer updates.
+    pub flow_notes: Vec<String>,
+    /// The branch every take starts at, chosen from the tray; `None` is the root.
+    pub start: Option<String>,
     pub context_paused: bool,
     pub hotkey_error: Option<String>,
     pub notice: Option<String>,
@@ -178,7 +192,7 @@ pub struct Agent {
     context: Box<dyn ContextProvider>,
     sink: Arc<Mutex<Box<dyn TextSink>>>,
     audio: Box<dyn AudioSource>,
-    profiles: Arc<Profiles>,
+    flows: Arc<FlowTree>,
     hotkeys: std::collections::HashMap<u32, HotkeyAction>,
     /// Each registered hotkey's accelerator, to swallow its repeats while it is held.
     accelerators: std::collections::HashMap<u32, String>,
@@ -209,11 +223,18 @@ impl Agent {
         repaint: Arc<dyn Fn() + Send + Sync>,
         commands: mpsc::UnboundedSender<Command>,
     ) -> Self {
-        let profiles_dir = config.profiles_dir(&config_file);
-        let _ = std::fs::create_dir_all(&profiles_dir);
-        let watcher = watch(&profiles_dir, commands.clone());
+        let flows_dir = config.flows_dir(&config_file);
+        let (tree, notes) = defaults::open(&flows_dir, &Catalog::default());
+        let errors = tree.errors.clone();
+        let flows = if tree.is_valid() {
+            tree
+        } else {
+            // Nothing good to keep yet: the built-in tree runs until the folder is fixed.
+            FlowTree::load(&defaults::builtin(), &Catalog::default())
+        };
+        let watcher = watch(&flows_dir, commands.clone());
         let mut agent = Self {
-            profiles: Arc::new(Profiles::load_dir(&profiles_dir)),
+            flows: Arc::new(flows),
             config,
             config_file,
             runtime,
@@ -232,7 +253,9 @@ impl Agent {
         };
         {
             let mut view = agent.view.lock().expect("the view lock");
-            view.profiles = agent.profiles.clone();
+            view.flows = agent.flows.clone();
+            view.flow_errors = errors;
+            view.flow_notes = notes;
             view.context_backend = agent.context.name();
             view.sink_backend = agent.sink.lock().expect("the sink lock").name();
             view.devices = agent.audio.devices();
@@ -288,21 +311,17 @@ impl Agent {
     }
 
     fn publish_menu(&mut self) {
-        let (forced, paused) = {
+        let (start, paused) = {
             let view = self.view();
-            (view.forced_profile.clone(), view.context_paused)
+            (view.start.clone(), view.context_paused)
         };
         let live = self.active.as_ref().is_some_and(|a| a.live);
         let menu = MenuModel {
             busy: self.active.is_some(),
             dictating: self.active.as_ref().is_some_and(|a| !a.live),
             live,
-            profiles: self
-                .profiles
-                .iter()
-                .map(|p| (p.spec.id.clone(), p.display_name().to_string()))
-                .collect(),
-            forced,
+            entries: self.flows.entries(),
+            start,
             context_paused: paused,
             feedback: self.config.dictation.live_feedback,
         };
@@ -319,10 +338,10 @@ impl Agent {
                     self.view().show_window = true;
                     self.repaint();
                 }
-                Some(HotkeyAction::Dictate { profile }) => {
-                    let profile = profile.clone();
+                Some(HotkeyAction::Dictate { entry }) => {
+                    let entry = entry.clone();
                     let mode = self.config.dictation.hotkey_mode;
-                    self.hotkey_pressed(id, profile, false, mode);
+                    self.hotkey_pressed(id, entry, false, mode);
                 }
                 Some(HotkeyAction::LiveDictation) => {
                     let mode = self.config.dictation.live_hotkey_mode;
@@ -361,7 +380,7 @@ impl Agent {
                     let _ = commands.send(Command::RefreshContext);
                 });
             }
-            Command::ReloadProfiles => self.reload_profiles(),
+            Command::ReloadFlows => self.reload_flows(),
             Command::ReloadRuntime => self.runtime.apply(&self.config, &self.config_file),
             Command::RuntimeChanged => {
                 let status = self.runtime.status();
@@ -413,8 +432,8 @@ impl Agent {
                 let _ = std::fs::create_dir_all(dir.join("traces"));
                 open_folder(&dir);
             }
-            MenuCommand::ForceProfile(profile) => {
-                self.view().forced_profile = profile;
+            MenuCommand::StartAt(branch) => {
+                self.view().start = branch;
                 self.publish_menu();
                 self.refresh_context(true);
             }
@@ -442,7 +461,7 @@ impl Agent {
                 self.publish_menu();
                 self.repaint();
             }
-            MenuCommand::ReloadProfiles => self.reload_profiles(),
+            MenuCommand::ReloadFlows => self.reload_flows(),
             MenuCommand::OpenConfigFolder => {
                 if let Some(dir) = self.config_file.parent() {
                     let _ = std::fs::create_dir_all(dir);
@@ -465,9 +484,9 @@ impl Agent {
 
     /// A dictation hotkey went down: it starts a take, or stops the one it started in toggle
     /// mode. Key repeats and other hotkeys while a take runs change nothing.
-    fn hotkey_pressed(&mut self, id: u32, profile: Option<String>, live: bool, mode: HotkeyMode) {
+    fn hotkey_pressed(&mut self, id: u32, entry: Option<String>, live: bool, mode: HotkeyMode) {
         match &self.active {
-            None => self.begin(profile, Some(id), live, mode == HotkeyMode::Hold),
+            None => self.begin(entry, Some(id), live, mode == HotkeyMode::Hold),
             Some(a) if a.source == Some(id) && !a.held && a.capture.is_some() => self.stop_take(),
             Some(_) => {}
         }
@@ -521,11 +540,15 @@ impl Agent {
         {
             return;
         }
-        let forced = self.view().forced_profile.clone();
+        let start = self.view().start.clone();
+        let route = snapshot
+            .as_ref()
+            .map(|s| self.preview(s, start.as_deref()))
+            .unwrap_or_default();
         let mut view = self.view();
         match snapshot {
             Ok(snapshot) => {
-                view.resolution = Some(self.profiles.resolve(&snapshot, forced.as_deref()));
+                view.route = route;
                 view.context = Some(snapshot);
                 view.context_error = None;
             }
@@ -536,10 +559,34 @@ impl Agent {
         self.repaint();
     }
 
-    fn reload_profiles(&mut self) {
-        let dir = self.config.profiles_dir(&self.config_file);
-        self.profiles = Arc::new(Profiles::load_dir(&dir));
-        self.view().profiles = self.profiles.clone();
+    /// The route `snapshot` takes from `start` (or the root) before any model decision.
+    fn preview(&self, snapshot: &ContextSnapshot, start: Option<&str>) -> Vec<FlowStep> {
+        let entry = start
+            .and_then(|s| self.flows.find(s))
+            .unwrap_or_else(|| self.flows.root());
+        walk::preview(&self.flows, snapshot, entry)
+    }
+
+    /// Loads the flows folder again; a tree with errors is reported and the last good one kept.
+    fn reload_flows(&mut self) {
+        let dir = self.config.flows_dir(&self.config_file);
+        let (tree, notes) = defaults::open(&dir, &Catalog::default());
+        let errors = tree.errors.clone();
+        if tree.is_valid() {
+            tracing::info!(nodes = tree.nodes().len(), "Flow tree loaded");
+            self.flows = Arc::new(tree);
+        } else {
+            tracing::warn!(
+                errors = errors.len(),
+                "The flow tree has errors: keeping the last good one"
+            );
+        }
+        {
+            let mut view = self.view();
+            view.flows = self.flows.clone();
+            view.flow_errors = errors;
+            view.flow_notes = notes;
+        }
         self.publish_menu();
         self.refresh_context(true);
     }
@@ -551,17 +598,17 @@ impl Agent {
         }
         let hotkeys_changed = Binding::from_settings(&config.dictation)
             != Binding::from_settings(&self.config.dictation);
-        let profiles_changed =
-            config.profiles_dir(&self.config_file) != self.config.profiles_dir(&self.config_file);
+        let flows_changed =
+            config.flows_dir(&self.config_file) != self.config.flows_dir(&self.config_file);
         self.config = config;
         if hotkeys_changed && let Some(tray) = &self.tray {
             tray.hotkeys(Binding::from_settings(&self.config.dictation));
         }
-        if profiles_changed {
-            let dir = self.config.profiles_dir(&self.config_file);
+        if flows_changed {
+            let dir = self.config.flows_dir(&self.config_file);
             let _ = std::fs::create_dir_all(&dir);
             self._watcher = watch(&dir, self.commands.clone());
-            self.reload_profiles();
+            self.reload_flows();
         }
         self.runtime.apply(&self.config, &self.config_file);
         self.view().config = self.config.clone();
@@ -570,7 +617,7 @@ impl Agent {
 
     /// Starts a take: push-to-talk, or live dictation when `live`. `source` is the hotkey that
     /// started it; when `held`, its release ends the take.
-    fn begin(&mut self, profile: Option<String>, source: Option<u32>, live: bool, held: bool) {
+    fn begin(&mut self, entry: Option<String>, source: Option<u32>, live: bool, held: bool) {
         let Some(connection) = self.runtime.connection() else {
             let status = self.runtime.status().describe();
             self.notice(&format!("Dictation is unavailable: {status}"));
@@ -597,23 +644,24 @@ impl Agent {
         let dictation = &self.config.dictation;
         let env = Env {
             client: connection.client,
-            profiles: self.profiles.clone(),
+            flows: self.flows.clone(),
             settings: pipeline::Settings {
                 models: connection.models,
                 realtime: connection.realtime,
                 language: dictation.language.clone(),
                 decide: dictation.decide,
-                generation_threshold: dictation.generation_threshold,
                 max_output_tokens: dictation.max_output_tokens,
                 ..pipeline::Settings::default()
             },
             sink: Some(self.sink.clone()),
+            investigator: None,
         };
         let start = TakeStart {
             id,
             context: context.clone(),
-            forced_profile: profile.or_else(|| self.view().forced_profile.clone()),
+            entry: entry.or_else(|| self.view().start.clone()),
         };
+        let route = self.preview(&context, start.entry.as_deref());
         {
             let mut view = self.view();
             view.dictating = true;
@@ -634,10 +682,7 @@ impl Agent {
                 ),
                 ..Feedback::default()
             });
-            view.resolution = Some(
-                self.profiles
-                    .resolve(&context, start.forced_profile.as_deref()),
-            );
+            view.route = route;
             view.context = Some(context);
         }
         self.active = Some(Active {
@@ -758,15 +803,20 @@ impl Agent {
             let mut view = self.view();
             view.dictating = false;
             view.notice = trace.error.clone().or_else(|| match &trace.delivery {
-                Some(jevons_desktop_core::platform::DeliveryOutcome::OnClipboard { reason }) => {
+                Some(DeliveryOutcome::OnClipboard { reason }) => {
                     Some(format!("The text is on the clipboard: {reason}"))
                 }
                 _ => None,
             });
             if let Some(feedback) = view.feedback.as_mut().filter(|f| f.take == trace.take) {
                 feedback.finish(&trace);
-                // Long enough to read the outcome; errors stay longer.
-                let shown = Duration::from_secs(if failed { 8 } else { 4 });
+                // Long enough to read the outcome; errors and answers stay longer.
+                let words = trace.output.split_whitespace().count() as u64;
+                let shown = Duration::from_secs(match (failed, feedback.answer) {
+                    (true, _) => 8,
+                    (false, true) => (6 + words / 3).min(60),
+                    (false, false) => 4,
+                });
                 let commands = self.commands.clone();
                 let take = trace.take;
                 tokio::spawn(async move {
@@ -828,13 +878,11 @@ fn watch(
     use notify::Watcher;
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         if event.is_ok_and(|e| !e.kind.is_access()) {
-            let _ = commands.send(Command::ReloadProfiles);
+            let _ = commands.send(Command::ReloadFlows);
         }
     })
     .ok()?;
-    watcher
-        .watch(dir, notify::RecursiveMode::NonRecursive)
-        .ok()?;
+    watcher.watch(dir, notify::RecursiveMode::Recursive).ok()?;
     Some(watcher)
 }
 
@@ -870,16 +918,16 @@ mod tests {
             (feedback.heard.as_str(), feedback.partial.as_str()),
             ("Hola a todos.", "")
         );
-        feedback.apply(&Update::Step("Profile default".into()));
+        feedback.apply(&Update::Step("Route dictate".into()));
         let mut trace = Trace::new(&TakeStart {
             id: 1,
             context: ContextSnapshot::default(),
-            forced_profile: None,
+            entry: None,
         });
         trace.transcript = "Hola a todos.".into();
         trace.output = "Hola a todos.".into();
-        trace.delivery = Some(jevons_desktop_core::platform::DeliveryOutcome::Delivered {
-            method: jevons_desktop_core::profile::DeliveryMethod::Type,
+        trace.delivery = Some(DeliveryOutcome::Delivered {
+            method: jevons_desktop_core::platform::DeliveryMethod::Type,
         });
         feedback.finish(&trace);
         assert!(feedback.done && !feedback.failed);
@@ -888,7 +936,24 @@ mod tests {
             feedback.output, "",
             "an unchanged transcript is not shown twice"
         );
-        assert_eq!(feedback.steps, ["Profile default"]);
+        assert_eq!(feedback.steps, ["Route dictate"]);
+    }
+
+    #[test]
+    fn an_answer_stays_in_the_bubble_even_when_it_repeats_the_words() {
+        let mut feedback = Feedback::default();
+        let mut trace = Trace::new(&TakeStart {
+            id: 1,
+            context: ContextSnapshot::default(),
+            entry: Some("ask".into()),
+        });
+        trace.transcript = "What time is it".into();
+        trace.output = "What time is it".into();
+        trace.delivery = Some(DeliveryOutcome::Shown);
+        feedback.finish(&trace);
+        assert!(feedback.answer);
+        assert_eq!(feedback.status, "Answer");
+        assert_eq!(feedback.output, "What time is it");
     }
 
     #[test]

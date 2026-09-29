@@ -7,7 +7,7 @@
 //! someone edits it.
 
 use super::spec::{AgentSpec, DecideSpec, GenerateSpec, ToolSpec, TranscriptSpec};
-use super::tree::{Memory, NODE_FILES};
+use super::tree::{Catalog, Disk, FlowTree, Memory, NODE_FILES};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
@@ -47,11 +47,27 @@ pub const AGENTS_MD: &str = include_str!("../../../../examples/desktop/flows/AGE
 const AGENTS_HEADER: &str = "<!-- Written by jevons (flow format 1, sha256 ";
 const TAPLO_HEADER: &str = "# Written by jevons: editor validation for the flow files.";
 
-/// The built-in tree, for tests and for when the flows folder cannot be read.
+/// The [`FlowTree::source`] of the built-in tree.
+pub const BUILTIN: &str = "built-in flows";
+
+/// The built-in tree, for tests and for when the flows folder has problems.
 pub fn builtin() -> Memory {
     let mut files: Vec<(&str, &str)> = TREE.to_vec();
     files.push(("AGENTS.md", AGENTS_MD));
-    Memory::new("built-in flows", files)
+    Memory::new(BUILTIN, files)
+}
+
+/// Loads the tree in `dir`, first writing the built-in tree when the folder has none. The notes
+/// from writing it (such as an `AGENTS.md` left alone) come back with the tree.
+pub fn open(dir: &Path, catalog: &Catalog) -> (FlowTree, Vec<String>) {
+    let notes = match init(dir) {
+        Ok(report) => report.notes,
+        Err(e) => vec![format!(
+            "Cannot write the flows folder {}: {e}",
+            dir.display()
+        )],
+    };
+    (FlowTree::load(&Disk::new(dir), catalog), notes)
 }
 
 /// What [`init`] did.

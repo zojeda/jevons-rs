@@ -1,10 +1,11 @@
-//! The live context and the profile resolution for it.
+//! The live context and the route it takes through the flow tree.
 
 use super::Ctx;
 use super::components::{Collapsible, Icon, JsonTree, Switch, badge, icon};
 use crate::agent::Command;
 use dioxus::prelude::*;
-use jevons_desktop_core::profile::{Check, Resolution};
+use jevons_desktop_core::flow::Check;
+use jevons_desktop_core::flow::walk::FlowStep;
 use std::time::Duration;
 
 #[component]
@@ -20,7 +21,7 @@ pub fn ContextPage(rev: u64, frozen: Signal<bool>) -> Element {
     let paused = view.context_paused;
     let error = view.context_error.clone();
     let context = view.context.clone();
-    let resolution = view.resolution.clone();
+    let route = view.route.clone();
     drop(view);
     let capture = ctx.clone();
 
@@ -133,8 +134,8 @@ pub fn ContextPage(rev: u64, frozen: Signal<bool>) -> Element {
                 }
             }
         }
-        if let Some(resolution) = resolution {
-            {resolution_card(&resolution)}
+        if !route.is_empty() {
+            {route_card(&route)}
         }
     }
 }
@@ -148,52 +149,47 @@ fn excerpt(text: &str) -> String {
     }
 }
 
-/// Which profile and destination win, and every rule checked.
-pub fn resolution_card(resolution: &Resolution) -> Element {
-    let winner = resolution.profile.clone();
-    let destination = resolution.destination.clone();
-    let tied = (!resolution.tied.is_empty()).then(|| resolution.tied.join(", "));
+/// The route the context takes before any model decision, with every guard checked.
+pub fn route_card(route: &[FlowStep]) -> Element {
+    let path: Vec<String> = route.iter().filter_map(|s| s.chosen.clone()).collect();
+    let end = route.last().and_then(|s| s.how.clone());
     rsx! {
         div { class: "dx-card",
             div { class: "dx-card-header",
                 div {
-                    div { class: "dx-card-title", "Profile" }
-                    div { class: "dx-card-description", "Every profile, best first, with each rule it checked" }
+                    div { class: "dx-card-title", "Route" }
+                    div { class: "dx-card-description", "Where a take from here goes, by guards and rules alone, with each rule checked" }
                 }
                 div { class: "row",
-                    {badge(&winner, "accent")}
-                    if let Some(destination) = destination {
-                        {badge(&format!("→ {destination}"), "secondary")}
-                    }
-                    if resolution.forced {
-                        {badge("forced from the tray", "warning")}
-                    }
+                    {badge(&if path.is_empty() { "/".to_string() } else { path.join(" / ") }, "accent")}
                 }
             }
             div { class: "dx-card-content",
-                if let Some(tied) = tied {
-                    p { class: "muted", "Tied with {tied}: the decision model chooses." }
+                if let Some(end) = end {
+                    p { class: "muted", "{end}" }
                 }
                 div { class: "dx-accordion",
-                    {resolution.trace.iter().map(|profile| {
-                        let priority = if profile.priority == i32::MIN {
-                            "lowest".to_string()
-                        } else {
-                            profile.priority.to_string()
+                    {route.iter().enumerate().map(|(i, step)| {
+                        let title = step.node.clone();
+                        let subtitle = match (&step.chosen, &step.how) {
+                            (Some(chosen), Some(how)) => format!("→ {chosen} ({how})"),
+                            (None, Some(how)) => how.clone(),
+                            _ => format!("{:?}", step.kind).to_lowercase(),
                         };
-                        let title = profile.id.clone();
-                        let subtitle = format!("priority {priority} · {} rules", profile.specificity);
-                        let open = profile.id == resolution.profile;
+                        let open = i + 1 == route.len();
                         rsx! {
-                            Collapsible { key: "{profile.id}", title, subtitle: Some(subtitle), open, status: Some(profile.matched),
-                                {checks(&profile.checks)}
-                                {profile.destinations.iter().map(|d| {
+                            Collapsible { key: "{step.node}", title, subtitle: Some(subtitle), open,
+                                if step.branches.is_empty() {
+                                    p { class: "muted", "A leaf: the walk ends here." }
+                                }
+                                {step.branches.iter().map(|b| {
                                     rsx! {
                                         div { class: "row",
-                                            {icon(if d.matched { Icon::Check } else { Icon::Cross })}
-                                            span { class: "muted", "destination {d.id} · priority {d.priority}" }
+                                            {icon(if b.passed { Icon::Check } else { Icon::Cross })}
+                                            span { class: "mono", "{b.name}" }
+                                            span { class: "muted", "priority {b.priority} · {b.specificity} rules" }
                                         }
-                                        {checks(&d.checks)}
+                                        {checks(&b.checks)}
                                     }
                                 })}
                             }
@@ -207,7 +203,7 @@ pub fn resolution_card(resolution: &Resolution) -> Element {
 
 fn checks(checks: &[Check]) -> Element {
     if checks.is_empty() {
-        return rsx! { p { class: "muted", "No rules: matches everything." } };
+        return rsx! { p { class: "muted", "No guard: always applies." } };
     }
     rsx! {
         div {

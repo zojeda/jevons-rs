@@ -118,15 +118,16 @@ jobs:
           fi
           cp jevons-desktop.example.toml "dist/$name/"
           cp docs/desktop.md "dist/$name/GUIDE.md"
-          cp -r examples/desktop/profiles "dist/$name/profiles"
+          cp -r examples/desktop/flows "dist/$name/flows"
           cat > "dist/$name/README.txt" <<README
-          jevons-desktop $JEVONS_BUILD, context-aware dictation from the tray.
+          jevons-desktop $JEVONS_BUILD, context-aware dictation and automation from the tray.
 
           Needs an AMD RDNA3-class GPU with ROCm/HIP 7.2 (on Windows, the AMD driver and the
           AMD HIP SDK). Start jevons-desktop, open the window from the tray menu (Show context
-          inspector), and download the models in the Models tab. GUIDE.md covers profiles,
-          settings and hotkeys; profiles/ has example profiles to copy into the profiles folder
-          next to the settings file. Logs and traces go to the jevons folder in your home.
+          inspector), and download the models in the Models tab. GUIDE.md covers the flow tree,
+          settings and hotkeys. The app writes its flow tree into the flows folder next to the
+          settings file on the first run; flows/ here is the same tree, with AGENTS.md
+          describing the format. Logs and traces go to the jevons folder in your home.
           README
           cd dist
           if [ "${{ runner.os }}" = "Windows" ]; then

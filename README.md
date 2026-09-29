@@ -2,9 +2,9 @@
 
 # jevons-rs
 
-**Context-aware dictation for your desktop, on models that run on your own GPU.**
+**Context-aware dictation and desktop automation, on models that run on your own GPU.**
 
-jevons is a tray app. Press a hotkey in any application and speak. It reads where you are (the application, the page, the field, the selection), transcribes you, picks a profile for that place, and decides whether to insert your words, replace the selection or rewrite the field. When the text needs editing, a language model writes it with that profile's instructions. Then jevons types the result into the field you started in.
+jevons is a tray app. Press a hotkey in any application and speak. It reads where you are (the application, the page, the field, the selection), transcribes you, and walks a **flow tree**: a folder of TOML files where every folder is a step, like file-system routing in a web framework. Rules and a decision model pick the branch, and the branch decides what happens: type your words, rewrite the selection, answer a question in a bubble by the tray icon, or call a tool.
 
 Everything runs locally. The speech, decision and language models run inside the app on an AMD GPU, through a Rust inference runtime built on [Burn](https://github.com/tracel-ai/burn) and [CubeCL](https://github.com/tracel-ai/cubecl). That runtime is also a server with OpenAI-compatible and [System One](https://docs.typesafe.ai/introduction) APIs (see [The runtime](#the-runtime)).
 
@@ -14,27 +14,28 @@ Everything runs locally. The speech, decision and language models run inside the
 ## The desktop app
 
 - **Context-aware.** On Windows, UI Automation gives the focused field's role and name, the selection, the text around the caret and the browser's address. Password fields are never read, text is truncated, and the clipboard is read only if you allow it.
-- **Profiles and destinations.** A profile is a small TOML file: rules that match an application, window, page or field, a priority, the action, how to deliver the text, and instructions for the rewrite. Destinations refine a profile for one field, such as a thread reply. Files reload as soon as you save them.
-- **Decides what to do.** The decision model answers only what the rules leave open: insert, replace or rewrite; whether the words need editing beyond punctuation; and which profile wins a tie. Below a threshold, your words are typed as heard, with no generation.
+- **A flow tree you can edit.** Each folder holds one node file: `decide.toml` picks a subfolder, `generate.toml` writes with the language model, `transcript.toml` uses the words as heard, and `tool.toml` and `agent.toml` call tools. Guards (`[when]` rules on the application, window, page, field, selection or the words themselves) prune branches with no model call. Instructions add up from the root down. The files reload as soon as you save them, and an `AGENTS.md` in the folder teaches coding agents the format.
+- **Decides only what rules leave open.** Per-application branches choose by priority; the decision model chooses the rest by the branches' descriptions, asking consecutive decisions in one request, so a dictation usually costs one call. Unsure answers fall back to a safe branch.
 - **Push-to-talk and live dictation.** Each has its own hotkey, and each either listens while held or toggles with a press. In live dictation the app ends a phrase at each pause and keeps all the audio. When you stop, the whole transcript is edited and inserted once.
-- **Live feedback.** A bubble above the tray icon shows the words as they are recognized, then the profile chosen, the action, a rewrite, and whether the text was inserted. It never takes the focus. Turn it off from the tray menu.
-- **Safe delivery.** Text goes only into the window the take started in, once every key is released. It is pasted with your clipboard restored, typed, set through the accessibility API, or left on the clipboard, as the profile says. If the focus moved, the text waits on the clipboard.
-- **An inspector for everything.** The window shows the live context and why each profile matched or not, every take with its decision probabilities, prompt and timings, the profiles, the settings and the models. **New profile from the current context** writes a profile whose rules match what you are looking at.
+- **Live feedback and answers.** A bubble above the tray icon shows the words as they are recognized, then the route taken, the text written and whether it was inserted. Questions are answered there instead of being typed. It never takes the focus. Turn it off from the tray menu.
+- **Safe delivery.** Text goes only into the window the take started in, once every key is released. It is pasted with your clipboard restored, typed, set through the accessibility API, or left on the clipboard, as the flow says. If the focus moved, the text waits on the clipboard.
+- **An inspector for everything.** The window shows the live context and the route it takes through the tree, with every guard checked; every take with its decision probabilities, prompt and timings; the flow tree and its problems; the settings and the models. **New branch from the current context** writes a folder whose guard matches what you are looking at.
 - **Private by default.** The models run in the app, and its API listens on a loopback port with a random key. You can expose it on a port for other clients, or use a jevons server on another machine instead. Logs never contain your text; full traces stay in `~/jevons/traces`.
 
-### From speech to inserted text
+### From speech to a leaf
 
 ```mermaid
 flowchart LR
     hotkey(["Hotkey"]) --> context["Context<br/>app · window · URL<br/>field · selection"]
     hotkey --> speech["Speech<br/>Realtime transcription<br/>live words in the bubble"]
-    context --> profile["Profile<br/>rules · priority<br/>destination"]
-    speech --> profile
-    profile --> decide{"Decision<br/>insert · replace · rewrite<br/>needs editing?"}
-    decide -- "as heard" --> deliver["Delivery<br/>same window, keys released<br/>paste · type · set value"]
-    decide -- "edit" --> generate["Generation<br/>profile instructions"]
-    generate --> deliver
+    context --> tree["Flow tree<br/>guards · rules<br/>decision model"]
+    speech --> tree
+    tree -- "generate.toml" --> generate["Generation<br/>instructions from the root down"]
+    tree -- "transcript.toml" --> deliver
+    generate --> deliver["Delivery<br/>same window, keys released<br/>paste · type · set value"]
+    generate --> bubble["Answer<br/>in the bubble"]
     deliver --> trace[("Trace<br/>Takes tab · ~/jevons/traces")]
+    bubble --> trace
 ```
 
 ### Getting started
@@ -56,30 +57,38 @@ The app starts in the tray, with no console window. The [Desktop workflow](.gith
 2. **Wait for the first load.** The icon is blue while the models load. On the first runs on a machine it turns amber while GPU kernels are tuned, which takes a few minutes and is cached for later runs.
 3. **Dictate.** When the icon glows cyan, hold `Ctrl+Alt+Space` in any text field and speak. Hold `F9` for live dictation. **Settings** changes the hotkeys, the hold-or-toggle mode, the microphone and the language. Set the language if you always speak one: the transcript then stays in that language's alphabet.
 
-Settings are in `%APPDATA%\jevons\config\jevons-desktop.toml` (see [jevons-desktop.example.toml](jevons-desktop.example.toml)). Profiles are in the `profiles` folder next to it. Logs and traces are in `~/jevons`, which the tray's **Open logs and traces** opens.
+Settings are in `%APPDATA%\jevons\config\jevons-desktop.toml` (see [jevons-desktop.example.toml](jevons-desktop.example.toml)). The flow tree is in the `flows` folder next to it. Logs and traces are in `~/jevons`, which the tray's **Open logs and traces** opens.
 
-### Profiles
+### The flow tree
 
-```toml
-id = "chat"
-name = "Chat"
-priority = 20                   # higher wins among matching profiles
-action = "auto"                 # insert | replace | rewrite | auto
-delivery = "paste"              # paste | type | set_value | clipboard
-instructions = "Casual and concise. No sign-off."
-
-[match]                         # every rule that is set must match
-app = ["slack.exe", "*teams*"]
-url = ["https://app.slack.com/*"]
-
-[[destinations]]
-id = "thread-reply"
-instructions = "One or two sentences."
-[destinations.match]
-element_name = "(?i)reply"
+```
+flows/
+  decide.toml              # the root: dictate or ask?
+  dictate/
+    decide.toml            # select = "rules": the application picks the branch
+    chat/decide.toml       # [when] app = ["slack.exe", …]; casual instructions
+    code/decide.toml       # only insert or type as heard
+    any/decide.toml        # everything else
+  ask/
+    chat/generate.toml     # output = "bubble"; reads the open conversation first
+    any/generate.toml
+  _actions/                # shared: insert, replace, rewrite, verbatim
 ```
 
-The built-in `default` profile matches everything at the lowest priority. The tray's **Profile** menu forces one, and a hotkey per profile dictates with it. [examples/desktop/profiles](examples/desktop/profiles) has profiles for chat apps, web mail, code editors and notes.
+A branch is a folder with one file:
+
+```toml
+# flows/dictate/chat/decide.toml
+description = "A chat application"
+priority = 20
+branches = "_actions"      # take insert, replace, rewrite and verbatim from the shared folder
+instructions = "Casual and concise. Keep emoji and names exactly as dictated. No sign-off."
+
+[when]
+app = ["slack.exe", "*teams*", "discord*"]
+```
+
+jevons writes the built-in tree ([examples/desktop/flows](examples/desktop/flows)) on the first run, with an `AGENTS.md` that documents the format for people and coding agents. `jevons-desktop --check-flows` checks a folder and `--transcript "…"` runs a take from text, so a change can be tried without speaking. A hotkey or the tray's **Start takes at** menu can start a take below the root, such as at `ask`.
 
 ### The tray icon
 
@@ -96,7 +105,7 @@ From left to right: ready (cyan), models loading (blue), kernels tuning (amber),
 | Microphone | CPAL (WASAPI) | CPAL (ALSA/PulseAudio) | CPAL (CoreAudio) |
 | Hotkey, tray | global-hotkey, tray-icon | global-hotkey (X11), tray-icon (AppIndicator) | not yet |
 
-Every platform layer is a trait in `jevons-desktop-core`, with the pipeline, profiles and tray states shared across platforms. The [desktop guide](docs/desktop.md) covers profiles, the inspector, settings, models, headless replay and the app's threads.
+Every platform layer is a trait in `jevons-desktop-core`, with the pipeline, the flow tree and tray states shared across platforms. The [desktop guide](docs/desktop.md) covers the flow tree, the inspector, settings, models, headless runs and the app's threads.
 
 ## The runtime
 
@@ -113,7 +122,7 @@ Everything is Rust: model code, GPU kernels (written in CubeCL and compiled at r
 ```mermaid
 flowchart TB
     clients["Clients: OpenAI SDKs · Open WebUI · TypeSafe SDKs · curl"]
-    desktop["jevons-desktop · tray dictation<br/>context · profiles · hotkey · microphone · text input"]
+    desktop["jevons-desktop · tray dictation and automation<br/>context · flow tree · hotkey · microphone · text input"]
 
     subgraph api["API layer · jevons-api"]
         direction LR
@@ -164,7 +173,7 @@ flowchart TB
     burn --> gpu
 ```
 
-- **Desktop** (`jevons-desktop`, over the platform-free `jevons-desktop-core`): the dictation agent. Each platform layer (accessibility context, microphone, text input, hotkey, tray) is a trait with a per-OS implementation; the pipeline, profiles and tray states are shared. It loads the API layer in-process, optionally exposing it on a port.
+- **Desktop** (`jevons-desktop`, over the platform-free `jevons-desktop-core`): the desktop agent. Each platform layer (accessibility context, microphone, text input, hotkey, tray) is a trait with a per-OS implementation; the pipeline, the flow tree and tray states are shared. It loads the API layer in-process, optionally exposing it on a port.
 - **API layer** (`jevons-api`): routes, authentication, settings and the wire formats. OpenAI requests become Generative or Speech calls, and System One questions compile into Decision reads. Each loaded model gets one worker thread: the diffusion worker serves both Generative and Decision jobs on one engine, and the speech worker runs live Realtime passes ahead of queued uploads. The `jevons-rs` binary is a thin wrapper around it.
 - **Services** take typed Rust requests and return typed results, with no HTTP, JSON or async code:
   - **Generative** (`jevons-generative`) frames conversations, reserves an optional thought, and streams the answer while holding back text that could still become a stop sequence.
@@ -299,7 +308,7 @@ The [example](examples/system-one.json) asks three question types about a constr
 
 - **OpenAI SDKs** (Python, JavaScript and others): set `base_url` to `http://127.0.0.1:8080/v1`. Chat, Responses, Completions, transcriptions and Realtime transcription sessions all parse into the SDKs' own types.
 - **Open WebUI:** add an OpenAI connection with the base URL above for chat. For dictation and voice calls, set Admin Panel → Settings → Audio → Speech-to-Text to the *OpenAI* engine with the same URL and model `parakeet-tdt-0.6b-v3`, and use *Web API* for text to speech. The model selector picks the chat model; dictation always uses the Audio setting.
-- **jevons-desktop:** tray dictation into any application, with profiles per app, page and field (see [Desktop dictation](docs/desktop.md)).
+- **jevons-desktop:** tray dictation and automation in any application, routed by a flow tree per app, page and field (see [Desktop app](docs/desktop.md)).
 - **TypeSafe SDKs:** set `TYPESAFE_BASE_URL=http://127.0.0.1:8080` and use `jev-latest`. No connection to TypeSafe or Codiv infrastructure is needed.
 
 ### Performance
@@ -319,7 +328,7 @@ See [benchmarks](benchmarks/README.md) for methods, per-case results and compari
 
 | Guide | Contents |
 | --- | --- |
-| [Desktop dictation](docs/desktop.md) | The tray app: profiles, the context inspector, settings, model downloads, platform status |
+| [Desktop app](docs/desktop.md) | The tray app: the flow tree, the context inspector, settings, model downloads, platform status |
 | [HTTP API](docs/api.md) | Routes, settings, OpenAI-compatible generation, speech to text, Realtime, limits, errors |
 | [System One](docs/system-one.md) | The masked canvas, text and image examples, extensions |
 | [Build and hardware](docs/build.md) | ROCm/WSL setup, hardware, runtime options, image input |

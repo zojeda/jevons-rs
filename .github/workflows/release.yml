@@ -94,7 +94,7 @@ jobs:
           cp "target/${{ matrix.target }}/release/jevons-rs${{ matrix.exe }}" \
             "target/${{ matrix.target }}/release/jevons-desktop${{ matrix.exe }}" \
             README.md jevons.example.toml jevons-desktop.example.toml "dist/$name/"
-          cp -r examples/desktop/profiles "dist/$name/profiles"
+          cp -r examples/desktop/flows "dist/$name/flows"
           cd dist
           if [ "${{ runner.os }}" = "Windows" ]; then
             7z a -tzip "$name.zip" "$name" > /dev/null
@@ -138,7 +138,7 @@ jobs:
           AMD HIP SDK, which may have to be copied next to the executable under that name.
           Models are not included; copy \`jevons.example.toml\` to \`jevons.toml\` to configure
           the service. \`jevons-desktop\` is the tray dictation app (see docs/desktop.md): it can
-          download the models itself, and \`profiles/\` holds example profiles.
+          download the models itself, and \`flows/\` is its built-in flow tree.
           NOTES
           gh release create "v$VERSION" dist/* \
             --repo "$GITHUB_REPOSITORY" \

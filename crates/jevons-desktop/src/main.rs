@@ -1,10 +1,11 @@
-//! jevons-desktop: context-aware dictation from the tray.
+//! jevons-desktop: a context-aware desktop agent in the tray.
 //!
 //! Tap the hotkey to toggle dictation or hold it while speaking. The agent reads the focused
-//! application and field, transcribes, picks a profile, decides whether to insert, replace or
-//! rewrite, generates the text when it needs editing, and types it where the user was.
+//! application and field, transcribes, and walks the flow tree (a folder of TOML files) to a
+//! leaf that types into the application, answers in the bubble or calls a tool.
 //!
-//! `--replay <audio> --context <json>` runs one take headless and prints its trace.
+//! `--replay <audio>` or `--transcript <text>`, with `--context <json>`, runs one take headless
+//! and prints its trace. `--check-flows` and `--init-flows` check and prepare a flows folder.
 #![forbid(unsafe_code)]
 // A tray app: no console window on Windows. Logs go to a file; --replay output can be redirected.
 #![cfg_attr(windows, windows_subsystem = "windows")]
@@ -23,9 +24,9 @@ use clap::Parser;
 use jevons_desktop_core::config::{DesktopConfig, default_config_file};
 use jevons_desktop_core::context::ContextSnapshot;
 use jevons_desktop_core::fake::FileAudioSource;
+use jevons_desktop_core::flow::{Catalog, FlowTree, defaults};
 use jevons_desktop_core::pipeline::{self, Env, TakeStart};
 use jevons_desktop_core::platform::AudioSource;
-use jevons_desktop_core::profile::Profiles;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
@@ -37,14 +38,37 @@ struct Args {
     #[arg(long)]
     config: Option<PathBuf>,
     /// Run one take from an audio file instead of the microphone, print its trace and exit.
-    #[arg(long, value_name = "AUDIO")]
+    #[arg(long, value_name = "AUDIO", conflicts_with = "transcript")]
     replay: Option<PathBuf>,
-    /// The context for --replay, as a snapshot JSON file.
-    #[arg(long, value_name = "JSON", requires = "replay")]
+    /// Run one take from this text as if it had been said, print its trace and exit.
+    #[arg(long, value_name = "TEXT")]
+    transcript: Option<String>,
+    /// The context for --replay or --transcript, as a snapshot JSON file.
+    #[arg(long, value_name = "JSON")]
     context: Option<PathBuf>,
-    /// With --replay: deliver into the focused application instead of only printing.
-    #[arg(long, requires = "replay")]
+    /// With --replay or --transcript: start at this branch of the flow tree, such as `ask`.
+    #[arg(long, value_name = "BRANCH")]
+    flow: Option<String>,
+    /// With --replay or --transcript: deliver into the focused application instead of only
+    /// printing.
+    #[arg(long)]
     deliver: bool,
+    /// Check a flows folder (by default the settings' one), print its problems and exit.
+    #[arg(long, value_name = "DIR", num_args = 0..=1, default_missing_value = "")]
+    check_flows: Option<PathBuf>,
+    /// Write the built-in flow tree into a folder that has none (by default the settings'
+    /// flows folder), refresh AGENTS.md and the schemas, and exit.
+    #[arg(long, value_name = "DIR", num_args = 0..=1, default_missing_value = "")]
+    init_flows: Option<PathBuf>,
+}
+
+impl Args {
+    fn headless(&self) -> bool {
+        self.replay.is_some()
+            || self.transcript.is_some()
+            || self.check_flows.is_some()
+            || self.init_flows.is_some()
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -55,14 +79,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     {
         use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
-        let output = match args.replay.is_none().then(log_file).flatten() {
+        let output = match (!args.headless()).then(log_file).flatten() {
             // The tray app has no terminal: log to a file the user can find.
             Some(file) => tracing_subscriber::fmt::layer()
                 .with_ansi(false)
                 .with_writer(Mutex::new(file))
                 .with_filter(filter())
                 .boxed(),
-            // stdout carries the --replay trace.
+            // stdout carries the headless output.
             None => tracing_subscriber::fmt::layer()
                 .with_writer(std::io::stderr)
                 .with_filter(filter())
@@ -81,10 +105,61 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
     let config_file = args.config.clone().unwrap_or_else(default_config_file);
     let config = DesktopConfig::load(&config_file)?;
-    match &args.replay {
-        Some(audio) => replay(&args, audio, config, config_file),
-        None => desktop(config, config_file),
+    let folder = |dir: &PathBuf| {
+        if dir.as_os_str().is_empty() {
+            config.flows_dir(&config_file)
+        } else {
+            dir.clone()
+        }
+    };
+    if let Some(dir) = &args.check_flows {
+        return check_flows(&folder(dir));
     }
+    if let Some(dir) = &args.init_flows {
+        let dir = folder(dir);
+        let report = defaults::init(&dir)?;
+        for file in &report.written {
+            println!("wrote {}", dir.join(file).display());
+        }
+        for note in &report.notes {
+            println!("note: {note}");
+        }
+        return check_flows(&dir);
+    }
+    if args.replay.is_some() || args.transcript.is_some() {
+        return replay(&args, config, config_file);
+    }
+    desktop(config, config_file)
+}
+
+/// Prints every problem of the flow tree in `dir`; fails when there is one.
+fn check_flows(dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let tree = FlowTree::load(
+        &jevons_desktop_core::flow::Disk::new(dir),
+        &Catalog::default(),
+    );
+    for error in &tree.errors {
+        eprintln!("{error}");
+    }
+    if !tree.is_valid() {
+        return Err(format!(
+            "{}: {} problem(s) in the flow tree",
+            dir.display(),
+            tree.errors.len()
+        )
+        .into());
+    }
+    let leaves = tree
+        .nodes()
+        .iter()
+        .filter(|n| n.children.is_empty())
+        .count();
+    println!(
+        "{}: {} nodes, {leaves} leaves, no problems",
+        dir.display(),
+        tree.nodes().len()
+    );
+    Ok(())
 }
 
 /// `~/jevons/logs/jevons-desktop.log`; the previous run's log is kept next to it.
@@ -96,10 +171,9 @@ fn log_file() -> Option<std::fs::File> {
     std::fs::File::create(file).ok()
 }
 
-/// One headless take, for scripted end-to-end checks.
+/// One headless take, from audio or text, for scripted end-to-end checks.
 fn replay(
     args: &Args,
-    audio: &std::path::Path,
     config: DesktopConfig,
     config_file: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -122,43 +196,46 @@ fn replay(
             },
         }
     };
-    let profiles = Profiles::load_dir(&config.profiles_dir(&config_file));
-    for error in &profiles.errors {
-        eprintln!("{}: {}", error.file.display(), error.message);
+    let (flows, notes) = defaults::open(&config.flows_dir(&config_file), &Catalog::default());
+    for note in notes {
+        eprintln!("note: {note}");
+    }
+    if !flows.is_valid() {
+        for error in &flows.errors {
+            eprintln!("{error}");
+        }
+        return Err("the flow tree has problems; see above".into());
     }
     let dictation = &config.dictation;
     let env = Env {
         client: connection.client,
-        profiles: Arc::new(profiles),
+        flows: Arc::new(flows),
         settings: pipeline::Settings {
             models: connection.models,
             realtime: connection.realtime,
             language: dictation.language.clone(),
             decide: dictation.decide,
-            generation_threshold: dictation.generation_threshold,
             max_output_tokens: dictation.max_output_tokens,
             ..pipeline::Settings::default()
         },
         sink: args
             .deliver
             .then(|| Arc::new(Mutex::new(platform::text_sink()))),
+        investigator: None,
     };
     let tokio = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     let trace = tokio.block_on(async {
-        let (events, received) = mpsc::unbounded_channel();
-        let mut source = FileAudioSource {
-            file: audio.to_path_buf(),
-            paced: true,
-        };
-        let capture = source.start(None, events)?;
-        let (_finish, finished) = oneshot::channel();
         let (updates, mut live) = mpsc::unbounded_channel();
         let printer = tokio::spawn(async move {
             while let Some(update) = live.recv().await {
-                if let pipeline::Update::Delta(text) = update {
-                    eprint!("{text}");
+                match update {
+                    pipeline::Update::Delta(text) | pipeline::Update::Output(text) => {
+                        eprint!("{text}")
+                    }
+                    pipeline::Update::Step(step) => eprintln!("\n· {step}"),
+                    _ => {}
                 }
             }
             eprintln!();
@@ -166,10 +243,24 @@ fn replay(
         let start = TakeStart {
             id: 1,
             context,
-            forced_profile: None,
+            entry: args.flow.clone(),
         };
-        let trace = pipeline::run_take(&env, start, received, finished, &updates).await;
-        capture.stop();
+        let trace = match (&args.replay, &args.transcript) {
+            (Some(audio), _) => {
+                let (events, received) = mpsc::unbounded_channel();
+                let mut source = FileAudioSource {
+                    file: audio.to_path_buf(),
+                    paced: true,
+                };
+                let capture = source.start(None, events)?;
+                let (_finish, finished) = oneshot::channel();
+                let trace = pipeline::run_take(&env, start, received, finished, &updates).await;
+                capture.stop();
+                trace
+            }
+            (None, Some(text)) => pipeline::run_transcript(&env, start, text, &updates).await,
+            (None, None) => unreachable!("replay runs with audio or a transcript"),
+        };
         drop(updates);
         let _ = printer.await;
         Ok::<_, Box<dyn std::error::Error>>(trace)
