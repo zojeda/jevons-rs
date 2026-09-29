@@ -138,7 +138,8 @@ impl Models {
 pub struct Dictation {
     /// Push-to-talk: hold while speaking, release to insert.
     pub hotkey: String,
-    /// Starts and stops live dictation.
+    /// Live dictation while held. A single key without modifiers (F9 by default): it types while
+    /// the key is held, and applications garble text typed under a held Ctrl or Alt.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live_hotkey: Option<String>,
     /// Live dictation types the words as they are recognized. When off, it types each phrase
@@ -168,7 +169,7 @@ impl Default for Dictation {
     fn default() -> Self {
         Self {
             hotkey: "Ctrl+Alt+Space".into(),
-            live_hotkey: Some("Ctrl+Alt+L".into()),
+            live_hotkey: Some("F9".into()),
             live_stream: true,
             inspector_hotkey: None,
             profile_hotkeys: BTreeMap::new(),

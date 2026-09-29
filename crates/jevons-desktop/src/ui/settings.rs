@@ -7,6 +7,16 @@ use crate::runtime::Status;
 use dioxus::prelude::*;
 use jevons_desktop_core::config::{DesktopConfig, Mode};
 
+/// Whether `accelerator` holds a modifier (Ctrl, Alt, Shift or Win) along with its key.
+fn has_modifier(accelerator: &str) -> bool {
+    accelerator.split('+').rev().skip(1).any(|part| {
+        matches!(
+            part.trim().to_ascii_lowercase().as_str(),
+            "ctrl" | "control" | "alt" | "shift" | "super" | "win" | "meta" | "cmd" | "command"
+        )
+    })
+}
+
 #[component]
 pub fn SettingsPage(rev: u64) -> Element {
     let _ = rev;
@@ -137,6 +147,11 @@ pub fn SettingsPage(rev: u64) -> Element {
                     HotkeyField { value: d.dictation.live_hotkey.clone().unwrap_or_default(), optional: true,
                         onchange: move |h: String| draft.write().dictation.live_hotkey = Some(h).filter(|h| !h.is_empty()) }
                 }
+                if d.dictation.live_hotkey.as_deref().is_some_and(has_modifier) {
+                    p { class: "warn",
+                        "Live dictation types while this hotkey is held, and applications garble text typed under a held Ctrl, Alt, Shift or Win. Use a single key, such as F9."
+                    }
+                }
                 div { class: "field",
                     span { class: "field-label", "Live dictation types" }
                     Switch { checked: d.dictation.live_stream,
@@ -260,5 +275,18 @@ pub fn SettingsPage(rev: u64) -> Element {
                 "Revert"
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_modifier;
+
+    #[test]
+    fn a_live_hotkey_with_a_modifier_is_flagged() {
+        assert!(has_modifier("Ctrl+F9"));
+        assert!(has_modifier("Ctrl+Alt+L"));
+        assert!(!has_modifier("F9"));
+        assert!(!has_modifier("Pause"));
     }
 }
