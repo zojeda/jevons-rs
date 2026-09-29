@@ -254,11 +254,9 @@ impl Agent {
                         self.begin(profile, Some(id), false);
                     }
                 }
-                // Hold to dictate live, like push-to-talk; the release below stops it.
-                Some(HotkeyAction::LiveDictation) if self.active.is_none() => {
-                    self.begin(None, Some(id), true);
-                }
-                Some(HotkeyAction::LiveDictation) => {}
+                // Live dictation toggles: press to start, press again to stop. Nothing is
+                // held while it types.
+                Some(HotkeyAction::LiveDictation) => self.toggle_live(),
                 None => {}
             },
             Command::Hotkey(HotkeyEvent::Released(id)) => {

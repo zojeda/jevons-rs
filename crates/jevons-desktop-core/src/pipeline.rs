@@ -107,6 +107,8 @@ impl Phrases {
 }
 /// Live dictation: how long to wait for the last turn after stopping.
 const LIVE_DRAIN: Duration = Duration::from_secs(5);
+/// Live dictation: how long typing waits for held keys to be released.
+const LIVE_KEYS_WAIT: Duration = Duration::from_millis(500);
 /// How long to wait for the final transcript after the take ends.
 const TRANSCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -616,7 +618,7 @@ fn starts_with_punctuation(text: &str) -> bool {
 type Edit = (usize, String);
 
 /// Folds a later edit into an earlier one that has not been delivered yet, so a queue of edits
-/// becomes one paste.
+/// is typed at once.
 fn fold((erase, mut text): Edit, (later_erase, later): Edit) -> Edit {
     let len = text.chars().count();
     if later_erase <= len {
@@ -646,9 +648,8 @@ enum Typing {
     Flush(oneshot::Sender<()>),
 }
 
-/// Live dictation's typing, off the live loop: each paste waits for the target to read the
-/// clipboard, so edits queued meanwhile are folded into the next paste instead of adding a
-/// wait each and falling behind the speech.
+/// Live dictation's typing, off the live loop: edits queued while one is typed are folded
+/// into the next, so typing never falls behind the speech.
 struct Typist {
     queue: std::sync::mpsc::Sender<Typing>,
     /// Why an edit could not be delivered, since the last [`Typist::failure`].
@@ -714,7 +715,7 @@ impl Typist {
     }
 }
 
-/// Pastes `text` over `erase` characters before the caret, if `window` still has the focus.
+/// Types `text` over `erase` characters before the caret, if `window` still has the focus.
 fn deliver_at(
     sink: &Mutex<Box<dyn TextSink>>,
     window: u64,
@@ -725,10 +726,15 @@ fn deliver_at(
     if window == 0 || sink.foreground_window().unwrap_or(0) != window {
         return Err("the focused window changed".into());
     }
+    // Keys typed under a held modifier become shortcuts: wait briefly for the keyboard.
+    let waited = Instant::now();
+    while sink.keys_down() && waited.elapsed() < LIVE_KEYS_WAIT {
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let request = DeliveryRequest {
         action: Action::Insert,
         text: text.to_string(),
-        method: DeliveryMethod::Paste,
+        method: DeliveryMethod::Type,
         select_all: false,
         erase,
     };
@@ -795,11 +801,11 @@ fn streamed_turn(
         }
         typist.edit(erase, text);
         trace.delivery = Some(DeliveryOutcome::Delivered {
-            method: DeliveryMethod::Paste,
+            method: DeliveryMethod::Type,
         });
     } else {
         trace.delivery = Some(DeliveryOutcome::Delivered {
-            method: DeliveryMethod::Paste,
+            method: DeliveryMethod::Type,
         });
     }
     trace.time("deliver", began);
@@ -1604,8 +1610,7 @@ instructions = "Formal tone.""#,
             (&["sekond", " phrase"], "second phrase."),
         ])
         .await;
-        // The live hotkey is held the whole time: typing must not wait for it.
-        let sink = RecordingSink::new(Some(7)).holding_keys();
+        let sink = RecordingSink::new(Some(7));
         let env = Env {
             client,
             profiles: Arc::default(),
@@ -1628,10 +1633,10 @@ instructions = "Formal tone.""#,
         let mut traces = Vec::new();
         let result = run_live(&env, start, received, stopped, &updates, |t| traces.push(t)).await;
         assert_eq!(result, Ok(()));
-        // Pastes queued while one is under way are folded together, so replay them.
+        // Edits queued while one is typed are folded together, so replay them.
         let mut document = String::new();
         for request in sink.requests() {
-            assert_eq!(request.method, DeliveryMethod::Paste);
+            assert_eq!(request.method, DeliveryMethod::Type);
             let kept = document.chars().count() - request.erase;
             document = document.chars().take(kept).collect::<String>() + &request.text;
         }
@@ -1706,7 +1711,7 @@ instructions = "Formal tone.""#,
     }
 
     #[test]
-    fn queued_edits_fold_into_one_paste() {
+    fn queued_edits_fold_into_one() {
         let edit = |erase, text: &str| (erase, text.to_string());
         assert_eq!(
             fold(edit(0, "hello"), edit(0, " there")),
