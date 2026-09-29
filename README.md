@@ -50,7 +50,7 @@ jevons builds from source. On Windows you need:
 cargo run --release --locked -p jevons-desktop
 ```
 
-The app starts in the tray, with no console window.
+The app starts in the tray, with no console window. The [Desktop workflow](.github/workflows/desktop.yml) also builds it for Windows and Linux on every push to `dev` and `main`: download the package from the run's artifacts.
 
 1. **Download the models.** Open the window (**Show context inspector** in the tray menu) and go to **Models**. Press **Download** on DiffusionGemma (about 18 GB, with its vision projector) and Parakeet (2.5 GB). They go to `~/jevons/models`, or to a folder you choose. Nothing downloads by itself, and **Use existing…** points at models already on disk.
 2. **Wait for the first load.** The icon is blue while the models load. On the first runs on a machine it turns amber while GPU kernels are tuned, which takes a few minutes and is cached for later runs.

@@ -1,0 +1,146 @@
+name: Desktop
+
+# Builds jevons-desktop, the tray dictation app, for Windows and Linux on every push to dev or
+# main and on pull requests that touch it, and uploads each as a ready-to-run artifact.
+# Releases stay in release.yml. The app loads ROCm/HIP at run time, so no GPU or ROCm is
+# needed to build it.
+on:
+  push:
+    branches: [dev, main]
+    paths: &paths
+      - "crates/**"
+      - "third_party/**"
+      - "examples/desktop/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "jevons-desktop.example.toml"
+      - ".github/hipconfig.rs"
+      - ".github/workflows/desktop.yml"
+  pull_request:
+    paths: *paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # HIP binding layout compiled into the app: the ROCm version it is tested on.
+  JEVONS_HIP_VERSION: "7.2.53211"
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-check
+      - name: Pin the HIP bindings
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          rustc -O .github/hipconfig.rs -o "$RUNNER_TEMP/bin/hipconfig"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install the desktop libraries
+        # Tray (GTK, AppIndicator, xdo), microphone (ALSA), TLS (OpenSSL).
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxdo-dev libayatana-appindicator3-dev libasound2-dev libssl-dev
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy -p jevons-desktop-core -p jevons-desktop --all-targets --locked -- -D warnings
+      - run: cargo test -p jevons-desktop-core -p jevons-desktop --locked
+
+  build:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    # The embedded runtime (Burn, CubeCL, the models) makes a long first build.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Name the build
+        shell: bash
+        run: |
+          short="${GITHUB_SHA::7}"
+          echo "VERSION=${GITHUB_REF_NAME//\//-}-$short" >> "$GITHUB_ENV"
+          echo "JEVONS_BUILD=${GITHUB_REF_NAME} ${short} (run ${GITHUB_RUN_NUMBER})" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-${{ matrix.target }}
+      - uses: actions/setup-python@v5
+        # Blitz's CSS engine (stylo) generates code with Python at build time.
+        with:
+          python-version: "3.12"
+      - name: Pin the HIP bindings
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          rustc -O .github/hipconfig.rs -o "$RUNNER_TEMP/bin/hipconfig${{ runner.os == 'Windows' && '.exe' || '' }}"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install the desktop libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxdo-dev libayatana-appindicator3-dev libasound2-dev libssl-dev
+      - name: Build
+        shell: bash
+        run: |
+          cargo build --release --locked --target ${{ matrix.target }} -p jevons-desktop --bin jevons-desktop
+      - name: Package
+        shell: bash
+        run: |
+          name="jevons-desktop-$VERSION-${{ matrix.target }}"
+          release="target/${{ matrix.target }}/release"
+          mkdir -p "dist/$name"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            # The .pdb gives the log's panic backtraces their files and lines.
+            cp "$release/jevons-desktop.exe" "$release/jevons_desktop.pdb" "dist/$name/"
+          else
+            cp "$release/jevons-desktop" "dist/$name/"
+          fi
+          cp jevons-desktop.example.toml "dist/$name/"
+          cp docs/desktop.md "dist/$name/GUIDE.md"
+          cp -r examples/desktop/profiles "dist/$name/profiles"
+          cat > "dist/$name/README.txt" <<README
+          jevons-desktop $JEVONS_BUILD, context-aware dictation from the tray.
+
+          Needs an AMD RDNA3-class GPU with ROCm/HIP 7.2 (on Windows, the AMD driver and the
+          AMD HIP SDK). Start jevons-desktop, open the window from the tray menu (Show context
+          inspector), and download the models in the Models tab. GUIDE.md covers profiles,
+          settings and hotkeys; profiles/ has example profiles to copy into the profiles folder
+          next to the settings file. Logs and traces go to the jevons folder in your home.
+          README
+          cd dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            archive="$name.zip"
+            7z a -tzip "$archive" "$name" > /dev/null
+          else
+            archive="$name.tar.gz"
+            tar czf "$archive" "$name"
+          fi
+          rm -r "$name"
+          sha256sum "$archive" > "$archive.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jevons-desktop-${{ env.VERSION }}-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30

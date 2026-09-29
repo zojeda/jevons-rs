@@ -66,6 +66,12 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
 
+GitHub Actions runs two workflows:
+- `release.yml` checks the whole workspace on pull requests and pushes to `main`, then publishes each push to `main` as a release with both binaries.
+- `desktop.yml` lints and tests the desktop crates on pushes to `dev` and `main` and on pull requests that touch them. It then builds `jevons-desktop` for Windows (with its `.pdb`) and Linux, and uploads each package as a run artifact, kept 30 days. Start it by hand from the Actions tab (*Run workflow*).
+
+Neither workflow needs a GPU: the HIP libraries load at run time, and `.github/hipconfig.rs` pins the binding layout.
+
 For inference changes, set `DIFFUSION_MODEL` (and `DIFFUSION_MMPROJ` for the image test) and the [ROCm/WSL environment](build.md#rocmhip), then run the model tests. Run each in its own process: every test loads the 17.7 GB model, and on APUs that memory is system memory.
 
 ```bash
