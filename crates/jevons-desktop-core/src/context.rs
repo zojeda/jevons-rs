@@ -66,6 +66,13 @@ pub struct Privacy {
     pub max_context_chars: usize,
     /// Whether a provider may read the clipboard into `extras`.
     pub read_clipboard: bool,
+    /// Whether investigations may read windows other than the one a take started in (only of
+    /// the applications in `readable_apps`).
+    pub read_other_windows: bool,
+    /// Globs on the process names investigations may read besides the take's own window, such
+    /// as `["slack.exe", "chrome.exe"]`; empty allows none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub readable_apps: Vec<String>,
 }
 
 impl Default for Privacy {
@@ -73,6 +80,8 @@ impl Default for Privacy {
         Self {
             max_context_chars: 2000,
             read_clipboard: false,
+            read_other_windows: false,
+            readable_apps: Vec::new(),
         }
     }
 }

@@ -20,6 +20,14 @@ pub fn context_provider() -> Box<dyn ContextProvider> {
     Box::new(WindowContext)
 }
 
+/// The interface reader for investigations on this platform.
+pub fn context_inspector() -> std::sync::Arc<dyn jevons_desktop_core::platform::ContextInspector> {
+    #[cfg(windows)]
+    return std::sync::Arc::new(windows::UiaInspector);
+    #[cfg(not(windows))]
+    std::sync::Arc::new(jevons_desktop_core::platform::Unsupported)
+}
+
 /// The text sink for this platform.
 pub fn text_sink() -> Box<dyn TextSink> {
     #[cfg(windows)]

@@ -6,9 +6,10 @@ use device_query::{DeviceQuery, DeviceState};
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use jevons_desktop_core::context::{ContextSnapshot, Element, Privacy};
 use jevons_desktop_core::platform::{
-    ContextProvider, DeliveryMethod, DeliveryOutcome, DeliveryRequest, PlatformError,
-    SinkCapabilities, TextSink,
+    ContextInspector, ContextProvider, DeliveryMethod, DeliveryOutcome, DeliveryRequest,
+    PlatformError, SinkCapabilities, TextSink, UiElement, WindowEntry,
 };
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use uiautomation::patterns::{UITextPattern, UIValuePattern};
@@ -34,6 +35,9 @@ type Reply<T> = std::sync::mpsc::Sender<Result<T, PlatformError>>;
 enum Request {
     Snapshot(Privacy, Reply<ContextSnapshot>),
     SetValue(String, Reply<()>),
+    Windows(Reply<Vec<WindowEntry>>),
+    Children(String, Reply<Vec<UiElement>>),
+    Subtree(String, usize, usize, Reply<Vec<(usize, UiElement)>>),
 }
 
 /// UI Automation calls, on one thread that owns its COM apartment: the threads that ask may
@@ -46,6 +50,8 @@ fn automation(request: Request) {
             .name("ui-automation".into())
             .spawn(move || {
                 let automation = UIAutomation::new().map_err(failed);
+                // Elements handed to investigations, by id; cleared when one lists the windows.
+                let mut elements: HashMap<String, UIElement> = HashMap::new();
                 for request in requests {
                     let automation = automation.as_ref().map_err(failed);
                     match request {
@@ -54,6 +60,21 @@ fn automation(request: Request) {
                         }
                         Request::SetValue(text, reply) => {
                             let _ = reply.send(automation.and_then(|a| set_value(a, &text)));
+                        }
+                        Request::Windows(reply) => {
+                            elements.clear();
+                            let _ = reply.send(automation.and_then(|a| windows(a, &mut elements)));
+                        }
+                        Request::Children(id, reply) => {
+                            let _ = reply
+                                .send(automation.and_then(|a| children(a, &mut elements, &id)));
+                        }
+                        Request::Subtree(id, depth, limit, reply) => {
+                            let _ =
+                                reply
+                                    .send(automation.and_then(|a| {
+                                        subtree(a, &mut elements, &id, depth, limit)
+                                    }));
                         }
                     }
                 }
@@ -83,6 +104,172 @@ impl ContextProvider for UiaContext {
     fn snapshot(&self, privacy: &Privacy) -> Result<ContextSnapshot, PlatformError> {
         ask(|reply| Request::Snapshot(privacy.clone(), reply))
     }
+}
+
+/// Interfaces read on demand, for the context investigator.
+pub struct UiaInspector;
+
+impl ContextInspector for UiaInspector {
+    fn name(&self) -> &'static str {
+        "UI Automation"
+    }
+
+    fn windows(&self) -> Result<Vec<WindowEntry>, PlatformError> {
+        ask(Request::Windows)
+    }
+
+    fn children(&self, id: &str) -> Result<Vec<UiElement>, PlatformError> {
+        ask(|reply| Request::Children(id.to_string(), reply))
+    }
+
+    fn subtree(
+        &self,
+        id: &str,
+        depth: usize,
+        limit: usize,
+    ) -> Result<Vec<(usize, UiElement)>, PlatformError> {
+        ask(|reply| Request::Subtree(id.to_string(), depth, limit, reply))
+    }
+}
+
+/// The most characters of an element's value an investigation reads.
+const MAX_VALUE: i32 = 4000;
+
+fn element_id(element: &UIElement) -> Option<String> {
+    let id = element.get_runtime_id().ok()?;
+    Some(id.iter().map(i32::to_string).collect::<Vec<_>>().join("."))
+}
+
+/// An element as investigations see it; remembered so its children can be read later.
+fn describe(element: &UIElement, elements: &mut HashMap<String, UIElement>) -> Option<UiElement> {
+    let id = element_id(element)?;
+    let password = element.is_password().unwrap_or(false);
+    let role = element
+        .get_control_type()
+        .map(|t| format!("{t:?}"))
+        .unwrap_or_default();
+    let value = if password {
+        None
+    } else {
+        element
+            .get_pattern::<UIValuePattern>()
+            .ok()
+            .and_then(|v| v.get_value().ok())
+            .or_else(|| {
+                matches!(element.get_control_type(), Ok(ControlType::Document))
+                    .then(|| element.get_pattern::<UITextPattern>().ok())
+                    .flatten()
+                    .and_then(|t| {
+                        t.get_document_range()
+                            .and_then(|r| r.get_text(MAX_VALUE))
+                            .ok()
+                    })
+            })
+            .filter(|v| !v.is_empty())
+            .map(|v| v.chars().take(MAX_VALUE as usize).collect())
+    };
+    let described = UiElement {
+        id: id.clone(),
+        role,
+        name: if password {
+            String::new()
+        } else {
+            element.get_name().unwrap_or_default()
+        },
+        value,
+        class: element.get_classname().ok().filter(|c| !c.is_empty()),
+        automation_id: element.get_automation_id().ok().filter(|a| !a.is_empty()),
+        password,
+        child_count: None,
+    };
+    elements.insert(id, element.clone());
+    Some(described)
+}
+
+fn windows(
+    automation: &UIAutomation,
+    elements: &mut HashMap<String, UIElement>,
+) -> Result<Vec<WindowEntry>, PlatformError> {
+    let root = automation.get_root_element().map_err(failed)?;
+    let walker = automation.get_control_view_walker().map_err(failed)?;
+    let front = super::active_window().map(|(w, _)| w.process_id);
+    let mut system = sysinfo::System::new();
+    system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    let mut out = Vec::new();
+    let mut next = walker.get_first_child(&root).ok();
+    while let Some(window) = next {
+        next = walker.get_next_sibling(&window).ok();
+        let title = window.get_name().unwrap_or_default();
+        let Ok(pid) = window.get_process_id() else {
+            continue;
+        };
+        if title.is_empty() || pid == std::process::id() {
+            continue;
+        }
+        let app = system
+            .process(sysinfo::Pid::from_u32(pid))
+            .map(|p| p.name().to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let Some(id) = element_id(&window) else {
+            continue;
+        };
+        elements.insert(id.clone(), window.clone());
+        out.push(WindowEntry {
+            id,
+            app,
+            title,
+            front: front == Some(u64::from(pid)),
+        });
+    }
+    Ok(out)
+}
+
+fn children(
+    automation: &UIAutomation,
+    elements: &mut HashMap<String, UIElement>,
+    id: &str,
+) -> Result<Vec<UiElement>, PlatformError> {
+    let parent = elements
+        .get(id)
+        .cloned()
+        .ok_or_else(|| failed(format!("no element {id}: list the windows again")))?;
+    let walker = automation.get_control_view_walker().map_err(failed)?;
+    let mut out = Vec::new();
+    let mut next = walker.get_first_child(&parent).ok();
+    while let Some(child) = next {
+        next = walker.get_next_sibling(&child).ok();
+        if let Some(described) = describe(&child, elements) {
+            out.push(described);
+        }
+    }
+    Ok(out)
+}
+
+/// A subtree in one call on this thread, parents before children.
+fn subtree(
+    automation: &UIAutomation,
+    elements: &mut HashMap<String, UIElement>,
+    id: &str,
+    depth: usize,
+    limit: usize,
+) -> Result<Vec<(usize, UiElement)>, PlatformError> {
+    let mut out = Vec::new();
+    let mut stack: Vec<(usize, UiElement)> = children(automation, elements, id)?
+        .into_iter()
+        .rev()
+        .map(|e| (1, e))
+        .collect();
+    while let Some((level, element)) = stack.pop() {
+        if out.len() >= limit {
+            break;
+        }
+        if level < depth {
+            let below = children(automation, elements, &element.id).unwrap_or_default();
+            stack.extend(below.into_iter().rev().map(|e| (level + 1, e)));
+        }
+        out.push((level, element));
+    }
+    Ok(out)
 }
 
 fn snapshot(

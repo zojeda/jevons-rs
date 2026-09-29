@@ -53,6 +53,10 @@ struct Args {
     /// printing.
     #[arg(long)]
     deliver: bool,
+    /// With --replay or --transcript: answer investigations from this recorded interface (the
+    /// inspector's Record tree) instead of the live one.
+    #[arg(long, value_name = "JSON")]
+    tree: Option<PathBuf>,
     /// Check a flows folder (by default the settings' one), print its problems and exit.
     #[arg(long, value_name = "DIR", num_args = 0..=1, default_missing_value = "")]
     check_flows: Option<PathBuf>,
@@ -206,6 +210,21 @@ fn replay(
         }
         return Err("the flow tree has problems; see above".into());
     }
+    let inspector: Arc<dyn jevons_desktop_core::platform::ContextInspector> = match &args.tree {
+        Some(file) => Arc::new(jevons_desktop_core::recorded::RecordedInspector::load(
+            file,
+        )?),
+        None => platform::context_inspector(),
+    };
+    let investigator = connection.models.generative.clone().map(|model| {
+        Arc::new(jevons_desktop_core::flow::investigator::Investigator::new(
+            connection.client.clone(),
+            model,
+            inspector,
+            config.privacy.clone(),
+            Arc::default(),
+        )) as Arc<dyn jevons_desktop_core::flow::investigate::Investigate>
+    });
     let dictation = &config.dictation;
     let env = Env {
         client: connection.client,
@@ -221,7 +240,7 @@ fn replay(
         sink: args
             .deliver
             .then(|| Arc::new(Mutex::new(platform::text_sink()))),
-        investigator: None,
+        investigator,
     };
     let tokio = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -329,6 +348,7 @@ fn start_agent(
             tokio.block_on(async move {
                 let layers = Layers {
                     context: platform::context_provider(),
+                    inspector: platform::context_inspector(),
                     sink: platform::text_sink(),
                     audio: Box::new(audio::CpalSource),
                     tray,

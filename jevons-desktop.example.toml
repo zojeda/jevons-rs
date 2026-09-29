@@ -57,3 +57,7 @@ max_output_tokens = 1024
 [privacy]
 max_context_chars = 2000
 read_clipboard = false
+# Investigations read the window a take started in. To let them read other windows too (such as
+# "is Slack open, and what did Ana say?"), allow it and list the applications:
+read_other_windows = false
+# readable_apps = ["slack.exe", "chrome.exe"]

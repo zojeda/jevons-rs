@@ -99,12 +99,12 @@ impl Client {
 
 /// Splits a server-sent event stream into the `data` of each event.
 #[derive(Default)]
-struct SseParser {
+pub(super) struct SseParser {
     buffer: String,
 }
 
 impl SseParser {
-    fn push(&mut self, bytes: &[u8]) -> Vec<String> {
+    pub(super) fn push(&mut self, bytes: &[u8]) -> Vec<String> {
         self.buffer.push_str(&String::from_utf8_lossy(bytes));
         let mut events = Vec::new();
         while let Some(end) = self.buffer.find("\n\n") {

@@ -6,14 +6,17 @@ use crate::runtime::{Runtime, Status};
 use crate::tray::Tray;
 use jevons_desktop_core::config::{DesktopConfig, HotkeyMode};
 use jevons_desktop_core::context::ContextSnapshot;
+use jevons_desktop_core::flow::investigate::Investigate;
+use jevons_desktop_core::flow::investigator::{Investigator, PathCache};
 use jevons_desktop_core::flow::walk::{self, FlowStep};
 use jevons_desktop_core::flow::{Catalog, FlowError, FlowTree, defaults};
 use jevons_desktop_core::icons::TrayState;
 use jevons_desktop_core::pipeline::{self, Env, TakeStart, Trace, Update};
 use jevons_desktop_core::platform::{
-    AudioDevice, AudioSource, Binding, CaptureHandle, ContextProvider, DeliveryOutcome,
-    HotkeyAction, HotkeyEvent, MenuCommand, MenuModel, TextSink, TrayBackend,
+    AudioDevice, AudioSource, Binding, CaptureHandle, ContextInspector, ContextProvider,
+    DeliveryOutcome, HotkeyAction, HotkeyEvent, MenuCommand, MenuModel, TextSink, TrayBackend,
 };
+use jevons_desktop_core::recorded::RecordedTree;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -39,6 +42,8 @@ pub enum Command {
     RefreshContext,
     /// Read the context after a delay, so the user can switch to the target application.
     CaptureContextIn(Duration),
+    /// Saves the interface of the window in front, for writing flows and investigation tests.
+    RecordTree,
     ReloadFlows,
     RuntimeChanged,
     /// Apply the settings to the runtime again, such as after a model finished downloading.
@@ -190,6 +195,9 @@ pub struct Agent {
     runtime: Runtime,
     tray: Option<Tray>,
     context: Box<dyn ContextProvider>,
+    inspector: Arc<dyn ContextInspector>,
+    /// Where investigations found their answers, reused across takes.
+    paths: Arc<Mutex<PathCache>>,
     sink: Arc<Mutex<Box<dyn TextSink>>>,
     audio: Box<dyn AudioSource>,
     flows: Arc<FlowTree>,
@@ -207,6 +215,7 @@ pub struct Agent {
 /// The platform layers the agent drives.
 pub struct Layers {
     pub context: Box<dyn ContextProvider>,
+    pub inspector: Arc<dyn ContextInspector>,
     pub sink: Box<dyn TextSink>,
     pub audio: Box<dyn AudioSource>,
     pub tray: Option<Tray>,
@@ -240,6 +249,8 @@ impl Agent {
             runtime,
             tray: layers.tray,
             context: layers.context,
+            inspector: layers.inspector,
+            paths: Arc::new(Mutex::new(PathCache::open(PathCache::default_file()))),
             sink: Arc::new(Mutex::new(layers.sink)),
             audio: layers.audio,
             hotkeys: std::collections::HashMap::new(),
@@ -380,6 +391,7 @@ impl Agent {
                     let _ = commands.send(Command::RefreshContext);
                 });
             }
+            Command::RecordTree => self.record_tree(),
             Command::ReloadFlows => self.reload_flows(),
             Command::ReloadRuntime => self.runtime.apply(&self.config, &self.config_file),
             Command::RuntimeChanged => {
@@ -567,6 +579,59 @@ impl Agent {
         walk::preview(&self.flows, snapshot, entry)
     }
 
+    /// Saves the front window's interface to `~/jevons/trees`, off the agent thread.
+    fn record_tree(&mut self) {
+        let inspector = self.inspector.clone();
+        let app = self
+            .view()
+            .context
+            .as_ref()
+            .map(|c| c.app.process_name.clone());
+        let view = self.view.clone();
+        let repaint = self.repaint.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = inspector.windows().and_then(|windows| {
+                let window = windows
+                    .iter()
+                    .find(|w| {
+                        app.as_deref()
+                            .is_some_and(|a| w.app.eq_ignore_ascii_case(a))
+                    })
+                    .or_else(|| windows.iter().find(|w| w.front))
+                    .cloned()
+                    .ok_or_else(|| {
+                        jevons_desktop_core::platform::PlatformError::Failed(
+                            "no window to record".into(),
+                        )
+                    })?;
+                let tree = RecordedTree::record(
+                    inspector.as_ref(),
+                    std::slice::from_ref(&window),
+                    40,
+                    5000,
+                )?;
+                let dir = jevons_desktop_core::config::user_dir().join("trees");
+                let millis = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_millis());
+                let file = dir.join(format!("{millis}-{}.json", window.app));
+                std::fs::create_dir_all(&dir)
+                    .and_then(|()| {
+                        std::fs::write(&file, serde_json::to_vec_pretty(&tree).unwrap_or_default())
+                    })
+                    .map_err(|e| {
+                        jevons_desktop_core::platform::PlatformError::Failed(e.to_string())
+                    })?;
+                Ok(file)
+            });
+            view.lock().expect("the view lock").notice = Some(match result {
+                Ok(file) => format!("Recorded the interface in {}", file.display()),
+                Err(e) => format!("Cannot record the interface: {e}"),
+            });
+            repaint();
+        });
+    }
+
     /// Loads the flows folder again; a tree with errors is reported and the last good one kept.
     fn reload_flows(&mut self) {
         let dir = self.config.flows_dir(&self.config_file);
@@ -642,6 +707,15 @@ impl Agent {
         };
         let (finish, finished) = oneshot::channel();
         let dictation = &self.config.dictation;
+        let investigator = connection.models.generative.clone().map(|model| {
+            Arc::new(Investigator::new(
+                connection.client.clone(),
+                model,
+                self.inspector.clone(),
+                self.config.privacy.clone(),
+                self.paths.clone(),
+            )) as Arc<dyn Investigate>
+        });
         let env = Env {
             client: connection.client,
             flows: self.flows.clone(),
@@ -654,7 +728,7 @@ impl Agent {
                 ..pipeline::Settings::default()
             },
             sink: Some(self.sink.clone()),
-            investigator: None,
+            investigator,
         };
         let start = TakeStart {
             id,

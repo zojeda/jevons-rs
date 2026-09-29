@@ -42,6 +42,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 # Desktop agent.
+# Agents and MCP: default features off, so no model providers, skills or TLS come in.
+adk-agent = { version = "2.2", default-features = false }
+adk-core = { version = "2.2", default-features = false }
+adk-runner = { version = "2.2", default-features = false }
+adk-session = { version = "2.2", default-features = false }
+adk-tool = { version = "2.2", default-features = false, features = ["mcp"] }
 active-win-pos-rs = "0.11"
 arboard = "3.6"
 cpal = "0.18"
@@ -65,6 +71,8 @@ rdev = "0.5"
 rfd = "0.17"
 schemars = "1"
 sha2 = "0.10"
+# Process names for the windows investigations may read (Windows).
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 tao = "0.37"
 tokio-tungstenite = "0.29"
 tray-icon = "0.25"

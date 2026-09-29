@@ -1,11 +1,13 @@
 //! Typed requests to the jevons API. The server parses requests by hand, so these mirror its
 //! schemas rather than share types with it (which would also pull in the inference stack).
 
+mod chat;
 mod realtime;
 mod responses;
 mod systemone;
 mod transcriptions;
 
+pub use chat::{ChatMessage, ChatReply, ChatRequest};
 pub use realtime::{RealtimeEvent, RealtimeReader, RealtimeWriter, Turns};
 pub use responses::{Reasoning, ResponseRequest};
 pub use systemone::{Answer, DecisionRequest, DecisionResponse, NoulCriteria, Question, Usage};

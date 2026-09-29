@@ -43,6 +43,7 @@ uuid.workspace = true
 rdev = { workspace = true, features = ["unstable_grab"] }
 device_query.workspace = true
 enigo.workspace = true
+sysinfo.workspace = true
 uiautomation = { workspace = true, features = ["pattern"] }
 
 [dev-dependencies]

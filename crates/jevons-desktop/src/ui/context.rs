@@ -24,6 +24,7 @@ pub fn ContextPage(rev: u64, frozen: Signal<bool>) -> Element {
     let route = view.route.clone();
     drop(view);
     let capture = ctx.clone();
+    let record = ctx.clone();
 
     rsx! {
         div { class: "spread",
@@ -47,6 +48,14 @@ pub fn ContextPage(rev: u64, frozen: Signal<bool>) -> Element {
                     checked: raw(),
                     label: "Raw JSON".to_string(),
                     onchange: move |on| raw.set(on),
+                }
+                button {
+                    class: "dx-button",
+                    "data-style": "outline",
+                    "data-size": "sm",
+                    title: "Save this window's interface to ~/jevons/trees, for writing investigations and replaying them with --tree",
+                    onclick: move |_| record.send(Command::RecordTree),
+                    "Record tree"
                 }
             }
             span { class: "muted", "{backends}" }

@@ -79,6 +79,29 @@ The built-in tree:
 
 `AGENTS.md` in the folder is the full reference: every field, placeholders such as `{selection}` and `{chat.messages}`, investigations, tools, agents and the rules the loader enforces. [examples/desktop/flows](../examples/desktop/flows) is the built-in tree.
 
+### Investigations: reading more of the screen
+
+The snapshot a take starts with holds the focused field and its text. When a branch needs more, such as the messages of the open conversation, it declares an investigation, and the built-in context investigator reads the application's interface (UI Automation on Windows) to answer it:
+
+```toml
+[investigate.conversation]
+question = "Which conversation is open in this window, and what are its most recent messages?"
+schema = { name = "string", messages = [{ author = "string", time = "string", text = "string" }] }
+```
+
+The answer is available to that node and every node below it as `{conversation}` and `{conversation.name}`, and generation prompts include it. The investigator is an agent with four tools:
+
+- `outline`: an element's descendants as compact lines, where wrappers with no text collapse and unnamed rows show the start of their text;
+- `find`: search below an element by role or text;
+- `read`: an element's full text;
+- `list_windows`: only when other windows are allowed.
+
+Elements get short ids as they are seen, and each tool takes one as an enum of the ids seen so far, so the model picks it with a restricted read and a step never names an element that does not exist. The answer is filled into the schema. When an investigation succeeds, the path to the element it read is remembered for that application and question (in the platform cache folder, `investigations.json`), and the next time it is read and answered in one call. The same question twice in a take is answered once.
+
+Investigations read only the window the take started in. To let a question like "is Slack open, and what did Ana say?" read other windows, set `privacy.read_other_windows = true` and list the applications in `privacy.readable_apps`; the investigation's `scope` then names which of them it reads. Password fields are never read, and text is capped at `privacy.max_context_chars` per read.
+
+**Record tree** on the Context tab saves the interface of the window in front to `~/jevons/trees` as JSON (it holds that window's text: it stays on your machine). `--tree <file>` replays a take against a recorded interface instead of the live one.
+
 ### Writing a branch against the real context
 
 The **Context** tab shows what the platform reports for the focused window. It updates twice a second and ignores the inspector's own window. Use **Capture in 3 s**, then switch to the target application.
@@ -96,7 +119,7 @@ The **Settings** tab edits the runtime, dictation and privacy settings. **Apply 
   - Turning exposure on or off, or changing the port, rebinds the listener without reloading the models.
   - *Use a jevons server* skips local models and uses a server URL and key instead.
 - **Dictation.** The hotkeys (push-to-talk, live dictation, inspector, and one per top-level branch), live feedback, the microphone, language (detected when empty), whether to ask the decision model (when off, decisions take their fallback), and the most tokens a generation may write unless a node sets its own.
-- **Privacy.** How many characters of each field to keep, and whether to include the clipboard.
+- **Privacy.** How many characters of each field to keep, whether to include the clipboard, and whether investigations may read windows other than the take's own (`read_other_windows`, with `readable_apps`).
 
 ## Models
 
@@ -146,7 +169,7 @@ cargo run -p jevons-desktop -- --transcript "what did Ana say about the launch?"
   --context examples/desktop/context-slack.json --flow ask
 ```
 
-`--flow` starts at a branch instead of the root, and `--deliver` types the result into the focused application.
+`--flow` starts at a branch instead of the root, `--tree` answers investigations from a recorded interface, and `--deliver` types the result into the focused application.
 
 `--check-flows [DIR]` checks a flows folder (the settings' one by default), printing every problem with its file and line, and fails when there is one. `--init-flows [DIR]` writes the built-in tree into a folder that has none and refreshes `AGENTS.md`, the schemas and `.taplo.toml`.
 
@@ -157,6 +180,7 @@ Every platform layer is a trait in `jevons-desktop-core::platform`. The pipeline
 | Layer | Windows | Linux | macOS |
 | --- | --- | --- | --- |
 | Context | UI Automation: role, name, selection, caret text, browser address | active window only (AT-SPI planned) | active window only (Accessibility API planned) |
+| Investigations | UI Automation: windows and their element trees | not yet | not yet |
 | Text input | paste, type (SendInput) or set value (UI Automation) | clipboard (Wayland input method, X11 XTest, uinput planned) | clipboard (CGEvent planned) |
 | Microphone | CPAL (WASAPI) | CPAL (ALSA/PulseAudio) | CPAL (CoreAudio) |
 | Hotkey, tray | global-hotkey, tray-icon | global-hotkey (X11), tray-icon (AppIndicator) | not yet |

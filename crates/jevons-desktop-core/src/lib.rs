@@ -28,3 +28,4 @@ pub mod icons;
 pub mod levels;
 pub mod pipeline;
 pub mod platform;
+pub mod recorded;

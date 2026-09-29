@@ -28,6 +28,74 @@ pub trait ContextProvider: Send {
     fn snapshot(&self, privacy: &Privacy) -> Result<ContextSnapshot, PlatformError>;
 }
 
+/// A top-level window the context investigator may look into.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(default)]
+pub struct WindowEntry {
+    /// Stable while the window exists.
+    pub id: String,
+    /// The process name, such as `slack.exe`.
+    pub app: String,
+    pub title: String,
+    /// The window in front.
+    pub front: bool,
+}
+
+/// An element of an application's interface, as the accessibility layer reports it.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(default)]
+pub struct UiElement {
+    /// Stable within an investigation; used to read the element's children.
+    pub id: String,
+    /// The control type, such as `List`, `ListItem` or `Text`.
+    pub role: String,
+    pub name: String,
+    /// The value or document text, when the element has one.
+    pub value: Option<String>,
+    pub class: Option<String>,
+    pub automation_id: Option<String>,
+    /// A password field: its text is never read.
+    pub password: bool,
+    /// How many children it has, when known.
+    pub child_count: Option<usize>,
+}
+
+/// Accessibility layer for investigations: windows and their element trees, read on demand.
+pub trait ContextInspector: Send + Sync {
+    /// The backend, for the inspector.
+    fn name(&self) -> &'static str;
+    fn windows(&self) -> Result<Vec<WindowEntry>, PlatformError>;
+    /// The children of a window (by [`WindowEntry::id`]) or of an element (by [`UiElement::id`]).
+    fn children(&self, id: &str) -> Result<Vec<UiElement>, PlatformError>;
+    /// Every element below `id` to `depth`, parents before children, at most `limit` of them.
+    /// Platforms override this to read a subtree in one call.
+    fn subtree(
+        &self,
+        id: &str,
+        depth: usize,
+        limit: usize,
+    ) -> Result<Vec<(usize, UiElement)>, PlatformError> {
+        let mut out = Vec::new();
+        let mut stack: Vec<(usize, UiElement)> = self
+            .children(id)?
+            .into_iter()
+            .rev()
+            .map(|e| (1, e))
+            .collect();
+        while let Some((level, element)) = stack.pop() {
+            if out.len() >= limit {
+                break;
+            }
+            if level < depth && element.child_count != Some(0) {
+                let children = self.children(&element.id).unwrap_or_default();
+                stack.extend(children.into_iter().rev().map(|e| (level + 1, e)));
+            }
+            out.push((level, element));
+        }
+        Ok(out)
+    }
+}
+
 /// A capture device.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct AudioDevice {
@@ -251,6 +319,24 @@ impl ContextProvider for Unsupported {
     fn snapshot(&self, _: &Privacy) -> Result<ContextSnapshot, PlatformError> {
         Err(PlatformError::Unsupported(
             "Reading the focused application",
+        ))
+    }
+}
+
+impl ContextInspector for Unsupported {
+    fn name(&self) -> &'static str {
+        "none"
+    }
+
+    fn windows(&self) -> Result<Vec<WindowEntry>, PlatformError> {
+        Err(PlatformError::Unsupported(
+            "Reading other applications' interfaces",
+        ))
+    }
+
+    fn children(&self, _: &str) -> Result<Vec<UiElement>, PlatformError> {
+        Err(PlatformError::Unsupported(
+            "Reading other applications' interfaces",
         ))
     }
 }

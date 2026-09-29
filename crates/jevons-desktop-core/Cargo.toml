@@ -12,6 +12,11 @@ testing = []
 
 [dependencies]
 jevons-audio.workspace = true
+adk-agent.workspace = true
+adk-core.workspace = true
+adk-runner.workspace = true
+adk-session.workspace = true
+adk-tool.workspace = true
 base64.workspace = true
 directories.workspace = true
 futures-util = { workspace = true, features = ["sink", "std"] }

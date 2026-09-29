@@ -10,10 +10,13 @@
 //! - [`walk`] and [`frame`]: one take through the tree, and what it carries down.
 //! - [`investigate`]: the contract of the built-in context investigator.
 
+pub mod agent;
 pub mod defaults;
 pub mod frame;
 pub mod guard;
 pub mod investigate;
+pub mod investigator;
+pub mod llm;
 pub mod shape;
 pub mod spec;
 pub mod template;
