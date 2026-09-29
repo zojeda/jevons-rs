@@ -134,7 +134,8 @@ fn run(commands: UnboundedSender<Command>, ready: std::sync::mpsc::Sender<Result
         .filter_map(|(_, pixels)| Icon::from_rgba(pixels, icons::SIZE, icons::SIZE).ok())
         .collect();
     let mut tray: Option<TrayIcon> = None;
-    let mut state = TrayState::Offline;
+    // The runtime starts loading as soon as the app starts.
+    let mut state = TrayState::Loading;
     let mut shown: Option<TrayState> = None;
     let mut menu = MenuModel::default();
     let mut registered: Vec<HotKey> = Vec::new();

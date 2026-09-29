@@ -21,6 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // One tile per state the tray can show, in reading order.
     let states = [
         TrayState::Idle,
+        TrayState::Loading,
         TrayState::Tuning,
         TrayState::Offline,
         TrayState::Error,

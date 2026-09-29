@@ -8,12 +8,13 @@ It runs the jevons models in-process, optionally exposing the API on a port, or 
 
 ## The tray icon
 
-<img src="assets/tray.png" alt="Tray states: ready, tuning, not ready, failed, listening (quiet and loud), transcribing, writing" width="620">
+<img src="assets/tray.png" alt="Tray states: ready, loading, tuning, no models, failed, listening (quiet and loud), transcribing, writing" width="680">
 
 From left to right:
 - **Ready** (cyan): the models are loaded.
+- **Loading** (blue): the models are loading; dictation is not ready yet.
 - **Tuning** (amber): GPU kernels are being autotuned for this model. This only happens on the first runs on a machine, and the results are saved; the tooltip says so.
-- **Not ready** (grey): the models are still loading.
+- **No models** (grey): nothing is loaded; download or choose models in the Models tab.
 - **Failed** (red): the last take failed; the inspector says why.
 - **Listening:** the waveform follows your voice.
 - **Transcribing:** green dots.

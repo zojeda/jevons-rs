@@ -19,7 +19,7 @@ The first run opens the window when no tray is available; otherwise use the tray
 
 The tray icon shows what is happening:
 
-- the jevons alien, glowing cyan when ready and grey while the models load;
+- the jevons alien, glowing cyan when ready, blue while the models load (not ready yet), and grey when no model is loaded;
 - amber while GPU kernels are being tuned for the model, which only happens on the first runs and can take minutes (the tooltip and the window say so);
 - a waveform that follows your voice while listening;
 - green dots while transcribing;

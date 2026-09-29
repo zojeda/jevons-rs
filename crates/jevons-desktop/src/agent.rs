@@ -290,6 +290,7 @@ impl Agent {
                     let state = match status {
                         Status::Ready { .. } | Status::Remote { .. } => TrayState::Idle,
                         Status::Failed(_) => TrayState::Error,
+                        Status::Loading => TrayState::Loading,
                         _ => TrayState::Offline,
                     };
                     self.set_tray(state);

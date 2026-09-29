@@ -1,8 +1,8 @@
 //! Icons, drawn in code as RGBA. The app icon is the jevons alien: a dark head with headphones,
 //! glowing almond eyes and a waveform on its forehead, simplified from the artwork in
 //! `crates/jevons-desktop/assets/jevons.png` so it reads at tray size. It glows cyan when ready,
-//! amber while GPU kernels are being tuned, grey while the runtime is not ready and red after a
-//! failed take. While listening the tray shows a waveform that follows the microphone level, and
+//! blue while the models load, amber while GPU kernels are being tuned, grey when no model is
+//! loaded and red after a failed take. While listening the tray shows a waveform that follows the microphone level, and
 //! while the take is transcribed or generated, advancing dots (both ported from bot-rs).
 
 use crate::levels::MAX_LEVEL;
@@ -30,8 +30,10 @@ pub enum TrayState {
         frame: u8,
     },
     Error,
-    /// The runtime is loading models or unreachable.
+    /// No models are loaded (none downloaded or selected, or the server is unreachable).
     Offline,
+    /// The models are loading: not ready to dictate yet.
+    Loading,
     /// GPU kernels are being autotuned for this model (first runs only).
     Tuning,
 }
@@ -45,7 +47,8 @@ impl TrayState {
             Self::Transcribing { .. } => "jevons: transcribing…",
             Self::Thinking { .. } => "jevons: writing…",
             Self::Error => "jevons: the last take failed",
-            Self::Offline => "jevons: runtime not ready",
+            Self::Offline => "jevons: no models loaded (see the Models tab)",
+            Self::Loading => "jevons: loading the models, not ready yet",
             Self::Tuning => {
                 "jevons: tuning GPU kernels for this model. This happens on the first runs only; \
                  the results are saved"
@@ -79,6 +82,7 @@ pub fn frames() -> Vec<(TrayState, Vec<u8>)> {
         (TrayState::Error, alien(SIZE, RED)),
         (TrayState::Offline, alien(SIZE, GREY)),
         (TrayState::Tuning, alien(SIZE, AMBER)),
+        (TrayState::Loading, alien(SIZE, BLUE)),
     ];
     frames.extend((0..=MAX_LEVEL).map(|level| (TrayState::Listening { level }, wave(level))));
     frames.extend((0..3).map(|frame| {
@@ -98,13 +102,14 @@ pub fn frames() -> Vec<(TrayState, Vec<u8>)> {
 
 /// The index of `state`'s frame in [`frames`].
 pub fn frame_index(state: TrayState) -> usize {
-    let listening = 4;
+    let listening = 5;
     let transcribing = listening + usize::from(MAX_LEVEL) + 1;
     match state {
         TrayState::Idle => 0,
         TrayState::Error => 1,
         TrayState::Offline => 2,
         TrayState::Tuning => 3,
+        TrayState::Loading => 4,
         TrayState::Listening { level } => listening + usize::from(level.min(MAX_LEVEL)),
         TrayState::Transcribing { frame } => transcribing + usize::from(frame % 3),
         TrayState::Thinking { frame } => transcribing + 3 + usize::from(frame % 3),
@@ -121,6 +126,7 @@ const CYAN: [f32; 3] = [34.0, 230.0, 242.0];
 const AMBER: [f32; 3] = [255.0, 180.0, 60.0];
 const RED: [f32; 3] = [255.0, 92.0, 92.0];
 const GREY: [f32; 3] = [140.0, 150.0, 160.0];
+const BLUE: [f32; 3] = [96.0, 132.0, 255.0];
 /// The head and ear cups.
 const DARK: [f32; 3] = [16.0, 28.0, 38.0];
 
