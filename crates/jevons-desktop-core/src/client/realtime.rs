@@ -136,6 +136,11 @@ impl RealtimeWriter {
             .await
     }
 
+    /// Drops the audio buffered since the last commit.
+    pub async fn clear(&mut self) -> Result<(), ClientError> {
+        self.send(json!({"type": "input_audio_buffer.clear"})).await
+    }
+
     pub async fn close(mut self) {
         let _ = self.sink.close().await;
     }

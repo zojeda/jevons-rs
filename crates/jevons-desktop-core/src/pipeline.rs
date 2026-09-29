@@ -23,8 +23,88 @@ use tokio::sync::{mpsc, oneshot};
 const MIN_SAMPLES: usize = SAMPLE_RATE as usize / 10;
 /// A push-to-talk press shorter than this was not meant as speech: it is dropped quietly.
 const MIN_TAKE_SECONDS: f64 = 0.4;
-/// Live dictation: the pause that ends a turn.
-const LIVE_SILENCE_MS: u32 = 700;
+/// Live dictation: speech in a phrase before a pause can end it.
+const PHRASE_SPEECH_MS: u32 = 300;
+/// Live dictation: the pause that ends a phrase.
+const PHRASE_PAUSE_MS: u32 = 700;
+/// Live dictation: the longest phrase; nonstop speech is committed this often.
+const PHRASE_LONGEST_MS: u32 = 20_000;
+/// Live dictation: audio without speech kept before it is dropped.
+const PHRASE_IDLE_MS: u32 = 3_000;
+
+/// What live dictation does after a chunk of microphone audio.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phrase {
+    Continue,
+    /// A phrase ended: commit it.
+    Commit,
+    /// Only background noise so far: drop it, so it is never transcribed into words.
+    Clear,
+}
+
+/// Where live dictation ends a phrase, from the microphone level. The app commits the turns
+/// itself, so no audio is ever dropped as silence: a missed pause only makes a phrase longer.
+#[derive(Debug, Default)]
+struct Phrases {
+    speech_ms: u32,
+    quiet_ms: u32,
+    total_ms: u32,
+    /// The noise floor, as an RMS level from 0 to 1.
+    floor: Option<f32>,
+}
+
+impl Phrases {
+    fn push(&mut self, samples: &[i16]) -> Phrase {
+        if samples.is_empty() {
+            return Phrase::Continue;
+        }
+        let ms = (samples.len() as u64 * 1000 / u64::from(SAMPLE_RATE)) as u32;
+        let rms = (samples
+            .iter()
+            .map(|s| (f32::from(*s) / 32768.0).powi(2))
+            .sum::<f32>()
+            / samples.len() as f32)
+            .sqrt();
+        // The floor follows quiet chunks down at once and louder ones up slowly, so the
+        // pauses between words keep it at the room's level through nonstop speech.
+        let floor = match self.floor {
+            None => rms.min(0.002),
+            Some(f) if rms < f => rms,
+            Some(f) => f + (rms - f) * 0.001,
+        };
+        self.floor = Some(floor);
+        let speech = rms > (floor * 4.0).max(0.006);
+        self.total_ms += ms;
+        if speech {
+            self.speech_ms += ms;
+            self.quiet_ms = 0;
+        } else {
+            self.quiet_ms += ms;
+        }
+        let phrase = if self.heard() {
+            if self.quiet_ms >= PHRASE_PAUSE_MS || self.total_ms >= PHRASE_LONGEST_MS {
+                Phrase::Commit
+            } else {
+                Phrase::Continue
+            }
+        } else if self.total_ms >= PHRASE_IDLE_MS && self.quiet_ms >= 1000 {
+            Phrase::Clear
+        } else {
+            Phrase::Continue
+        };
+        if phrase != Phrase::Continue {
+            self.speech_ms = 0;
+            self.quiet_ms = 0;
+            self.total_ms = 0;
+        }
+        phrase
+    }
+
+    /// Whether the audio since the last commit held speech.
+    fn heard(&self) -> bool {
+        self.speech_ms >= PHRASE_SPEECH_MS
+    }
+}
 /// Live dictation: how long to wait for the last turn after stopping.
 const LIVE_DRAIN: Duration = Duration::from_secs(5);
 /// How long to wait for the final transcript after the take ends.
@@ -388,14 +468,15 @@ pub async fn run_live(
         .realtime(
             settings.models.speech.as_deref(),
             settings.language.as_deref(),
-            Turns::ServerVad {
-                silence_ms: LIVE_SILENCE_MS,
-            },
+            Turns::Client,
         )
         .await
         .map_err(|e| format!("Live dictation needs Realtime transcription: {e}"))?;
     let mut turn = 0;
     let mut deadline: Option<tokio::time::Instant> = None;
+    let mut phrases = Phrases::default();
+    // Commits whose transcript has not arrived yet.
+    let mut in_flight = 0usize;
     // Streaming: what this turn has typed so far, and why typing stopped, if it did.
     let mut typed = String::new();
     let mut halted: Option<String> = None;
@@ -407,14 +488,30 @@ pub async fn run_live(
                     if let Err(e) = writer.append(&samples).await {
                         break Err(e.to_string());
                     }
+                    let sent = match phrases.push(&samples) {
+                        Phrase::Commit => {
+                            in_flight += 1;
+                            writer.commit().await
+                        }
+                        Phrase::Clear => writer.clear().await,
+                        Phrase::Continue => Ok(()),
+                    };
+                    if let Err(e) = sent {
+                        break Err(e.to_string());
+                    }
                 }
                 Some(AudioEvent::Level(bands)) => {
                     let _ = updates.send(Update::Level(bands));
                 }
                 Some(AudioEvent::Failed(message)) => break Err(format!("Microphone: {message}")),
                 Some(AudioEvent::Ended) | None => {
-                    // Whatever is still buffered is the last turn.
-                    let _ = writer.commit().await;
+                    // Whatever speech is still buffered is the last phrase.
+                    if phrases.heard() && writer.commit().await.is_ok() {
+                        in_flight += 1;
+                    }
+                    if in_flight == 0 {
+                        break Ok(());
+                    }
                     deadline = Some(tokio::time::Instant::now() + LIVE_DRAIN);
                 }
             },
@@ -422,9 +519,15 @@ pub async fn run_live(
                 while let Ok(event) = audio.try_recv() {
                     if let AudioEvent::Chunk(samples) = event {
                         let _ = writer.append(&samples).await;
+                        phrases.push(&samples);
                     }
                 }
-                let _ = writer.commit().await;
+                if phrases.heard() && writer.commit().await.is_ok() {
+                    in_flight += 1;
+                }
+                if in_flight == 0 {
+                    break Ok(());
+                }
                 deadline = Some(tokio::time::Instant::now() + LIVE_DRAIN);
             }
             event = reader.next() => match event {
@@ -459,17 +562,22 @@ pub async fn run_live(
                         live_turn(env, &start, turn, &transcript, updates).await
                     };
                     on_turn(trace);
-                    match deadline {
-                        // After stopping, wait only briefly for a turn still in flight.
-                        Some(_) => {
-                            deadline = Some(tokio::time::Instant::now() + Duration::from_secs(1));
+                    in_flight = in_flight.saturating_sub(1);
+                    if deadline.is_some() {
+                        if in_flight == 0 {
+                            break Ok(());
                         }
-                        None => {
-                            let _ = updates.send(Update::Listening);
-                        }
+                    } else {
+                        let _ = updates.send(Update::Listening);
                     }
                 }
-                // After stopping, committing an empty buffer is an error: nothing was left.
+                // A commit the server found too short: nothing will come for it.
+                Some(RealtimeEvent::Error { message }) if message.contains("buffer too small") => {
+                    in_flight = in_flight.saturating_sub(1);
+                    if deadline.is_some() && in_flight == 0 {
+                        break Ok(());
+                    }
+                }
                 Some(RealtimeEvent::Error { .. }) if deadline.is_some() => break Ok(()),
                 Some(RealtimeEvent::Error { message }) => break Err(message),
                 Some(RealtimeEvent::Other(_)) => {}
@@ -1292,18 +1400,19 @@ instructions = "Formal tone.""#,
         use axum::extract::ws::{Message, WebSocketUpgrade};
         let session = move |upgrade: WebSocketUpgrade| async move {
             upgrade.protocols(["realtime"]).on_upgrade(move |mut socket| async move {
-                let mut appends = 0;
                 let mut next = turns.iter();
                 while let Some(Ok(Message::Text(text))) = socket.recv().await {
                     let event: Value = serde_json::from_str(&text).unwrap();
                     let replies: Vec<Value> = match event["type"].as_str().unwrap() {
                         "session.update" => {
-                            assert_eq!(event["session"]["audio"]["input"]["turn_detection"]["type"], "server_vad");
+                            // The app commits the phrases itself.
+                            assert!(event["session"]["audio"]["input"]["turn_detection"].is_null());
                             Vec::new()
                         }
-                        "input_audio_buffer.append" => {
-                            appends += 1;
-                            match (appends % 2 == 0).then(|| next.next()).flatten() {
+                        "input_audio_buffer.append" => Vec::new(),
+                        // Each phrase the app commits is the next scripted turn.
+                        "input_audio_buffer.commit" => {
+                            match next.next() {
                                 Some((deltas, transcript)) => deltas
                                     .iter()
                                     .map(|d| json!({"type": "conversation.item.input_audio_transcription.delta",
@@ -1311,9 +1420,10 @@ instructions = "Formal tone.""#,
                                     .chain([json!({"type": "conversation.item.input_audio_transcription.completed",
                                                    "item_id": "i", "content_index": 0, "transcript": transcript})])
                                     .collect(),
-                                None => Vec::new(),
+                                None => vec![json!({"type": "error", "error": {"message": "buffer too small"}})],
                             }
                         }
+                        "input_audio_buffer.clear" => vec![json!({"type": "input_audio_buffer.cleared"})],
                         _ => vec![json!({"type": "error", "error": {"message": "buffer too small"}})],
                     };
                     for reply in replies {
@@ -1365,8 +1475,9 @@ instructions = "Formal tone.""#,
             sink: Some(sink.shared()),
         };
         let (audio, received) = mpsc::unbounded_channel();
-        for _ in 0..4 {
-            audio.send(AudioEvent::Chunk(vec![500; 2400])).unwrap();
+        // Two phrases with a pause between them.
+        for chunk in [[6000; 4].as_slice(), &[30; 8], &[6000; 4]].concat() {
+            audio.send(AudioEvent::Chunk(chunk_at(chunk))).unwrap();
         }
         audio.send(AudioEvent::Ended).unwrap();
         let (_stop, stopped) = oneshot::channel();
@@ -1404,8 +1515,9 @@ instructions = "Formal tone.""#,
             sink: Some(sink.shared()),
         };
         let (audio, received) = mpsc::unbounded_channel();
-        for _ in 0..4 {
-            audio.send(AudioEvent::Chunk(vec![500; 2400])).unwrap();
+        // Two phrases with a pause between them.
+        for chunk in [[6000; 4].as_slice(), &[30; 8], &[6000; 4]].concat() {
+            audio.send(AudioEvent::Chunk(chunk_at(chunk))).unwrap();
         }
         audio.send(AudioEvent::Ended).unwrap();
         let (_stop, stopped) = oneshot::channel();
@@ -1493,6 +1605,51 @@ instructions = "Formal tone.""#,
             trace.notes
         );
         assert_eq!(sink.requests()[0].text, "hello world");
+    }
+
+    /// 100 ms of audio at `amplitude`.
+    fn chunk_at(amplitude: i16) -> Vec<i16> {
+        (0..SAMPLE_RATE as usize / 10)
+            .map(|i| if i % 2 == 0 { amplitude } else { -amplitude })
+            .collect()
+    }
+
+    #[test]
+    fn phrases_end_at_pauses_after_speech_and_keep_every_word() {
+        let mut phrases = Phrases::default();
+        for _ in 0..5 {
+            assert_eq!(phrases.push(&chunk_at(30)), Phrase::Continue, "room noise");
+        }
+        for _ in 0..10 {
+            assert_eq!(phrases.push(&chunk_at(6000)), Phrase::Continue, "speech");
+        }
+        let ends: Vec<Phrase> = (0..7).map(|_| phrases.push(&chunk_at(30))).collect();
+        assert_eq!(
+            ends[..6],
+            [Phrase::Continue; 6],
+            "a short pause keeps the phrase"
+        );
+        assert_eq!(ends[6], Phrase::Commit, "0.7 s of quiet ends it");
+    }
+
+    #[test]
+    fn nonstop_speech_is_committed_every_twenty_seconds() {
+        let mut phrases = Phrases::default();
+        // Words, with the short dips between them.
+        let commits = (0..400)
+            .map(|i| if i % 4 == 3 { 30 } else { 6000 })
+            .filter(|a| phrases.push(&chunk_at(*a)) == Phrase::Commit)
+            .count();
+        assert_eq!(commits, 2);
+    }
+
+    #[test]
+    fn noise_alone_is_dropped_and_never_committed() {
+        let mut phrases = Phrases::default();
+        let results: Vec<Phrase> = (0..40).map(|_| phrases.push(&chunk_at(30))).collect();
+        assert!(!results.contains(&Phrase::Commit));
+        assert_eq!(results.iter().filter(|p| **p == Phrase::Clear).count(), 1);
+        assert!(!phrases.heard());
     }
 
     #[test]
