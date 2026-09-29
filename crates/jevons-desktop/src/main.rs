@@ -11,6 +11,7 @@
 
 mod agent;
 mod audio;
+mod hold;
 mod platform;
 mod runtime;
 mod tray;
@@ -211,6 +212,7 @@ fn start_agent(
     commands: mpsc::UnboundedSender<Command>,
     received: mpsc::UnboundedReceiver<Command>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    hold::start();
     let tray = match tray::spawn(commands.clone()) {
         Ok(tray) => {
             view.lock().expect("the view lock").tray_running = true;

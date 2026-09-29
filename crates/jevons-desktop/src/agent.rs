@@ -28,7 +28,7 @@ pub enum Command {
     Hotkey(HotkeyEvent),
     /// The hotkeys the tray registered, and those it could not.
     HotkeysRegistered {
-        actions: Vec<(u32, HotkeyAction)>,
+        actions: Vec<(u32, HotkeyAction, String)>,
         errors: Vec<String>,
     },
     Menu(MenuCommand),
@@ -109,6 +109,8 @@ pub struct Agent {
     audio: Box<dyn AudioSource>,
     profiles: Arc<Profiles>,
     hotkeys: std::collections::HashMap<u32, HotkeyAction>,
+    /// Each registered hotkey's accelerator, to swallow its repeats while it is held.
+    accelerators: std::collections::HashMap<u32, String>,
     active: Option<Active>,
     next_take: u64,
     view: SharedView,
@@ -149,6 +151,7 @@ impl Agent {
             sink: Arc::new(Mutex::new(layers.sink)),
             audio: layers.audio,
             hotkeys: std::collections::HashMap::new(),
+            accelerators: std::collections::HashMap::new(),
             active: None,
             next_take: 1,
             view,
@@ -268,7 +271,14 @@ impl Agent {
                 }
             }
             Command::HotkeysRegistered { actions, errors } => {
-                self.hotkeys = actions.into_iter().collect();
+                self.accelerators = actions
+                    .iter()
+                    .map(|(id, _, accelerator)| (*id, accelerator.clone()))
+                    .collect();
+                self.hotkeys = actions
+                    .into_iter()
+                    .map(|(id, action, _)| (id, action))
+                    .collect();
                 self.view().hotkey_error = (!errors.is_empty()).then(|| errors.join("; "));
                 self.repaint();
             }
@@ -524,6 +534,10 @@ impl Agent {
             finish: Some(finish),
             task: None,
         });
+        // Keep the held hotkey's repeats out of the focused application while the take runs.
+        if let Some(accelerator) = source.and_then(|id| self.accelerators.get(&id)) {
+            crate::hold::hold(accelerator);
+        }
         self.set_tray(TrayState::Listening { level: 0 });
         self.publish_menu();
 
@@ -593,6 +607,7 @@ impl Agent {
     }
 
     fn stop_take(&mut self) {
+        crate::hold::release();
         if let Some(active) = &mut self.active {
             if let Some(capture) = active.capture.take() {
                 capture.stop();
@@ -608,6 +623,7 @@ impl Agent {
     }
 
     fn cancel_take(&mut self) {
+        crate::hold::release();
         if let Some(mut active) = self.active.take() {
             if let Some(capture) = active.capture.take() {
                 capture.stop();
@@ -629,6 +645,7 @@ impl Agent {
     }
 
     fn live_ended(&mut self, take: u64, error: Option<String>) {
+        crate::hold::release();
         if self.active.as_ref().is_some_and(|a| a.id == take)
             && let Some(active) = self.active.take()
             && let Some(capture) = active.capture
@@ -652,6 +669,7 @@ impl Agent {
     }
 
     fn finished(&mut self, trace: Trace) {
+        crate::hold::release();
         save_trace(&trace);
         if self.active.as_ref().is_some_and(|a| a.id == trace.take) {
             // The source may have ended by itself (a device error).

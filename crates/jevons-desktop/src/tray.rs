@@ -185,17 +185,17 @@ fn run(commands: UnboundedSender<Command>, ready: std::sync::mpsc::Sender<Result
                 };
                 let _ = manager.unregister_all(&registered);
                 registered.clear();
-                let mut actions: Vec<(u32, HotkeyAction)> = Vec::new();
+                let mut actions: Vec<(u32, HotkeyAction, String)> = Vec::new();
                 let mut errors = Vec::new();
                 for binding in bindings {
                     match binding.accelerator.parse::<HotKey>() {
-                        Ok(key) if actions.iter().any(|(id, _)| *id == key.id()) => {
+                        Ok(key) if actions.iter().any(|(id, _, _)| *id == key.id()) => {
                             errors.push(format!("{} is assigned twice", binding.accelerator));
                         }
                         Ok(key) => match manager.register(key) {
                             Ok(()) => {
                                 registered.push(key);
-                                actions.push((key.id(), binding.action));
+                                actions.push((key.id(), binding.action, binding.accelerator));
                             }
                             Err(e) => {
                                 errors

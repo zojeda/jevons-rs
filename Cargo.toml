@@ -61,6 +61,7 @@ notify = "8"
 regex = "1.11"
 # Native TLS: SChannel on Windows and Security.framework on macOS need no C toolchain.
 reqwest = { version = "0.13", default-features = false, features = ["native-tls", "charset", "json", "multipart", "stream"] }
+rdev = "0.5"
 rfd = "0.17"
 sha2 = "0.10"
 tao = "0.37"

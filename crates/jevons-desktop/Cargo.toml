@@ -39,6 +39,8 @@ tray-icon.workspace = true
 uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+# A keyboard hook that swallows a held hotkey's auto-repeats (see hold.rs).
+rdev = { workspace = true, features = ["unstable_grab"] }
 device_query.workspace = true
 enigo.workspace = true
 uiautomation = { workspace = true, features = ["pattern"] }
