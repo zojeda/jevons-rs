@@ -7,17 +7,25 @@
 //! questions go in one System One request, so a typical take costs one decision call. Every step
 //! is recorded as a [`FlowStep`] with the guards it checked and the probabilities it read.
 
+use super::agent::{self as agents, Task};
 use super::frame::Frame;
 use super::guard::Check;
 use super::investigate::{Inquiry, Investigate};
-use super::spec::{DecideSpec, GenerateSpec, Output, Select, TranscriptSpec};
+use super::investigator::InvestigateTool;
+use super::llm::JevonsLlm;
+use super::spec::{
+    AgentSpec, ArgType, DecideSpec, GenerateSpec, Output, Select, ToolSpec, TranscriptSpec,
+};
+use super::tools::result_text;
 use super::tree::{FlowTree, Investigation, Kind, Node, NodeId, NodeSpec};
 use crate::client::{Answer, ClientError, DecisionRequest, Question, Reasoning, ResponseRequest};
 use crate::pipeline::{DecisionTrace, Env, GenerationTrace, Trace, Update};
 use crate::platform::{Action, DeliveryMethod};
+use adk_core::{Tool, ToolConfirmationHandler};
 use serde::Serialize;
-use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use serde_json::{Map, Value, json};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -86,6 +94,29 @@ impl FlowStep {
             ms: 0,
         }
     }
+}
+
+/// A tool call a take made, from a tool node or an agent.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ToolTrace {
+    /// The node that made it.
+    pub node: String,
+    /// The tool, as flow files name it.
+    pub tool: String,
+    pub arguments: Value,
+    /// Its result, truncated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+    /// Whether the user approved it, when it asked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirmed: Option<bool>,
+}
+
+/// What a tool or agent node leads to.
+enum Ahead {
+    Leaf(Leaf),
+    /// On to the node's branch, with this as `{result}`.
+    Next(Value),
 }
 
 /// Where a walk ends: the text and where it goes.
@@ -163,9 +194,26 @@ impl Walker<'_> {
                     self.step().ms = began.elapsed().as_millis() as u64;
                     return Ok(self.transcript(node, t));
                 }
-                NodeSpec::Tool(_) | NodeSpec::Agent(_) => {
-                    return Err(ClientError::NotServed("Tool and agent nodes"));
-                }
+                NodeSpec::Tool(t) => match self.tool(node, t).await? {
+                    Ahead::Leaf(leaf) => {
+                        self.step().ms = began.elapsed().as_millis() as u64;
+                        return Ok(leaf);
+                    }
+                    Ahead::Next(result) => {
+                        self.frame.values.insert("result".into(), result);
+                        node.children.first().copied()
+                    }
+                },
+                NodeSpec::Agent(a) => match self.agent(node, a).await? {
+                    Ahead::Leaf(leaf) => {
+                        self.step().ms = began.elapsed().as_millis() as u64;
+                        return Ok(leaf);
+                    }
+                    Ahead::Next(result) => {
+                        self.frame.values.insert("result".into(), result);
+                        node.children.first().copied()
+                    }
+                },
             };
             self.step().ms = began.elapsed().as_millis() as u64;
             id = next.expect("decisions choose a branch");
@@ -540,31 +588,48 @@ impl Walker<'_> {
         d: &DecideSpec,
         asked: &[(NodeId, Vec<NodeId>)],
     ) -> Option<Vec<Option<Answer>>> {
-        let settings = &self.env.settings;
-        let model = settings.models.decision.clone()?;
         let keys: Vec<String> = (0..asked.len()).map(|i| format!("q{i:02}")).collect();
         let questions = keys
             .iter()
             .zip(asked)
             .map(|(key, (id, candidates))| (key.clone(), self.question(*id, candidates)))
             .collect();
+        let response = self.system_one(node, questions, d.steps, d.samples).await?;
+        Some(
+            keys.iter()
+                .map(|key| response.answers.get(key).cloned())
+                .collect(),
+        )
+    }
+
+    /// One System One request about the take's state, recorded on the current step.
+    async fn system_one(
+        &mut self,
+        node: &Node,
+        questions: BTreeMap<String, Question>,
+        steps: Option<u32>,
+        samples: Option<u32>,
+    ) -> Option<crate::client::DecisionResponse> {
+        let env = self.env;
+        let model = env.settings.models.decision.clone()?;
+        let count = questions.len();
         let request = DecisionRequest {
             model,
             state: self.frame.state(),
             questions,
-            steps: d.steps,
-            samples: d.samples,
+            steps,
+            samples,
             think: self.frame.think.filter(|t| *t > 0),
         };
         let began = Instant::now();
         tracing::info!(
             take = self.trace.take,
             node = node.label(),
-            questions = asked.len(),
+            questions = count,
             "Deciding"
         );
         let response =
-            tokio::time::timeout(settings.decision_timeout, self.env.client.decide(&request)).await;
+            tokio::time::timeout(env.settings.decision_timeout, env.client.decide(&request)).await;
         let ms = began.elapsed().as_millis() as u64;
         self.trace.timings.push(("decide".into(), ms));
         tracing::info!(
@@ -587,7 +652,7 @@ impl Walker<'_> {
                 self.stalled = true;
                 self.note(format!(
                     "The decision model gave no answer within {} s",
-                    settings.decision_timeout.as_secs()
+                    env.settings.decision_timeout.as_secs()
                 ));
                 self.step().decision = Some(DecisionTrace {
                     request,
@@ -596,15 +661,317 @@ impl Walker<'_> {
                 return None;
             }
         };
-        let answers = keys
-            .iter()
-            .map(|key| response.answers.get(key).cloned())
-            .collect();
         self.step().decision = Some(DecisionTrace {
             request,
-            response: Some(response),
+            response: Some(response.clone()),
         });
-        Some(answers)
+        Some(response)
+    }
+
+    /// Calls a node's tool with the arguments it fills, after asking when it must.
+    async fn tool(&mut self, node: &Node, t: &ToolSpec) -> Result<Ahead, ClientError> {
+        let host = self.env.tools.clone().ok_or(ClientError::NotServed(
+            "Tools (register them in the desktop settings)",
+        ))?;
+        let resolved = host
+            .resolve(std::slice::from_ref(&t.tool), node.label())
+            .await
+            .map_err(ClientError::Protocol)?
+            .remove(0);
+        let schema = resolved.tool.parameters_schema();
+        let arguments = self.arguments(node, t, schema.as_ref()).await?;
+        let mut record = ToolTrace {
+            node: node.label().to_string(),
+            tool: resolved.reference.clone(),
+            arguments: arguments.clone(),
+            result: None,
+            confirmed: None,
+        };
+        if resolved.confirm || t.confirm {
+            let _ = self.updates.send(Update::Step(format!(
+                "Asking before {}",
+                resolved.reference
+            )));
+            let approved = match &self.env.confirmer {
+                Some(confirmer) => confirmer.ask(&resolved.reference, &arguments).await,
+                None => false,
+            };
+            record.confirmed = Some(approved);
+            if !approved {
+                self.trace.calls.push(record);
+                return Err(ClientError::Protocol(format!(
+                    "{} did not run: it was not confirmed",
+                    resolved.reference
+                )));
+            }
+        }
+        let _ = self
+            .updates
+            .send(Update::Step(format!("Calling {}", resolved.reference)));
+        let began = Instant::now();
+        let context: Arc<dyn adk_core::ToolContext> =
+            Arc::new(adk_tool::SimpleToolContext::new(node.label()));
+        let result = resolved.tool.execute(context, arguments).await;
+        self.trace
+            .timings
+            .push(("tool".into(), began.elapsed().as_millis() as u64));
+        let result = match result {
+            Ok(result) => result,
+            Err(e) => {
+                record.result = Some(format!("error: {e}"));
+                self.trace.calls.push(record);
+                return Err(ClientError::Protocol(format!(
+                    "{}: {e}",
+                    resolved.reference
+                )));
+            }
+        };
+        record.result = Some(result_text(&result).chars().take(600).collect());
+        self.trace.calls.push(record);
+        match t.output.unwrap_or(Output::Bubble) {
+            Output::Next => Ok(Ahead::Next(result)),
+            output => Ok(Ahead::Leaf(self.leaf(
+                node,
+                result_text(&result),
+                output,
+                Action::Insert,
+            ))),
+        }
+    }
+
+    /// A tool node's arguments: labels and yes-or-no in one System One request, literal values
+    /// from their templates, and written values from the generative model.
+    async fn arguments(
+        &mut self,
+        node: &Node,
+        t: &ToolSpec,
+        schema: Option<&Value>,
+    ) -> Result<Value, ClientError> {
+        let kind = |name: &str, spec: Option<ArgType>| {
+            spec.unwrap_or(match schema.map(|s| &s["properties"][name]["type"]) {
+                Some(Value::String(t)) if t == "integer" => ArgType::Integer,
+                Some(Value::String(t)) if t == "number" => ArgType::Number,
+                Some(Value::String(t)) if t == "boolean" => ArgType::Boolean,
+                _ => ArgType::String,
+            })
+        };
+        let mut out = Map::new();
+        let mut questions = BTreeMap::new();
+        for (name, spec) in &t.args {
+            if let Some(labels) = &spec.choose {
+                questions.insert(
+                    name.clone(),
+                    Question::Choice {
+                        instructions: Some(format!(
+                            "For the tool {}, which fits the argument `{name}`?",
+                            t.tool
+                        )),
+                        criteria: labels.clone(),
+                    },
+                );
+            } else if spec.noul.is_some() {
+                let text = node
+                    .template(&format!("args.{name}.noul"))
+                    .map(|q| q.render(|path| self.frame.value(path)))
+                    .unwrap_or_default();
+                questions.insert(
+                    name.clone(),
+                    Question::Noul {
+                        instructions: Some(text),
+                        criteria: None,
+                    },
+                );
+            }
+        }
+        if !questions.is_empty() {
+            let answers = if self.can_decide() {
+                self.system_one(node, questions.clone(), None, None).await
+            } else {
+                None
+            };
+            for (name, question) in &questions {
+                let value = match (answers.as_ref().and_then(|a| a.answers.get(name)), question) {
+                    (Some(Answer::Choice { choice, .. }), _) => json!(choice),
+                    (Some(Answer::Noul { noul }), _) => json!(*noul >= 0.5),
+                    (_, Question::Choice { criteria, .. }) => {
+                        json!(criteria.keys().next().cloned().unwrap_or_default())
+                    }
+                    _ => json!(false),
+                };
+                out.insert(name.clone(), value);
+            }
+        }
+        for (name, spec) in &t.args {
+            let text = if spec.value.is_some() {
+                node.template(&format!("args.{name}.value"))
+                    .map(|v| v.render(|path| self.frame.value(path)))
+                    .unwrap_or_default()
+            } else if spec.generate.is_some() {
+                let instruction = node
+                    .template(&format!("args.{name}.generate"))
+                    .map(|g| g.render(|path| self.frame.value(path)))
+                    .unwrap_or_default();
+                self.write_argument(&t.tool, name, &instruction).await?
+            } else {
+                continue;
+            };
+            let value = match kind(name, spec.kind) {
+                ArgType::String => json!(text.trim()),
+                ArgType::Integer => json!(text.trim().parse::<i64>().map_err(|_| {
+                    ClientError::Protocol(format!("`{name}` must be an integer, not {text:?}"))
+                })?),
+                ArgType::Number => json!(text.trim().parse::<f64>().map_err(|_| {
+                    ClientError::Protocol(format!("`{name}` must be a number, not {text:?}"))
+                })?),
+                ArgType::Boolean => json!(matches!(
+                    text.trim().to_lowercase().as_str(),
+                    "true" | "yes" | "1"
+                )),
+            };
+            out.insert(name.clone(), value);
+        }
+        Ok(Value::Object(out))
+    }
+
+    /// One argument written by the generative model.
+    async fn write_argument(
+        &mut self,
+        tool: &str,
+        name: &str,
+        instruction: &str,
+    ) -> Result<String, ClientError> {
+        let Some(model) = self.env.settings.models.generative.clone() else {
+            return Err(ClientError::NotServed(
+                "A language model to write tool arguments",
+            ));
+        };
+        let mut instructions = self.frame.instructions.clone();
+        instructions.push(format!(
+            "Write only the value of the argument `{name}` for the tool {tool}: {instruction}. \
+             Output only the value: no quotes, no explanation, no Markdown."
+        ));
+        let request = ResponseRequest {
+            model,
+            instructions: Some(instructions.join("\n\n")),
+            input: self.default_input(Output::None, Action::Insert),
+            max_output_tokens: Some(
+                self.frame
+                    .max_output_tokens
+                    .unwrap_or(self.env.settings.max_output_tokens),
+            ),
+            reasoning: None,
+        };
+        let began = Instant::now();
+        let written = tokio::time::timeout(
+            self.env.settings.generation_timeout,
+            self.env.client.respond(&request, |_| {}),
+        )
+        .await
+        .map_err(|_| ClientError::Protocol(format!("no value for `{name}` in time")))??;
+        self.trace
+            .timings
+            .push(("generate".into(), began.elapsed().as_millis() as u64));
+        Ok(written.trim().to_string())
+    }
+
+    /// Runs an agent over the node's tools (and the investigator) to its answer.
+    async fn agent(&mut self, node: &Node, a: &AgentSpec) -> Result<Ahead, ClientError> {
+        let Some(model) = self.env.settings.models.generative.clone() else {
+            return Err(ClientError::NotServed("A language model for agents"));
+        };
+        let resolved = match &self.env.tools {
+            Some(host) => host
+                .resolve(&a.tools, node.label())
+                .await
+                .map_err(ClientError::Protocol)?,
+            None if a.tools.is_empty() => Vec::new(),
+            None => {
+                return Err(ClientError::NotServed(
+                    "Tools (register them in the desktop settings)",
+                ));
+            }
+        };
+        let confirm: BTreeSet<String> = resolved
+            .iter()
+            .filter(|r| r.confirm)
+            .map(|r| r.tool.name().to_string())
+            .collect();
+        let names: HashMap<String, String> = resolved
+            .iter()
+            .map(|r| (r.tool.name().to_string(), r.reference.clone()))
+            .collect();
+        let mut tools: Vec<Arc<dyn Tool>> = resolved.iter().map(|r| r.tool.clone()).collect();
+        if let Some(investigator) = &self.env.investigator {
+            tools.push(Arc::new(InvestigateTool {
+                investigator: investigator.clone(),
+                snapshot: self.frame.snapshot.clone(),
+            }));
+        }
+        let output = a.output.unwrap_or(Output::Bubble);
+        let mut instructions = self.frame.instructions.clone();
+        instructions.push(
+            "You can call tools to do what the user asks, one at a time. When you have what you \
+             need, answer the user in plain text."
+                .into(),
+        );
+        let input = match node.template("prompt") {
+            Some(prompt) => prompt.render(|path| self.frame.value(path)),
+            None => self.default_input(output, Action::Insert),
+        };
+        if output == Output::Bubble {
+            let _ = self.updates.send(Update::Answering);
+        }
+        let _ = self
+            .updates
+            .send(Update::Step(format!("Agent with {} tools", tools.len())));
+        let updates = self.updates.clone();
+        let llm = JevonsLlm::new(self.env.client.clone(), model)
+            .with_think(self.frame.think.unwrap_or(0))
+            .with_deltas(Arc::new(move |delta: &str| {
+                let _ = updates.send(Update::Output(delta.to_string()));
+            }));
+        let task = Task {
+            name: "agent".into(),
+            instruction: instructions.join("\n\n"),
+            input,
+            tools,
+            toolsets: Vec::new(),
+            max_steps: a.max_steps.unwrap_or(4),
+            output_schema: None,
+            confirm,
+            confirmer: self
+                .env
+                .confirmer
+                .clone()
+                .map(|c| c as Arc<dyn ToolConfirmationHandler>),
+        };
+        let began = Instant::now();
+        let outcome = agents::run(Arc::new(llm), task).await;
+        self.trace
+            .timings
+            .push(("agent".into(), began.elapsed().as_millis() as u64));
+        let outcome = outcome.map_err(ClientError::Protocol)?;
+        for call in &outcome.calls {
+            self.trace.calls.push(ToolTrace {
+                node: node.label().to_string(),
+                tool: names
+                    .get(&call.tool)
+                    .cloned()
+                    .unwrap_or_else(|| call.tool.clone()),
+                arguments: call.arguments.clone(),
+                result: call.result.clone(),
+                confirmed: None,
+            });
+        }
+        match output {
+            Output::Next => Ok(Ahead::Next(json!(outcome.text))),
+            output => Ok(Ahead::Leaf(self.leaf(
+                node,
+                outcome.text.trim().to_string(),
+                output,
+                Action::Insert,
+            ))),
+        }
     }
 
     fn leaf(&self, node: &Node, text: String, output: Output, action: Action) -> Leaf {

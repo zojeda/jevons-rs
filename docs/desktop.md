@@ -104,6 +104,34 @@ Investigations read only the window the take started in. To let a question like 
 
 **Record tree** on the Context tab saves the interface of the window in front to `~/jevons/trees` as JSON (it holds that window's text: it stays on your machine). `--tree <file>` replays a take against a recorded interface instead of the live one.
 
+### Tools and agents
+
+A `tool.toml` node calls one tool; an `agent.toml` node runs a tool-calling agent over several (at most `max_steps` model turns). Tools are registered in the desktop settings, never in the flows folder, so a folder a coding agent edits can call only what you registered:
+
+```toml
+# jevons-desktop.toml
+[tools.search]
+kind = "open"                          # open | command | http
+description = "Searches the web for a query"
+url = "https://duckduckgo.com/?q={query}"
+arguments = { query = "What to search for" }
+confirm = false                        # every tool asks first unless this says otherwise
+
+[mcp.fs]                               # an MCP server over stdio; its tools are fs:<tool>
+command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "C:/Users/me/notes"]
+unconfirmed = ["read_file", "list_directory"]
+```
+
+- **Built-in tools:**
+  - `command` runs a program directly, never through a shell, with each argument as its own element. Only a few basic environment variables and the ones you list reach it, and it has a time limit.
+  - `http` sends a request. Arguments are URL-encoded in the address and JSON-escaped in the body, and `${env:NAME}` keeps secrets out of files.
+  - `open` opens an address or file with the default application.
+- **MCP servers** start in the background when the app starts and list their tools, which then check the flow files and fill `TOOLS.md` in the flows folder. The model knows an MCP tool as `server__tool`, because tool names cannot hold a colon.
+- **Arguments** of a tool node come from `generate` (the language model writes the value), `choose` and `noul` (all of them in one decision read), and `value` (text with placeholders). With `output = "next"`, the node's single branch gets the result as `{result}`.
+- **Agents** can always call `investigate`, the context investigator, to read the screen. Their answer streams into the bubble.
+- **Confirmation:** every call that asks shows in the bubble first (see [Using it](#using-it)). `allow` on a tool or server limits which flow nodes may use it.
+- **Headless runs** (`--replay`, `--transcript`) list the MCP servers' tools but run nothing: each call returns what it would have done, and the trace records it.
+
 ### Writing a branch against the real context
 
 The **Context** tab shows what the platform reports for the focused window. It updates twice a second and ignores the inspector's own window. Use **Capture in 3 s**, then switch to the target application.

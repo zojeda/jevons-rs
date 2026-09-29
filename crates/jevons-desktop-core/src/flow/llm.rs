@@ -8,15 +8,20 @@ use adk_core::{
     async_trait,
 };
 use serde_json::{Value, json};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
+/// Receives answer text as it is written.
+pub type Deltas = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// A jevons generative model behind the API.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct JevonsLlm {
     client: Client,
     model: String,
     /// A thought budget before each answer, in tokens.
     think: u32,
+    deltas: Option<Deltas>,
 }
 
 impl JevonsLlm {
@@ -25,7 +30,14 @@ impl JevonsLlm {
             client,
             model: model.into(),
             think: 0,
+            deltas: None,
         }
+    }
+
+    /// Also sends the answer text to `deltas` as it is written, such as into the bubble.
+    pub fn with_deltas(mut self, deltas: Deltas) -> Self {
+        self.deltas = Some(deltas);
+        self
     }
 
     pub fn with_think(mut self, tokens: u32) -> Self {
@@ -161,11 +173,15 @@ impl Llm for JevonsLlm {
     ) -> adk_core::Result<LlmResponseStream> {
         let chat = chat_request(&self.model, self.think, &request);
         let client = self.client.clone();
+        let watcher = self.deltas.clone();
         let (sender, receiver) = mpsc::unbounded_channel::<adk_core::Result<LlmResponse>>();
         tokio::spawn(async move {
             let deltas = sender.clone();
             let reply = client
                 .chat(&chat, |delta| {
+                    if let Some(watcher) = &watcher {
+                        watcher(delta);
+                    }
                     let _ = deltas.send(Ok(text_chunk(delta)));
                 })
                 .await;

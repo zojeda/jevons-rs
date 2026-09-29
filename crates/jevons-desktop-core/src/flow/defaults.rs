@@ -70,6 +70,19 @@ pub fn open(dir: &Path, catalog: &Catalog) -> (FlowTree, Vec<String>) {
     (FlowTree::load(&Disk::new(dir), catalog), notes)
 }
 
+/// Writes `TOOLS.md` (the registered tools, from [`ToolHost::tools_md`]) when it changed.
+///
+/// [`ToolHost::tools_md`]: super::tools::ToolHost::tools_md
+pub fn write_tools_md(dir: &Path, text: &str) -> std::io::Result<bool> {
+    let file = dir.join("TOOLS.md");
+    if std::fs::read_to_string(&file).ok().as_deref() == Some(text) {
+        return Ok(false);
+    }
+    std::fs::create_dir_all(dir)?;
+    std::fs::write(file, text)?;
+    Ok(true)
+}
+
 /// What [`init`] did.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct InitReport {

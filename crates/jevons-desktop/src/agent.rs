@@ -9,6 +9,7 @@ use jevons_desktop_core::context::ContextSnapshot;
 use jevons_desktop_core::flow::confirm::{ChannelConfirmer, Confirmation};
 use jevons_desktop_core::flow::investigate::Investigate;
 use jevons_desktop_core::flow::investigator::{Investigator, PathCache};
+use jevons_desktop_core::flow::tools::ToolHost;
 use jevons_desktop_core::flow::walk::{self, FlowStep};
 use jevons_desktop_core::flow::{Catalog, FlowError, FlowTree, defaults};
 use jevons_desktop_core::icons::TrayState;
@@ -47,6 +48,8 @@ pub enum Command {
     RecordTree,
     ReloadFlows,
     RuntimeChanged,
+    /// The MCP servers listed their tools: check the flows against them.
+    ToolsListed(Vec<String>),
     /// Apply the settings to the runtime again, such as after a model finished downloading.
     ReloadRuntime,
     TakeFinished(Box<Trace>),
@@ -182,6 +185,8 @@ pub struct View {
     pub flow_notes: Vec<String>,
     /// The branch every take starts at, chosen from the tray; `None` is the root.
     pub start: Option<String>,
+    /// MCP servers that did not start or list their tools.
+    pub tool_problems: Vec<String>,
     pub context_paused: bool,
     pub hotkey_error: Option<String>,
     pub notice: Option<String>,
@@ -232,6 +237,8 @@ pub struct Agent {
     paths: Arc<Mutex<PathCache>>,
     sink: Arc<Mutex<Box<dyn TextSink>>>,
     audio: Box<dyn AudioSource>,
+    /// The tools the settings register.
+    tools: Arc<ToolHost>,
     flows: Arc<FlowTree>,
     hotkeys: std::collections::HashMap<u32, HotkeyAction>,
     /// The reply to the tool call the bubble asks about.
@@ -267,7 +274,8 @@ impl Agent {
         commands: mpsc::UnboundedSender<Command>,
     ) -> Self {
         let flows_dir = config.flows_dir(&config_file);
-        let (tree, notes) = defaults::open(&flows_dir, &Catalog::default());
+        let tools = Arc::new(ToolHost::new(&config.tools, &config.mcp));
+        let (tree, notes) = defaults::open(&flows_dir, &tools.catalog());
         let errors = tree.errors.clone();
         let flows = if tree.is_valid() {
             tree
@@ -277,6 +285,7 @@ impl Agent {
         };
         let watcher = watch(&flows_dir, commands.clone());
         let mut agent = Self {
+            tools,
             flows: Arc::new(flows),
             config,
             config_file,
@@ -313,7 +322,25 @@ impl Agent {
         }
         agent.runtime.apply(&agent.config, &agent.config_file);
         agent.publish_menu();
+        agent.list_tools();
         agent
+    }
+
+    /// Starts the MCP servers in the background; their tools then check the flows.
+    fn list_tools(&self) {
+        let tools = self.tools.clone();
+        let commands = self.commands.clone();
+        let dir = self.config.flows_dir(&self.config_file);
+        tokio::spawn(async move {
+            let problems = tools.start().await;
+            for problem in &problems {
+                tracing::warn!(problem = %problem, "An MCP server is unavailable");
+            }
+            if let Err(e) = defaults::write_tools_md(&dir, &tools.tools_md()) {
+                tracing::warn!(error = %e, "Cannot write TOOLS.md");
+            }
+            let _ = commands.send(Command::ToolsListed(problems));
+        });
     }
 
     /// Handles commands until Quit.
@@ -431,6 +458,10 @@ impl Agent {
                 });
             }
             Command::RecordTree => self.record_tree(),
+            Command::ToolsListed(problems) => {
+                self.view().tool_problems = problems;
+                self.reload_flows();
+            }
             Command::ReloadFlows => self.reload_flows(),
             Command::ReloadRuntime => self.runtime.apply(&self.config, &self.config_file),
             Command::RuntimeChanged => {
@@ -791,7 +822,7 @@ impl Agent {
     /// Loads the flows folder again; a tree with errors is reported and the last good one kept.
     fn reload_flows(&mut self) {
         let dir = self.config.flows_dir(&self.config_file);
-        let (tree, notes) = defaults::open(&dir, &Catalog::default());
+        let (tree, notes) = defaults::open(&dir, &self.tools.catalog());
         let errors = tree.errors.clone();
         if tree.is_valid() {
             tracing::info!(nodes = tree.nodes().len(), "Flow tree loaded");
@@ -821,6 +852,7 @@ impl Agent {
             != Binding::from_settings(&self.config.dictation);
         let flows_changed =
             config.flows_dir(&self.config_file) != self.config.flows_dir(&self.config_file);
+        let tools_changed = config.tools != self.config.tools || config.mcp != self.config.mcp;
         self.config = config;
         if hotkeys_changed && let Some(tray) = &self.tray {
             tray.hotkeys(self.bindings());
@@ -830,6 +862,10 @@ impl Agent {
             let _ = std::fs::create_dir_all(&dir);
             self._watcher = watch(&dir, self.commands.clone());
             self.reload_flows();
+        }
+        if tools_changed || flows_changed {
+            self.tools = Arc::new(ToolHost::new(&self.config.tools, &self.config.mcp));
+            self.list_tools();
         }
         self.runtime.apply(&self.config, &self.config_file);
         self.view().config = self.config.clone();
@@ -893,6 +929,7 @@ impl Agent {
             sink: Some(self.sink.clone()),
             investigator,
             confirmer: Some(Arc::new(ChannelConfirmer::new(confirm))),
+            tools: Some(self.tools.clone()),
         };
         let start = TakeStart {
             id,

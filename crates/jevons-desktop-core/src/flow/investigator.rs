@@ -576,6 +576,53 @@ impl Tool for NavTool {
     }
 }
 
+/// The investigator as a tool agents can call: a question in, a short answer out.
+pub struct InvestigateTool {
+    pub investigator: Arc<dyn Investigate>,
+    /// The context of the take the agent runs in.
+    pub snapshot: crate::context::ContextSnapshot,
+}
+
+#[async_trait]
+impl Tool for InvestigateTool {
+    fn name(&self) -> &str {
+        "investigate"
+    }
+
+    fn description(&self) -> &str {
+        "Reads the user's screen (the application the take started in) to answer a question \
+         about what it shows."
+    }
+
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
+    fn parameters_schema(&self) -> Option<Value> {
+        Some(
+            json!({"type": "object", "properties": {"question": {"type": "string",
+            "description": "What to find out on the screen"}}, "required": ["question"]}),
+        )
+    }
+
+    async fn execute(&self, _: Arc<dyn ToolContext>, args: Value) -> adk_core::Result<Value> {
+        let question = args["question"].as_str().unwrap_or_default().to_string();
+        let shape = Shape::Object(BTreeMap::from([("answer".to_string(), Shape::String)]));
+        let found = self
+            .investigator
+            .investigate(Inquiry {
+                name: "agent",
+                question,
+                shape: &shape,
+                scope: &[],
+                max_steps: 8,
+                snapshot: &self.snapshot,
+            })
+            .await;
+        Ok(found.value)
+    }
+}
+
 /// The context investigator over a platform inspector and the jevons model.
 pub struct Investigator {
     client: Client,

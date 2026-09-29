@@ -12,7 +12,8 @@ use crate::flow::FlowTree;
 use crate::flow::frame::Frame;
 use crate::flow::investigate::Investigate;
 use crate::flow::spec::Output;
-use crate::flow::walk::{self, FlowStep, Leaf};
+use crate::flow::tools::ToolHost;
+use crate::flow::walk::{self, FlowStep, Leaf, ToolTrace};
 use crate::platform::{
     Action, AudioEvent, DeliveryMethod, DeliveryOutcome, DeliveryRequest, SAMPLE_RATE, TextSink,
 };
@@ -162,6 +163,8 @@ pub struct Env {
     pub investigator: Option<Arc<dyn Investigate>>,
     /// Approves tool calls that need confirmation; without it they are denied.
     pub confirmer: Option<Arc<crate::flow::confirm::ChannelConfirmer>>,
+    /// The tools the settings register; without them tool and agent nodes fail.
+    pub tools: Option<Arc<ToolHost>>,
 }
 
 /// A take as it starts.
@@ -228,6 +231,9 @@ pub struct Trace {
     pub flow: Vec<FlowStep>,
     /// Where the walk ended and where its text goes.
     pub leaf: Option<Leaf>,
+    /// The tool calls of tool and agent nodes.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub calls: Vec<ToolTrace>,
     pub generation: Option<GenerationTrace>,
     /// The text delivered (or that would be, in a dry run).
     pub output: String,
@@ -254,6 +260,7 @@ impl Trace {
             entry: start.entry.clone().unwrap_or_else(|| "/".into()),
             flow: Vec::new(),
             leaf: None,
+            calls: Vec::new(),
             generation: None,
             output: String::new(),
             delivery: None,
@@ -831,7 +838,37 @@ mod tests {
 
     /// A fake jevons server: no Realtime route, a scripted decision and generation.
     async fn server(decide: Decider, output: &'static str) -> (Client, Seen) {
+        server_with(decide, output, Vec::new()).await
+    }
+
+    /// The same, with chat turns for agents: text, or `{"call": name, "arguments": {...}}`.
+    async fn server_with(
+        decide: Decider,
+        output: &'static str,
+        chat: Vec<Value>,
+    ) -> (Client, Seen) {
         let seen = Seen::default();
+        let turns = Arc::new(Mutex::new(std::collections::VecDeque::from(chat)));
+        let chat = move |Json(_body): Json<Value>| {
+            let turns = turns.clone();
+            async move {
+                let reply = turns
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .unwrap_or(json!("(no reply)"));
+                let chunk = match &reply {
+                    Value::String(text) => json!({"choices": [{"delta": {"content": text}}]}),
+                    call => json!({"choices": [{"delta": {"tool_calls": [{"index": 0,
+                        "id": "call_1", "type": "function",
+                        "function": {"name": call["call"], "arguments": call["arguments"].to_string()}}]}}]}),
+                };
+                (
+                    [("content-type", "text/event-stream")],
+                    format!("data: {chunk}\n\ndata: [DONE]\n\n"),
+                )
+            }
+        };
         let s = seen.clone();
         let decide = move |Json(body): Json<Value>| {
             let s = s.clone();
@@ -875,6 +912,7 @@ mod tests {
             )
             .route("/v1/systemone", post(decide))
             .route("/v1/responses", post(respond))
+            .route("/v1/chat/completions", post(chat))
             .route("/v1/audio/transcriptions", post(transcribe));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -907,6 +945,7 @@ mod tests {
             sink: sink.map(RecordingSink::shared),
             investigator: None,
             confirmer: None,
+            tools: None,
         }
     }
 
@@ -1165,6 +1204,144 @@ mod tests {
             .unwrap();
         assert!(!note.passed);
         assert_eq!(note.checks[0].value.as_deref(), Some("hello world"));
+    }
+
+    fn tool_host() -> Arc<ToolHost> {
+        let config: crate::config::DesktopConfig = toml::from_str(
+            r#"
+[tools.note]
+kind = "command"
+description = "Saves a note"
+program = "notes"
+args = ["{title}", "{folder}", "{body}"]
+arguments = { title = "A title", folder = "Where", body = "The note" }
+
+[tools.search]
+kind = "open"
+description = "Searches the web"
+url = "https://duckduckgo.com/?q={query}"
+arguments = { query = "What to find" }
+confirm = false
+"#,
+        )
+        .unwrap();
+        Arc::new(ToolHost::new(&config.tools, &config.mcp).dry_run())
+    }
+
+    fn tree_of(files: &[(&str, &str)]) -> Arc<FlowTree> {
+        let tree = FlowTree::load(
+            &Memory::new("test", files.iter().copied()),
+            &tool_host().catalog(),
+        );
+        assert!(tree.is_valid(), "{:?}", tree.errors);
+        Arc::new(tree)
+    }
+
+    #[tokio::test]
+    async fn a_tool_node_fills_its_arguments_asks_and_answers_with_the_result() {
+        let (client, seen) = server(prefer(&["work"]), "Launch moved").await;
+        let (confirm, mut asked) = mpsc::unbounded_channel::<crate::flow::confirm::Confirmation>();
+        let approver = tokio::spawn(async move {
+            let call = asked.recv().await.unwrap();
+            let tool = call.tool.clone();
+            call.reply.send(true).unwrap();
+            tool
+        });
+        let env = Env {
+            flows: tree_of(&[(
+                "tool.toml",
+                "tool = \"note\"\n[args.title]\ngenerate = \"A short title\"\n[args.folder]\nchoose = { inbox = \"Unsorted\", work = \"About work\" }\n[args.body]\nvalue = \"{transcript}\"",
+            )]),
+            tools: Some(tool_host()),
+            confirmer: Some(Arc::new(crate::flow::confirm::ChannelConfirmer::new(
+                confirm,
+            ))),
+            ..env(client, None)
+        };
+        let trace = take(&env, None).await;
+        assert_eq!(trace.error, None, "{:?}", trace.notes);
+        assert_eq!(approver.await.unwrap(), "note");
+        let call = &trace.calls[0];
+        assert_eq!(call.tool, "note");
+        assert_eq!(call.confirmed, Some(true));
+        assert_eq!(
+            call.arguments,
+            json!({"title": "Launch moved", "folder": "work", "body": "hello world"})
+        );
+        assert!(trace.output.contains("dry_run"), "{}", trace.output);
+        assert_eq!(trace.leaf.as_ref().unwrap().output, Output::Bubble);
+        // The labels were one System One read; the title one generation.
+        assert_eq!(seen.decisions.lock().unwrap().len(), 1);
+        assert_eq!(seen.generations.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_unconfirmed_tool_call_does_not_run() {
+        let (client, _) = server(prefer(&["work"]), "Title").await;
+        let env = Env {
+            flows: tree_of(&[(
+                "tool.toml",
+                "tool = \"note\"\n[args.title]\nvalue = \"x\"\n[args.folder]\nvalue = \"y\"\n[args.body]\nvalue = \"z\"",
+            )]),
+            tools: Some(tool_host()),
+            confirmer: None,
+            ..env(client, None)
+        };
+        let trace = take(&env, None).await;
+        assert!(
+            trace.error.as_deref().unwrap().contains("not confirmed"),
+            "{:?}",
+            trace.error
+        );
+        assert_eq!(trace.calls[0].confirmed, Some(false));
+    }
+
+    #[tokio::test]
+    async fn an_agent_node_calls_its_tools_and_its_answer_goes_to_the_bubble() {
+        let (client, _) = server_with(
+            prefer(&[]),
+            "unused",
+            vec![
+                json!({"call": "search", "arguments": {"query": "launch date"}}),
+                json!("It is on Friday."),
+            ],
+        )
+        .await;
+        let env = Env {
+            flows: tree_of(&[("agent.toml", "tools = [\"search\"]\nmax_steps = 3")]),
+            tools: Some(tool_host()),
+            ..env(client, None)
+        };
+        let (audio, finish) = one_second_of_audio();
+        let (updates, mut shown) = mpsc::unbounded_channel();
+        let start = TakeStart {
+            id: 1,
+            context: context(None),
+            entry: None,
+        };
+        let trace = run_take(&env, start, audio, finish, &updates).await;
+        assert_eq!(trace.error, None, "{:?}", trace.notes);
+        assert_eq!(trace.output, "It is on Friday.");
+        assert_eq!(trace.delivery, Some(DeliveryOutcome::Shown));
+        assert_eq!(trace.calls[0].tool, "search");
+        assert!(
+            trace.calls[0]
+                .result
+                .as_deref()
+                .unwrap()
+                .contains("dry_run")
+        );
+        let mut streamed = String::new();
+        let mut answering = false;
+        while let Ok(update) = shown.try_recv() {
+            match update {
+                Update::Answering => answering = true,
+                Update::Output(text) => streamed.push_str(&text),
+                _ => {}
+            }
+        }
+        assert!(answering);
+        assert_eq!(streamed, "It is on Friday.");
     }
 
     /// A live turn in a fake Realtime session: its live deltas, then its final transcript.

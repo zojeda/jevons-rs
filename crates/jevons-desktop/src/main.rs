@@ -24,7 +24,7 @@ use clap::Parser;
 use jevons_desktop_core::config::{DesktopConfig, default_config_file};
 use jevons_desktop_core::context::ContextSnapshot;
 use jevons_desktop_core::fake::FileAudioSource;
-use jevons_desktop_core::flow::{Catalog, FlowTree, defaults};
+use jevons_desktop_core::flow::{FlowTree, defaults};
 use jevons_desktop_core::pipeline::{self, Env, TakeStart};
 use jevons_desktop_core::platform::AudioSource;
 use std::path::PathBuf;
@@ -117,7 +117,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     if let Some(dir) = &args.check_flows {
-        return check_flows(&folder(dir));
+        return check_flows(&folder(dir), &config);
     }
     if let Some(dir) = &args.init_flows {
         let dir = folder(dir);
@@ -128,7 +128,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for note in &report.notes {
             println!("note: {note}");
         }
-        return check_flows(&dir);
+        return check_flows(&dir, &config);
     }
     if args.replay.is_some() || args.transcript.is_some() {
         return replay(&args, config, config_file);
@@ -137,11 +137,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Prints every problem of the flow tree in `dir`; fails when there is one.
-fn check_flows(dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-    let tree = FlowTree::load(
-        &jevons_desktop_core::flow::Disk::new(dir),
-        &Catalog::default(),
-    );
+fn check_flows(
+    dir: &std::path::Path,
+    config: &DesktopConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Tool names are checked against the settings; MCP tools by server (they are not started).
+    let catalog =
+        jevons_desktop_core::flow::tools::ToolHost::new(&config.tools, &config.mcp).catalog();
+    let tree = FlowTree::load(&jevons_desktop_core::flow::Disk::new(dir), &catalog);
     for error in &tree.errors {
         eprintln!("{error}");
     }
@@ -200,7 +203,17 @@ fn replay(
             },
         }
     };
-    let (flows, notes) = defaults::open(&config.flows_dir(&config_file), &Catalog::default());
+    let tokio = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    // Headless runs list the MCP servers' tools but never run one.
+    let tools = Arc::new(
+        jevons_desktop_core::flow::tools::ToolHost::new(&config.tools, &config.mcp).dry_run(),
+    );
+    for problem in tokio.block_on(tools.start()) {
+        eprintln!("note: {problem}");
+    }
+    let (flows, notes) = defaults::open(&config.flows_dir(&config_file), &tools.catalog());
     for note in notes {
         eprintln!("note: {note}");
     }
@@ -241,12 +254,10 @@ fn replay(
             .deliver
             .then(|| Arc::new(Mutex::new(platform::text_sink()))),
         investigator,
-        // Headless runs never run a tool that asks first.
+        // Headless runs never run a tool that asks first, and run no tool at all.
         confirmer: None,
+        tools: Some(tools),
     };
-    let tokio = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
     let trace = tokio.block_on(async {
         let (updates, mut live) = mpsc::unbounded_channel();
         let printer = tokio::spawn(async move {

@@ -34,6 +34,7 @@ pub fn FlowsPage(rev: u64) -> Element {
     let dir = view.config.flows_dir(&view.config_file);
     let errors: Vec<String> = view.flow_errors.iter().map(ToString::to_string).collect();
     let notes = view.flow_notes.clone();
+    let tool_problems = view.tool_problems.clone();
     let tree = view.flows.clone();
     let context = view.context.clone();
     drop(view);
@@ -161,9 +162,10 @@ pub fn FlowsPage(rev: u64) -> Element {
             {errors.iter().map(|e| rsx! { p { class: "error-text mono", "{e}" } })}
         }
         {notes.iter().map(|n| rsx! { p { class: "muted", "{n}" } })}
+        {tool_problems.iter().map(|n| rsx! { p { class: "warn", "{n}" } })}
         p { class: "muted",
-            "Every folder is a node; AGENTS.md in the folder explains the format to people and agents. \
-             Files reload as soon as they are saved."
+            "Every folder is a node; AGENTS.md in the folder explains the format to people and agents, \
+             and TOOLS.md lists the tools the settings register. Files reload as soon as they are saved."
         }
 
         div { class: "dx-card",

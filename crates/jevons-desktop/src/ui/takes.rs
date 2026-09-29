@@ -77,6 +77,22 @@ fn TakeItem(trace: TraceProp) -> Element {
             format!("{} → {:?}, {:?}", leaf.node, leaf.output, leaf.action).to_lowercase(),
         ));
     }
+    for call in &trace.calls {
+        let confirmed = match call.confirmed {
+            Some(true) => " (approved)",
+            Some(false) => " (not approved)",
+            None => "",
+        };
+        rows.push((
+            "Tool call",
+            format!(
+                "{} {}{confirmed} → {}",
+                call.tool,
+                call.arguments,
+                call.result.clone().unwrap_or_default()
+            ),
+        ));
+    }
     rows.push(("Output", trace.output.clone()));
     if let Some(delivery) = &trace.delivery {
         rows.push((

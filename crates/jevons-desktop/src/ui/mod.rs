@@ -384,6 +384,7 @@ mod tests {
                 action: Action::Insert,
                 delivery: DeliveryMethod::Paste,
             }),
+            calls: Vec::new(),
             generation: None,
             output: "Hello world.".into(),
             delivery: Some(DeliveryOutcome::Delivered {

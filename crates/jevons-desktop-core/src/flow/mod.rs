@@ -21,6 +21,7 @@ pub mod llm;
 pub mod shape;
 pub mod spec;
 pub mod template;
+pub mod tools;
 pub mod tree;
 pub mod walk;
 

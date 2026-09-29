@@ -61,3 +61,27 @@ read_clipboard = false
 # "is Slack open, and what did Ana say?"), allow it and list the applications:
 read_other_windows = false
 # readable_apps = ["slack.exe", "chrome.exe"]
+
+# Tools flow nodes may call (tool.toml, agent.toml). Flow files can use these, never add them.
+# Each asks in the bubble before it runs unless confirm = false here. {argument} takes a call's
+# argument; ${env:NAME} an environment variable, for secrets.
+# [tools.search]
+# kind = "open"                       # open | command | http
+# description = "Searches the web for a query"
+# url = "https://duckduckgo.com/?q={query}"
+# arguments = { query = "What to search for" }
+# confirm = false
+#
+# [tools.lights]
+# kind = "http"
+# description = "Turns on the lights of a room"
+# method = "POST"
+# url = "http://homeassistant.local:8123/api/services/light/turn_on"
+# headers = { Authorization = "Bearer ${env:HA_TOKEN}" }
+# body = '{"entity_id": "light.{room}"}'
+# arguments = { room = "The room, such as kitchen" }
+#
+# MCP servers, started on demand over standard input and output; their tools are server:tool.
+# [mcp.fs]
+# command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "C:/Users/me/notes"]
+# unconfirmed = ["read_file", "list_directory"]   # these run without asking
