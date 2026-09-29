@@ -4,8 +4,8 @@
 
 use crate::context::{ContextSnapshot, Privacy};
 use crate::icons::TrayState;
-use crate::profile::DeliveryMethod;
-use serde::Serialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// The rate of [`AudioEvent::Chunk`] samples: the Realtime API's default PCM16 rate.
@@ -63,15 +63,31 @@ pub trait AudioSource: Send {
 }
 
 /// What to do with the text in the target.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
     /// Insert at the caret.
+    #[default]
     Insert,
     /// Replace the selection.
     Replace,
     /// Replace the selection, or the whole field when nothing is selected.
     Rewrite,
+}
+
+/// How the text reaches the target.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryMethod {
+    /// Put the text on the clipboard and paste it, restoring the clipboard after.
+    #[default]
+    Paste,
+    /// Type it key by key.
+    Type,
+    /// Set the element's value through the accessibility API.
+    SetValue,
+    /// Only copy it; the user pastes.
+    Clipboard,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]

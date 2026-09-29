@@ -1,0 +1,8 @@
+# Plain-text notes: rewriting a selection is common here.
+description = "A notes or plain-text editor"
+priority = 10
+branches = "_actions"
+instructions = "Tidy prose with correct punctuation. When rewriting, keep the author's voice."
+
+[when]
+app = ["notepad.exe", "obsidian*", "gedit", "gnome-text-editor"]

@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
-description = "Platform-free core of the jevons desktop dictation agent: traits, profiles, pipeline and API client."
+description = "Platform-free core of the jevons desktop agent: traits, the flow tree, the pipeline and the API client."
 
 [features]
 # Fakes for pipeline tests and the headless replay mode.
@@ -18,6 +18,7 @@ futures-util = { workspace = true, features = ["sink", "std"] }
 globset.workspace = true
 regex.workspace = true
 reqwest.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

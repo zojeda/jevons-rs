@@ -1,0 +1,3 @@
+description = "The user asks a question, about what is on screen or in general, and wants the answer shown to them rather than typed into the application."
+select = "rules"
+fallback = "any"

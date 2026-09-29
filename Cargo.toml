@@ -63,6 +63,7 @@ regex = "1.11"
 reqwest = { version = "0.13", default-features = false, features = ["native-tls", "charset", "json", "multipart", "stream"] }
 rdev = "0.5"
 rfd = "0.17"
+schemars = "1"
 sha2 = "0.10"
 tao = "0.37"
 tokio-tungstenite = "0.29"

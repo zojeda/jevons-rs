@@ -1,0 +1,10 @@
+# The same for chat apps in a browser.
+description = "In a chat application in a browser"
+output = "bubble"
+
+[when]
+url = ["https://web.whatsapp.com/*", "https://app.slack.com/*", "https://teams.microsoft.com/*", "https://discord.com/*"]
+
+[investigate.conversation]
+question = "Which conversation is open in this page, and what are its most recent messages?"
+schema = { name = "string", messages = [{ author = "string", time = "string", text = "string" }] }

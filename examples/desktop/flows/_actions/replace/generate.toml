@@ -1,0 +1,5 @@
+description = "Type the dictated words in place of the selected text."
+action = "replace"
+
+[when]
+selection = true

@@ -1,0 +1,5 @@
+# The root: every take starts here unless its hotkey starts further down.
+question = "What does the user want done with what they said?"
+# When the decision model is unsure or unavailable, the words are dictated.
+fallback = "dictate"
+min_confidence = 0.5

@@ -1,0 +1,4 @@
+description = "The user is dictating text to type where they are writing, or telling how to change the text there (rewrite, translate, shorten or fix the selection or the field)."
+# The application decides the branch: the highest priority whose guard passes.
+select = "rules"
+fallback = "any"

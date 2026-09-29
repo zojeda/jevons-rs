@@ -1,0 +1,5 @@
+description = "The words are an instruction to change the selected text or the field's text, such as rewrite, translate, shorten or fix it."
+action = "rewrite"
+
+[when]
+text = true

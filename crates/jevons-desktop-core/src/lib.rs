@@ -23,6 +23,7 @@ pub mod delivery;
 pub mod download;
 #[cfg(any(test, feature = "testing"))]
 pub mod fake;
+pub mod flow;
 pub mod icons;
 pub mod levels;
 pub mod pipeline;

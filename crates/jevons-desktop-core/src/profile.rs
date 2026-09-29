@@ -95,20 +95,7 @@ pub enum ActionPreference {
     Auto,
 }
 
-/// How the text reaches the target.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DeliveryMethod {
-    /// Put the text on the clipboard and paste it, restoring the clipboard after.
-    #[default]
-    Paste,
-    /// Type it key by key.
-    Type,
-    /// Set the element's value through the accessibility API.
-    SetValue,
-    /// Only copy it; the user pastes.
-    Clipboard,
-}
+pub use crate::platform::DeliveryMethod;
 
 /// One rule check, for the inspector.
 #[derive(Clone, Debug, PartialEq, Serialize)]

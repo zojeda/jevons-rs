@@ -1,0 +1,9 @@
+# Chat apps: short, casual messages, with thread replies shorter still.
+description = "A chat application"
+priority = 20
+select = "rules"
+fallback = "any"
+instructions = "Casual and concise. Keep emoji and names exactly as dictated. No sign-off."
+
+[when]
+app = ["slack.exe", "*teams*", "discord*", "whatsapp*", "telegram*"]

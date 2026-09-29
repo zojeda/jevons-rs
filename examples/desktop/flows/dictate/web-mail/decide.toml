@@ -1,0 +1,9 @@
+# Web mail in any browser: the page address says it is mail.
+description = "Web mail in a browser"
+priority = 30
+branches = "_actions"
+instructions = "Write a clear, polite email in paragraphs. Start with a greeting only when the text is the start of the message."
+
+[when]
+app = ["chrome.exe", "msedge.exe", "firefox*"]
+url = ["https://mail.google.com/*", "https://outlook.office.com/*", "https://outlook.live.com/*"]

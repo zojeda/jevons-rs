@@ -1,0 +1,6 @@
+description = "A reply in a thread"
+branches = "_actions"
+instructions = "One or two sentences."
+
+[when]
+element_name = "(?i)reply"
