@@ -241,6 +241,8 @@ fn replay(
             .deliver
             .then(|| Arc::new(Mutex::new(platform::text_sink()))),
         investigator,
+        // Headless runs never run a tool that asks first.
+        confirmer: None,
     };
     let tokio = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

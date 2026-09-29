@@ -11,6 +11,7 @@
 //! - [`investigate`]: the contract of the built-in context investigator.
 
 pub mod agent;
+pub mod confirm;
 pub mod defaults;
 pub mod frame;
 pub mod guard;

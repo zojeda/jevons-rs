@@ -707,6 +707,9 @@ impl Walker<'_> {
             Output::Bubble => "Answering with the language model".into(),
             _ => "Writing with the language model".into(),
         }));
+        if output == Output::Bubble {
+            let _ = self.updates.send(Update::Answering);
+        }
         let began = Instant::now();
         tracing::info!(take = self.trace.take, node = node.label(), "Generating");
         let updates = self.updates;

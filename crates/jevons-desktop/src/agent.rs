@@ -6,6 +6,7 @@ use crate::runtime::{Runtime, Status};
 use crate::tray::Tray;
 use jevons_desktop_core::config::{DesktopConfig, HotkeyMode};
 use jevons_desktop_core::context::ContextSnapshot;
+use jevons_desktop_core::flow::confirm::{ChannelConfirmer, Confirmation};
 use jevons_desktop_core::flow::investigate::Investigate;
 use jevons_desktop_core::flow::investigator::{Investigator, PathCache};
 use jevons_desktop_core::flow::walk::{self, FlowStep};
@@ -51,6 +52,29 @@ pub enum Command {
     TakeFinished(Box<Trace>),
     /// Hides the feedback bubble of a finished take, unless a newer take shows it.
     HideFeedback(u64),
+    /// A take asks before calling a tool.
+    ConfirmRequested(Confirmation),
+    /// The user's answer: run the tool or not.
+    Confirmed(bool),
+    /// A button of the bubble's answer.
+    Bubble(BubbleAction),
+}
+
+/// What the buttons under an answer in the bubble do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BubbleAction {
+    Copy,
+    /// Types the answer into the window the take started in.
+    Insert,
+    Close,
+}
+
+/// A tool call waiting for the user in the bubble.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PendingCall {
+    pub tool: String,
+    /// The arguments, as readable JSON.
+    pub arguments: String,
 }
 
 /// What the feedback bubble by the tray icon shows about a take.
@@ -70,6 +94,10 @@ pub struct Feedback {
     pub output: String,
     /// The output is an answer for the user to read, not text typed into the application.
     pub answer: bool,
+    /// A tool call waiting for the user's confirmation.
+    pub confirm: Option<PendingCall>,
+    /// The window the take started in, where Insert types the answer.
+    pub window: Option<u64>,
     /// The take ended; the bubble hides shortly.
     pub done: bool,
     pub failed: bool,
@@ -94,6 +122,10 @@ impl Feedback {
             }
             Update::Step(step) => self.steps.push(step.clone()),
             Update::Output(text) => self.output.push_str(text),
+            Update::Answering => {
+                self.answer = true;
+                self.output.clear();
+            }
         }
         true
     }
@@ -202,6 +234,8 @@ pub struct Agent {
     audio: Box<dyn AudioSource>,
     flows: Arc<FlowTree>,
     hotkeys: std::collections::HashMap<u32, HotkeyAction>,
+    /// The reply to the tool call the bubble asks about.
+    confirming: Option<oneshot::Sender<bool>>,
     /// Each registered hotkey's accelerator, to swallow its repeats while it is held.
     accelerators: std::collections::HashMap<u32, String>,
     active: Option<Active>,
@@ -254,6 +288,7 @@ impl Agent {
             sink: Arc::new(Mutex::new(layers.sink)),
             audio: layers.audio,
             hotkeys: std::collections::HashMap::new(),
+            confirming: None,
             accelerators: std::collections::HashMap::new(),
             active: None,
             next_take: 1,
@@ -358,6 +393,10 @@ impl Agent {
                     let mode = self.config.dictation.live_hotkey_mode;
                     self.hotkey_pressed(id, None, true, mode);
                 }
+                Some(HotkeyAction::Confirm(yes)) => {
+                    let yes = *yes;
+                    self.confirmed(yes);
+                }
                 None => {}
             },
             Command::Hotkey(HotkeyEvent::Released(id)) => {
@@ -409,6 +448,9 @@ impl Agent {
                 self.repaint();
             }
             Command::TakeFinished(trace) => self.finished(*trace),
+            Command::ConfirmRequested(confirmation) => self.confirm_requested(confirmation),
+            Command::Confirmed(yes) => self.confirmed(yes),
+            Command::Bubble(action) => self.bubble(action),
             Command::HideFeedback(take) => {
                 let mut view = self.view();
                 if view
@@ -579,6 +621,120 @@ impl Agent {
         walk::preview(&self.flows, snapshot, entry)
     }
 
+    /// Every hotkey the settings define, plus Enter and Esc while a tool call waits.
+    fn bindings(&self) -> Vec<Binding> {
+        let mut bindings = Binding::from_settings(&self.config.dictation);
+        if self.confirming.is_some() {
+            bindings.push(Binding {
+                accelerator: "Enter".into(),
+                action: HotkeyAction::Confirm(true),
+            });
+            bindings.push(Binding {
+                accelerator: "Escape".into(),
+                action: HotkeyAction::Confirm(false),
+            });
+        }
+        bindings
+    }
+
+    /// Shows a tool call in the bubble and waits for the user.
+    fn confirm_requested(&mut self, confirmation: Confirmation) {
+        if let Some(previous) = self.confirming.take() {
+            let _ = previous.send(false);
+        }
+        let arguments = serde_json::to_string_pretty(&confirmation.arguments).unwrap_or_default();
+        tracing::info!(tool = %confirmation.tool, "Waiting for confirmation");
+        self.confirming = Some(confirmation.reply);
+        {
+            let mut view = self.view();
+            if let Some(feedback) = view.feedback.as_mut() {
+                feedback.confirm = Some(PendingCall {
+                    tool: confirmation.tool,
+                    arguments,
+                });
+                feedback.status = "Run this tool? Enter runs it, Esc cancels".into();
+            }
+        }
+        if let Some(tray) = &self.tray {
+            tray.hotkeys(self.bindings());
+        }
+        self.repaint();
+    }
+
+    fn confirmed(&mut self, yes: bool) {
+        let Some(reply) = self.confirming.take() else {
+            return;
+        };
+        tracing::info!(approved = yes, "Confirmation answered");
+        let _ = reply.send(yes);
+        if let Some(feedback) = self.view().feedback.as_mut() {
+            feedback.confirm = None;
+            feedback.status = if yes {
+                "Running the tool…"
+            } else {
+                "Cancelled"
+            }
+            .into();
+        }
+        if let Some(tray) = &self.tray {
+            tray.hotkeys(self.bindings());
+        }
+        self.repaint();
+    }
+
+    /// The bubble's answer buttons.
+    fn bubble(&mut self, action: BubbleAction) {
+        let Some(feedback) = self.view().feedback.take() else {
+            return;
+        };
+        self.repaint();
+        match action {
+            BubbleAction::Close => {}
+            BubbleAction::Copy => {
+                let copied = self
+                    .sink
+                    .lock()
+                    .expect("the sink lock")
+                    .copy(&feedback.output);
+                self.notice(&match copied {
+                    Ok(()) => "The answer is on the clipboard".to_string(),
+                    Err(e) => e.to_string(),
+                });
+            }
+            BubbleAction::Insert => {
+                let sink = self.sink.clone();
+                let view = self.view.clone();
+                let repaint = self.repaint.clone();
+                tokio::spawn(async move {
+                    // Closing the bubble gives the focus back to the application underneath.
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    let request = jevons_desktop_core::platform::DeliveryRequest {
+                        action: jevons_desktop_core::platform::Action::Insert,
+                        text: feedback.output.clone(),
+                        method: jevons_desktop_core::platform::DeliveryMethod::Paste,
+                        select_all: false,
+                        erase: 0,
+                    };
+                    let outcome = pipeline::deliver_text(
+                        &sink,
+                        feedback.take,
+                        feedback.window.unwrap_or(0),
+                        request,
+                    )
+                    .await;
+                    view.lock().expect("the view lock").notice = match outcome {
+                        Ok(Some(DeliveryOutcome::OnClipboard { reason })) => {
+                            Some(format!("The answer is on the clipboard: {reason}"))
+                        }
+                        Err(e) => Some(e),
+                        _ => None,
+                    };
+                    repaint();
+                });
+            }
+        }
+    }
+
     /// Saves the front window's interface to `~/jevons/trees`, off the agent thread.
     fn record_tree(&mut self) {
         let inspector = self.inspector.clone();
@@ -667,7 +823,7 @@ impl Agent {
             config.flows_dir(&self.config_file) != self.config.flows_dir(&self.config_file);
         self.config = config;
         if hotkeys_changed && let Some(tray) = &self.tray {
-            tray.hotkeys(Binding::from_settings(&self.config.dictation));
+            tray.hotkeys(self.bindings());
         }
         if flows_changed {
             let dir = self.config.flows_dir(&self.config_file);
@@ -707,6 +863,13 @@ impl Agent {
         };
         let (finish, finished) = oneshot::channel();
         let dictation = &self.config.dictation;
+        let (confirm, mut asked) = mpsc::unbounded_channel::<Confirmation>();
+        let forward = self.commands.clone();
+        tokio::spawn(async move {
+            while let Some(confirmation) = asked.recv().await {
+                let _ = forward.send(Command::ConfirmRequested(confirmation));
+            }
+        });
         let investigator = connection.models.generative.clone().map(|model| {
             Arc::new(Investigator::new(
                 connection.client.clone(),
@@ -729,6 +892,7 @@ impl Agent {
             },
             sink: Some(self.sink.clone()),
             investigator,
+            confirmer: Some(Arc::new(ChannelConfirmer::new(confirm))),
         };
         let start = TakeStart {
             id,
@@ -745,6 +909,7 @@ impl Agent {
             view.feedback = Some(Feedback {
                 take: id,
                 live,
+                window: context.window.handle,
                 status: format!(
                     "{}: {}",
                     if live { "Live dictation" } else { "Listening" },
@@ -800,7 +965,7 @@ impl Agent {
                         }
                         Update::Transcribing => Some(TrayState::Transcribing { frame: 0 }),
                         Update::Thinking => Some(TrayState::Thinking { frame: 0 }),
-                        Update::Step(_) => None,
+                        Update::Step(_) | Update::Answering => None,
                         Update::Output(text) => {
                             view.live_output.push_str(&text);
                             None
@@ -850,6 +1015,7 @@ impl Agent {
 
     fn cancel_take(&mut self) {
         crate::hold::release();
+        self.confirmed(false);
         self.view().feedback = None;
         if let Some(mut active) = self.active.take() {
             if let Some(capture) = active.capture.take() {
@@ -863,6 +1029,7 @@ impl Agent {
 
     fn finished(&mut self, trace: Trace) {
         crate::hold::release();
+        self.confirmed(false);
         save_trace(&trace);
         if self.active.as_ref().is_some_and(|a| a.id == trace.take) {
             // The source may have ended by itself (a device error).

@@ -104,6 +104,7 @@ pub fn run(
         ctx,
         main: None,
         bubble: None,
+        bubble_clicks: false,
     };
     event_loop.run_app(&mut shell)?;
     Ok(())
@@ -117,6 +118,8 @@ struct Shell {
     main: Option<WindowId>,
     /// The feedback bubble, while it shows.
     bubble: Option<WindowId>,
+    /// Whether the bubble takes clicks (an answer or a confirmation).
+    bubble_clicks: bool,
 }
 
 /// Where the bubble goes: just above the tray icon (or below it, for a taskbar at the top), and
@@ -221,22 +224,42 @@ impl Shell {
     }
 
     fn refresh(&mut self, event_loop: &ActiveEventLoop) {
-        let (quit, show, bubble) = {
+        let (quit, show, bubble, clicks) = {
             let mut view = self.view.lock().expect("the view lock");
-            let bubble = view.feedback.is_some() && view.config.dictation.live_feedback;
-            (view.quit, std::mem::take(&mut view.show_window), bubble)
+            // A call waiting for confirmation shows even with live feedback off.
+            let asking = view.feedback.as_ref().is_some_and(|f| f.confirm.is_some());
+            let bubble = view.feedback.is_some() && (view.config.dictation.live_feedback || asking);
+            let clicks = view
+                .feedback
+                .as_ref()
+                .is_some_and(|f| f.confirm.is_some() || (f.answer && f.done));
+            (
+                view.quit,
+                std::mem::take(&mut view.show_window),
+                bubble,
+                clicks,
+            )
         };
         if quit {
             event_loop.exit();
             return;
         }
         match (bubble, self.bubble) {
-            (true, None) => self.open_bubble(event_loop),
+            (true, None) => {
+                self.open_bubble(event_loop);
+                self.bubble_clicks = false;
+            }
             (false, Some(id)) => {
                 self.bubble = None;
                 self.inner.windows.remove(&id);
             }
             _ => {}
+        }
+        if let Some(window) = self.bubble.and_then(|id| self.inner.windows.get(&id))
+            && clicks != self.bubble_clicks
+        {
+            let _ = window.window.set_cursor_hittest(clicks);
+            self.bubble_clicks = clicks;
         }
         for (id, window) in self.inner.windows.iter_mut() {
             if show && Some(*id) == self.main {
@@ -457,6 +480,35 @@ mod tests {
         assert!(text.contains("Hello there."), "{text}");
         assert!(text.contains("Route dictate"), "{text}");
         assert!(text.contains("Inserted"), "{text}");
+        // A tool call waits, then the take answers in the bubble.
+        view.lock().unwrap().feedback.as_mut().unwrap().confirm = Some(crate::agent::PendingCall {
+            tool: "notes:create_note".into(),
+            arguments: "{\"title\": \"Launch\"}".into(),
+        });
+        doc.vdom.mark_dirty(ScopeId::APP);
+        doc.poll(None);
+        let text = doc.root_element().text_content();
+        assert!(
+            text.contains("Run notes:create_note?") && text.contains("Cancel (Esc)"),
+            "{text}"
+        );
+        {
+            let mut view = view.lock().unwrap();
+            let feedback = view.feedback.as_mut().unwrap();
+            feedback.confirm = None;
+            feedback.answer = true;
+            feedback.output = "The launch is on Friday.".into();
+            feedback.window = Some(7);
+        }
+        doc.vdom.mark_dirty(ScopeId::APP);
+        doc.poll(None);
+        let text = doc.root_element().text_content();
+        assert!(
+            text.contains("The launch is on Friday.")
+                && text.contains("Insert")
+                && text.contains("Copy"),
+            "{text}"
+        );
         // The take ends and the bubble empties.
         view.lock().unwrap().feedback = None;
         doc.vdom.mark_dirty(ScopeId::APP);

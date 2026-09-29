@@ -160,6 +160,8 @@ pub struct Env {
     pub sink: Option<Arc<Mutex<Box<dyn TextSink>>>>,
     /// Answers `[investigate]` questions; without it their answers are empty.
     pub investigator: Option<Arc<dyn Investigate>>,
+    /// Approves tool calls that need confirmation; without it they are denied.
+    pub confirmer: Option<Arc<crate::flow::confirm::ChannelConfirmer>>,
 }
 
 /// A take as it starts.
@@ -185,6 +187,8 @@ pub enum Update {
     Step(String),
     /// Generated text.
     Output(String),
+    /// The text being generated is an answer for the bubble, not text for the application.
+    Answering,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -725,6 +729,18 @@ async fn deliver(
         select_all: leaf.action == Action::Rewrite && start.context.selection().is_none(),
         erase: 0,
     };
+    let window = start.context.window.handle.unwrap_or(0);
+    deliver_text(sink, start.id, window, request).await
+}
+
+/// Types `request` into `window` once every key is released, or leaves it on the clipboard when
+/// the window changed or keys stayed down (the bubble's Insert uses it too).
+pub async fn deliver_text(
+    sink: &Arc<Mutex<Box<dyn TextSink>>>,
+    take: u64,
+    window: u64,
+    request: DeliveryRequest,
+) -> Result<Option<DeliveryOutcome>, String> {
     let copy = |reason: String| -> Result<Option<DeliveryOutcome>, String> {
         sink.lock()
             .expect("the sink lock is not poisoned")
@@ -735,14 +751,13 @@ async fn deliver(
     if request.method == DeliveryMethod::Clipboard {
         return copy("the flow delivers to the clipboard".into());
     }
-    let window = start.context.window.handle.unwrap_or(0);
-    let pending = Pending::new(start.id, window, Instant::now());
+    let pending = Pending::new(take, window, Instant::now());
     loop {
         let (foreground, keys_down) = {
             let sink = sink.lock().expect("the sink lock is not poisoned");
             (sink.foreground_window().unwrap_or(0), sink.keys_down())
         };
-        match pending.decide(start.id, foreground, keys_down, Instant::now()) {
+        match pending.decide(take, foreground, keys_down, Instant::now()) {
             Decision::Deliver => {
                 let result = sink
                     .lock()
@@ -891,6 +906,7 @@ mod tests {
             settings: settings(),
             sink: sink.map(RecordingSink::shared),
             investigator: None,
+            confirmer: None,
         }
     }
 

@@ -73,7 +73,7 @@ flowchart TD
 2. **While you speak** the audio streams to Realtime transcription, and the feedback bubble and the inspector show live text. When Realtime is not served, the take is uploaded when you finish.
 3. **The flow tree** routes the take. Guards (rules on the context and the transcript) drop branches with no model call, rules decisions pick by priority, and the decision model chooses the rest by the branches' descriptions, one merged request per take when it can. The inspector shows the route for the window in front, with every rule it checked.
 4. **The leaf** writes with the language model, following the instructions gathered from the root down, or uses the words as heard.
-5. **Delivery** goes only into the window the take started in, once every key is released. Otherwise the text waits on the clipboard. Answers go to the bubble instead.
+5. **Delivery** goes only into the window the take started in, once every key is released. Otherwise the text waits on the clipboard. Answers stream into the bubble instead, which then takes clicks for **Copy**, **Insert** and **Close**; before a tool runs, the bubble asks (Enter runs it, Esc cancels).
 
 In **live dictation** (its own hotkey, held while speaking or pressed to start and stop), the app ends a phrase at each pause and the feedback bubble above the tray icon shows the words as they are recognized. When you stop, the whole transcript goes from *Transcript* through the steps above. The bubble follows push-to-talk takes too: what was heard, the route and the outcome. The tray menu's **Live feedback** turns it off.
 

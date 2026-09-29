@@ -81,3 +81,46 @@ html, body, #main {
   padding: 1px 8px;
   white-space: nowrap;
 }
+
+/* An answer, and a tool call waiting for confirmation: the bubble takes clicks then. */
+.bubble[data-state="answer"] { border-color: #b6fae3; }
+.bubble[data-state="answer"] .bubble-dot { background: #b6fae3; }
+.bubble[data-state="confirm"] { border-color: #ffd27a; }
+.bubble[data-state="confirm"] .bubble-dot { background: #ffd27a; }
+.bubble-asked {
+  font-size: 12px;
+  color: #a1a1a1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bubble-answer {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  font-size: 14px;
+  color: #fafafa;
+  white-space: pre-wrap;
+}
+.bubble-question { font-size: 15px; color: #fafafa; }
+.bubble-args {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  overflow: hidden;
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 12px;
+  color: #d4d4d4;
+  white-space: pre-wrap;
+}
+.bubble-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.bubble-button {
+  font-family: inherit;
+  font-size: 12px;
+  color: #e6e6e6;
+  background: #1c1c1c;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  padding: 3px 10px;
+}
+.bubble-button[data-primary="true"] { background: #0c3a40; border-color: #22e6f2; color: #fafafa; }

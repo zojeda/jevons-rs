@@ -216,6 +216,9 @@ pub enum HotkeyAction {
     /// are recognized.
     LiveDictation,
     ShowInspector,
+    /// Answers the tool call the bubble asks about (Enter runs it, Esc cancels); registered only
+    /// while a call waits.
+    Confirm(bool),
 }
 
 /// A global shortcut, such as `Ctrl+Alt+Space`, and what it does.
