@@ -33,10 +33,13 @@ realtime = true
 # path = "D:/models/parakeet-tdt-0.6b-v3"
 
 [dictation]
-# Push-to-talk: hold while speaking; the text is inserted on release.
+# Push-to-talk (and the profile hotkeys); the text is inserted when you finish.
 hotkey = "Ctrl+Alt+Space"
-# Live dictation: press to start, press again to stop; the text is inserted when you stop.
+# "hold": listen while the hotkey is held. "toggle": press to start, press again to finish.
+hotkey_mode = "hold"
+# Live dictation: the bubble shows the words as you speak; the text is inserted when you finish.
 live_hotkey = "F9"
+live_hotkey_mode = "hold"
 # A bubble above the tray icon shows what dictation hears and does.
 live_feedback = true
 # inspector_hotkey = "Ctrl+Alt+I"

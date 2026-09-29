@@ -4,7 +4,7 @@
 
 use crate::runtime::{Runtime, Status};
 use crate::tray::Tray;
-use jevons_desktop_core::config::DesktopConfig;
+use jevons_desktop_core::config::{DesktopConfig, HotkeyMode};
 use jevons_desktop_core::context::ContextSnapshot;
 use jevons_desktop_core::icons::TrayState;
 use jevons_desktop_core::pipeline::{self, Env, TakeStart, Trace, Update};
@@ -159,8 +159,11 @@ struct Active {
     id: u64,
     /// Live dictation rather than push-to-talk.
     live: bool,
-    /// The hotkey that started it; its release ends a push-to-talk take.
+    /// The hotkey that started it.
     source: Option<u32>,
+    /// The hotkey is held while speaking: its release ends the take. Otherwise pressing it
+    /// again does.
+    held: bool,
     capture: Option<Box<dyn CaptureHandle>>,
     finish: Option<oneshot::Sender<()>>,
     /// The pipeline task, aborted when the take is cancelled.
@@ -317,22 +320,21 @@ impl Agent {
                     self.repaint();
                 }
                 Some(HotkeyAction::Dictate { profile }) => {
-                    // Key repeat and other keys while a take runs change nothing.
-                    if self.active.is_none() {
-                        let profile = profile.clone();
-                        self.begin(profile, Some(id), false);
-                    }
+                    let profile = profile.clone();
+                    let mode = self.config.dictation.hotkey_mode;
+                    self.hotkey_pressed(id, profile, false, mode);
                 }
-                // Live dictation toggles: press to start, press again to stop. Nothing is
-                // held while it types.
-                Some(HotkeyAction::LiveDictation) => self.toggle_live(),
+                Some(HotkeyAction::LiveDictation) => {
+                    let mode = self.config.dictation.live_hotkey_mode;
+                    self.hotkey_pressed(id, None, true, mode);
+                }
                 None => {}
             },
             Command::Hotkey(HotkeyEvent::Released(id)) => {
                 if self
                     .active
                     .as_ref()
-                    .is_some_and(|a| a.source == Some(id) && a.capture.is_some())
+                    .is_some_and(|a| a.source == Some(id) && a.held && a.capture.is_some())
                 {
                     self.stop_take();
                 }
@@ -461,13 +463,23 @@ impl Agent {
         true
     }
 
+    /// A dictation hotkey went down: it starts a take, or stops the one it started in toggle
+    /// mode. Key repeats and other hotkeys while a take runs change nothing.
+    fn hotkey_pressed(&mut self, id: u32, profile: Option<String>, live: bool, mode: HotkeyMode) {
+        match &self.active {
+            None => self.begin(profile, Some(id), live, mode == HotkeyMode::Hold),
+            Some(a) if a.source == Some(id) && !a.held && a.capture.is_some() => self.stop_take(),
+            Some(_) => {}
+        }
+    }
+
     /// Starts or stops push-to-talk dictation from the menu.
     fn toggle(&mut self) {
         match &self.active {
             Some(active) if !active.live && active.capture.is_some() => self.stop_take(),
             Some(active) if active.live => self.notice("Live dictation is running"),
             Some(_) => self.notice("The last take is still being processed"),
-            None => self.begin(None, None, false),
+            None => self.begin(None, None, false, false),
         }
     }
 
@@ -476,7 +488,7 @@ impl Agent {
             Some(active) if active.live && active.capture.is_some() => self.stop_take(),
             Some(active) if active.live => {}
             Some(_) => self.notice("Finish the current take first"),
-            None => self.begin(None, None, true),
+            None => self.begin(None, None, true, false),
         }
     }
 
@@ -556,9 +568,9 @@ impl Agent {
         self.repaint();
     }
 
-    /// Starts a take: push-to-talk, or live dictation when `live`. `source` is the hotkey
-    /// whose release ends a push-to-talk take.
-    fn begin(&mut self, profile: Option<String>, source: Option<u32>, live: bool) {
+    /// Starts a take: push-to-talk, or live dictation when `live`. `source` is the hotkey that
+    /// started it; when `held`, its release ends the take.
+    fn begin(&mut self, profile: Option<String>, source: Option<u32>, live: bool, held: bool) {
         let Some(connection) = self.runtime.connection() else {
             let status = self.runtime.status().describe();
             self.notice(&format!("Dictation is unavailable: {status}"));
@@ -611,11 +623,15 @@ impl Agent {
             view.feedback = Some(Feedback {
                 take: id,
                 live,
-                status: if live {
-                    "Live dictation: listening… press the hotkey again to finish".into()
-                } else {
-                    "Listening…".into()
-                },
+                status: format!(
+                    "{}: {}",
+                    if live { "Live dictation" } else { "Listening" },
+                    match (source, held) {
+                        (Some(_), true) => "release the hotkey to finish",
+                        (Some(_), false) => "press the hotkey again to finish",
+                        (None, _) => "stop it from the tray menu",
+                    }
+                ),
                 ..Feedback::default()
             });
             view.resolution = Some(
@@ -628,12 +644,13 @@ impl Agent {
             id,
             live,
             source,
+            held,
             capture: Some(capture),
             finish: Some(finish),
             task: None,
         });
         // Keep the held hotkey's repeats out of the focused application while the take runs.
-        if let Some(accelerator) = source.and_then(|id| self.accelerators.get(&id)) {
+        if held && let Some(accelerator) = source.and_then(|id| self.accelerators.get(&id)) {
             crate::hold::hold(accelerator);
         }
         self.set_tray(TrayState::Listening { level: 0 });

@@ -5,7 +5,24 @@ use super::components::{Choice, HotkeyField, Select, Switch, copy};
 use crate::agent::Command;
 use crate::runtime::Status;
 use dioxus::prelude::*;
-use jevons_desktop_core::config::{DesktopConfig, Mode};
+use jevons_desktop_core::config::{DesktopConfig, HotkeyMode, Mode};
+
+/// The hotkey mode a switch sets: on holds the hotkey while speaking.
+fn mode(hold: bool) -> HotkeyMode {
+    if hold {
+        HotkeyMode::Hold
+    } else {
+        HotkeyMode::Toggle
+    }
+}
+
+fn mode_label(mode: HotkeyMode) -> String {
+    match mode {
+        HotkeyMode::Hold => "Hold while speaking; release to finish",
+        HotkeyMode::Toggle => "Press to start, press again to finish",
+    }
+    .into()
+}
 
 #[component]
 pub fn SettingsPage(rev: u64) -> Element {
@@ -124,18 +141,30 @@ pub fn SettingsPage(rev: u64) -> Element {
                 div { class: "field",
                     div { class: "stack",
                         span { class: "field-label", "Push-to-talk" }
-                        span { class: "field-hint", "Hold while speaking" }
+                        span { class: "field-hint", "Also the profile hotkeys" }
                     }
                     HotkeyField { value: d.dictation.hotkey.clone(), optional: false,
                         onchange: move |h: String| if !h.is_empty() { draft.write().dictation.hotkey = h } }
                 }
                 div { class: "field",
+                    span { class: "field-label", "" }
+                    Switch { checked: d.dictation.hotkey_mode == HotkeyMode::Hold,
+                        label: mode_label(d.dictation.hotkey_mode),
+                        onchange: move |on| draft.write().dictation.hotkey_mode = mode(on) }
+                }
+                div { class: "field",
                     div { class: "stack",
                         span { class: "field-label", "Live dictation" }
-                        span { class: "field-hint", "Press to start, again to stop" }
+                        span { class: "field-hint", "Inserts the text when it stops" }
                     }
                     HotkeyField { value: d.dictation.live_hotkey.clone().unwrap_or_default(), optional: true,
                         onchange: move |h: String| draft.write().dictation.live_hotkey = Some(h).filter(|h| !h.is_empty()) }
+                }
+                div { class: "field",
+                    span { class: "field-label", "" }
+                    Switch { checked: d.dictation.live_hotkey_mode == HotkeyMode::Hold,
+                        label: mode_label(d.dictation.live_hotkey_mode),
+                        onchange: move |on| draft.write().dictation.live_hotkey_mode = mode(on) }
                 }
                 div { class: "field",
                     span { class: "field-label", "Live feedback" }

@@ -133,14 +133,28 @@ impl Models {
     }
 }
 
+/// How a dictation hotkey starts and stops listening.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HotkeyMode {
+    /// Listens while the hotkey is held; releasing it stops.
+    #[default]
+    Hold,
+    /// The first press starts listening, the next press stops.
+    Toggle,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Dictation {
-    /// Push-to-talk: hold while speaking, release to insert.
+    /// Push-to-talk, and the per-profile hotkeys, which work the same way.
     pub hotkey: String,
-    /// Live dictation: press to start, press again to stop (F9 by default).
+    /// Whether the push-to-talk hotkeys are held while speaking or pressed to start and stop.
+    pub hotkey_mode: HotkeyMode,
+    /// Live dictation (F9 by default).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live_hotkey: Option<String>,
+    pub live_hotkey_mode: HotkeyMode,
     /// A bubble by the tray icon shows what dictation hears and does: the words as they are
     /// recognized, the profile chosen, and the text delivered.
     pub live_feedback: bool,
@@ -171,7 +185,9 @@ impl Default for Dictation {
     fn default() -> Self {
         Self {
             hotkey: "Ctrl+Alt+Space".into(),
+            hotkey_mode: HotkeyMode::Hold,
             live_hotkey: Some("F9".into()),
+            live_hotkey_mode: HotkeyMode::Hold,
             live_feedback: true,
             legacy_live_stream: None,
             inspector_hotkey: None,
@@ -280,6 +296,15 @@ mod tests {
         let config: DesktopConfig = toml::from_str(text).unwrap();
         assert!(!config.server.expose);
         assert_eq!(config.server.port, 8080);
+    }
+
+    #[test]
+    fn hotkey_modes_are_hold_or_toggle() {
+        let config: DesktopConfig =
+            toml::from_str("[dictation]\nlive_hotkey_mode = \"toggle\"\n").unwrap();
+        assert_eq!(config.dictation.hotkey_mode, HotkeyMode::Hold);
+        assert_eq!(config.dictation.live_hotkey_mode, HotkeyMode::Toggle);
+        assert!(toml::from_str::<DesktopConfig>("[dictation]\nhotkey_mode = \"tap\"\n").is_err());
     }
 
     #[test]

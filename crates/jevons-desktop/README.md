@@ -73,7 +73,7 @@ flowchart TD
 5. **Generation** follows the base prompt, then the action, then the profile's and the destination's instructions.
 6. **Delivery** goes only into the window the take started in, once every key is released. Otherwise the text waits on the clipboard.
 
-In **live dictation** (its own hotkey: press to start, press again to stop), the app ends a phrase at each pause and the feedback bubble above the tray icon shows the words as they are recognized. When you stop, the whole transcript goes from *Transcript* through the steps above. The bubble follows push-to-talk takes too: what was heard, the profile, the action and the outcome. The tray menu's **Live feedback** turns it off.
+In **live dictation** (its own hotkey, held while speaking or pressed to start and stop), the app ends a phrase at each pause and the feedback bubble above the tray icon shows the words as they are recognized. When you stop, the whole transcript goes from *Transcript* through the steps above. The bubble follows push-to-talk takes too: what was heard, the profile, the action and the outcome. The tray menu's **Live feedback** turns it off.
 
 ## Threads
 
