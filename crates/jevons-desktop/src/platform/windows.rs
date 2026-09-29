@@ -254,13 +254,20 @@ impl WindowsSink {
     }
 
     /// Pastes `text`, restoring the previous clipboard text afterwards.
-    fn paste(&mut self, text: &str, select_all: bool) -> Result<(), PlatformError> {
+    /// Pastes `text` after deleting `erase` characters, restoring the previous clipboard text.
+    fn paste(&mut self, text: &str, select_all: bool, erase: usize) -> Result<(), PlatformError> {
         let mut clipboard = arboard::Clipboard::new().map_err(failed)?;
         let previous = clipboard.get_text().ok();
         clipboard.set_text(text).map_err(failed)?;
         let mut enigo = Self::enigo()?;
         if select_all {
             Self::chord(&mut enigo, 'a')?;
+        }
+        // Live dictation replacing words it inserted that recognition revised.
+        for _ in 0..erase {
+            enigo
+                .key(Key::Backspace, Direction::Click)
+                .map_err(failed)?;
         }
         Self::chord(&mut enigo, 'v')?;
         // The target reads the clipboard asynchronously; give it time before restoring.
@@ -295,7 +302,9 @@ impl TextSink for WindowsSink {
 
     fn deliver(&mut self, request: &DeliveryRequest) -> Result<DeliveryOutcome, PlatformError> {
         match request.method {
-            DeliveryMethod::Paste => self.paste(&request.text, request.select_all)?,
+            DeliveryMethod::Paste => {
+                self.paste(&request.text, request.select_all, request.erase)?
+            }
             DeliveryMethod::Type => {
                 let mut enigo = Self::enigo()?;
                 if request.select_all {

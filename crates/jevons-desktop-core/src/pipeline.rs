@@ -491,10 +491,10 @@ fn starts_with_punctuation(text: &str) -> bool {
     text.starts_with(|c: char| ",.;:!?)".contains(c))
 }
 
-/// Types `text` into the window the take started in, after deleting `erase` characters; refuses
-/// when the focus moved to another window. It does not wait for keys to be released: live
-/// dictation types while its hotkey is held, and typed characters are delivered as Unicode input,
-/// which held modifiers do not turn into shortcuts.
+/// Inserts `text` into the window the take started in, after deleting `erase` characters; refuses
+/// when the focus moved to another window. It pastes: some applications (the Windows 11 Notepad)
+/// garble a fast stream of typed Unicode characters, while a paste arrives whole. It does not wait
+/// for keys to be released, since live dictation inserts while its hotkey is held.
 async fn type_now(env: &Env, window: u64, text: &str, erase: usize) -> Result<(), String> {
     let Some(sink) = &env.sink else {
         return Ok(());
@@ -510,7 +510,7 @@ async fn type_now(env: &Env, window: u64, text: &str, erase: usize) -> Result<()
     let request = DeliveryRequest {
         action: Action::Insert,
         text: text.to_string(),
-        method: DeliveryMethod::Type,
+        method: DeliveryMethod::Paste,
         select_all: false,
         erase,
     };
@@ -586,14 +586,14 @@ async fn streamed_turn(
                         .push(format!("Retyped the phrase over {erase} typed characters"));
                 }
                 trace.delivery = Some(DeliveryOutcome::Delivered {
-                    method: DeliveryMethod::Type,
+                    method: DeliveryMethod::Paste,
                 });
             }
             Err(e) => trace.error = Some(e),
         }
     } else {
         trace.delivery = Some(DeliveryOutcome::Delivered {
-            method: DeliveryMethod::Type,
+            method: DeliveryMethod::Paste,
         });
     }
     trace.time("deliver", began);
@@ -1422,7 +1422,7 @@ instructions = "Formal tone.""#,
             .requests()
             .into_iter()
             .map(|r| {
-                assert_eq!(r.method, DeliveryMethod::Type);
+                assert_eq!(r.method, DeliveryMethod::Paste);
                 (r.erase, r.text)
             })
             .collect();
