@@ -1,0 +1,83 @@
+/* The feedback bubble above the tray icon, in the window's dark theme. */
+* { box-sizing: border-box; }
+
+html, body, #main {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: #0e0e0e;
+  color: #e6e6e6;
+  font-family: "Segoe UI", "Inter", system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  overflow: hidden;
+}
+
+.bubble {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  height: 100%;
+  padding: 10px 14px;
+  border: 1px solid #22e6f2;
+}
+.bubble[data-tail="down"] { padding-bottom: 16px; }
+.bubble[data-tail="up"] { padding-top: 16px; }
+.bubble[data-state="failed"] { border-color: #ffb4b4; }
+.bubble[data-state="done"] { border-color: #b6fae3; }
+
+.bubble-tail { position: absolute; }
+.bubble[data-tail="down"] .bubble-tail { bottom: 0; }
+.bubble[data-tail="up"] .bubble-tail { top: 0; }
+
+.bubble-head { display: flex; align-items: center; gap: 8px; }
+.bubble-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 4px;
+  background: #22e6f2;
+  flex-shrink: 0;
+}
+.bubble[data-state="failed"] .bubble-dot { background: #ffb4b4; }
+.bubble[data-state="done"] .bubble-dot { background: #b6fae3; }
+.bubble-status {
+  font-size: 12px;
+  color: #a1a1a1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The latest words stay in view: older ones scroll off the top. */
+.bubble-text {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  overflow: hidden;
+}
+.bubble-text p { margin: 0; font-size: 15px; color: #fafafa; }
+.bubble-partial { color: #a1a1a1; }
+.bubble-hint { color: #5d5d5d; }
+
+.bubble-output {
+  font-size: 13px;
+  color: #b6fae3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bubble-steps { display: flex; flex-wrap: nowrap; gap: 6px; overflow: hidden; }
+.bubble-step {
+  font-size: 11px;
+  color: #22e6f2;
+  background: #0c3a40;
+  border-radius: 999px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}

@@ -107,8 +107,6 @@ impl Phrases {
 }
 /// Live dictation: how long to wait for the last turn after stopping.
 const LIVE_DRAIN: Duration = Duration::from_secs(5);
-/// Live dictation: how long typing waits for held keys to be released.
-const LIVE_KEYS_WAIT: Duration = Duration::from_millis(500);
 /// How long to wait for the final transcript after the take ends.
 const TRANSCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -138,8 +136,6 @@ pub struct Settings {
     pub decision_timeout: Duration,
     /// How long generation may take before the transcript is typed as heard.
     pub generation_timeout: Duration,
-    /// Live dictation types words as they are recognized, instead of each edited phrase.
-    pub live_stream: bool,
 }
 
 impl Default for Settings {
@@ -153,7 +149,6 @@ impl Default for Settings {
             max_output_tokens: 1024,
             decision_timeout: Duration::from_secs(60),
             generation_timeout: Duration::from_secs(120),
-            live_stream: true,
         }
     }
 }
@@ -180,12 +175,14 @@ pub struct TakeStart {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
     Level([u8; 5]),
-    /// Live transcript text.
+    /// Words recognized so far in the phrase being spoken.
     Delta(String),
+    /// Live dictation: every phrase finished so far; the phrase being spoken starts over.
+    Heard(String),
     Transcribing,
     Thinking,
-    /// Live dictation is listening again after a turn.
-    Listening,
+    /// A step of processing, such as the profile chosen or the action decided.
+    Step(String),
     /// Generated text.
     Output(String),
 }
@@ -237,7 +234,7 @@ pub struct Trace {
 }
 
 impl Trace {
-    fn new(start: &TakeStart) -> Self {
+    pub fn new(start: &TakeStart) -> Self {
         Self {
             take: start.id,
             turn: None,
@@ -308,12 +305,23 @@ pub async fn run_take(
         }
     }
     let _ = updates.send(Update::Thinking);
-    if let Err(e) = process(env, &start, updates, &mut trace).await {
+    finish_take(env, &start, updates, trace).await
+}
+
+/// Chooses the profile and action for a transcribed take, produces its text and delivers it.
+async fn finish_take(
+    env: &Env,
+    start: &TakeStart,
+    updates: &mpsc::UnboundedSender<Update>,
+    mut trace: Trace,
+) -> Trace {
+    let take = start.id;
+    if let Err(e) = process(env, start, updates, &mut trace).await {
         trace.error = Some(e.to_string());
         return trace;
     }
     let delivered = Instant::now();
-    match deliver(env, &start, &mut trace).await {
+    match deliver(env, start, &mut trace).await {
         Ok(outcome) => trace.delivery = outcome,
         Err(e) => trace.error = Some(e),
     }
@@ -453,19 +461,23 @@ async fn transcribe(
     Ok(transcription.text)
 }
 
-/// Live dictation: the audio streams with server turn detection, and each turn is processed
-/// and delivered while the user keeps talking, until `stop` fires. `on_turn` receives each
-/// turn's trace.
+/// Live dictation: the audio streams to Realtime until `stop` fires, the app ending a phrase
+/// at each pause, and `updates` shows what is heard as it is recognized. Nothing is typed while
+/// speaking: once stopped, the whole transcript goes through the same decision, generation and
+/// delivery as a take.
 pub async fn run_live(
     env: &Env,
     start: TakeStart,
     mut audio: mpsc::UnboundedReceiver<AudioEvent>,
     mut stop: oneshot::Receiver<()>,
     updates: &mpsc::UnboundedSender<Update>,
-    mut on_turn: impl FnMut(Trace),
-) -> Result<(), String> {
+) -> Trace {
+    let mut trace = Trace::new(&start);
+    trace.transcription = Some(TranscriptionPath::Realtime);
+    let take = start.id;
+    tracing::info!(take, app = %start.context.app.process_name, "Live dictation started");
     let settings = &env.settings;
-    let (mut writer, mut reader) = env
+    let (mut writer, mut reader) = match env
         .client
         .realtime(
             settings.models.speech.as_deref(),
@@ -473,20 +485,25 @@ pub async fn run_live(
             Turns::Client,
         )
         .await
-        .map_err(|e| format!("Live dictation needs Realtime transcription: {e}"))?;
-    let mut turn = 0;
+    {
+        Ok(session) => session,
+        Err(e) => {
+            trace.error = Some(format!("Live dictation needs Realtime transcription: {e}"));
+            return trace;
+        }
+    };
+    let began = Instant::now();
+    let mut heard = String::new();
+    let mut samples_sent = 0usize;
     let mut deadline: Option<tokio::time::Instant> = None;
     let mut phrases = Phrases::default();
     // Commits whose transcript has not arrived yet.
     let mut in_flight = 0usize;
-    // Streaming: what this turn has typed so far, and why typing stopped, if it did.
-    let mut typed = String::new();
-    let mut halted: Option<String> = None;
-    let typist = Typist::start(env.sink.clone(), start.context.window.handle.unwrap_or(0));
-    let result = loop {
+    let result: Result<(), String> = loop {
         tokio::select! {
             event = audio.recv(), if deadline.is_none() => match event {
                 Some(AudioEvent::Chunk(samples)) => {
+                    samples_sent += samples.len();
                     if let Err(e) = writer.append(&samples).await {
                         break Err(e.to_string());
                     }
@@ -514,12 +531,14 @@ pub async fn run_live(
                     if in_flight == 0 {
                         break Ok(());
                     }
+                    let _ = updates.send(Update::Transcribing);
                     deadline = Some(tokio::time::Instant::now() + LIVE_DRAIN);
                 }
             },
             _ = &mut stop, if deadline.is_none() => {
                 while let Ok(event) = audio.try_recv() {
                     if let AudioEvent::Chunk(samples) = event {
+                        samples_sent += samples.len();
                         let _ = writer.append(&samples).await;
                         phrases.push(&samples);
                     }
@@ -530,6 +549,7 @@ pub async fn run_live(
                 if in_flight == 0 {
                     break Ok(());
                 }
+                let _ = updates.send(Update::Transcribing);
                 deadline = Some(tokio::time::Instant::now() + LIVE_DRAIN);
             }
             event = reader.next() => {
@@ -538,59 +558,37 @@ pub async fn run_live(
                     deadline = Some(tokio::time::Instant::now() + LIVE_DRAIN);
                 }
                 match event {
-                Some(RealtimeEvent::Delta { delta, .. }) => {
-                    if halted.is_none() {
-                        halted = typist.failure();
+                    Some(RealtimeEvent::Delta { delta, .. }) => {
+                        let _ = updates.send(Update::Delta(delta));
                     }
-                    if settings.live_stream && halted.is_none() {
-                        let text = if typed.is_empty() {
-                            let words = delta.trim_start();
-                            if turn > 0 && !starts_with_punctuation(words) {
-                                format!(" {words}")
-                            } else {
-                                words.to_string()
+                    Some(RealtimeEvent::Completed { transcript, .. }) => {
+                        let words = transcript.trim();
+                        if !words.is_empty() {
+                            if !heard.is_empty() && !starts_with_punctuation(words) {
+                                heard.push(' ');
                             }
-                        } else {
-                            delta.clone()
-                        };
-                        if !text.is_empty() {
-                            typed.push_str(&text);
-                            typist.edit(0, text);
+                            heard.push_str(words);
                         }
-                    }
-                    let _ = updates.send(Update::Delta(delta));
-                }
-                Some(RealtimeEvent::Completed { transcript, .. }) => {
-                    turn += 1;
-                    let trace = if settings.live_stream {
-                        let halted = halted.take().or_else(|| typist.failure());
-                        let trace = streamed_turn(env, &typist, &start, turn, &transcript, &typed, halted);
-                        typed.clear();
-                        trace
-                    } else {
-                        live_turn(env, &start, turn, &transcript, updates).await
-                    };
-                    on_turn(trace);
-                    in_flight = in_flight.saturating_sub(1);
-                    if deadline.is_some() {
-                        if in_flight == 0 {
+                        let _ = updates.send(Update::Heard(heard.clone()));
+                        in_flight = in_flight.saturating_sub(1);
+                        if deadline.is_some() && in_flight == 0 {
                             break Ok(());
                         }
-                    } else {
-                        let _ = updates.send(Update::Listening);
                     }
-                }
-                // A commit the server found too short: nothing will come for it.
-                Some(RealtimeEvent::Error { message }) if message.contains("buffer too small") => {
-                    in_flight = in_flight.saturating_sub(1);
-                    if deadline.is_some() && in_flight == 0 {
+                    // A commit the server found too short: nothing will come for it.
+                    Some(RealtimeEvent::Error { message }) if message.contains("buffer too small") => {
+                        in_flight = in_flight.saturating_sub(1);
+                        if deadline.is_some() && in_flight == 0 {
+                            break Ok(());
+                        }
+                    }
+                    Some(RealtimeEvent::Error { message }) if deadline.is_some() => {
+                        trace.notes.push(format!("Transcription ended early: {message}"));
                         break Ok(());
                     }
-                }
-                Some(RealtimeEvent::Error { .. }) if deadline.is_some() => break Ok(()),
-                Some(RealtimeEvent::Error { message }) => break Err(message),
-                Some(RealtimeEvent::Other(_)) => {}
-                None => break Ok(()),
+                    Some(RealtimeEvent::Error { message }) => break Err(message),
+                    Some(RealtimeEvent::Other(_)) => {}
+                    None => break Ok(()),
                 }
             }
             () = async {
@@ -598,269 +596,39 @@ pub async fn run_live(
                     Some(at) => tokio::time::sleep_until(at).await,
                     None => std::future::pending().await,
                 }
-            } => break Ok(()),
+            } => {
+                trace.notes.push(format!("{in_flight} phrases were still being transcribed"));
+                break Ok(());
+            }
         }
     };
     writer.close().await;
-    typist.flush().await;
-    result
+    trace.time("transcribe", began);
+    trace.audio_seconds = samples_sent as f64 / f64::from(SAMPLE_RATE);
+    tracing::info!(
+        take,
+        audio_seconds = trace.audio_seconds,
+        ok = result.is_ok(),
+        "Live dictation transcribed"
+    );
+    if let Err(e) = result {
+        trace.error = Some(e);
+        // Keep what was heard: it still goes to the application below.
+        if heard.is_empty() {
+            return trace;
+        }
+    }
+    if heard.is_empty() {
+        trace.error = Some("No speech was recognized".into());
+        return trace;
+    }
+    trace.transcript = heard;
+    let _ = updates.send(Update::Thinking);
+    finish_take(env, &start, updates, trace).await
 }
 
 fn starts_with_punctuation(text: &str) -> bool {
     text.starts_with(|c: char| ",.;:!?)".contains(c))
-}
-
-/// Inserts `text` into the window the take started in, after deleting `erase` characters; refuses
-/// when the focus moved to another window. It pastes: some applications (the Windows 11 Notepad)
-/// garble a fast stream of typed Unicode characters, while a paste arrives whole. It does not wait
-/// for keys to be released, since live dictation inserts while its hotkey is held.
-/// An edit at the caret: erase characters before it, then insert text.
-type Edit = (usize, String);
-
-/// Folds a later edit into an earlier one that has not been delivered yet, so a queue of edits
-/// is typed at once.
-fn fold((erase, mut text): Edit, (later_erase, later): Edit) -> Edit {
-    let len = text.chars().count();
-    if later_erase <= len {
-        text = text.chars().take(len - later_erase).collect();
-        text.push_str(&later);
-        (erase, text)
-    } else {
-        (erase + later_erase - len, later)
-    }
-}
-
-/// The edit that turns `typed` into `expected`: erase what differs after their common start.
-fn revision(typed: &str, expected: &str) -> Edit {
-    let common = typed
-        .chars()
-        .zip(expected.chars())
-        .take_while(|(a, b)| a == b)
-        .count();
-    (
-        typed.chars().count() - common,
-        expected.chars().skip(common).collect(),
-    )
-}
-
-enum Typing {
-    Edit(Edit),
-    Flush(oneshot::Sender<()>),
-}
-
-/// Live dictation's typing, off the live loop: edits queued while one is typed are folded
-/// into the next, so typing never falls behind the speech.
-struct Typist {
-    queue: std::sync::mpsc::Sender<Typing>,
-    /// Why an edit could not be delivered, since the last [`Typist::failure`].
-    failed: Arc<Mutex<Option<String>>>,
-}
-
-impl Typist {
-    fn start(sink: Option<Arc<Mutex<Box<dyn TextSink>>>>, window: u64) -> Self {
-        let (queue, edits) = std::sync::mpsc::channel::<Typing>();
-        let failed = Arc::new(Mutex::new(None));
-        let failure = failed.clone();
-        tokio::task::spawn_blocking(move || {
-            while let Ok(first) = edits.recv() {
-                let mut pending: Option<Edit> = None;
-                let mut flushed = Vec::new();
-                for typing in std::iter::once(first).chain(edits.try_iter()) {
-                    match typing {
-                        Typing::Edit(edit) => {
-                            pending = Some(match pending {
-                                Some(earlier) => fold(earlier, edit),
-                                None => edit,
-                            });
-                        }
-                        Typing::Flush(done) => flushed.push(done),
-                    }
-                }
-                if let Some((erase, text)) = pending
-                    && (erase > 0 || !text.is_empty())
-                    && let Some(sink) = &sink
-                    && let Err(e) = deliver_at(sink, window, &text, erase)
-                {
-                    failure
-                        .lock()
-                        .expect("the failure lock is not poisoned")
-                        .get_or_insert(e);
-                }
-                for done in flushed {
-                    let _ = done.send(());
-                }
-            }
-        });
-        Self { queue, failed }
-    }
-
-    fn edit(&self, erase: usize, text: String) {
-        let _ = self.queue.send(Typing::Edit((erase, text)));
-    }
-
-    /// Waits until every queued edit is delivered.
-    async fn flush(&self) {
-        let (done, flushed) = oneshot::channel();
-        if self.queue.send(Typing::Flush(done)).is_ok() {
-            let _ = flushed.await;
-        }
-    }
-
-    /// Why typing failed since the last call, if it did.
-    fn failure(&self) -> Option<String> {
-        self.failed
-            .lock()
-            .expect("the failure lock is not poisoned")
-            .take()
-    }
-}
-
-/// Types `text` over `erase` characters before the caret, if `window` still has the focus.
-fn deliver_at(
-    sink: &Mutex<Box<dyn TextSink>>,
-    window: u64,
-    text: &str,
-    erase: usize,
-) -> Result<(), String> {
-    let mut sink = sink.lock().expect("the sink lock is not poisoned");
-    if window == 0 || sink.foreground_window().unwrap_or(0) != window {
-        return Err("the focused window changed".into());
-    }
-    // Keys typed under a held modifier become shortcuts: wait briefly for the keyboard.
-    let waited = Instant::now();
-    while sink.keys_down() && waited.elapsed() < LIVE_KEYS_WAIT {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let request = DeliveryRequest {
-        action: Action::Insert,
-        text: text.to_string(),
-        method: DeliveryMethod::Type,
-        select_all: false,
-        erase,
-    };
-    sink.deliver(&request)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
-}
-
-/// Finishes a streamed live dictation turn: what was typed while speaking becomes the final
-/// transcript, retyping the phrase when recognition revised it. `halted` says why typing stopped
-/// mid-turn; the phrase then goes to the clipboard instead.
-fn streamed_turn(
-    env: &Env,
-    typist: &Typist,
-    start: &TakeStart,
-    turn: u32,
-    transcript: &str,
-    typed: &str,
-    halted: Option<String>,
-) -> Trace {
-    let mut start = start.clone();
-    if turn > 1
-        && let Some(element) = &mut start.context.focused
-    {
-        element.selection = None;
-    }
-    let mut trace = Trace::new(&start);
-    trace.turn = Some(turn);
-    trace.transcription = Some(TranscriptionPath::Realtime);
-    trace.transcript = transcript.trim().to_string();
-    trace.action = Some(Action::Insert);
-    let words = transcript.trim();
-    let expected = if words.is_empty() {
-        String::new()
-    } else if turn > 1 && !starts_with_punctuation(words) {
-        format!(" {words}")
-    } else {
-        words.to_string()
-    };
-    trace.output = expected.clone();
-    let began = Instant::now();
-    if let Some(reason) = halted {
-        trace.delivery = match &env.sink {
-            Some(sink) => match sink
-                .lock()
-                .expect("the sink lock is not poisoned")
-                .copy(expected.trim_start())
-            {
-                Ok(()) => Some(DeliveryOutcome::OnClipboard { reason }),
-                Err(e) => {
-                    trace.error = Some(e.to_string());
-                    None
-                }
-            },
-            None => None,
-        };
-    } else if typed != expected {
-        // Recognition revised the words already typed: replace the words that changed.
-        let (erase, text) = revision(typed, &expected);
-        if erase > 0 {
-            trace
-                .notes
-                .push(format!("Retyped {erase} typed characters as {text:?}"));
-        }
-        typist.edit(erase, text);
-        trace.delivery = Some(DeliveryOutcome::Delivered {
-            method: DeliveryMethod::Type,
-        });
-    } else {
-        trace.delivery = Some(DeliveryOutcome::Delivered {
-            method: DeliveryMethod::Type,
-        });
-    }
-    trace.time("deliver", began);
-    tracing::info!(
-        take = start.id,
-        turn,
-        chars = expected.chars().count(),
-        retyped = typed != expected,
-        "Streamed a live phrase"
-    );
-    trace
-}
-
-/// One live dictation turn: the same decision, generation and delivery as a take.
-async fn live_turn(
-    env: &Env,
-    start: &TakeStart,
-    turn: u32,
-    transcript: &str,
-    updates: &mpsc::UnboundedSender<Update>,
-) -> Trace {
-    let mut start = start.clone();
-    if turn > 1 {
-        // The selection belonged to the first turn; later turns continue after it.
-        if let Some(element) = &mut start.context.focused {
-            element.selection = None;
-        }
-    }
-    let mut trace = Trace::new(&start);
-    trace.turn = Some(turn);
-    trace.transcription = Some(TranscriptionPath::Realtime);
-    trace.transcript = transcript.trim().to_string();
-    if trace.transcript.is_empty() {
-        trace.notes.push("No speech in this turn".into());
-        return trace;
-    }
-    let _ = updates.send(Update::Thinking);
-    if let Err(e) = process(env, &start, updates, &mut trace).await {
-        trace.error = Some(e.to_string());
-        return trace;
-    }
-    if turn > 1
-        && !trace
-            .output
-            .starts_with(|c: char| c.is_whitespace() || ",.;:!?)".contains(c))
-    {
-        trace.output.insert(0, ' ');
-    }
-    let delivered = Instant::now();
-    match deliver(env, &start, &mut trace).await {
-        Ok(outcome) => trace.delivery = outcome,
-        Err(e) => trace.error = Some(e),
-    }
-    trace.time("deliver", delivered);
-    trace
 }
 
 /// Chooses the profile and action and produces the text, filling `trace`.
@@ -968,6 +736,18 @@ async fn process(
         Some(_) if action == Action::Rewrite => true,
         Some(_) => needs_generation.is_none_or(|p| p >= settings.generation_threshold),
     };
+    let _ = updates.send(Update::Step(match &resolution.destination {
+        Some(destination) => format!("Profile {} → {destination}", resolution.profile),
+        None => format!("Profile {}", resolution.profile),
+    }));
+    let _ = updates.send(Update::Step(
+        match action {
+            Action::Insert => "Insert at the caret",
+            Action::Replace => "Replace the selection",
+            Action::Rewrite => "Rewrite the field",
+        }
+        .into(),
+    ));
     trace.action = Some(action);
     trace.resolution = Some(resolution);
     trace.output = trace.transcript.clone();
@@ -980,6 +760,7 @@ async fn process(
         let request =
             generation_request(model, env, context, &effective, action, &trace.transcript);
         let began = Instant::now();
+        let _ = updates.send(Update::Step("Editing with the language model".into()));
         tracing::info!(take = start.id, model = %request.model, action = ?action, "Generating");
         let generated = tokio::time::timeout(
             settings.generation_timeout,
@@ -1565,46 +1346,30 @@ instructions = "Formal tone.""#,
         Client::new(&base, None)
     }
 
-    #[tokio::test]
-    async fn live_dictation_by_phrase_types_each_turn_as_it_completes() {
-        let client = realtime_server(&[(&[], "hello there"), (&[], "second phrase")]).await;
-        let sink = RecordingSink::new(Some(7));
-        let env = Env {
-            client,
-            profiles: Arc::default(),
-            settings: Settings {
-                live_stream: false,
-                ..settings()
-            },
-            sink: Some(sink.shared()),
-        };
+    /// Runs live dictation over two phrases with a pause between them.
+    async fn live(env: &Env, chunks: &[i16]) -> (Trace, Vec<Update>) {
         let (audio, received) = mpsc::unbounded_channel();
-        // Two phrases with a pause between them.
-        for chunk in [[6000; 4].as_slice(), &[30; 8], &[6000; 4]].concat() {
-            audio.send(AudioEvent::Chunk(chunk_at(chunk))).unwrap();
+        for amplitude in chunks {
+            audio.send(AudioEvent::Chunk(chunk_at(*amplitude))).unwrap();
         }
         audio.send(AudioEvent::Ended).unwrap();
         let (_stop, stopped) = oneshot::channel();
-        let (updates, _) = mpsc::unbounded_channel();
+        let (updates, mut seen) = mpsc::unbounded_channel();
         let start = TakeStart {
             id: 3,
             context: context(Some("old text")),
             forced_profile: None,
         };
-        let mut traces = Vec::new();
-        let result = run_live(&env, start, received, stopped, &updates, |t| traces.push(t)).await;
-        assert_eq!(result, Ok(()));
-        assert_eq!(traces.len(), 2);
-        assert_eq!(traces[1].turn, Some(2));
-        let delivered: Vec<String> = sink.requests().into_iter().map(|r| r.text).collect();
-        assert_eq!(delivered, ["hello there", " second phrase"]);
-        // The selection belonged to the first turn only.
-        assert!(traces[1].context.selection().is_none());
+        let trace = run_live(env, start, received, stopped, &updates).await;
+        let mut shown = Vec::new();
+        while let Ok(update) = seen.try_recv() {
+            shown.push(update);
+        }
+        (trace, shown)
     }
 
     #[tokio::test]
-    async fn streamed_live_dictation_types_words_as_they_come_and_fixes_revisions() {
-        // The second phrase is revised at the end: "sekond" becomes "second".
+    async fn live_dictation_shows_each_phrase_and_types_the_whole_text_once_stopped() {
         let client = realtime_server(&[
             (&["hello", " there"], "hello there"),
             (&["sekond", " phrase"], "second phrase."),
@@ -1617,42 +1382,46 @@ instructions = "Formal tone.""#,
             settings: settings(),
             sink: Some(sink.shared()),
         };
-        let (audio, received) = mpsc::unbounded_channel();
-        // Two phrases with a pause between them.
-        for chunk in [[6000; 4].as_slice(), &[30; 8], &[6000; 4]].concat() {
-            audio.send(AudioEvent::Chunk(chunk_at(chunk))).unwrap();
-        }
-        audio.send(AudioEvent::Ended).unwrap();
-        let (_stop, stopped) = oneshot::channel();
-        let (updates, _) = mpsc::unbounded_channel();
-        let start = TakeStart {
-            id: 4,
-            context: context(None),
-            forced_profile: None,
-        };
-        let mut traces = Vec::new();
-        let result = run_live(&env, start, received, stopped, &updates, |t| traces.push(t)).await;
-        assert_eq!(result, Ok(()));
-        // Edits queued while one is typed are folded together, so replay them.
-        let mut document = String::new();
-        for request in sink.requests() {
-            assert_eq!(request.method, DeliveryMethod::Type);
-            let kept = document.chars().count() - request.erase;
-            document = document.chars().take(kept).collect::<String>() + &request.text;
-        }
-        assert_eq!(document, "hello there second phrase.");
-        assert_eq!(traces[1].output, " second phrase.");
-        // Only the revised words are retyped: " se" stays.
-        assert_eq!(
-            traces[1].notes,
-            ["Retyped 11 typed characters as \"cond phrase.\""]
-        );
-        // No decision or generation while streaming.
+        let speech = [[6000; 4].as_slice(), &[30; 8], &[6000; 4]].concat();
+        let (trace, shown) = live(&env, &speech).await;
+        assert_eq!(trace.error, None);
+        assert_eq!(trace.transcript, "hello there second phrase.");
+        // Typed once, after stopping.
+        let typed: Vec<String> = sink.requests().into_iter().map(|r| r.text).collect();
+        assert_eq!(typed, ["hello there second phrase."]);
+        let heard: Vec<&str> = shown
+            .iter()
+            .filter_map(|u| match u {
+                Update::Heard(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(heard, ["hello there", "hello there second phrase."]);
         assert!(
-            traces
+            shown
                 .iter()
-                .all(|t| t.decision.is_none() && t.generation.is_none())
+                .any(|u| matches!(u, Update::Delta(d) if d == "sekond"))
         );
+        assert!(
+            shown
+                .iter()
+                .any(|u| matches!(u, Update::Step(s) if s.starts_with("Profile")))
+        );
+    }
+
+    #[tokio::test]
+    async fn live_dictation_without_speech_types_nothing() {
+        let client = realtime_server(&[]).await;
+        let sink = RecordingSink::new(Some(7));
+        let env = Env {
+            client,
+            profiles: Arc::default(),
+            settings: settings(),
+            sink: Some(sink.shared()),
+        };
+        let (trace, _) = live(&env, &[30; 12]).await;
+        assert_eq!(trace.error.as_deref(), Some("No speech was recognized"));
+        assert!(sink.requests().is_empty());
     }
 
     #[tokio::test]
@@ -1708,31 +1477,6 @@ instructions = "Formal tone.""#,
         (0..SAMPLE_RATE as usize / 10)
             .map(|i| if i % 2 == 0 { amplitude } else { -amplitude })
             .collect()
-    }
-
-    #[test]
-    fn queued_edits_fold_into_one() {
-        let edit = |erase, text: &str| (erase, text.to_string());
-        assert_eq!(
-            fold(edit(0, "hello"), edit(0, " there")),
-            edit(0, "hello there")
-        );
-        assert_eq!(
-            fold(edit(2, " sekond"), edit(4, "cond")),
-            edit(2, " second")
-        );
-        // Erasing past the queued text erases what was already pasted.
-        assert_eq!(fold(edit(0, "ab"), edit(5, "xyz")), edit(3, "xyz"));
-    }
-
-    #[test]
-    fn revisions_retype_only_what_changed() {
-        assert_eq!(
-            revision(" sekond phrase", " second phrase."),
-            (11, "cond phrase.".into())
-        );
-        assert_eq!(revision("hello", "hello."), (0, ".".into()));
-        assert_eq!(revision("", "Hola"), (0, "Hola".into()));
     }
 
     #[test]

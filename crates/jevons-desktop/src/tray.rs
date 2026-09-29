@@ -29,6 +29,25 @@ pub enum TrayMessage {
     Quit,
 }
 
+/// The tray icon's screen rectangle in physical pixels (x, y, width, height), for placing the
+/// feedback bubble next to it.
+static ICON_RECT: std::sync::Mutex<Option<(f64, f64, u32, u32)>> = std::sync::Mutex::new(None);
+
+pub fn icon_rect() -> Option<(f64, f64, u32, u32)> {
+    *ICON_RECT.lock().expect("the tray rectangle lock")
+}
+
+fn remember_rect(icon: &TrayIcon) {
+    if let Some(rect) = icon.rect() {
+        *ICON_RECT.lock().expect("the tray rectangle lock") = Some((
+            rect.position.x,
+            rect.position.y,
+            rect.size.width,
+            rect.size.height,
+        ));
+    }
+}
+
 /// Talks to the tray thread.
 #[derive(Clone)]
 pub struct Tray {
@@ -153,6 +172,7 @@ fn run(commands: UnboundedSender<Command>, ready: std::sync::mpsc::Sender<Result
                 {
                     Ok(icon) => {
                         shown = Some(state);
+                        remember_rect(&icon);
                         tray = Some(icon);
                     }
                     Err(e) => tracing::error!(error = %e, "Cannot create the tray icon"),
@@ -166,6 +186,12 @@ fn run(commands: UnboundedSender<Command>, ready: std::sync::mpsc::Sender<Result
                 if std::mem::discriminant(&new) != std::mem::discriminant(&state)
                     || matches!(new, TrayState::Listening { .. })
                 {
+                    // The taskbar may have moved the icon since.
+                    if !matches!(state, TrayState::Listening { .. })
+                        && let Some(icon) = &tray
+                    {
+                        remember_rect(icon);
+                    }
                     state = new;
                 }
             }
@@ -287,6 +313,7 @@ fn build_menu(model: &MenuModel) -> Menu {
         &profiles,
         &PredefinedMenuItem::separator(),
         &MenuItem::with_id("inspector", "Show context inspector", true, None),
+        &CheckMenuItem::with_id("feedback", "Live feedback", true, model.feedback, None),
         &CheckMenuItem::with_id(
             "pause",
             "Pause context capture",
@@ -311,6 +338,7 @@ fn menu_command(id: &str) -> Option<MenuCommand> {
         "logs" => MenuCommand::OpenLogsFolder,
         "inspector" => MenuCommand::ShowInspector,
         "pause" => MenuCommand::ToggleContextPause,
+        "feedback" => MenuCommand::ToggleFeedback,
         "reload" => MenuCommand::ReloadProfiles,
         "config" => MenuCommand::OpenConfigFolder,
         "quit" => MenuCommand::Quit,
@@ -337,5 +365,6 @@ mod tests {
             Some(MenuCommand::ForceProfile(Some("slack".into())))
         );
         assert_eq!(menu_command("profiles"), None);
+        assert_eq!(menu_command("feedback"), Some(MenuCommand::ToggleFeedback));
     }
 }

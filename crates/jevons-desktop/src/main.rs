@@ -137,7 +137,6 @@ fn replay(
             decide: dictation.decide,
             generation_threshold: dictation.generation_threshold,
             max_output_tokens: dictation.max_output_tokens,
-            live_stream: dictation.live_stream,
             ..pipeline::Settings::default()
         },
         sink: args

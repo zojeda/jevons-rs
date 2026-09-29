@@ -43,13 +43,79 @@ pub enum Command {
     /// Apply the settings to the runtime again, such as after a model finished downloading.
     ReloadRuntime,
     TakeFinished(Box<Trace>),
-    /// A live dictation turn was delivered; the take goes on.
-    TurnFinished(Box<Trace>),
-    /// Live dictation ended, with the reason when it failed.
-    LiveEnded {
-        take: u64,
-        error: Option<String>,
-    },
+    /// Hides the feedback bubble of a finished take, unless a newer take shows it.
+    HideFeedback(u64),
+}
+
+/// What the feedback bubble by the tray icon shows about a take.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Feedback {
+    pub take: u64,
+    pub live: bool,
+    /// What the take is doing, such as "Listening".
+    pub status: String,
+    /// The phrases finished so far, or the transcript once the take is transcribed.
+    pub heard: String,
+    /// Words of the phrase being spoken.
+    pub partial: String,
+    /// The profile chosen, the action and the other steps taken.
+    pub steps: Vec<String>,
+    /// The text a rewrite produced.
+    pub output: String,
+    /// The take ended; the bubble hides shortly.
+    pub done: bool,
+    pub failed: bool,
+}
+
+impl Feedback {
+    /// Applies a progress update; returns whether it changed what the bubble shows.
+    fn apply(&mut self, update: &Update) -> bool {
+        match update {
+            Update::Level(_) => return false,
+            Update::Delta(text) => self.partial.push_str(text),
+            Update::Heard(text) => {
+                self.heard = text.clone();
+                self.partial.clear();
+            }
+            Update::Transcribing => self.status = "Transcribing…".into(),
+            Update::Thinking => {
+                self.status = "Thinking…".into();
+                if !self.live && self.heard.is_empty() {
+                    self.heard = std::mem::take(&mut self.partial);
+                }
+            }
+            Update::Step(step) => self.steps.push(step.clone()),
+            Update::Output(text) => self.output.push_str(text),
+        }
+        true
+    }
+
+    /// The take's outcome.
+    fn finish(&mut self, trace: &Trace) {
+        use jevons_desktop_core::platform::DeliveryOutcome;
+        self.done = true;
+        self.partial.clear();
+        if !trace.transcript.is_empty() {
+            self.heard = trace.transcript.clone();
+        }
+        self.output = if trace.output != trace.transcript {
+            trace.output.clone()
+        } else {
+            String::new()
+        };
+        self.failed = trace.error.is_some();
+        self.status = match (&trace.error, &trace.delivery) {
+            (Some(error), _) => error.clone(),
+            (None, Some(DeliveryOutcome::Delivered { .. })) => "Inserted".into(),
+            (None, Some(DeliveryOutcome::OnClipboard { reason })) => {
+                format!("On the clipboard: {reason}")
+            }
+            (None, None) if trace.notes.iter().any(|n| n.starts_with("Too short")) => {
+                "Too short to hold speech".into()
+            }
+            (None, None) => "Done".into(),
+        };
+    }
 }
 
 /// What the inspector shows; the agent writes it, the window reads it.
@@ -82,6 +148,8 @@ pub struct View {
     pub window_visible: bool,
     /// Whether the window shows the live context, which the agent then reads twice a second.
     pub watch_context: bool,
+    /// The feedback bubble's contents while a take runs and shortly after.
+    pub feedback: Option<Feedback>,
     pub quit: bool,
 }
 
@@ -233,6 +301,7 @@ impl Agent {
                 .collect(),
             forced,
             context_paused: paused,
+            feedback: self.config.dictation.live_feedback,
         };
         if let Some(tray) = &mut self.tray {
             tray.set_menu(&menu);
@@ -307,8 +376,18 @@ impl Agent {
                 self.repaint();
             }
             Command::TakeFinished(trace) => self.finished(*trace),
-            Command::TurnFinished(trace) => self.turn_finished(*trace),
-            Command::LiveEnded { take, error } => self.live_ended(take, error),
+            Command::HideFeedback(take) => {
+                let mut view = self.view();
+                if view
+                    .feedback
+                    .as_ref()
+                    .is_some_and(|f| f.take == take && f.done)
+                {
+                    view.feedback = None;
+                    drop(view);
+                    self.repaint();
+                }
+            }
         }
         true
     }
@@ -340,6 +419,18 @@ impl Agent {
             MenuCommand::ShowInspector => {
                 self.view().show_window = true;
                 self.repaint();
+            }
+            MenuCommand::ToggleFeedback => {
+                let mut config = self.config.clone();
+                config.dictation.live_feedback = !config.dictation.live_feedback;
+                if let Err(e) = config.save(&self.config_file) {
+                    self.notice(&e.to_string());
+                } else {
+                    self.config = config;
+                    self.view().config = self.config.clone();
+                    self.publish_menu();
+                    self.repaint();
+                }
             }
             MenuCommand::ToggleContextPause => {
                 {
@@ -502,7 +593,6 @@ impl Agent {
                 decide: dictation.decide,
                 generation_threshold: dictation.generation_threshold,
                 max_output_tokens: dictation.max_output_tokens,
-                live_stream: dictation.live_stream,
                 ..pipeline::Settings::default()
             },
             sink: Some(self.sink.clone()),
@@ -518,6 +608,16 @@ impl Agent {
             view.live_transcript.clear();
             view.live_output.clear();
             view.notice = None;
+            view.feedback = Some(Feedback {
+                take: id,
+                live,
+                status: if live {
+                    "Live dictation: listening… press the hotkey again to finish".into()
+                } else {
+                    "Listening…".into()
+                },
+                ..Feedback::default()
+            });
             view.resolution = Some(
                 self.profiles
                     .resolve(&context, start.forced_profile.as_deref()),
@@ -547,6 +647,9 @@ impl Agent {
             while let Some(update) = received.recv().await {
                 let state = {
                     let mut view = view.lock().expect("the view lock");
+                    if let Some(feedback) = view.feedback.as_mut().filter(|f| f.take == id) {
+                        feedback.apply(&update);
+                    }
                     let state = match update {
                         Update::Level(bands) => Some(TrayState::Listening {
                             level: bands.into_iter().max().unwrap_or(0),
@@ -555,13 +658,13 @@ impl Agent {
                             view.live_transcript.push_str(&text);
                             None
                         }
+                        Update::Heard(text) => {
+                            view.live_transcript = text;
+                            None
+                        }
                         Update::Transcribing => Some(TrayState::Transcribing { frame: 0 }),
                         Update::Thinking => Some(TrayState::Thinking { frame: 0 }),
-                        Update::Listening => {
-                            view.live_transcript.clear();
-                            view.live_output.clear();
-                            Some(TrayState::Listening { level: 0 })
-                        }
+                        Update::Step(_) => None,
                         Update::Output(text) => {
                             view.live_output.push_str(&text);
                             None
@@ -579,25 +682,14 @@ impl Agent {
             }
         });
         let commands = self.commands.clone();
-        let task = if live {
-            tokio::spawn(async move {
-                let turns = commands.clone();
-                let result =
-                    pipeline::run_live(&env, start, audio_events, finished, &updates, |trace| {
-                        let _ = turns.send(Command::TurnFinished(Box::new(trace)));
-                    })
-                    .await;
-                let _ = commands.send(Command::LiveEnded {
-                    take: id,
-                    error: result.err(),
-                });
-            })
-        } else {
-            tokio::spawn(async move {
-                let trace = pipeline::run_take(&env, start, audio_events, finished, &updates).await;
-                let _ = commands.send(Command::TakeFinished(Box::new(trace)));
-            })
-        };
+        let task = tokio::spawn(async move {
+            let trace = if live {
+                pipeline::run_live(&env, start, audio_events, finished, &updates).await
+            } else {
+                pipeline::run_take(&env, start, audio_events, finished, &updates).await
+            };
+            let _ = commands.send(Command::TakeFinished(Box::new(trace)));
+        });
         if let Some(active) = &mut self.active {
             active.task = Some(task);
         }
@@ -622,6 +714,7 @@ impl Agent {
 
     fn cancel_take(&mut self) {
         crate::hold::release();
+        self.view().feedback = None;
         if let Some(mut active) = self.active.take() {
             if let Some(capture) = active.capture.take() {
                 capture.stop();
@@ -630,40 +723,6 @@ impl Agent {
                 task.abort();
             }
         }
-    }
-
-    fn turn_finished(&mut self, trace: Trace) {
-        save_trace(&trace);
-        let mut view = self.view();
-        view.notice = trace.error.clone();
-        view.traces.push_front(trace);
-        view.traces.truncate(HISTORY);
-        drop(view);
-        self.repaint();
-    }
-
-    fn live_ended(&mut self, take: u64, error: Option<String>) {
-        crate::hold::release();
-        if self.active.as_ref().is_some_and(|a| a.id == take)
-            && let Some(active) = self.active.take()
-            && let Some(capture) = active.capture
-        {
-            capture.stop();
-        }
-        {
-            let mut view = self.view();
-            view.dictating = false;
-            if error.is_some() {
-                view.notice = error.clone();
-            }
-        }
-        self.set_tray(if error.is_some() {
-            TrayState::Error
-        } else {
-            TrayState::Idle
-        });
-        self.publish_menu();
-        self.repaint();
     }
 
     fn finished(&mut self, trace: Trace) {
@@ -687,6 +746,17 @@ impl Agent {
                 }
                 _ => None,
             });
+            if let Some(feedback) = view.feedback.as_mut().filter(|f| f.take == trace.take) {
+                feedback.finish(&trace);
+                // Long enough to read the outcome; errors stay longer.
+                let shown = Duration::from_secs(if failed { 8 } else { 4 });
+                let commands = self.commands.clone();
+                let take = trace.take;
+                tokio::spawn(async move {
+                    tokio::time::sleep(shown).await;
+                    let _ = commands.send(Command::HideFeedback(take));
+                });
+            }
             view.traces.push_front(trace);
             view.traces.truncate(HISTORY);
         }
@@ -761,4 +831,55 @@ pub fn open_folder(dir: &std::path::Path) {
         "xdg-open"
     };
     let _ = std::process::Command::new(program).arg(dir).spawn();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feedback_shows_phrases_as_heard_and_the_outcome_at_the_end() {
+        let mut feedback = Feedback {
+            take: 1,
+            live: true,
+            ..Feedback::default()
+        };
+        assert!(!feedback.apply(&Update::Level([1; 5])));
+        feedback.apply(&Update::Delta("hola".into()));
+        feedback.apply(&Update::Delta(" a todos".into()));
+        assert_eq!(feedback.partial, "hola a todos");
+        feedback.apply(&Update::Heard("Hola a todos.".into()));
+        assert_eq!(
+            (feedback.heard.as_str(), feedback.partial.as_str()),
+            ("Hola a todos.", "")
+        );
+        feedback.apply(&Update::Step("Profile default".into()));
+        let mut trace = Trace::new(&TakeStart {
+            id: 1,
+            context: ContextSnapshot::default(),
+            forced_profile: None,
+        });
+        trace.transcript = "Hola a todos.".into();
+        trace.output = "Hola a todos.".into();
+        trace.delivery = Some(jevons_desktop_core::platform::DeliveryOutcome::Delivered {
+            method: jevons_desktop_core::profile::DeliveryMethod::Type,
+        });
+        feedback.finish(&trace);
+        assert!(feedback.done && !feedback.failed);
+        assert_eq!(feedback.status, "Inserted");
+        assert_eq!(
+            feedback.output, "",
+            "an unchanged transcript is not shown twice"
+        );
+        assert_eq!(feedback.steps, ["Profile default"]);
+    }
+
+    #[test]
+    fn push_to_talk_feedback_keeps_the_streamed_words_as_the_transcript() {
+        let mut feedback = Feedback::default();
+        feedback.apply(&Update::Delta("hello".into()));
+        feedback.apply(&Update::Thinking);
+        assert_eq!(feedback.heard, "hello");
+        assert_eq!(feedback.status, "Thinking…");
+    }
 }

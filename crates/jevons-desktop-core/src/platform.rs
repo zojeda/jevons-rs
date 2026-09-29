@@ -190,6 +190,8 @@ pub struct MenuModel {
     /// The profile forced from the menu; `None` chooses automatically.
     pub forced: Option<String>,
     pub context_paused: bool,
+    /// Whether the feedback bubble shows.
+    pub feedback: bool,
 }
 
 /// What a tray menu item asks for.
@@ -204,6 +206,8 @@ pub enum MenuCommand {
     ForceProfile(Option<String>),
     ShowInspector,
     ToggleContextPause,
+    /// Shows or hides the feedback bubble by the tray icon.
+    ToggleFeedback,
     ReloadProfiles,
     OpenConfigFolder,
     Quit,

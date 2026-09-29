@@ -141,9 +141,12 @@ pub struct Dictation {
     /// Live dictation: press to start, press again to stop (F9 by default).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live_hotkey: Option<String>,
-    /// Live dictation types the words as they are recognized. When off, it types each phrase
-    /// after a pause, once the profile's decision and generation have edited it.
-    pub live_stream: bool,
+    /// A bubble by the tray icon shows what dictation hears and does: the words as they are
+    /// recognized, the profile chosen, and the text delivered.
+    pub live_feedback: bool,
+    /// Ignored: live dictation used to type while speaking.
+    #[serde(rename = "live_stream", skip_serializing)]
+    pub legacy_live_stream: Option<bool>,
     /// Shows the inspector window.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inspector_hotkey: Option<String>,
@@ -169,7 +172,8 @@ impl Default for Dictation {
         Self {
             hotkey: "Ctrl+Alt+Space".into(),
             live_hotkey: Some("F9".into()),
-            live_stream: true,
+            live_feedback: true,
+            legacy_live_stream: None,
             inspector_hotkey: None,
             profile_hotkeys: BTreeMap::new(),
             microphone: None,
@@ -276,6 +280,14 @@ mod tests {
         let config: DesktopConfig = toml::from_str(text).unwrap();
         assert!(!config.server.expose);
         assert_eq!(config.server.port, 8080);
+    }
+
+    #[test]
+    fn settings_saved_before_live_feedback_still_load() {
+        let config: DesktopConfig = toml::from_str("[dictation]\nlive_stream = true\n").unwrap();
+        assert!(config.dictation.live_feedback);
+        let saved = toml::to_string(&config).unwrap();
+        assert!(!saved.contains("live_stream"), "{saved}");
     }
 
     #[test]

@@ -2,10 +2,12 @@
 //! profile matches, the recent takes, the profiles, the settings and the models. Closing it hides
 //! it; the tray reopens it.
 //!
-//! The window lives on the main thread's winit loop. The agent and background work call [`wake`],
-//! which re-renders from the shared [`View`](crate::agent::View).
+//! The window lives on the main thread's winit loop, with the feedback bubble while a take runs.
+//! The agent and background work call [`wake`], which re-renders from the shared
+//! [`View`](crate::agent::View).
 
 mod app;
+mod bubble;
 mod components;
 mod context;
 mod models;
@@ -15,16 +17,16 @@ mod takes;
 
 use crate::agent::{Command, SharedView};
 use anyrender_vello::{VelloRendererOptions, VelloWindowRenderer};
-use blitz_shell::{BlitzApplication, BlitzShellEvent, WindowConfig};
+use blitz_shell::{BlitzApplication, BlitzShellEvent, View, WindowConfig};
 use dioxus::prelude::*;
 use dioxus_native::{DioxusDocument, DocumentConfig};
 use std::sync::{Mutex, OnceLock};
 use tokio::sync::mpsc::UnboundedSender;
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
+use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
-use winit::window::{Window, WindowId};
+use winit::window::{Window, WindowId, WindowLevel};
 
 /// Asks the window to re-render from the shared view.
 #[derive(Debug)]
@@ -68,11 +70,12 @@ pub fn run(
     start();
 
     let visible = !view.lock().expect("the view lock").tray_running;
-    let mut vdom = VirtualDom::new(app::App);
-    vdom.insert_any_root_context(Box::new(Ctx {
+    let ctx = Ctx {
         view: view.clone(),
         commands,
-    }));
+    };
+    let mut vdom = VirtualDom::new(app::App);
+    vdom.insert_any_root_context(Box::new(ctx.clone()));
     let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
     doc.add_user_agent_stylesheet(include_str!("style.css"));
     doc.initial_build();
@@ -95,7 +98,13 @@ pub fn run(
         attributes,
     ));
     view.lock().expect("the view lock").window_visible = visible;
-    let mut shell = Shell { inner, view };
+    let mut shell = Shell {
+        inner,
+        view,
+        ctx,
+        main: None,
+        bubble: None,
+    };
     event_loop.run_app(&mut shell)?;
     Ok(())
 }
@@ -103,20 +112,134 @@ pub fn run(
 struct Shell {
     inner: BlitzApplication<VelloWindowRenderer>,
     view: SharedView,
+    ctx: Ctx,
+    /// The inspector and settings window.
+    main: Option<WindowId>,
+    /// The feedback bubble, while it shows.
+    bubble: Option<WindowId>,
+}
+
+/// Where the bubble goes: just above the tray icon (or below it, for a taskbar at the top), and
+/// at the bottom right of the screen when the icon's place is unknown.
+fn place_bubble(
+    event_loop: &ActiveEventLoop,
+) -> Option<(PhysicalPosition<i32>, f64, bubble::Anchor)> {
+    let icon = crate::tray::icon_rect();
+    let monitor = event_loop
+        .available_monitors()
+        .find(|m| {
+            icon.is_some_and(|(x, y, _, _)| {
+                let (p, size) = (m.position(), m.size());
+                x >= f64::from(p.x)
+                    && x < f64::from(p.x) + f64::from(size.width)
+                    && y >= f64::from(p.y)
+                    && y < f64::from(p.y) + f64::from(size.height)
+            })
+        })
+        .or_else(|| event_loop.primary_monitor())
+        .or_else(|| event_loop.available_monitors().next())?;
+    let scale = monitor.scale_factor();
+    let (origin, size) = (monitor.position(), monitor.size());
+    let (left, top) = (f64::from(origin.x), f64::from(origin.y));
+    let (width, height) = (f64::from(size.width), f64::from(size.height));
+    let (w, h) = (bubble::SIZE.0 * scale, bubble::SIZE.1 * scale);
+    let gap = 6.0 * scale;
+    let (center, y, icon_below) = match icon {
+        Some((x, y, iw, ih)) => {
+            let below = y - top > height / 2.0;
+            let center = x + f64::from(iw) / 2.0;
+            (
+                center,
+                if below {
+                    y - h - gap
+                } else {
+                    y + f64::from(ih) + gap
+                },
+                below,
+            )
+        }
+        None => (
+            left + width - w / 2.0 - 16.0 * scale,
+            top + height - h - 56.0 * scale,
+            true,
+        ),
+    };
+    let x = (center - w / 2.0).clamp(left + 8.0 * scale, left + width - w - 8.0 * scale);
+    let anchor = bubble::Anchor {
+        tail_x: (center - x) / scale,
+        icon_below,
+    };
+    Some((PhysicalPosition::new(x as i32, y as i32), scale, anchor))
 }
 
 impl Shell {
+    /// Opens the feedback bubble without taking the focus from the application being dictated
+    /// into. It is a new window each time: winit shows a window without activating it only once.
+    fn open_bubble(&mut self, event_loop: &ActiveEventLoop) {
+        let Some((position, scale, anchor)) = place_bubble(event_loop) else {
+            return;
+        };
+        let mut vdom = VirtualDom::new(bubble::Bubble);
+        vdom.insert_any_root_context(Box::new(self.ctx.clone()));
+        vdom.insert_any_root_context(Box::new(anchor));
+        let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("bubble.css"));
+        doc.initial_build();
+        let renderer = VelloWindowRenderer::with_options(VelloRendererOptions {
+            base_color: peniko::Color::from_rgb8(14, 14, 14),
+            ..Default::default()
+        });
+        let size = PhysicalSize::new(
+            (bubble::SIZE.0 * scale).round() as u32,
+            (bubble::SIZE.1 * scale).round() as u32,
+        );
+        #[allow(unused_mut)]
+        let mut attributes = Window::default_attributes()
+            .with_title("jevons feedback")
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_window_level(WindowLevel::AlwaysOnTop)
+            .with_active(false)
+            .with_inner_size(size)
+            .with_position(position);
+        #[cfg(windows)]
+        {
+            use winit::platform::windows::WindowAttributesExtWindows;
+            attributes = attributes.with_skip_taskbar(true);
+        }
+        let mut view = View::init(
+            WindowConfig::with_attributes(Box::new(doc), renderer, attributes),
+            event_loop,
+            &self.inner.proxy,
+        );
+        view.resume();
+        // Clicks go to the application underneath.
+        let _ = view.window.set_cursor_hittest(false);
+        let id = view.window_id();
+        self.inner.windows.insert(id, view);
+        self.bubble = Some(id);
+    }
+
     fn refresh(&mut self, event_loop: &ActiveEventLoop) {
-        let (quit, show) = {
+        let (quit, show, bubble) = {
             let mut view = self.view.lock().expect("the view lock");
-            (view.quit, std::mem::take(&mut view.show_window))
+            let bubble = view.feedback.is_some() && view.config.dictation.live_feedback;
+            (view.quit, std::mem::take(&mut view.show_window), bubble)
         };
         if quit {
             event_loop.exit();
             return;
         }
-        for window in self.inner.windows.values_mut() {
-            if show {
+        match (bubble, self.bubble) {
+            (true, None) => self.open_bubble(event_loop),
+            (false, Some(id)) => {
+                self.bubble = None;
+                self.inner.windows.remove(&id);
+            }
+            _ => {}
+        }
+        for (id, window) in self.inner.windows.iter_mut() {
+            if show && Some(*id) == self.main {
                 window.window.set_visible(true);
                 window.window.set_minimized(false);
                 window.window.focus_window();
@@ -133,6 +256,9 @@ impl Shell {
 impl ApplicationHandler<BlitzShellEvent> for Shell {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.inner.resumed(event_loop);
+        if self.main.is_none() {
+            self.main = self.inner.windows.keys().next().copied();
+        }
         self.refresh(event_loop);
     }
 
@@ -141,6 +267,9 @@ impl ApplicationHandler<BlitzShellEvent> for Shell {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if matches!(event, WindowEvent::CloseRequested) && Some(id) == self.bubble {
+            return;
+        }
         if matches!(event, WindowEvent::CloseRequested) {
             // Hide instead of closing: the tray keeps running and reopens the window.
             if let Some(window) = self.inner.windows.get(&id) {
@@ -266,6 +395,62 @@ mod tests {
             doc.vdom.mark_dirty(ScopeId::APP);
             doc.poll(None);
         }
+    }
+
+    #[test]
+    fn the_feedback_bubble_follows_a_live_take_to_its_end_in_blitz() {
+        use crate::agent::Feedback;
+        let folder = std::env::temp_dir().join(format!("jevons-ui-bubble-{}", std::process::id()));
+        let view = Arc::new(Mutex::new(view(&folder)));
+        let (commands, _received) = tokio::sync::mpsc::unbounded_channel();
+        // The bubble is its window's root, as the shell opens it.
+        let mut vdom = VirtualDom::new(bubble::Bubble);
+        vdom.insert_any_root_context(Box::new(Ctx {
+            view: view.clone(),
+            commands,
+        }));
+        vdom.insert_any_root_context(Box::new(bubble::Anchor {
+            tail_x: 300.0,
+            icon_below: true,
+        }));
+        let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("bubble.css"));
+        doc.initial_build();
+        let feedback = Feedback {
+            take: 1,
+            live: true,
+            status: "Listening…".into(),
+            ..Feedback::default()
+        };
+        type Step = Box<dyn Fn(&mut Feedback)>;
+        let steps: Vec<Step> = vec![
+            Box::new(|f| f.partial.push_str("hello")),
+            Box::new(|f| f.partial.push_str(" there")),
+            Box::new(|f| {
+                f.heard = "Hello there.".into();
+                f.partial.clear();
+            }),
+            Box::new(|f| f.steps.push("Profile default".into())),
+            Box::new(|f| f.output = "Hello there!".into()),
+            Box::new(|f| {
+                f.done = true;
+                f.status = "Inserted".into();
+            }),
+        ];
+        view.lock().unwrap().feedback = Some(feedback);
+        for step in steps {
+            step(view.lock().unwrap().feedback.as_mut().unwrap());
+            doc.vdom.mark_dirty(ScopeId::APP);
+            doc.poll(None);
+        }
+        let text = doc.root_element().text_content();
+        assert!(text.contains("Hello there."), "{text}");
+        assert!(text.contains("Profile default"), "{text}");
+        assert!(text.contains("Inserted"), "{text}");
+        // The take ends and the bubble empties.
+        view.lock().unwrap().feedback = None;
+        doc.vdom.mark_dirty(ScopeId::APP);
+        doc.poll(None);
     }
 
     fn context_root() -> Element {

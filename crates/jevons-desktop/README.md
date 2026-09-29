@@ -37,7 +37,7 @@ flowchart TD
     snapshot --> privacy["Privacy limits<br/>no password text · truncation<br/>clipboard only if allowed"]
 
     mic --> realtime{"/v1/realtime<br/>served?"}
-    realtime -- yes --> stream["Stream audio<br/>live text in the inspector"]
+    realtime -- yes --> stream["Stream audio<br/>live text in the bubble and inspector"]
     realtime -- "no or failed" --> buffer["Buffer the take"]
     release(["Hotkey released"]) --> commit
     stream --> commit["Commit the turn"]
@@ -67,13 +67,13 @@ flowchart TD
 ```
 
 1. **At the press** the app captures the context, before your focus can move, and opens the microphone. The context comes from UI Automation on Windows; other platforms read only the active window for now.
-2. **While you speak** the audio streams to Realtime transcription, and the inspector shows live text. When Realtime is not served, the take is uploaded when you finish.
+2. **While you speak** the audio streams to Realtime transcription, and the feedback bubble and the inspector show live text. When Realtime is not served, the take is uploaded when you finish.
 3. **The profile** comes from rules you write in TOML. The inspector shows every rule it checked against the real context, so a mismatch is easy to spot.
 4. **The decision model** answers only the open questions: which action (only when the profile says `auto` and there is text to act on), whether the words need editing, and which profile when two tie. Clean dictation skips generation entirely.
 5. **Generation** follows the base prompt, then the action, then the profile's and the destination's instructions.
 6. **Delivery** goes only into the window the take started in, once every key is released. Otherwise the text waits on the clipboard.
 
-In **live dictation** (its own hotkey: press to start, press again to stop), words are typed as they are recognized; the app ends a phrase at each pause, and its final transcript replaces the phrase when recognition revised it. A setting switches it to phrase by phrase, where each phrase goes from *Transcript* through the steps above.
+In **live dictation** (its own hotkey: press to start, press again to stop), the app ends a phrase at each pause and the feedback bubble above the tray icon shows the words as they are recognized. When you stop, the whole transcript goes from *Transcript* through the steps above. The bubble follows push-to-talk takes too: what was heard, the profile, the action and the outcome. The tray menu's **Live feedback** turns it off.
 
 ## Threads
 

@@ -13,7 +13,8 @@ The first run opens the window when no tray is available; otherwise use the tray
 ## Using it
 
 - **Push-to-talk:** hold the hotkey (default `Ctrl+Alt+Space`) while speaking. Listening starts on the press, and releasing it sends the take through the flow below. A press too short to hold speech (under 0.4 s) is dropped quietly.
-- **Live dictation:** press its hotkey (default `F9`) to start and press it again to stop, or use the tray menu's **Start live dictation**. Words are typed into the field (SendInput) as they are recognized, while you speak; words recognized while others are being typed go in together, so typing keeps up. The app ends a phrase at each pause (0.7 s quiet at the microphone, or every 20 s of nonstop speech) and keeps all the audio. When recognition revises words already typed, only the changed ones are retyped. Typing waits up to half a second for held keys, since text typed under a held modifier becomes shortcuts. While push-to-talk runs from a held hotkey, a keyboard hook drops that key's auto-repeats, which Windows would otherwise send to the focused application (a held F10 toggles most applications' menu bar). With **Settings → Live dictation types → each phrase after a pause**, each phrase instead goes through the profile's decision and generation and is typed once edited.
+- **Live dictation:** press its hotkey (default `F9`) to start and press it again to stop, or use the tray menu's **Start live dictation**. While you speak, the feedback bubble shows the words as they are recognized. Nothing is typed until you stop: then the whole transcript goes through the profile's decision, rewrite and delivery, like a push-to-talk take. The app ends a phrase at each pause (0.7 s of quiet at the microphone, or every 20 s of nonstop speech) and keeps all the audio. While push-to-talk runs from a held hotkey, a keyboard hook drops that key's auto-repeats, which Windows would otherwise send to the focused application (a held F10 toggles most applications' menu bar).
+- **Live feedback:** a bubble above the tray icon follows each take: the words as they are recognized, then the profile chosen, the action, a rewrite, and whether the text was inserted or left on the clipboard. It never takes the focus, lets clicks through, and closes a few seconds after the take ends. Turn it off with the tray menu's **Live feedback** or in Settings.
 - **Left-click** the tray icon to toggle dictation.
 - **Other hotkeys** (set in Settings, by clicking a field and pressing the combination): one to show the inspector, and one per profile to dictate with that profile whatever the context matches.
 
@@ -91,7 +92,7 @@ The **Settings** tab edits the runtime, dictation and privacy settings. **Apply 
   - *Expose the API* serves it on the address and port you choose, so the OpenAI SDK, Open WebUI or `scripts/smoke-test.py` can use it. It takes the key from `TYPESAFE_API_KEY` or the settings; without a key the API is open.
   - Turning exposure on or off, or changing the port, rebinds the listener without reloading the models.
   - *Use a jevons server* skips local models and uses a server URL and key instead.
-- **Dictation.** The hotkeys (push-to-talk, live dictation, inspector, and per profile), the microphone, language (detected when empty), whether to ask the decision model, the rewrite threshold, and the most tokens a rewrite may generate.
+- **Dictation.** The hotkeys (push-to-talk, live dictation, inspector, and per profile), live feedback, the microphone, language (detected when empty), whether to ask the decision model, the rewrite threshold, and the most tokens a rewrite may generate.
 - **Privacy.** How many characters of each field to keep, and whether to include the clipboard.
 
 ## Models
