@@ -183,9 +183,12 @@ async fn generate(
         .as_ref()
         .filter(|t| t.serves(&request.model))
         .ok_or_else(|| model_not_found(&request.model))?;
-    let mut updates = text
-        .worker
-        .generate(request.generation.clone(), request.seed)?;
+    let mut updates = if request.uses_tools() {
+        text.worker.tools(request.tool_request(), request.seed)?
+    } else {
+        text.worker
+            .generate(request.generation.clone(), request.seed)?
+    };
     let id = uuid::Uuid::new_v4().simple().to_string();
     let created = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -202,6 +205,10 @@ async fn generate(
                     let body = request.response(&id, created, &text.model_id, &generation);
                     return Ok(Json(body).into_response());
                 }
+                Update::Called(call) => {
+                    let body = request.call_response(&id, created, &text.model_id, &call);
+                    return Ok(Json(body).into_response());
+                }
             }
             update = updates.recv().await.ok_or_else(ApiError::unavailable)?;
         }
@@ -210,6 +217,17 @@ async fn generate(
         return Err(engine_error(error).into());
     }
     let mut renderer = request.stream(&id, created, &text.model_id);
+    if let Update::Called(call) = &first {
+        // A call is decided whole: every event goes at once.
+        let events = renderer.call(call).into_iter().map(|event| {
+            let sse = Event::default().data(event.data);
+            Ok::<_, Infallible>(match event.name {
+                Some(name) => sse.event(name),
+                None => sse,
+            })
+        });
+        return Ok(Sse::new(futures_util::stream::iter(events)).into_response());
+    }
     let opening = renderer.start();
     let events = futures_util::stream::unfold(
         (updates, renderer, Some(first), opening, false),
@@ -247,6 +265,14 @@ async fn generate(
                     Update::Done(Err(error)) => {
                         done = true;
                         renderer.error(&engine_error(error))
+                    }
+                    Update::Called(_) => {
+                        done = true;
+                        renderer.error(&OpenAiError::new(
+                            500,
+                            "server_error",
+                            "The model called a tool after answering",
+                        ))
                     }
                 };
             }

@@ -6017,6 +6017,7 @@ version = "0.1.0"
 dependencies = [
  "jevons-core",
  "jevons-diffusion",
+ "serde_json",
 ]
 
 [[package]]

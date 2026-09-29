@@ -422,6 +422,73 @@ mod tests {
         assert_eq!(content, "Hello");
     }
 
+    /// Answers the next tools job with a call to `name`.
+    fn tool_worker(
+        mut receiver: mpsc::Receiver<worker::Job>,
+        name: &'static str,
+    ) -> tokio::task::JoinHandle<jevons_generative::tools::ToolRequest> {
+        tokio::spawn(async move {
+            let Some(worker::Job::Tools {
+                request, updates, ..
+            }) = receiver.recv().await
+            else {
+                panic!("a tools job");
+            };
+            updates
+                .send(worker::Update::Called(crate::openai::Call {
+                    name: name.into(),
+                    arguments: r#"{"city":"Oslo"}"#.into(),
+                    prompt_tokens: 40,
+                    completion_tokens: 6,
+                }))
+                .unwrap();
+            request
+        })
+    }
+
+    const WEATHER: &str = r#""tools":[{"type":"function","function":{"name":"get_weather","description":"Weather now","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}]"#;
+
+    #[tokio::test]
+    async fn chat_completions_with_tools_answer_with_a_tool_call() {
+        let (app, receiver) = app(None);
+        let worker = tool_worker(receiver, "get_weather");
+        let body = format!(
+            r#"{{"model":"local","messages":[{{"role":"user","content":"Weather in Oslo?"}}],{WEATHER}}}"#
+        );
+        let (status, body) = send(app, "/v1/chat/completions", &body, None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let call = &body["choices"][0]["message"]["tool_calls"][0];
+        assert_eq!(call["function"]["name"], "get_weather");
+        assert_eq!(call["function"]["arguments"], r#"{"city":"Oslo"}"#);
+        assert_eq!(body["choices"][0]["finish_reason"], "tool_calls");
+        let request = worker.await.unwrap();
+        assert_eq!(request.tools[0].name, "get_weather");
+        assert_eq!(request.messages[0].text, "Weather in Oslo?");
+    }
+
+    #[tokio::test]
+    async fn streamed_tool_calls_are_whole_event_streams() {
+        let (app, receiver) = app(None);
+        let worker = tool_worker(receiver, "get_weather");
+        let body = format!(
+            r#"{{"model":"local","input":"Weather?","stream":true,{}}}"#,
+            r#""tools":[{"type":"function","name":"get_weather"}]"#
+        );
+        let (status, kind, text) = raw(app, "/v1/responses", &body).await;
+        worker.await.unwrap();
+        assert_eq!(status, StatusCode::OK);
+        assert!(kind.starts_with("text/event-stream"), "{kind}");
+        let events: Vec<&str> = text
+            .lines()
+            .filter_map(|l| l.strip_prefix("event: "))
+            .collect();
+        assert!(
+            events.contains(&"response.function_call_arguments.done"),
+            "{events:?}"
+        );
+        assert_eq!(events.last(), Some(&"response.completed"));
+    }
+
     #[tokio::test]
     async fn streamed_responses_name_their_events() {
         let (app, receiver) = app(None);

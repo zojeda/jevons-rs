@@ -111,7 +111,7 @@ Every platform layer is a trait in `jevons-desktop-core`, with the pipeline, the
 
 The app's models run on a Rust inference runtime, which is also a server for other tools. It offers three services behind APIs that existing clients already speak:
 
-- **Generative:** free-form chat and text from diffusion language models, through the OpenAI-compatible Chat Completions, Completions and Responses APIs (streaming included), for OpenAI SDKs, Open WebUI and other clients.
+- **Generative:** free-form chat and text from diffusion language models, through the OpenAI-compatible Chat Completions, Completions and Responses APIs (streaming, function tools and JSON Schema output included), for OpenAI SDKs, agent frameworks, Open WebUI and other clients.
 - **Speech:** speech to text, through the OpenAI-compatible transcriptions API for uploads (subtitles and word timestamps included) and Realtime transcription over a WebSocket for live dictation.
 - **Decision:** typed, probabilistic answers (yes/no, choice, rubric scores) about a state and a set of questions, read from a diffusion model's masked canvas in one pass, through the [System One](https://docs.typesafe.ai/introduction) API.
 
@@ -245,7 +245,7 @@ reply = client.chat.completions.create(
 print(reply.choices[0].message.content)
 ```
 
-Add `"stream": true` for server-sent events. `reasoning_effort` lets the model think before it answers. Decoding is greedy; tools, several choices and log probabilities are rejected with `400`.
+Add `"stream": true` for server-sent events. `reasoning_effort` lets the model think before it answers. Function `tools` and `json_schema` output work too: the next step and labelled arguments are restricted reads, so a call always names a real tool, and free arguments are checked against the schema (see [the API guide](docs/api.md#openai-compatible-generation)). Decoding is greedy; several choices and log probabilities are rejected with `400`.
 
 #### Generative: Responses and Completions
 
