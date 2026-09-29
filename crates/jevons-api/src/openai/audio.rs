@@ -17,8 +17,8 @@ pub enum ResponseFormat {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TranscriptionRequest {
     pub model: String,
-    /// ISO-639-1, lowercase. The model detects the language itself; this is validated and
-    /// echoed.
+    /// ISO-639-1, lowercase. The model detects the language itself; this keeps the transcript
+    /// in the language's script, and is echoed.
     pub language: Option<String>,
     pub format: ResponseFormat,
     /// `verbose_json` word and segment timestamps.

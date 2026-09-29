@@ -54,6 +54,53 @@ pub trait SpeechModel {
 
     /// The text of token ids, with the model's detokenization.
     fn detokenize(&self, ids: &[u32]) -> Result<String>;
+
+    /// Keeps later transcriptions in the writing system of `language` (ISO-639-1), for models
+    /// that detect the language themselves and can mistake it; `None` lifts the restriction.
+    fn set_language(&mut self, language: Option<&str>) -> Result<()> {
+        let _ = language;
+        Ok(())
+    }
+}
+
+/// A writing system, for keeping a transcript in its language's script.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Script {
+    Latin,
+    Greek,
+    Cyrillic,
+}
+
+impl Script {
+    /// The script of an ISO-639-1 language: Latin unless it is written otherwise.
+    pub fn of_language(language: &str) -> Option<Self> {
+        match language {
+            "el" => Some(Self::Greek),
+            "be" | "bg" | "kk" | "mk" | "mn" | "ru" | "sr" | "uk" => Some(Self::Cyrillic),
+            _ if language.len() == 2 && language.bytes().all(|b| b.is_ascii_lowercase()) => {
+                Some(Self::Latin)
+            }
+            _ => None,
+        }
+    }
+
+    fn of_letter(c: char) -> Option<Self> {
+        match c {
+            'A'..='Z' | 'a'..='z' | '\u{00C0}'..='\u{024F}' | '\u{1E00}'..='\u{1EFF}' => {
+                Some(Self::Latin)
+            }
+            '\u{0370}'..='\u{03FF}' | '\u{1F00}'..='\u{1FFF}' => Some(Self::Greek),
+            '\u{0400}'..='\u{052F}' => Some(Self::Cyrillic),
+            _ => None,
+        }
+    }
+
+    /// Whether every letter of `text` is in this script; digits, punctuation and marks are.
+    pub fn writes(self, text: &str) -> bool {
+        text.chars()
+            .filter(|c| c.is_alphabetic())
+            .all(|c| Self::of_letter(c) == Some(self))
+    }
 }
 
 /// A word: tokens from one `▁`-prefixed piece up to the next.
@@ -89,5 +136,24 @@ pub struct Transcript {
 impl Transcript {
     pub fn tokens(&self) -> impl Iterator<Item = &SpeechToken> {
         self.words.iter().flat_map(|w| w.tokens.iter())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Script;
+
+    #[test]
+    fn scripts_keep_letters_of_other_alphabets_out() {
+        let latin = Script::of_language("es").unwrap();
+        assert!(latin.writes("▁Nahuel"));
+        assert!(latin.writes("▁años,"));
+        assert!(latin.writes("15"));
+        assert!(!latin.writes("▁Валентина"));
+        assert!(!latin.writes("να"));
+        assert_eq!(Script::of_language("ru"), Some(Script::Cyrillic));
+        assert!(Script::Cyrillic.writes("▁Валентина."));
+        assert_eq!(Script::of_language("el"), Some(Script::Greek));
+        assert_eq!(Script::of_language("detect"), None);
     }
 }

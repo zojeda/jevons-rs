@@ -17,4 +17,6 @@ pub use model::{
     PromptPart, TextTokenizer,
 };
 pub use profile::PrefillProfile;
-pub use speech::{Segment, SpeechConfig, SpeechInfo, SpeechModel, SpeechToken, Transcript, Word};
+pub use speech::{
+    Script, Segment, SpeechConfig, SpeechInfo, SpeechModel, SpeechToken, Transcript, Word,
+};

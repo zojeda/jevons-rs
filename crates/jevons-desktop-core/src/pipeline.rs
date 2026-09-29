@@ -480,7 +480,7 @@ pub async fn run_live(
     // Streaming: what this turn has typed so far, and why typing stopped, if it did.
     let mut typed = String::new();
     let mut halted: Option<String> = None;
-    let window = start.context.window.handle.unwrap_or(0);
+    let typist = Typist::start(env.sink.clone(), start.context.window.handle.unwrap_or(0));
     let result = loop {
         tokio::select! {
             event = audio.recv(), if deadline.is_none() => match event {
@@ -530,8 +530,16 @@ pub async fn run_live(
                 }
                 deadline = Some(tokio::time::Instant::now() + LIVE_DRAIN);
             }
-            event = reader.next() => match event {
+            event = reader.next() => {
+                // After stopping, wait for the transcripts as long as they keep coming.
+                if deadline.is_some() {
+                    deadline = Some(tokio::time::Instant::now() + LIVE_DRAIN);
+                }
+                match event {
                 Some(RealtimeEvent::Delta { delta, .. }) => {
+                    if halted.is_none() {
+                        halted = typist.failure();
+                    }
                     if settings.live_stream && halted.is_none() {
                         let text = if typed.is_empty() {
                             let words = delta.trim_start();
@@ -544,10 +552,8 @@ pub async fn run_live(
                             delta.clone()
                         };
                         if !text.is_empty() {
-                            match type_now(env, window, &text, 0).await {
-                                Ok(()) => typed.push_str(&text),
-                                Err(reason) => halted = Some(reason),
-                            }
+                            typed.push_str(&text);
+                            typist.edit(0, text);
                         }
                     }
                     let _ = updates.send(Update::Delta(delta));
@@ -555,7 +561,8 @@ pub async fn run_live(
                 Some(RealtimeEvent::Completed { transcript, .. }) => {
                     turn += 1;
                     let trace = if settings.live_stream {
-                        let trace = streamed_turn(env, &start, turn, &transcript, &typed, halted.take()).await;
+                        let halted = halted.take().or_else(|| typist.failure());
+                        let trace = streamed_turn(env, &typist, &start, turn, &transcript, &typed, halted);
                         typed.clear();
                         trace
                     } else {
@@ -582,7 +589,8 @@ pub async fn run_live(
                 Some(RealtimeEvent::Error { message }) => break Err(message),
                 Some(RealtimeEvent::Other(_)) => {}
                 None => break Ok(()),
-            },
+                }
+            }
             () = async {
                 match deadline {
                     Some(at) => tokio::time::sleep_until(at).await,
@@ -592,6 +600,7 @@ pub async fn run_live(
         }
     };
     writer.close().await;
+    typist.flush().await;
     result
 }
 
@@ -603,16 +612,117 @@ fn starts_with_punctuation(text: &str) -> bool {
 /// when the focus moved to another window. It pastes: some applications (the Windows 11 Notepad)
 /// garble a fast stream of typed Unicode characters, while a paste arrives whole. It does not wait
 /// for keys to be released, since live dictation inserts while its hotkey is held.
-async fn type_now(env: &Env, window: u64, text: &str, erase: usize) -> Result<(), String> {
-    let Some(sink) = &env.sink else {
-        return Ok(());
-    };
-    let foreground = sink
-        .lock()
-        .expect("the sink lock is not poisoned")
-        .foreground_window()
-        .unwrap_or(0);
-    if window == 0 || foreground != window {
+/// An edit at the caret: erase characters before it, then insert text.
+type Edit = (usize, String);
+
+/// Folds a later edit into an earlier one that has not been delivered yet, so a queue of edits
+/// becomes one paste.
+fn fold((erase, mut text): Edit, (later_erase, later): Edit) -> Edit {
+    let len = text.chars().count();
+    if later_erase <= len {
+        text = text.chars().take(len - later_erase).collect();
+        text.push_str(&later);
+        (erase, text)
+    } else {
+        (erase + later_erase - len, later)
+    }
+}
+
+/// The edit that turns `typed` into `expected`: erase what differs after their common start.
+fn revision(typed: &str, expected: &str) -> Edit {
+    let common = typed
+        .chars()
+        .zip(expected.chars())
+        .take_while(|(a, b)| a == b)
+        .count();
+    (
+        typed.chars().count() - common,
+        expected.chars().skip(common).collect(),
+    )
+}
+
+enum Typing {
+    Edit(Edit),
+    Flush(oneshot::Sender<()>),
+}
+
+/// Live dictation's typing, off the live loop: each paste waits for the target to read the
+/// clipboard, so edits queued meanwhile are folded into the next paste instead of adding a
+/// wait each and falling behind the speech.
+struct Typist {
+    queue: std::sync::mpsc::Sender<Typing>,
+    /// Why an edit could not be delivered, since the last [`Typist::failure`].
+    failed: Arc<Mutex<Option<String>>>,
+}
+
+impl Typist {
+    fn start(sink: Option<Arc<Mutex<Box<dyn TextSink>>>>, window: u64) -> Self {
+        let (queue, edits) = std::sync::mpsc::channel::<Typing>();
+        let failed = Arc::new(Mutex::new(None));
+        let failure = failed.clone();
+        tokio::task::spawn_blocking(move || {
+            while let Ok(first) = edits.recv() {
+                let mut pending: Option<Edit> = None;
+                let mut flushed = Vec::new();
+                for typing in std::iter::once(first).chain(edits.try_iter()) {
+                    match typing {
+                        Typing::Edit(edit) => {
+                            pending = Some(match pending {
+                                Some(earlier) => fold(earlier, edit),
+                                None => edit,
+                            });
+                        }
+                        Typing::Flush(done) => flushed.push(done),
+                    }
+                }
+                if let Some((erase, text)) = pending
+                    && (erase > 0 || !text.is_empty())
+                    && let Some(sink) = &sink
+                    && let Err(e) = deliver_at(sink, window, &text, erase)
+                {
+                    failure
+                        .lock()
+                        .expect("the failure lock is not poisoned")
+                        .get_or_insert(e);
+                }
+                for done in flushed {
+                    let _ = done.send(());
+                }
+            }
+        });
+        Self { queue, failed }
+    }
+
+    fn edit(&self, erase: usize, text: String) {
+        let _ = self.queue.send(Typing::Edit((erase, text)));
+    }
+
+    /// Waits until every queued edit is delivered.
+    async fn flush(&self) {
+        let (done, flushed) = oneshot::channel();
+        if self.queue.send(Typing::Flush(done)).is_ok() {
+            let _ = flushed.await;
+        }
+    }
+
+    /// Why typing failed since the last call, if it did.
+    fn failure(&self) -> Option<String> {
+        self.failed
+            .lock()
+            .expect("the failure lock is not poisoned")
+            .take()
+    }
+}
+
+/// Pastes `text` over `erase` characters before the caret, if `window` still has the focus.
+fn deliver_at(
+    sink: &Mutex<Box<dyn TextSink>>,
+    window: u64,
+    text: &str,
+    erase: usize,
+) -> Result<(), String> {
+    let mut sink = sink.lock().expect("the sink lock is not poisoned");
+    if window == 0 || sink.foreground_window().unwrap_or(0) != window {
         return Err("the focused window changed".into());
     }
     let request = DeliveryRequest {
@@ -622,9 +732,7 @@ async fn type_now(env: &Env, window: u64, text: &str, erase: usize) -> Result<()
         select_all: false,
         erase,
     };
-    sink.lock()
-        .expect("the sink lock is not poisoned")
-        .deliver(&request)
+    sink.deliver(&request)
         .map(|_| ())
         .map_err(|e| e.to_string())
 }
@@ -632,8 +740,9 @@ async fn type_now(env: &Env, window: u64, text: &str, erase: usize) -> Result<()
 /// Finishes a streamed live dictation turn: what was typed while speaking becomes the final
 /// transcript, retyping the phrase when recognition revised it. `halted` says why typing stopped
 /// mid-turn; the phrase then goes to the clipboard instead.
-async fn streamed_turn(
+fn streamed_turn(
     env: &Env,
+    typist: &Typist,
     start: &TakeStart,
     turn: u32,
     transcript: &str,
@@ -677,28 +786,17 @@ async fn streamed_turn(
             None => None,
         };
     } else if typed != expected {
-        // Recognition revised the words already typed: replace the phrase.
-        let erase = typed.chars().count();
-        match type_now(
-            env,
-            start.context.window.handle.unwrap_or(0),
-            &expected,
-            erase,
-        )
-        .await
-        {
-            Ok(()) => {
-                if erase > 0 {
-                    trace
-                        .notes
-                        .push(format!("Retyped the phrase over {erase} typed characters"));
-                }
-                trace.delivery = Some(DeliveryOutcome::Delivered {
-                    method: DeliveryMethod::Paste,
-                });
-            }
-            Err(e) => trace.error = Some(e),
+        // Recognition revised the words already typed: replace the words that changed.
+        let (erase, text) = revision(typed, &expected);
+        if erase > 0 {
+            trace
+                .notes
+                .push(format!("Retyped {erase} typed characters as {text:?}"));
         }
+        typist.edit(erase, text);
+        trace.delivery = Some(DeliveryOutcome::Delivered {
+            method: DeliveryMethod::Paste,
+        });
     } else {
         trace.delivery = Some(DeliveryOutcome::Delivered {
             method: DeliveryMethod::Paste,
@@ -1530,27 +1628,20 @@ instructions = "Formal tone.""#,
         let mut traces = Vec::new();
         let result = run_live(&env, start, received, stopped, &updates, |t| traces.push(t)).await;
         assert_eq!(result, Ok(()));
-        let typed: Vec<(usize, String)> = sink
-            .requests()
-            .into_iter()
-            .map(|r| {
-                assert_eq!(r.method, DeliveryMethod::Paste);
-                (r.erase, r.text)
-            })
-            .collect();
-        assert_eq!(
-            typed,
-            [
-                (0, "hello".to_string()),
-                (0, " there".to_string()),
-                (0, " sekond".to_string()),
-                (0, " phrase".to_string()),
-                // " sekond phrase" is 14 characters.
-                (14, " second phrase.".to_string()),
-            ]
-        );
+        // Pastes queued while one is under way are folded together, so replay them.
+        let mut document = String::new();
+        for request in sink.requests() {
+            assert_eq!(request.method, DeliveryMethod::Paste);
+            let kept = document.chars().count() - request.erase;
+            document = document.chars().take(kept).collect::<String>() + &request.text;
+        }
+        assert_eq!(document, "hello there second phrase.");
         assert_eq!(traces[1].output, " second phrase.");
-        assert!(traces[1].notes[0].contains("Retyped"));
+        // Only the revised words are retyped: " se" stays.
+        assert_eq!(
+            traces[1].notes,
+            ["Retyped 11 typed characters as \"cond phrase.\""]
+        );
         // No decision or generation while streaming.
         assert!(
             traces
@@ -1612,6 +1703,31 @@ instructions = "Formal tone.""#,
         (0..SAMPLE_RATE as usize / 10)
             .map(|i| if i % 2 == 0 { amplitude } else { -amplitude })
             .collect()
+    }
+
+    #[test]
+    fn queued_edits_fold_into_one_paste() {
+        let edit = |erase, text: &str| (erase, text.to_string());
+        assert_eq!(
+            fold(edit(0, "hello"), edit(0, " there")),
+            edit(0, "hello there")
+        );
+        assert_eq!(
+            fold(edit(2, " sekond"), edit(4, "cond")),
+            edit(2, " second")
+        );
+        // Erasing past the queued text erases what was already pasted.
+        assert_eq!(fold(edit(0, "ab"), edit(5, "xyz")), edit(3, "xyz"));
+    }
+
+    #[test]
+    fn revisions_retype_only_what_changed() {
+        assert_eq!(
+            revision(" sekond phrase", " second phrase."),
+            (11, "cond phrase.".into())
+        );
+        assert_eq!(revision("hello", "hello."), (0, ".".into()));
+        assert_eq!(revision("", "Hola"), (0, "Hola".into()));
     }
 
     #[test]

@@ -93,6 +93,11 @@ impl Transcriber {
         self.model.info()
     }
 
+    /// Keeps later passes in the script of `language` (see [`SpeechModel::set_language`]).
+    pub fn set_language(&mut self, language: Option<&str>) -> Result<()> {
+        self.model.set_language(language)
+    }
+
     /// Tokens of one pass over at most [`SpeechInfo::max_window_seconds`] of audio.
     pub fn pass(&mut self, samples: &[f32]) -> Result<Vec<SpeechToken>> {
         self.model.transcribe(samples)

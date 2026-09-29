@@ -346,7 +346,9 @@ async fn transcribe(
     .await
     .map_err(|_| ApiError::unavailable())?
     .map_err(|e| failure(e, "Transcription failed"))?;
-    let mut updates = speech.worker.transcribe(samples, false)?;
+    let mut updates = speech
+        .worker
+        .transcribe(samples, request.language.clone(), false)?;
     if !request.stream {
         loop {
             match updates.recv().await.ok_or_else(ApiError::unavailable)? {

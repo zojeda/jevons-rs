@@ -16,11 +16,13 @@ pub(crate) enum Job {
     /// A whole recording, windowed, streamed as [`Update`]s.
     Transcribe {
         samples: Vec<f32>,
+        language: Option<String>,
         updates: mpsc::UnboundedSender<Update>,
     },
     /// One pass over a live utterance (at most one model window): its words and text.
     Pass {
         samples: Vec<f32>,
+        language: Option<String>,
         reply: oneshot::Sender<Result<Pass, Error>>,
     },
 }
@@ -52,16 +54,24 @@ fn submit(queue: &mpsc::Sender<Job>, job: Job) -> Result<(), ApiError> {
 }
 
 impl Client {
-    /// Queues a recording (`live` for a committed Realtime turn). Dropping the receiver
-    /// cancels it after the current window.
+    /// Queues a recording (`live` for a committed Realtime turn), in the script of `language`
+    /// when one is given. Dropping the receiver cancels it after the current window.
     pub fn transcribe(
         &self,
         samples: Vec<f32>,
+        language: Option<String>,
         live: bool,
     ) -> Result<mpsc::UnboundedReceiver<Update>, ApiError> {
         let (updates, receiver) = mpsc::unbounded_channel();
         let queue = if live { &self.live } else { &self.batch };
-        submit(queue, Job::Transcribe { samples, updates })?;
+        submit(
+            queue,
+            Job::Transcribe {
+                samples,
+                language,
+                updates,
+            },
+        )?;
         Ok(receiver)
     }
 
@@ -69,9 +79,17 @@ impl Client {
     pub fn pass(
         &self,
         samples: Vec<f32>,
+        language: Option<String>,
     ) -> Result<oneshot::Receiver<Result<Pass, Error>>, ApiError> {
         let (reply, receiver) = oneshot::channel();
-        submit(&self.live, Job::Pass { samples, reply })?;
+        submit(
+            &self.live,
+            Job::Pass {
+                samples,
+                language,
+                reply,
+            },
+        )?;
         Ok(receiver)
     }
 
@@ -80,7 +98,12 @@ impl Client {
     }
 }
 
-fn run_pass(transcriber: &mut Transcriber, samples: &[f32]) -> Result<Pass, Error> {
+fn run_pass(
+    transcriber: &mut Transcriber,
+    samples: &[f32],
+    language: Option<&str>,
+) -> Result<Pass, Error> {
+    transcriber.set_language(language)?;
     let tokens = transcriber.pass(samples)?;
     let words = words(&tokens);
     let text = transcriber.text(&words)?;
@@ -90,19 +113,31 @@ fn run_pass(transcriber: &mut Transcriber, samples: &[f32]) -> Result<Pass, Erro
 /// Runs one job; `between` runs between the windows of a recording.
 fn run(transcriber: &mut Transcriber, job: Job, between: &mut dyn FnMut(&mut Transcriber)) {
     match job {
-        Job::Pass { samples, reply } => {
+        Job::Pass {
+            samples,
+            language,
+            reply,
+        } => {
             if !reply.is_closed() {
-                let _ = reply.send(run_pass(transcriber, &samples));
+                let _ = reply.send(run_pass(transcriber, &samples, language.as_deref()));
             }
         }
-        Job::Transcribe { samples, updates } => {
+        Job::Transcribe {
+            samples,
+            language,
+            updates,
+        } => {
             let seconds = samples.len() as f64 / f64::from(transcriber.info().sample_rate);
             let mut job = Transcription::new(samples);
             while !job.is_done() {
                 if updates.is_closed() {
                     return;
                 }
-                match transcriber.step(&mut job) {
+                // Live jobs between windows may have changed the language.
+                let step = transcriber
+                    .set_language(language.as_deref())
+                    .and_then(|()| transcriber.step(&mut job));
+                match step {
                     Ok(segments) => {
                         for (segment, words) in segments {
                             let _ = updates.send(Update::Segment(segment, words));
@@ -314,7 +349,7 @@ mod tests {
     #[tokio::test]
     async fn recordings_stream_segments_then_the_transcript() {
         let client = scripted(20.0).await;
-        let mut updates = client.transcribe(spoken(12, 100), false).unwrap();
+        let mut updates = client.transcribe(spoken(12, 100), None, false).unwrap();
         let mut segments = Vec::new();
         let transcript = loop {
             match updates.recv().await.unwrap() {
@@ -335,7 +370,12 @@ mod tests {
     #[tokio::test]
     async fn live_passes_return_words_and_text() {
         let client = scripted(20.0).await;
-        let pass = client.pass(spoken(3, 100)).unwrap().await.unwrap().unwrap();
+        let pass = client
+            .pass(spoken(3, 100), None)
+            .unwrap()
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(pass.text, "w1 w2 w3");
         assert_eq!(pass.words.len(), 3);
     }
@@ -351,8 +391,8 @@ mod tests {
         })
         .await
         .unwrap();
-        let mut long = client.transcribe(spoken(60, 100), false).unwrap();
-        let pass = client.pass(spoken(2, 100)).unwrap();
+        let mut long = client.transcribe(spoken(60, 100), None, false).unwrap();
+        let pass = client.pass(spoken(2, 100), None).unwrap();
         open.send(()).unwrap();
         let mut segments_before_pass = None;
         let mut segments = 0;

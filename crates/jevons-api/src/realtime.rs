@@ -334,11 +334,11 @@ impl Live {
         if self.active.is_none()
             && let Some(committed) = self.committed.pop_front()
         {
-            match self
-                .speech
-                .worker
-                .transcribe(committed.samples.clone(), true)
-            {
+            match self.speech.worker.transcribe(
+                committed.samples.clone(),
+                self.session.config().language.clone(),
+                true,
+            ) {
                 Ok(updates) => self.active = Some((committed, updates)),
                 Err(_) => {
                     out.push(self.session.failed(
@@ -359,7 +359,12 @@ impl Live {
         {
             let from = turn.start.saturating_sub(self.buffer_start);
             turn.passed_at = end;
-            if let Ok(reply) = self.speech.worker.pass(self.buffer[from..].to_vec()) {
+            let language = self.session.config().language.clone();
+            if let Ok(reply) = self
+                .speech
+                .worker
+                .pass(self.buffer[from..].to_vec(), language)
+            {
                 self.partial = Some((turn.item_id.clone(), reply));
             }
         }
