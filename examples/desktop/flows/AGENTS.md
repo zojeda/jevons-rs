@@ -48,6 +48,7 @@ also updates this `AGENTS.md` until someone edits it.
 | `description` | When this branch applies. Required below a `decide.toml`, whose model chooses by these descriptions: write them for it. |
 | `priority` | Below `select = "rules"`, the highest priority among passing guards wins. |
 | `[when]` | The guard, checked with no model call. A branch whose guard fails is not a candidate. |
+| `[prefer]` | Rules (the same as `[when]`) that choose this branch with no model call: when they pass, the parent's decision chooses only among its preferred branches. A branch whose `[prefer]` fails is still a candidate. |
 | `instructions` | Text added after `instructions.md` for this node and below. Placeholders allowed. |
 | `delivery` | How text reaches the application: `paste` (default), `type`, `set_value`, `clipboard`. |
 | `max_output_tokens` | The most tokens a generation writes, for this node and below. |
@@ -76,21 +77,43 @@ Every rule that is set must pass; a node without rules always applies.
 
 The inspector's Context tab shows every value these rules compare, for the window in front.
 
+### Preferences: `[prefer]`
+
+A guard decides whether a branch can be chosen at all; `[prefer]` decides when it should be,
+without the model. It takes the same rules as `[when]`. When one candidate's `[prefer]` passes,
+the parent's decision takes it with no model call, and the trace says which rule did
+(`preferred: its transcript rule passed`). When several pass, the decision chooses among those
+alone, as it would among all. A branch whose `[prefer]` fails stays a candidate, so a keyword
+that is not said never takes a branch away.
+
+```toml
+# ask/decide.toml: "Pregunta: ¿qué dice Paul?" is always a question for jevons.
+[prefer]
+transcript = "(?i)^\\W*(pregunta|question)\\b"
+```
+
+Use it for what the user says on purpose (a keyword) and for contexts where the answer never
+changes (a terminal is always a place to dictate). Leave softer signals, such as a field that does
+not accept typing, to the model: the decision's state says whether the focused element accepts
+typing, and the descriptions can say what that suggests.
+
 ## `decide.toml`
 
 | Field | Meaning |
 |---|---|
 | `question` | What the decision model answers; the branches' descriptions are the choices. |
 | `select` | `model` (default): the model chooses. `rules`: the highest `priority`, then the most specific guard; the model only breaks exact ties. |
-| `fallback` | The branch taken when no guard passes, or the model is below `min_confidence` or unavailable. It is taken even if its own guard fails. |
-| `min_confidence` | Below this probability for the chosen branch, run `enrich`, ask again, then take the fallback. |
+| `fallback` | The branch taken when no guard passes, or the model is below `min_probability` or unavailable. It is taken even if its own guard fails. |
+| `min_probability` | Below this probability (0 to 1) for the branch the model chose, run `enrich`, ask again, then take the fallback. The built-in root uses 0.7. |
 | `enrich` | Extract and investigation names to read only when the first answer is unsure. |
 | `branches` | Take the branches from a shared folder such as `"_actions"` instead of subfolders. |
 | `only` | With `branches`: keep only these of them. |
 | `steps`, `samples` | System One refinement steps (1 to 8) and samples (1 to 32). |
 
-With one candidate the model is not asked. The model sees the context, what the user said and the
-investigations so far. When a decision leads straight into another model decision, jevons asks
+With one candidate the model is not asked. The model sees the context (the application, the
+window, the focused element and whether it accepts typing, the text around the cursor and the
+selection), what the user said and the investigations so far. Write descriptions for it: say who
+the words are for, give the cues that tell branches apart, and add a short example or two. When a decision leads straight into another model decision, jevons asks
 both in one request.
 
 ## `generate.toml` and `transcript.toml`
@@ -189,6 +212,10 @@ lazy = true               # read only when a node at or below uses {messages} or
   another application's window: list it in `scope = ["slack.exe"]`. That also needs the
   user's permission in the settings.
 - **What `//` covers:** an expression that starts with `//` searches every window the extract may read (the take's own and each `scope` window). One that starts with `.//` stays in the take's window.
+- **Only in some applications:** `app = ["slack.exe"]` (process-name globs, any case) reads the
+  extract only in takes from those applications; elsewhere nothing is read and its answer is
+  empty. That lets the root declare an application's extracts once for every branch below: the
+  built-in root reads Slack's `{slack_conversation}`, `{slack_messages}` and `{slack_channels}`.
 - **Variables:** `$name` takes a placeholder's value, such as `//TreeItem[@name = $transcript]` or
   `$chat.name`. Values are never pasted into the expression, so they cannot change what it means.
 - **Answers:** available at this node and below as `{channels}` and `{messages}` (JSON), and
@@ -196,9 +223,15 @@ lazy = true               # read only when a node at or below uses {messages} or
 - **Lists only hold what is on screen.** A list such as a chat's messages holds only the rows
   currently rendered.
 
-To find expressions, use the Context tab's **XPath** box on the window in front, or
-`jevons-desktop --xpath "//ListItem" --app slack.exe`. An investigation that succeeds shows the
-XPath it remembered in the take's trace, and that XPath can become an extract.
+To find and improve expressions, use the Context tab. **Read by the flow tree** reads every
+extract that applies to the window in front (lazy ones included) and shows each answer. The
+**Extracts** card takes any extract of this tree, or a new one: edit its expression, its `as` and
+its table columns, and see its answer and what it matched, read as a take would (its `app`,
+`scope` and `$variables` included). **Live** tries each edit after a pause in typing and again when
+the window changes. **Save** writes the expression back into its node file (keeping the file's
+comments) once the tree still loads, and **Copy as TOML** gives a new one to paste here. From a
+shell: `jevons-desktop --xpath "//ListItem" --app slack.exe`. An investigation that succeeds
+shows the XPath it remembered in the take's trace, and that XPath can become an extract.
 
 ## `run.toml`
 

@@ -53,47 +53,66 @@ impl Client {
         request: &ResponseRequest,
         mut on_delta: impl FnMut(&str),
     ) -> Result<String, ClientError> {
-        let response = self
-            .request(reqwest::Method::POST, "/v1/responses")
-            .json(&Streamed {
-                request,
-                stream: true,
-            })
-            .send()
-            .await?;
-        let mut body = checked(response).await?.bytes_stream();
-        let mut events = SseParser::default();
+        let streamed = Streamed {
+            request,
+            stream: true,
+        };
+        let log = super::log::Call::start("POST /v1/responses", &streamed);
         let mut text = String::new();
-        while let Some(chunk) = body.next().await {
-            for data in events.push(&chunk?) {
-                let event: serde_json::Value = serde_json::from_str(&data)
-                    .map_err(|e| ClientError::Protocol(format!("Responses event: {e}")))?;
-                match event["type"].as_str() {
-                    Some("response.output_text.delta") => {
-                        let delta = event["delta"].as_str().unwrap_or_default();
-                        text.push_str(delta);
-                        on_delta(delta);
-                    }
-                    Some("response.output_text.done") => {
-                        if let Some(done) = event["text"].as_str() {
-                            text = done.to_string();
+        // For the API log: every event but the text deltas, which `text` holds.
+        let mut kept = Vec::new();
+        let mut count = 0;
+        let streaming = async {
+            let response = self
+                .request(reqwest::Method::POST, "/v1/responses")
+                .json(&streamed)
+                .send()
+                .await?;
+            let mut body = checked(response).await?.bytes_stream();
+            let mut events = SseParser::default();
+            while let Some(chunk) = body.next().await {
+                for data in events.push(&chunk?) {
+                    count += 1;
+                    let event: serde_json::Value = serde_json::from_str(&data).map_err(|e| {
+                        ClientError::Protocol(format!("Responses event: {e}: {data}"))
+                    })?;
+                    match event["type"].as_str() {
+                        Some("response.output_text.delta") => {
+                            let delta = event["delta"].as_str().unwrap_or_default();
+                            text.push_str(delta);
+                            on_delta(delta);
+                            continue;
                         }
+                        Some("response.output_text.done") => {
+                            if let Some(done) = event["text"].as_str() {
+                                text = done.to_string();
+                            }
+                        }
+                        Some("error" | "response.failed") => {
+                            let message = event["error"]["message"]
+                                .as_str()
+                                .or(event["response"]["error"]["message"].as_str())
+                                .unwrap_or("generation failed")
+                                .to_string();
+                            kept.push(event);
+                            return Err(ClientError::Api {
+                                status: 500,
+                                message,
+                            });
+                        }
+                        _ => {}
                     }
-                    Some("error" | "response.failed") => {
-                        let message = event["error"]["message"]
-                            .as_str()
-                            .or(event["response"]["error"]["message"].as_str())
-                            .unwrap_or("generation failed");
-                        return Err(ClientError::Api {
-                            status: 500,
-                            message: message.into(),
-                        });
-                    }
-                    _ => {}
+                    kept.push(event);
                 }
             }
+            Ok(())
         }
-        Ok(text)
+        .await;
+        log.end(
+            serde_json::json!({"text": text, "events": count, "other_events": kept}),
+            streaming.as_ref().err(),
+        );
+        streaming.map(|()| text)
     }
 }
 

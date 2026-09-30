@@ -146,6 +146,14 @@ p { margin: 0; }
 .dx-input:focus { border-color: var(--focused-border-color); outline: none; }
 .dx-input.narrow { width: 110px; }
 .dx-input.mono { font-family: "Cascadia Code", "Consolas", monospace; }
+/* The extract workbench's expression and table columns: several lines. */
+.dx-input.workbench-xpath, .dx-input.workbench-fields {
+  width: 100%;
+  height: auto;
+  min-height: 4.5rem;
+  padding: 6px 12px;
+  white-space: pre-wrap;
+}
 .dx-input[data-recording="true"] { border-color: var(--accent); color: var(--accent); }
 
 /* Switch */

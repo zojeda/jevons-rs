@@ -43,6 +43,49 @@ pub struct BranchCheck {
     pub specificity: usize,
     pub passed: bool,
     pub checks: Vec<Check>,
+    /// Whether its guard and its `[prefer]` rules passed, so the decision chooses among the
+    /// preferred branches only.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub preferred: bool,
+    /// The `[prefer]` rules checked (only for a branch whose guard passed).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub prefer: Vec<Check>,
+}
+
+/// A branch's `[prefer]` checks, when it has rules; and whether they all passed.
+fn prefer_checks(
+    child: &Node,
+    snapshot: &crate::context::ContextSnapshot,
+    transcript: &str,
+) -> (Vec<Check>, bool) {
+    if child.prefer.is_empty() {
+        return (Vec::new(), false);
+    }
+    let checks = child.prefer.check(snapshot, transcript);
+    let passed = checks.iter().all(|c| c.passed);
+    (checks, passed)
+}
+
+/// The preferred candidates when there are any, or else every candidate.
+fn narrow(branches: &[BranchCheck], candidates: Vec<NodeId>, tree: &FlowTree) -> Vec<NodeId> {
+    let preferred: Vec<NodeId> = candidates
+        .iter()
+        .copied()
+        .filter(|c| {
+            let name = &tree.node(*c).name;
+            branches.iter().any(|b| &b.name == name && b.preferred)
+        })
+        .collect();
+    if preferred.is_empty() {
+        candidates
+    } else {
+        preferred
+    }
+}
+
+/// The model's probability for `choice`, or its confidence when it gave none.
+fn probabilities_of(probabilities: &BTreeMap<String, f64>, choice: &str, confidence: f64) -> f64 {
+    probabilities.get(choice).copied().unwrap_or(confidence)
 }
 
 /// One investigation a take ran (or reused).
@@ -353,8 +396,23 @@ impl Walker<'_> {
 
     /// Reads an extract from the interface, with its `$variables` from the frame.
     async fn extract(&mut self, extract: &Extract) {
-        // A lazy value an expression uses is read first.
         self.frame.pending.remove(&extract.name);
+        if !extract.applies(&self.frame.snapshot.app.process_name) {
+            self.frame
+                .values
+                .insert(extract.name.clone(), extract.shape.empty());
+            self.step().extracts.push(ExtractTrace {
+                name: extract.name.clone(),
+                xpath: extract.spec.xpath.clone(),
+                answer: extract.shape.empty(),
+                matches: 0,
+                reused: false,
+                note: Some(format!("only read in {}", extract.spec.app.join(", "))),
+                ms: 0,
+            });
+            return;
+        }
+        // A lazy value an expression uses is read first.
         for path in extract.variables() {
             if let Some(name) = path.first()
                 && self.frame.pending.contains_key(name)
@@ -523,12 +581,19 @@ impl Walker<'_> {
             if passed {
                 candidates.push(child.id);
             }
+            let (prefer, preferred) = if passed {
+                prefer_checks(child, &self.frame.snapshot, &self.frame.transcript)
+            } else {
+                (Vec::new(), false)
+            };
             branches.push(BranchCheck {
                 name: child.name.clone(),
                 priority: child.spec.common().priority,
                 specificity: child.guard.specificity(),
                 passed,
                 checks,
+                preferred,
+                prefer,
             });
         }
         (branches, candidates)
@@ -588,6 +653,13 @@ impl Walker<'_> {
 
     async fn decide(&mut self, node: &Node, d: &DecideSpec) -> Result<NodeId, ClientError> {
         let (branches, candidates) = self.candidates(node);
+        let candidates = narrow(&branches, candidates, self.tree);
+        let preferred = branches.iter().any(|b| b.preferred);
+        let rules: Vec<&'static str> = branches
+            .iter()
+            .filter(|b| b.preferred)
+            .flat_map(|b| b.prefer.iter().map(|c| c.rule))
+            .collect();
         self.step().branches = branches;
         self.stage(Stage {
             kind: StageKind::Deciding,
@@ -605,6 +677,11 @@ impl Walker<'_> {
             (
                 self.fallback(node, d, &candidates),
                 "no branch applies: the fallback".to_string(),
+            )
+        } else if preferred && candidates.len() == 1 {
+            (
+                candidates[0],
+                format!("preferred: its {} rule passed", rules.join(" and ")),
             )
         } else {
             match d.select {
@@ -627,6 +704,7 @@ impl Walker<'_> {
         let detail = match self.step().probabilities.get(&name) {
             Some(p) if !how.contains("fallback") => format!("{p:.2}"),
             _ if how.starts_with("rules") => "rules".into(),
+            _ if how.starts_with("preferred") => "preferred".into(),
             _ if how.contains("fallback") => "fallback".into(),
             _ => "only one applies".into(),
         };
@@ -712,7 +790,7 @@ impl Walker<'_> {
                 "an answer of the wrong type: the fallback".into(),
             );
         };
-        self.step().probabilities = probabilities;
+        self.step().probabilities = probabilities.clone();
         let Some(chosen) = self.child(node, &choice).filter(|c| candidates.contains(c)) else {
             return (
                 self.fallback(node, d, candidates),
@@ -720,9 +798,10 @@ impl Walker<'_> {
             );
         };
         let asked = if ahead { "asked ahead" } else { "model" };
-        let floor = d.min_confidence.unwrap_or(0.0);
-        if confidence >= floor {
-            return (chosen, format!("{asked} {confidence:.2}"));
+        let floor = d.min_probability.unwrap_or(0.0);
+        let probability = probabilities_of(&probabilities, &choice, confidence);
+        if probability >= floor {
+            return (chosen, format!("{asked} {probability:.2}"));
         }
         let unenriched: Vec<String> = d
             .enrich
@@ -743,17 +822,21 @@ impl Walker<'_> {
                     confidence,
                 }) = answers.remove(0)
             {
+                let again = probabilities_of(&probabilities, &choice, confidence);
                 self.step().probabilities = probabilities;
                 if let Some(chosen) = self.child(node, &choice).filter(|c| candidates.contains(c))
-                    && confidence >= floor
+                    && again >= floor
                 {
-                    return (chosen, format!("model {confidence:.2}, after enriching"));
+                    return (chosen, format!("model {again:.2}, after enriching"));
                 }
             }
         }
         match d.fallback.as_deref().and_then(|f| self.child(node, f)) {
-            Some(fallback) => (fallback, format!("unsure ({confidence:.2}): the fallback")),
-            None => (chosen, format!("{asked} {confidence:.2}, unsure")),
+            Some(fallback) => (
+                fallback,
+                format!("unsure ({choice} {probability:.2}): the fallback"),
+            ),
+            None => (chosen, format!("{asked} {probability:.2}, unsure")),
         }
     }
 
@@ -763,7 +846,7 @@ impl Walker<'_> {
         for _ in 0..super::tree::MAX_DEPTH * 2 {
             let node = self.tree.node(id);
             let needs_context = !node.investigations.is_empty()
-                || !node.extracts.is_empty()
+                || node.extracts.values().any(|e| !e.spec.lazy)
                 || node
                     .template("question")
                     .is_some_and(|q| q.paths().any(|p| !super::template::is_builtin(&p[0])));
@@ -773,11 +856,12 @@ impl Walker<'_> {
             let NodeSpec::Decide(d) = &node.spec else {
                 return None;
             };
-            let (_, candidates) = self.candidates(node);
+            let (branches, candidates) = self.candidates(node);
             if candidates.is_empty() {
                 id = self.fallback(node, d, &candidates);
                 continue;
             }
+            let candidates = narrow(&branches, candidates, self.tree);
             let pool = match d.select {
                 Select::Rules => self.top(&candidates),
                 Select::Model => candidates,
@@ -1561,14 +1645,28 @@ pub fn preview(
             if passed {
                 candidates.push(child.id);
             }
+            let (prefer, preferred) = if passed {
+                prefer_checks(child, snapshot, "")
+            } else {
+                (Vec::new(), false)
+            };
             step.branches.push(BranchCheck {
                 name: child.name.clone(),
                 priority: child.spec.common().priority,
                 specificity: child.guard.specificity(),
                 passed,
                 checks,
+                preferred,
+                prefer,
             });
         }
+        let candidates = narrow(&step.branches, candidates, tree);
+        let preferred: Vec<&'static str> = step
+            .branches
+            .iter()
+            .filter(|b| b.preferred)
+            .flat_map(|b| b.prefer.iter().map(|c| c.rule))
+            .collect();
         let rank = |c: &NodeId| {
             let n = tree.node(*c);
             (n.spec.common().priority, n.guard.specificity())
@@ -1594,6 +1692,9 @@ pub fn preview(
             [only] => {
                 step.chosen = Some(tree.node(*only).name.clone());
                 step.how = Some(match d.select {
+                    _ if !preferred.is_empty() => {
+                        format!("preferred: its {} rule passed", preferred.join(" and "))
+                    }
                     Select::Rules => "rules".into(),
                     Select::Model => "the only branch that applies".into(),
                 });
@@ -1688,6 +1789,27 @@ mod tests {
         let code = preview(&tree, &snapshot("code.exe", Some("x")), dictate);
         assert!(
             code.last()
+                .unwrap()
+                .how
+                .as_deref()
+                .unwrap()
+                .ends_with("insert, verbatim")
+        );
+        // In a terminal the root prefers dictating, with no model, and never offers a rewrite.
+        let terminal = preview(
+            &tree,
+            &snapshot("WindowsTerminal.exe", Some("x")),
+            tree.root(),
+        );
+        assert_eq!(
+            terminal[0].how.as_deref(),
+            Some("preferred: its app rule passed")
+        );
+        assert_eq!(terminal[1].node, "dictate");
+        assert_eq!(terminal[2].node, "dictate/terminal");
+        assert!(
+            terminal
+                .last()
                 .unwrap()
                 .how
                 .as_deref()

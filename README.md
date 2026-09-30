@@ -57,6 +57,8 @@ jevons builds from source. On Windows you need:
 cargo run --release --locked -p jevons-desktop
 ```
 
+From WSL, `just desktop-windows` does the same natively on Windows. It mirrors your working tree (uncommitted changes included) into a Windows clone (`%USERPROFILE%\src\jevons-rs`), builds it in release mode, installs it into `%USERPROFILE%\jevons` and starts it; `--no-run` leaves it stopped and `--build` only builds. See [scripts/windows-desktop.sh](scripts/windows-desktop.sh).
+
 The app starts in the tray, with no console window. The [Desktop workflow](.github/workflows/desktop.yml) also builds it for Windows and Linux on every push to `dev` and `main`: download the package from the run's artifacts.
 
 1. **Download the models.** Open the window (**Show context inspector** in the tray menu) and go to **Models**. Press **Download** on DiffusionGemma (about 18 GB, with its vision projector) and Parakeet (2.5 GB). They go to `~/jevons/models`, or to a folder you choose. Nothing downloads by itself, and **Use existing…** points at models already on disk.
@@ -69,15 +71,18 @@ Settings are in `%APPDATA%\jevons\config\jevons-desktop.toml` (see [jevons-deskt
 
 ```
 flows/
-  decide.toml              # the root: dictate or ask?
+  decide.toml              # the root: dictate, ask or run? In Slack, reads its messages by XPath
   dictate/
-    decide.toml            # select = "rules": the application picks the branch
+    decide.toml            # select = "rules": the application picks the branch; [prefer] terminals
     chat/decide.toml       # [when] app = ["slack.exe", …]; casual instructions
     code/decide.toml       # only insert or type as heard
+    terminal/decide.toml   # prompts and commands: never rewrite the terminal's buffer
     any/decide.toml        # everything else
-  ask/
-    chat/generate.toml     # output = "bubble"; reads the open conversation first
+  ask/                     # [prefer] transcript: words starting with "Pregunta" or "Question"
+    slack/generate.toml    # output = "bubble"; answers from the root's Slack extracts
+    chat/generate.toml     # other chat apps: reads the open conversation first
     any/generate.toml
+  run/run.toml             # runs an approved automation
   _actions/                # shared: insert, replace, rewrite, verbatim
 ```
 

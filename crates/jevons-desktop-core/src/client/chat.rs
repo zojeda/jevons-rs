@@ -85,46 +85,76 @@ impl Client {
         request: &ChatRequest,
         mut on_delta: impl FnMut(&str),
     ) -> Result<ChatReply, ClientError> {
-        let response = self
-            .request(reqwest::Method::POST, "/v1/chat/completions")
-            .json(&Streamed {
-                request,
-                stream: true,
-            })
-            .send()
-            .await?;
-        let mut body = checked(response).await?.bytes_stream();
-        let mut events = SseParser::default();
+        let streamed = Streamed {
+            request,
+            stream: true,
+        };
+        let log = super::log::Call::start("POST /v1/chat/completions", &streamed);
         let mut text = String::new();
         let (mut id, mut name, mut arguments) = (String::new(), String::new(), String::new());
-        while let Some(chunk) = body.next().await {
-            for data in events.push(&chunk?) {
-                let event: Value = serde_json::from_str(&data)
-                    .map_err(|e| ClientError::Protocol(format!("chat chunk: {e}")))?;
-                if let Some(message) = event["error"]["message"].as_str() {
-                    return Err(ClientError::Api {
-                        status: 500,
-                        message: message.into(),
-                    });
-                }
-                let delta = &event["choices"][0]["delta"];
-                if let Some(piece) = delta["content"].as_str().filter(|p| !p.is_empty()) {
-                    text.push_str(piece);
-                    on_delta(piece);
-                }
-                for call in delta["tool_calls"].as_array().into_iter().flatten() {
-                    if let Some(value) = call["id"].as_str() {
-                        id = value.into();
+        // For the API log: every chunk but the plain text deltas, which `text` holds.
+        let mut kept = Vec::new();
+        let mut count = 0;
+        let streaming = async {
+            let response = self
+                .request(reqwest::Method::POST, "/v1/chat/completions")
+                .json(&streamed)
+                .send()
+                .await?;
+            let mut body = checked(response).await?.bytes_stream();
+            let mut events = SseParser::default();
+            while let Some(chunk) = body.next().await {
+                for data in events.push(&chunk?) {
+                    count += 1;
+                    let event: Value = serde_json::from_str(&data)
+                        .map_err(|e| ClientError::Protocol(format!("chat chunk: {e}: {data}")))?;
+                    if let Some(message) = event["error"]["message"].as_str() {
+                        kept.push(event.clone());
+                        return Err(ClientError::Api {
+                            status: 500,
+                            message: message.into(),
+                        });
                     }
-                    if let Some(value) = call["function"]["name"].as_str() {
-                        name.push_str(value);
+                    let delta = &event["choices"][0]["delta"];
+                    if let Some(piece) = delta["content"].as_str().filter(|p| !p.is_empty()) {
+                        text.push_str(piece);
+                        on_delta(piece);
                     }
-                    if let Some(value) = call["function"]["arguments"].as_str() {
-                        arguments.push_str(value);
+                    for call in delta["tool_calls"].as_array().into_iter().flatten() {
+                        if let Some(value) = call["id"].as_str() {
+                            id = value.into();
+                        }
+                        if let Some(value) = call["function"]["name"].as_str() {
+                            name.push_str(value);
+                        }
+                        if let Some(value) = call["function"]["arguments"].as_str() {
+                            arguments.push_str(value);
+                        }
+                    }
+                    let only_text = delta
+                        .as_object()
+                        .is_some_and(|d| d.keys().all(|k| k == "content" || k == "role"))
+                        && event["choices"][0]["finish_reason"].is_null()
+                        && event["usage"].is_null();
+                    if !only_text {
+                        kept.push(event);
                     }
                 }
             }
+            Ok(())
         }
+        .await;
+        log.end(
+            json!({
+                "text": text,
+                "tool_call": (!name.is_empty())
+                    .then(|| json!({"id": id, "name": name, "arguments": arguments})),
+                "events": count,
+                "other_events": kept,
+            }),
+            streaming.as_ref().err(),
+        );
+        streaming?;
         if name.is_empty() {
             return Ok(ChatReply::Text(text));
         }

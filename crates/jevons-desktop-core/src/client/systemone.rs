@@ -84,12 +84,26 @@ pub enum Answer {
 
 impl Client {
     pub async fn decide(&self, request: &DecisionRequest) -> Result<DecisionResponse, ClientError> {
-        let response = self
-            .request(reqwest::Method::POST, "/v1/systemone")
-            .json(request)
-            .send()
-            .await?;
-        Ok(checked(response).await?.json().await?)
+        let call = super::log::Call::start("POST /v1/systemone", request);
+        let body = async {
+            let response = self
+                .request(reqwest::Method::POST, "/v1/systemone")
+                .json(request)
+                .send()
+                .await?;
+            Ok::<_, ClientError>(checked(response).await?.text().await?)
+        }
+        .await;
+        let parsed = body.and_then(|body| {
+            serde_json::from_str::<serde_json::Value>(&body)
+                .map_err(|e| ClientError::Protocol(format!("System One answer: {e}: {body}")))
+        });
+        match &parsed {
+            Ok(value) => call.end(value.clone(), None),
+            Err(e) => call.end(serde_json::Value::Null, Some(e)),
+        }
+        serde_json::from_value(parsed?)
+            .map_err(|e| ClientError::Protocol(format!("System One answer: {e}")))
     }
 }
 

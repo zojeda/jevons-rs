@@ -35,6 +35,8 @@ thiserror = "2"
 base64 = "0.22"
 futures-util = { version = "0.3", default-features = false }
 toml = "1"
+# The inspector saves an edited extract into its node file, keeping comments and layout.
+toml_edit = "0.25"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "signal", "time"] }
 tower = { version = "0.5", features = ["util"] }
@@ -64,6 +66,8 @@ enigo = "0.6"
 global-hotkey = "0.8"
 globset = "0.4"
 notify = "8"
+# Markdown answers in the feedback bubble: the parser only (no HTML writer, no CLI).
+pulldown-cmark = { version = "0.13", default-features = false }
 regex = "1.11"
 # Native TLS: SChannel on Windows and Security.framework on macOS need no C toolchain.
 reqwest = { version = "0.13", default-features = false, features = ["native-tls", "charset", "json", "multipart", "stream"] }

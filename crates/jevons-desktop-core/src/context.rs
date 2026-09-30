@@ -73,6 +73,9 @@ pub struct Privacy {
     /// as `["slack.exe", "chrome.exe"]`; empty allows none.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub readable_apps: Vec<String>,
+    /// Whether every decision and generation request and its response are written, whole, to
+    /// `~/jevons/logs/api.log` (they hold what the user said and the screen's text).
+    pub log_api: bool,
 }
 
 impl Default for Privacy {
@@ -82,7 +85,21 @@ impl Default for Privacy {
             read_clipboard: false,
             read_other_windows: false,
             readable_apps: Vec::new(),
+            log_api: false,
         }
+    }
+}
+
+impl Privacy {
+    /// Starts or stops the API log as `log_api` says.
+    pub fn apply_api_log(&self) {
+        let file = self.log_api.then(crate::client::log::default_file);
+        if let Some(file) = &file
+            && !crate::client::log::enabled()
+        {
+            tracing::info!(file = %file.display(), "Writing the API log");
+        }
+        crate::client::log::set(file);
     }
 }
 
@@ -146,8 +163,22 @@ impl ContextSnapshot {
         if let Some(url) = &self.url {
             let _ = writeln!(out, "Address: {url}");
         }
+        match &self.focused {
+            None => {
+                let _ = writeln!(out, "Field: none (no element has focus)");
+            }
+            Some(e) => {
+                let typing = if e.is_password {
+                    "a password field"
+                } else if e.is_editable {
+                    "accepts typing"
+                } else {
+                    "does not accept typing"
+                };
+                let _ = writeln!(out, "Field: {} {:?} ({typing})", e.role, e.name);
+            }
+        }
         if let Some(e) = &self.focused {
-            let _ = writeln!(out, "Field: {} {:?}", e.role, e.name);
             if let Some(before) = e.before_caret.as_deref().filter(|t| !t.is_empty()) {
                 let _ = writeln!(out, "Text before the cursor: {before:?}");
             }

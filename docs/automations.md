@@ -29,8 +29,9 @@ The same window, through jevons' own evaluator (`jevons-desktop --xpath … --ap
 | `count(//TreeItem)` | 28 | 27 ms |
 | `count(//ListItem[starts-with(@automation_id, 'message-list_')])` | 28 | 32 ms |
 | `//Edit[has-class(@class,'ql-editor')]/@class` | 1 | 22 ms |
-| the selected conversation's name (built-in `ask/slack`) | 1 | 21 ms |
-| the last 15 message rows' names (built-in `ask/slack`) | 15 | 44 ms |
+| the open conversation's name, from the window title (built-in `slack_conversation`) | 1 | 0 ms |
+| the channels and direct messages (built-in `slack_channels`) | 22 | 127 ms |
+| the last 15 message rows' names (built-in `slack_messages`) | 15 | 44 ms |
 | `//TreeItem[1]/@class` (positional: one children read per node) | 3 | 310 ms |
 
 A search with native conditions takes 20–50 ms. A positional step after `//`, such as `//TreeItem[1]`, reads the children of every element and costs ten times as much; `(//TreeItem)[1]` does not.
@@ -40,13 +41,13 @@ A search with native conditions takes 20–50 ms. A positional step after `//`, 
 - **Names are localized.** With Slack in Spanish, the channel tree is named `Canales y mensajes directos`, the composer `Mensaje a <name>` and the toolbar `Navegación histórica`. Selectors that rely on names break when the language changes.
 - **Chromium reports the HTML `class` attribute as ClassName**, with every class separated by spaces (`ql-editor ql-blank`, `c-link c-timestamp`). These classes are the same in every language, so they make the most stable selectors. The XPath dialect has `has-class(@class, 'ql-editor')` for matching a single class.
 - **Messages** are `ListItem`s whose automation id is `message-list_<timestamp>`. There are also `message-list_unreadDivider`, `message-list_bottomSpacer` and date dividers. Each message holds a `Document` with class `c-message_kit__hover`, and inside that a timestamp `Hyperlink` (`c-link c-timestamp`), the text and the reactions. Messages support Invoke and ScrollItem. The list is virtualized (`c-virtual_list__item`), so only rendered rows exist.
-- **Messages are grouped.** A message that follows one from the same author has no sender button: of 24 rendered rows, 12 had one. Every row has its time, in a `Hyperlink` with class `c-link c-timestamp`. A row's name summarizes it (author, text, time, reactions) in a format that varies with the grouping, so `ask/slack` reads the names, not separate columns.
+- **Messages are grouped.** A message that follows one from the same author has no sender button: of 24 rendered rows, 12 had one. Every row has its time, in a `Hyperlink` with class `c-link c-timestamp`. A row's name summarizes it (author, text, time, reactions) in a format that varies with the grouping, so the built-in `slack_messages` reads the names, not separate columns.
 - **Channels** are `TreeItem`s under a `Tree` with class `c-virtual_list__scroll_container`. Every item has an automation id:
   - Slack's own ids for channels and direct messages;
   - `unified_directory`, `Vall_threads`, `Pdrafts` and `Pbrowse-huddles` for the fixed entries;
   - `sectionHeading-<id>` for section headings.
 
-  A channel item holds a `Group` with class `p-channel_sidebar__channel`. The open conversation's item has the class `p-channel_sidebar__static_list__item--selected`. UI Automation's `SelectionItem.IsSelected` stays false, and the item's own name can be empty, so the conversation's name is the item's text. The items support SelectionItem, ExpandCollapse and ScrollItem.
+  A channel item holds a `Group` with class `p-channel_sidebar__channel`. The open conversation's item has the class `p-channel_sidebar__static_list__item--selected`, but UI Automation's `SelectionItem.IsSelected` stays false and the item exposes neither a name nor any text (only an empty `Group`). The conversation's name is in the window title, `<name> (Canal) - <workspace> - Slack`, which the built-in `slack_conversation` cuts at the first ` - ` and ` (`. The header's `p-view_header__big_button` names it too, inside a localized sentence (`Información del canal de <name>`). The items support SelectionItem, ExpandCollapse and ScrollItem.
 - **The composer** is an `Edit` with class `ql-editor` (Quill) that supports Value, Text and ScrollItem. The channel filter is an `Edit` with class `c-filter_input__input`.
 - **The web content** starts at a `Document` with automation id `RootWebArea`, below seven native `Pane`s (`RootView`, `NonClientView`, `WinFrameView`, `ClientView`, `View`…).
 

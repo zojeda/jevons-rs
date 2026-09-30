@@ -288,6 +288,15 @@ pub fn SettingsPage(rev: u64) -> Element {
                     Switch { checked: d.privacy.read_clipboard, label: "Include the clipboard in the context".to_string(),
                         onchange: move |on| draft.write().privacy.read_clipboard = on }
                 }
+                div { class: "field",
+                    span { class: "field-label", "API log" }
+                    Switch { checked: d.privacy.log_api,
+                        label: "Write every decision and generation request and response to logs/api.log".to_string(),
+                        onchange: move |on| draft.write().privacy.log_api = on }
+                }
+                if d.privacy.log_api {
+                    p { class: "warn", "The log holds what you say and the text of your screen, in full. Turn it off when you are done debugging." }
+                }
             }
         }
 

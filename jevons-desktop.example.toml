@@ -61,6 +61,9 @@ read_clipboard = false
 # "is Slack open, and what did Ana say?"), allow it and list the applications:
 read_other_windows = false
 # readable_apps = ["slack.exe", "chrome.exe"]
+# For debugging: write every decision and generation request and its response, whole, to
+# ~/jevons/logs/api.log. They hold what you say and your screen's text; keys are never written.
+log_api = false
 
 # Tools flow nodes may call (tool.toml, agent.toml). Flow files can use these, never add them.
 # Each asks in the bubble before it runs unless confirm = false here. {argument} takes a call's

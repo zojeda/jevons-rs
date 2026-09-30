@@ -24,6 +24,7 @@ pub const TREE: &[(&str, &str)] = tree_files![
     "dictate/decide.toml",
     "dictate/instructions.md",
     "dictate/code/decide.toml",
+    "dictate/terminal/decide.toml",
     "dictate/chat/decide.toml",
     "dictate/chat/thread/decide.toml",
     "dictate/chat/any/decide.toml",
@@ -94,12 +95,81 @@ pub struct InitReport {
     pub notes: Vec<String>,
 }
 
-/// Writes the built-in tree into `dir` when it has no root node file, and refreshes the
-/// generated files. Existing flow files are never changed.
+/// The flow files in `dir` and the SHA-256 of each one's text (line endings made the same),
+/// leaving out the files jevons generates.
+fn flow_files(dir: &Path) -> std::io::Result<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(at) = stack.pop() {
+        for entry in std::fs::read_dir(&at)? {
+            let entry = entry?;
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') || name == "_schemas" {
+                continue;
+            }
+            if entry.file_type()?.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let relative = path
+                .strip_prefix(dir)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            if matches!(relative.as_str(), "AGENTS.md" | "TOOLS.md") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path)?.replace("\r\n", "\n");
+            out.push((relative, digest(&text)));
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Whether the flow files in `dir` are exactly an earlier built-in tree, left as jevons wrote it.
+fn earlier_built_in(dir: &Path) -> bool {
+    let Ok(files) = flow_files(dir) else {
+        return false;
+    };
+    super::earlier::EARLIER.iter().any(|tree| {
+        let mut earlier: Vec<(String, String)> = tree
+            .iter()
+            .map(|(path, hash)| (path.to_string(), hash.to_string()))
+            .collect();
+        earlier.sort();
+        earlier == files
+    })
+}
+
+/// Writes the built-in tree into `dir` when it has no root node file, or when it is an earlier
+/// built-in tree nobody edited (it is brought up to the current one), and refreshes the
+/// generated files. A tree anyone changed is never touched.
 pub fn init(dir: &Path) -> std::io::Result<InitReport> {
     let mut report = InitReport::default();
     std::fs::create_dir_all(dir)?;
     let has_tree = NODE_FILES.iter().any(|(file, _)| dir.join(file).exists());
+    if has_tree && earlier_built_in(dir) {
+        for (path, text) in TREE {
+            let file = dir.join(path);
+            let current = std::fs::read_to_string(&file)
+                .ok()
+                .map(|t| t.replace("\r\n", "\n"));
+            if current.as_deref() == Some(*text) {
+                continue;
+            }
+            if let Some(parent) = file.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&file, text)?;
+            report.written.push((*path).into());
+        }
+        report.notes.push(
+            "The flows folder held jevons' built-in tree from an earlier version, unedited: it \
+             now holds the current one"
+                .into(),
+        );
+    }
     if !has_tree {
         for (path, text) in TREE {
             let file = dir.join(path);
@@ -283,6 +353,84 @@ mod tests {
         assert_eq!(tree.node(insert).kind(), Kind::Generate);
         let entries: Vec<String> = tree.entries().into_iter().map(|(p, _)| p).collect();
         assert_eq!(entries, ["ask", "dictate", "run"]);
+    }
+
+    #[test]
+    fn an_unedited_earlier_built_in_tree_is_brought_up_to_date_and_an_edited_one_is_not() {
+        let dir = std::env::temp_dir().join(format!("jevons-flows-upgrade-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // The tree before automations, as jevons wrote it (with CRLF, as on Windows).
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let files: Vec<(String, String)> = std::process::Command::new("git")
+            .args([
+                "ls-tree",
+                "-r",
+                "--name-only",
+                "c9ac58f",
+                "examples/desktop/flows",
+            ])
+            .current_dir(&root)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .map(String::from)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p: &String| !p.ends_with("AGENTS.md"))
+            .filter_map(|p| {
+                let text = std::process::Command::new("git")
+                    .args(["show", &format!("c9ac58f:{p}")])
+                    .current_dir(&root)
+                    .output()
+                    .ok()?;
+                Some((
+                    p.trim_start_matches("examples/desktop/flows/").to_string(),
+                    String::from_utf8_lossy(&text.stdout).replace('\n', "\r\n"),
+                ))
+            })
+            .collect();
+        if files.is_empty() {
+            eprintln!("skipped: no git history to read the earlier tree from");
+            return;
+        }
+        let write = |dir: &Path| {
+            for (path, text) in &files {
+                let file = dir.join(path);
+                std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+                std::fs::write(file, text).unwrap();
+            }
+        };
+        write(&dir);
+        std::fs::write(dir.join("TOOLS.md"), "generated").unwrap();
+        let report = init(&dir).unwrap();
+        assert!(report.notes[0].contains("earlier version"), "{report:?}");
+        assert!(report.written.contains(&"run/run.toml".to_string()));
+        assert!(report.written.contains(&"decide.toml".to_string()));
+        let tree = FlowTree::load(&Disk::new(&dir), &Catalog::default());
+        assert!(tree.is_valid(), "{:?}", tree.errors);
+        assert!(tree.find("ask/slack").is_some());
+        // Up to date now: nothing more to do.
+        assert!(init(&dir).unwrap().notes.is_empty());
+        // An edited earlier tree is the user's: left as it is.
+        let edited = dir.with_extension("edited");
+        let _ = std::fs::remove_dir_all(&edited);
+        write(&edited);
+        std::fs::write(
+            edited.join("ask/instructions.md"),
+            "Answer in one sentence.",
+        )
+        .unwrap();
+        let report = init(&edited).unwrap();
+        let flows = |w: &String| TREE.iter().any(|(path, _)| path == w);
+        assert!(!report.written.iter().any(flows), "{report:?}");
+        assert!(!edited.join("run").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+        std::fs::remove_dir_all(edited).unwrap();
     }
 
     #[test]

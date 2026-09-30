@@ -138,6 +138,8 @@ pub struct Node {
     pub file: String,
     pub spec: NodeSpec,
     pub guard: Guard,
+    /// `[prefer]`: when it passes, the parent's decision chooses among the preferred branches.
+    pub prefer: Guard,
     /// The folder's `instructions.md`, taken as written (no placeholders).
     pub instructions_md: Option<String>,
     /// Compiled templates by field, such as `prompt`, `question` or `args.title.generate`.
@@ -620,6 +622,10 @@ impl Loader<'_> {
             self.error(&file, e);
             Guard::default()
         });
+        let prefer = Guard::new(spec.common().prefer).unwrap_or_else(|e| {
+            self.error(&file, format!("prefer: {e}"));
+            Guard::default()
+        });
         let templates = self.templates(&file, &spec);
         let investigations = self.investigations(&file, spec.common().investigate);
         let extracts = self.extracts(&file, spec.common().extract, &investigations);
@@ -631,6 +637,7 @@ impl Loader<'_> {
             file: file.clone(),
             spec,
             guard,
+            prefer,
             instructions_md,
             templates,
             investigations,
@@ -946,13 +953,13 @@ impl Loader<'_> {
                     ),
                     _ => {}
                 }
-                if let Some(p) = d.min_confidence
+                if let Some(p) = d.min_probability
                     && !(0.0..=1.0).contains(&p)
                 {
-                    self.error(file, "min_confidence is a probability from 0 to 1");
+                    self.error(file, "min_probability is a probability from 0 to 1");
                 }
-                if !d.enrich.is_empty() && d.min_confidence.is_none() {
-                    self.error(file, "`enrich` runs below `min_confidence`: set it too");
+                if !d.enrich.is_empty() && d.min_probability.is_none() {
+                    self.error(file, "`enrich` runs below `min_probability`: set it too");
                 }
                 if d.steps.is_some_and(|s| !(1..=8).contains(&s)) {
                     self.error(file, "steps must be 1 to 8");
@@ -1333,6 +1340,20 @@ mod tests {
     }
 
     #[test]
+    fn prefer_rules_are_checked_like_guards() {
+        let t = tree(&[
+            ("decide.toml", "fallback = \"a\""),
+            ("a/transcript.toml", LEAF),
+            (
+                "b/transcript.toml",
+                "description = \"x\"\n[prefer]\ntranscript = \"(unclosed\"",
+            ),
+        ]);
+        let e = errors(&t);
+        assert!(e.iter().any(|e| e.contains("prefer:")), "{e:?}");
+    }
+
+    #[test]
     fn toml_errors_keep_their_line_and_unknown_fields_are_rejected() {
         let t = tree(&[("generate.toml", "output = \"bubble\"\nouptut = 1\n")]);
         let e = errors(&t);
@@ -1468,7 +1489,7 @@ mod tests {
             (
                 "decide.toml",
                 "fallback = \"a\"\nquestion = \"{names} or {rows.author} or {rows.when}?\"\n\
-                 min_confidence = 0.5\nenrich = [\"names\", \"nope\"]\n\
+                 min_probability = 0.5\nenrich = [\"names\", \"nope\"]\n\
                  [extract.names]\nxpath = \"//TreeItem/@name\"\nas = \"list\"\n\
                  [extract.rows]\nxpath = \"//ListItem\"\nas = \"table\"\nfields = { author = \"@name\" }\n\
                  [extract.broken]\nxpath = \"//ListItem[\"\n\
@@ -1589,7 +1610,7 @@ mod tests {
         let t = tree(&[
             (
                 "decide.toml",
-                "min_confidence = 0.5\nenrich = [\"later\", \"missing\"]\nfallback = \"a\"\n[investigate.later]\nquestion = \"q\"\nschema = \"string\"\nlazy = true",
+                "min_probability = 0.5\nenrich = [\"later\", \"missing\"]\nfallback = \"a\"\n[investigate.later]\nquestion = \"q\"\nschema = \"string\"\nlazy = true",
             ),
             ("a/transcript.toml", LEAF),
             ("b/transcript.toml", LEAF),

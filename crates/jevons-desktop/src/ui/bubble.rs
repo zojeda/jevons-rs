@@ -2,23 +2,28 @@
 //! does, from the first words to the text delivered. It never takes the focus and lets clicks
 //! through, so dictation keeps going to the application underneath, except while it shows an
 //! answer (with Copy, Insert and Close) or asks before a tool runs (Run or Cancel, also Enter
-//! and Esc).
+//! and Esc). An answer opens a larger bubble, renders its Markdown, scrolls with the wheel and
+//! stays until Close (or the next take).
 
-use super::Ctx;
+use super::{Ctx, markdown};
 use crate::agent::{BubbleAction, Command, Feedback, StageView};
 use dioxus::prelude::*;
 use jevons_desktop_core::pipeline::StageKind;
 
 /// Where the bubble's arrow points: its distance from the bubble's left edge in logical pixels,
-/// and whether the icon is below the bubble (a taskbar at the bottom of the screen).
+/// and whether the icon is below the bubble (a taskbar at the bottom of the screen); and the
+/// bubble's width.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Anchor {
     pub tail_x: f64,
     pub icon_below: bool,
+    pub width: f64,
 }
 
 /// The bubble's size in logical pixels.
 pub const SIZE: (f64, f64) = (380.0, 190.0);
+/// The bubble's size while it shows an answer, which may be long.
+pub const ANSWER_SIZE: (f64, f64) = (520.0, 460.0);
 /// The arrow's width in logical pixels.
 const TAIL: f64 = 18.0;
 
@@ -39,7 +44,7 @@ pub fn Bubble() -> Element {
     } else {
         "busy"
     };
-    let left = (anchor.tail_x - TAIL / 2.0).clamp(8.0, SIZE.0 - TAIL - 8.0);
+    let left = (anchor.tail_x - TAIL / 2.0).clamp(8.0, anchor.width - TAIL - 8.0);
     let tail = rsx! {
         svg {
             class: "bubble-tail",
@@ -223,7 +228,7 @@ fn answer(
             if !f.heard.is_empty() {
                 div { class: "bubble-asked", "{f.heard}" }
             }
-            div { class: "bubble-answer", "{f.output}" }
+            div { class: "bubble-answer", {markdown::render(&f.output)} }
             if f.done {
                 div { class: "bubble-actions",
                 button { class: "bubble-button", onclick: move |_| close.send(Command::Bubble(BubbleAction::Close)), "Close" }

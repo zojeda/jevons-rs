@@ -16,7 +16,7 @@ The first run opens the window when no tray is available; otherwise use the tray
 - **Hold or toggle:** each dictation hotkey either listens while held (the default) or starts on a press and stops on the next one. Push-to-talk and the branch hotkeys share one setting (`hotkey_mode`), and live dictation has its own (`live_hotkey_mode`). Both are `hold` or `toggle`, and Settings has a switch under each hotkey.
 - **Live dictation:** hold its hotkey (default `F9`) while speaking, or press it to start and again to stop in toggle mode; the tray menu's **Start live dictation** toggles it too. While you speak, the feedback bubble shows the words as they are recognized. Nothing is typed until you stop: then the whole transcript goes through the flow tree, like a push-to-talk take. The app ends a phrase at each pause (0.7 s of quiet at the microphone, or every 20 s of nonstop speech) and keeps all the audio. While push-to-talk runs from a held hotkey, a keyboard hook drops that key's auto-repeats, which Windows would otherwise send to the focused application (a held F10 toggles most applications' menu bar).
 - **Live feedback:** a bubble above the tray icon follows each take: the words as they are recognized, then each stage as it runs. A decision's branches light up in turn until it chooses, and then the chosen one stays lit with its probability. An investigation shows what it reads, generation shows the words written, and tool calls and agents show each call. A running stage has moving dots, and a finished one has a check or a cross. At the end the bubble says whether the text was inserted or left on the clipboard. It never takes the focus, lets clicks through, and closes a few seconds after the take ends. Turn it off with the tray menu's **Live feedback** or in Settings.
-- **Answers:** a branch whose output is `bubble` (such as `ask/`) streams its answer into the bubble instead of typing it. The answer stays long enough to read (longer for longer answers), and the bubble then takes clicks: **Copy** puts the answer on the clipboard, **Insert** types it into the window the take started in (with the usual checks), and **Close** dismisses it.
+- **Answers:** a branch whose output is `bubble` (such as `ask/`) streams its answer into a larger bubble instead of typing it, even with live feedback off. The answer renders as Markdown (headings, **bold** and *italics*, lists and task lists, quotes, inline code and code blocks, tables), and scrolls with the mouse wheel while it streams and after. It stays until you close it or start another take. Once it is complete the bubble takes clicks: **Copy** puts the answer's Markdown on the clipboard, **Insert** types it into the window the take started in (with the usual checks), and **Close** dismisses it.
 - **Confirmations:** before a tool runs, the bubble shows the tool and its arguments and waits: **Run** or Enter runs it, **Cancel** or Esc does not. Enter and Esc are taken only while a call waits, and a call nobody answers within a minute is cancelled. The bubble asks even when live feedback is off. Headless runs never run a tool that asks first.
 - **Left-click** the tray icon to toggle dictation.
 - **Other hotkeys** (set in Settings, by clicking a field and pressing the combination): one to show the inspector, and one per top-level branch of the flow tree to start the take there instead of at the root (such as a hotkey that always asks).
@@ -45,7 +45,7 @@ Every step goes into a trace: the context, each node with the guards it checked,
 
 ## The flow tree
 
-The flow tree lives in the `flows` folder next to the settings file (`flows_dir` moves it). On the first run jevons writes the built-in tree there, with an `AGENTS.md` that documents the format for people and coding agents, a JSON Schema per node file in `_schemas/`, and a `.taplo.toml` that maps them for editors. The files reload as soon as you save them. A tree with problems is reported in the **Flows** tab with each file and line, and the last tree that loaded cleanly keeps running.
+The flow tree lives in the `flows` folder next to the settings file (`flows_dir` moves it). On the first run jevons writes the built-in tree there, with an `AGENTS.md` that documents the format for people and coding agents, a JSON Schema per node file in `_schemas/`, and a `.taplo.toml` that maps them for editors. When a new version of jevons changes the built-in tree, a folder that still holds an earlier built-in tree, unedited, is brought up to the new one (the **Flows** tab says so); a folder you edited is never touched, and `--init-flows` into an empty folder gives you the new tree to compare. The files reload as soon as you save them. A tree with problems is reported in the **Flows** tab with each file and line, and the last tree that loaded cleanly keeps running.
 
 Each folder is a node, and the file in it names its kind:
 
@@ -56,6 +56,7 @@ Each folder is a node, and the file in it names its kind:
 | `transcript.toml` | uses the words as recognized, with no model |
 | `tool.toml` | calls a tool registered in the settings |
 | `agent.toml` | runs a tool-calling agent over registered tools |
+| `run.toml` | runs one of your approved automations, its arguments filled from what you said |
 
 A decision in the built-in tree:
 
@@ -71,13 +72,16 @@ instructions = "Casual and concise. Keep emoji and names exactly as dictated. No
 app = ["slack.exe", "*teams*", "discord*", "whatsapp*", "telegram*"]
 ```
 
-Guards can check the application, window title, page address, the focused field's role and name, whether text is selected, whether the field holds text, whether it is editable, and the transcript itself (`transcript = "(?i)^translate"`). Instructions add up from the root down, and each folder may add an `instructions.md`.
+Guards can check the application, window title, page address, the focused field's role and name, whether text is selected, whether the field holds text, whether it is editable, and the transcript itself (`transcript = "(?i)^translate"`). A guard decides whether a branch can be chosen; `[prefer]`, with the same rules, chooses it with no model call when they pass (a branch whose `[prefer]` fails is still a candidate). Instructions add up from the root down, and each folder may add an `instructions.md`.
+
+The decision model reads each branch's `description` as that choice, along with the application, the window, the focused element and whether it accepts typing, the text around the cursor, the selection and what you said. A model decision takes the branch the model chose when its probability reaches `min_probability`, and otherwise its `fallback`.
 
 The built-in tree:
 
-- `decide.toml` at the root asks what the user wants: **dictate** (the fallback) or **ask**.
-- `dictate/` chooses by rules, per application: `code/` (only insert or type as heard), `chat/` (with `thread/` for replies), `web-mail/`, `notes/` and `any/`. Each takes its branches from the shared `_actions/` folder: `insert`, `replace` (with a selection), `rewrite` (with text in the field) and `verbatim` (the words as heard, no generation).
-- `ask/` answers in the bubble; in chat apps (`chat/`, `web-chat/`) it first reads the open conversation with an investigation.
+- `decide.toml` at the root asks who the words are for: the application (**dictate**, the fallback), jevons (**ask**), or a saved task (**run**, an automation). It takes the model's choice from 70% and dictates below that. Words that start with "Pregunta" or "Question" always go to **ask**, and in a terminal the words are always dictated, both with no model call (`[prefer]`). In Slack it also reads, with XPath, the open conversation, its latest messages and the channels (`slack_conversation`, `slack_messages`, `slack_channels`), lazily, for any branch below that uses them.
+- `dictate/` chooses by rules, per application: `code/` and `terminal/` (only insert or type as heard; a terminal's buffer is never rewritten), `chat/` (with `thread/` for replies), `web-mail/`, `notes/` and `any/`. Each takes its branches from the shared `_actions/` folder: `insert`, `replace` (with a selection), `rewrite` (with text in the field) and `verbatim` (the words as heard, no generation).
+- `ask/` answers in the bubble. In Slack (`slack/`) it answers from the root's Slack extracts; in other chat apps (`chat/`, `web-chat/`) it first reads the open conversation with an investigation.
+- `run/` runs one of your approved automations; it is not a choice until one is approved.
 
 `AGENTS.md` in the folder is the full reference: every field, placeholders such as `{selection}` and `{chat.messages}`, investigations, tools, agents and the rules the loader enforces. [examples/desktop/flows](../examples/desktop/flows) is the built-in tree.
 
@@ -100,10 +104,11 @@ lazy = true
 - **Vocabulary.** Elements are named by role (`List`, `ListItem`, `TreeItem`, `Edit`…) and attributes are the element's properties (`@name`, `@value`, `@class`, `@automation_id`, `@selected`…). In browsers and Electron apps, `@class` is the page's HTML class list; `has-class()` matches one class. Names follow the user's language, so classes and automation ids make steadier expressions.
 - **Answers.** An extract answers as text, a list, a count, a yes/no, or a table with one column per `fields` expression. The answer is available below as `{channels}` and `{messages.author}`, and decisions and generation read it like an investigation's answer.
 - **Variables.** `$transcript`, `$app` or `$chat.name` take a placeholder's value inside the expression; a value can never change what the expression means.
+- **Applications.** `app = ["slack.exe"]` reads an extract only in takes from those applications; elsewhere its answer is empty. The built-in root declares Slack's extracts this way.
 - **Scope.** An expression starts at the take's window. `/Window[@app='slack.exe']//…` with `scope = ["slack.exe"]` reads another application's window, under the same permissions as investigations. A leading `//` searches every window the extract may read, and `.//` only the take's.
 - **Search speed.** `//TreeItem[@name = $channel]` runs as one UI Automation search with the role and name as conditions, and fetches the element's properties in the same call.
 
-To write one, type the expression into the **XPath** box on the Context tab, which evaluates it on the window in front, or run `jevons-desktop --xpath "<expression>" --app slack.exe` (or `--tree <file>` for a recorded interface). [automations.md](automations.md) records how Slack's interface looks to UI Automation.
+To write one, use the **Extracts** card on the Context tab (below), which reads it in the window in front as a take would, or run `jevons-desktop --xpath "<expression>" --app slack.exe` (or `--tree <file>` for a recorded interface). [automations.md](automations.md) records how Slack's interface looks to UI Automation.
 
 ### Investigations: reading more of the screen
 
@@ -161,7 +166,11 @@ unconfirmed = ["read_file", "list_directory"]
 
 The **Context** tab shows what the platform reports for the focused window. It updates twice a second and ignores the inspector's own window. Use **Capture in 3 s**, then switch to the target application.
 
-Below the snapshot, the **Route** card walks the tree for that window by guards and rules alone. It shows each decision's branches with every rule's pattern, the value it was compared with, and whether it passed, and it stops at the first decision the model would make. **Flows → New branch from the current context** writes a folder under a decision (such as `dictate`) whose guard matches that application, page and field (the exact window title is included as a commented-out rule), then opens it for you to add a description and instructions.
+Below the snapshot, **Read by the flow tree** reads every `[extract]` that applies to the window (those of the nodes its guards reach, lazy ones included, such as the root's Slack extracts when Slack is in front) and shows each answer, with its expression, how many elements it matched and how long it took. It reads again when the window or its title changes (in Slack, when you open another conversation), or on **Read again**.
+
+The **Extracts** card is a workbench for them. Pick any `[extract]` of the tree (or **New expression**), edit its expression, its answer type (`as`) and a table's columns (`column = expression`, one per line), and **Try** it: it is checked as the node file would be (a mistake shows with its column) and read in the tab's window as a take reads it, with the same permissions, `app` filter and `$variables` (the tree's other extracts it names are read first). It shows the answer, how many elements matched, what they were and how long it took. With **Live** on, each edit is tried after a pause in typing, and again when the window or its title changes; **Freeze** keeps it on the captured window. **Save to <file>** writes the expression, `as` and columns back into the extract's node file, keeping the file's comments, but only if the tree still loads with the change; the tree then reloads. **Copy as TOML** puts a new expression on the clipboard as an `[extract.<name>]` table, and **Edit** on a reading above opens that extract here.
+
+The **Route** card walks the tree for that window by guards and rules alone. It shows each decision's branches with every rule's pattern, the value it was compared with, and whether it passed, and it stops at the first decision the model would make. **Flows → New branch from the current context** writes a folder under a decision (such as `dictate`) whose guard matches that application, page and field (the exact window title is included as a commented-out rule), then opens it for you to add a description and instructions.
 
 ## Automations
 
@@ -277,8 +286,9 @@ The panel shows the approximate memory of the selected models. On an APU, GPU me
 
 The app has no console window on Windows. Everything to review is in the `jevons` folder in your home directory (`C:\Users\<you>\jevons`, `~/jevons`), which **Open logs and traces** in the tray menu opens:
 
-- `logs/jevons-desktop.log`: this run's log, with `jevons-desktop.previous.log` from the run before. Each take logs its steps and timings (transcribed, deciding, generating, delivered) but never your text. Set `RUST_LOG` for more detail.
+- `logs/jevons-desktop.log`: this run's log, with `jevons-desktop.previous.log` from the run before. Each take logs its steps and timings (transcribed, deciding, generating, delivered) but never your text (the API log below is the one place that holds it, when you turn it on). Set `RUST_LOG` for more detail.
 - `traces/<time>-take<n>.json`: the full trace of each take, the same one the Takes tab shows (context, route with the guards checked, decision requests and probabilities, investigations, prompt, output, delivery). The newest 200 are kept.
+- `logs/api.log`, when **API log** is on (Settings → Privacy, or `log_api = true` under `[privacy]`): every call to the decision and generation APIs, the investigator's and agents' included. Each record holds the call's exact request body and its response: a decision's whole answer, and for a streamed generation the assembled text plus every event that is not a text delta (such as the final usage). Records are pretty-printed JSON, one after another, so `jq` reads the file as a stream (`jq 'select(.api == "POST /v1/systemone") | .response.answers' logs/api.log`). The log starts over at 32 MB, keeping `api.previous.log`. It holds your words and your screen's text in full, so it is off by default; keys are headers and never written.
 
 The decision and generation have time limits (60 s and 120 s). When the decision model does not answer in time, decisions take their fallback and the words are used as heard; the trace says why. **Cancel the current take** in the tray menu abandons a take without typing anything.
 

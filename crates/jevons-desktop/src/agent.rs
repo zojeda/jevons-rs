@@ -11,7 +11,7 @@ use jevons_desktop_core::automation::run::RunTrace;
 use jevons_desktop_core::config::{DesktopConfig, HotkeyMode};
 use jevons_desktop_core::context::ContextSnapshot;
 use jevons_desktop_core::flow::confirm::{ChannelConfirmer, Confirmation};
-use jevons_desktop_core::flow::extract::Reader;
+use jevons_desktop_core::flow::extract::{self, Reader};
 use jevons_desktop_core::flow::investigate::Investigate;
 use jevons_desktop_core::flow::investigator::{Investigator, PathCache};
 use jevons_desktop_core::flow::tools::ToolHost;
@@ -73,8 +73,18 @@ pub enum Command {
     /// What a running automation does now.
     AutomationProgress(String),
     AutomationFinished(Box<RunTrace>),
-    /// Evaluates an XPath expression against the window the Context tab shows.
-    EvaluateXPath(String),
+    /// Tries an extract on the window the Context tab shows: at once, or after a pause in typing.
+    TryExtract(Box<TrialRequest>),
+    /// Live mode: try the latest extract again whenever the Context tab's window changes.
+    LiveTrials(bool),
+    /// The pause after typing ended for the request with this number.
+    TrialDue(u64),
+    /// A trial finished.
+    TrialDone(Box<TrialView>),
+    /// Writes an edited extract into its node file.
+    SaveExtract(Box<TrialRequest>),
+    /// Reads the flow tree's extracts in the window the Context tab shows again.
+    ReadExtracts,
     ReloadFlows,
     RuntimeChanged,
     /// The MCP servers listed their tools: check the flows against them.
@@ -303,25 +313,74 @@ pub struct View {
     pub watch_context: bool,
     /// The feedback bubble's contents while a take runs and shortly after.
     pub feedback: Option<Feedback>,
-    /// The last XPath expression tried on the Context tab, and what it selected.
-    pub xpath: Option<XPathProbe>,
+    /// The Context tab's workbench: the last extract it tried and what it found.
+    pub trial: Option<TrialView>,
+    /// Whether a trial is under way.
+    pub trying: bool,
+    /// The last save from the workbench: where it went, or the tree's problems with it.
+    pub saved: Option<Result<String, Vec<String>>>,
+    /// What the flow tree's extracts read in the window the Context tab shows.
+    pub extracts: Option<ExtractsProbe>,
     /// The automations library: name, description, and whether this version is approved.
     pub automations: Vec<(String, String, bool)>,
     pub quit: bool,
 }
 
-/// What an expression tried on the Context tab selected.
+/// An extract the Context tab's workbench tries or saves.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrialRequest {
+    /// The node file that declares it (such as `ask/slack/generate.toml`); `None` for a new one.
+    pub file: Option<String>,
+    pub name: String,
+    pub spec: jevons_desktop_core::flow::spec::ExtractSpec,
+    /// Typed rather than asked for: wait for a pause first.
+    pub debounce: bool,
+}
+
+/// What the workbench's last trial found.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct XPathProbe {
-    pub expression: String,
-    /// One per match, or the value.
-    pub lines: Vec<String>,
-    /// Such as "12 matches in 18 ms".
-    pub summary: String,
-    pub error: Option<String>,
+pub struct TrialView {
+    pub name: String,
+    /// The expression it tried, to tell an answer from an earlier edit.
+    pub xpath: String,
+    /// The application and title of the window it read.
+    pub window: String,
+    pub trial: extract::Trial,
+}
+
+/// The pause in typing before the workbench tries an edit.
+const TRIAL_PAUSE: Duration = Duration::from_millis(350);
+
+/// The workbench's requests: at most one trial runs, and the latest one waiting runs after it.
+#[derive(Default)]
+struct Workbench {
+    latest: Option<TrialRequest>,
+    /// Counts typed requests, so only the last one's pause starts a trial.
+    due: u64,
+    running: bool,
+    /// A request arrived while a trial ran.
+    queued: bool,
+    live: bool,
+    /// The window (application and title) the last trial read, for live mode.
+    window: Option<String>,
+}
+
+/// The flow tree's extracts, read in the window the Context tab shows.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ExtractsProbe {
+    /// The application and title of the window they were read in.
+    pub window: String,
+    pub readings: Vec<extract::Reading>,
+    /// Whether a reading is under way.
+    pub reading: bool,
 }
 
 pub type SharedView = Arc<Mutex<View>>;
+
+/// A window as the Context tab's readings tell windows apart: its application and title.
+fn window_key(snapshot: &ContextSnapshot) -> String {
+    format!("{} · {}", snapshot.app.process_name, snapshot.window.title)
+}
 
 struct Active {
     id: u64,
@@ -378,6 +437,9 @@ pub struct Agent {
     replacing: Option<String>,
     /// How many messages the bubble has shown.
     messages: u64,
+    /// The window (and tree) the Context tab's extracts were last read in.
+    extracts_read: Option<String>,
+    workbench: Workbench,
     flows: Arc<FlowTree>,
     hotkeys: std::collections::HashMap<u32, HotkeyAction>,
     /// The reply to the tool call the bubble asks about.
@@ -415,6 +477,7 @@ impl Agent {
         repaint: Arc<dyn Fn() + Send + Sync>,
         commands: mpsc::UnboundedSender<Command>,
     ) -> Self {
+        config.privacy.apply_api_log();
         let flows_dir = config.flows_dir(&config_file);
         let automations = automation_host(&config, &config_file, &layers, &commands);
         let tools = Arc::new(
@@ -442,6 +505,8 @@ impl Agent {
             running: None,
             replacing: None,
             messages: 0,
+            extracts_read: None,
+            workbench: Workbench::default(),
             flows: Arc::new(flows),
             config,
             config_file,
@@ -633,7 +698,42 @@ impl Agent {
                 });
             }
             Command::RecordTree => self.record_tree(),
-            Command::EvaluateXPath(expression) => self.evaluate_xpath(expression),
+            Command::TryExtract(request) => {
+                let debounce = request.debounce;
+                self.workbench.latest = Some(*request);
+                self.view().saved = None;
+                if debounce {
+                    self.workbench.due += 1;
+                    let (due, commands) = (self.workbench.due, self.commands.clone());
+                    tokio::spawn(async move {
+                        tokio::time::sleep(TRIAL_PAUSE).await;
+                        let _ = commands.send(Command::TrialDue(due));
+                    });
+                } else {
+                    self.run_trial();
+                }
+            }
+            Command::LiveTrials(on) => self.workbench.live = on,
+            Command::TrialDue(due) => {
+                if due == self.workbench.due {
+                    self.run_trial();
+                }
+            }
+            Command::TrialDone(done) => {
+                self.workbench.running = false;
+                self.workbench.window = Some(done.window.clone());
+                {
+                    let mut view = self.view();
+                    view.trial = Some(*done);
+                    view.trying = false;
+                }
+                if std::mem::take(&mut self.workbench.queued) {
+                    self.run_trial();
+                }
+                self.repaint();
+            }
+            Command::SaveExtract(request) => self.save_extract(*request),
+            Command::ReadExtracts => self.read_extracts(true),
             Command::ToolsListed(problems) => {
                 self.view().tool_problems = problems;
                 self.reload_flows();
@@ -866,6 +966,9 @@ impl Agent {
             .map(|s| self.preview(s, start.as_deref()))
             .unwrap_or_default();
         let mut view = self.view();
+        // A capture freezes the tab, so the extracts follow any new snapshot while the window is
+        // open (reading again only when the window or the tree changed).
+        let open = view.window_visible;
         match snapshot {
             Ok(snapshot) => {
                 view.route = route;
@@ -876,6 +979,113 @@ impl Agent {
             Err(_) => {}
         }
         drop(view);
+        if open {
+            self.read_extracts(false);
+            // Live mode follows the window: a new one (or a new title) is tried again.
+            let window = self.view().context.as_ref().map(window_key);
+            if self.workbench.live
+                && self.workbench.latest.is_some()
+                && window.is_some()
+                && window != self.workbench.window
+            {
+                self.run_trial();
+            }
+        }
+        self.repaint();
+    }
+
+    /// Tries the workbench's latest extract on the window the Context tab shows, off the agent
+    /// thread; one at a time, the latest request waiting for the one running.
+    fn run_trial(&mut self) {
+        let Some(request) = self.workbench.latest.clone() else {
+            return;
+        };
+        if self.workbench.running {
+            self.workbench.queued = true;
+            return;
+        }
+        let Some(snapshot) = self.view().context.clone() else {
+            return;
+        };
+        self.workbench.running = true;
+        // Live mode would otherwise try again at once for a window it is already reading.
+        self.workbench.window = Some(window_key(&snapshot));
+        self.view().trying = true;
+        let tree = self.flows.clone();
+        let reader = Reader::new(self.inspector.clone(), self.config.privacy.clone());
+        let commands = self.commands.clone();
+        tokio::task::spawn_blocking(move || {
+            let name = if request.name.trim().is_empty() {
+                "new".to_string()
+            } else {
+                request.name.trim().to_string()
+            };
+            let trial = extract::trial(&tree, &name, &request.spec, &snapshot, &reader);
+            let _ = commands.send(Command::TrialDone(Box::new(TrialView {
+                name,
+                xpath: request.spec.xpath.clone(),
+                window: window_key(&snapshot),
+                trial,
+            })));
+        });
+        self.repaint();
+    }
+
+    /// Writes an edited extract into its node file in the flows folder, off the agent thread,
+    /// once the tree with the change still loads; the folder watcher then reloads it.
+    fn save_extract(&mut self, request: TrialRequest) {
+        let Some(file) = request.file.clone() else {
+            return;
+        };
+        let dir = self.config.flows_dir(&self.config_file);
+        let catalog = self.tools.catalog();
+        let view = self.view.clone();
+        let repaint = self.repaint.clone();
+        tokio::task::spawn_blocking(move || {
+            let saved = extract::save(&dir, &file, &request.name, &request.spec, &catalog)
+                .map(|()| format!("Saved [extract.{}] into {file}", request.name));
+            view.lock().expect("the view lock").saved = Some(saved);
+            repaint();
+        });
+    }
+
+    /// Reads the flow tree's extracts in the window the Context tab shows, off the agent
+    /// thread: when that window (or the tree) changed since the last reading, or on `force`.
+    fn read_extracts(&mut self, force: bool) {
+        let Some(snapshot) = self.view().context.clone() else {
+            return;
+        };
+        let key = format!(
+            "{}\u{1f}{}\u{1f}{:p}",
+            snapshot.app.process_name,
+            snapshot.window.title,
+            Arc::as_ptr(&self.flows)
+        );
+        if !force && self.extracts_read.as_deref() == Some(key.as_str()) {
+            return;
+        }
+        {
+            let mut view = self.view();
+            let probe = view.extracts.get_or_insert_with(ExtractsProbe::default);
+            if probe.reading {
+                return;
+            }
+            probe.reading = true;
+        }
+        self.extracts_read = Some(key);
+        let tree = self.flows.clone();
+        let reader = Reader::new(self.inspector.clone(), self.config.privacy.clone());
+        let view = self.view.clone();
+        let repaint = self.repaint.clone();
+        tokio::task::spawn_blocking(move || {
+            let readings = extract::read_applicable(&tree, &snapshot, &reader);
+            view.lock().expect("the view lock").extracts = Some(ExtractsProbe {
+                window: window_key(&snapshot),
+                readings,
+                reading: false,
+            });
+            repaint();
+        });
         self.repaint();
     }
 
@@ -1064,59 +1274,6 @@ impl Agent {
         });
     }
 
-    /// Evaluates an expression against the window the Context tab shows, off the agent thread,
-    /// reading only that window.
-    fn evaluate_xpath(&mut self, expression: String) {
-        use jevons_desktop_core::xpath::{self, Document, Variables, XPath};
-        let inspector = self.inspector.clone();
-        let privacy = self.config.privacy.clone();
-        let snapshot = self.view().context.clone().unwrap_or_default();
-        let view = self.view.clone();
-        let repaint = self.repaint.clone();
-        tokio::task::spawn_blocking(move || {
-            let began = std::time::Instant::now();
-            let mut probe = XPathProbe {
-                expression: expression.clone(),
-                ..XPathProbe::default()
-            };
-            match XPath::parse(&expression) {
-                Err(e) => probe.error = Some(e.to_string()),
-                Ok(parsed) => {
-                    // Only the window the tab shows, as an extract without `scope` reads.
-                    let (windows, note) =
-                        xpath::readable_windows(&*inspector, &snapshot, &[], &privacy);
-                    let mut document = Document::new(&*inspector, &windows);
-                    match document.window(0) {
-                        None => {
-                            probe.error = Some(note.unwrap_or_else(|| "No window to read".into()))
-                        }
-                        Some(window) => {
-                            match document.evaluate(&parsed, window, &Variables::new()) {
-                                Ok(value) => {
-                                    probe.lines = xpath::describe(&mut document, &value, 120);
-                                    let what = match &value {
-                                        xpath::Value::Nodes(nodes) => {
-                                            format!("{} matches", nodes.len())
-                                        }
-                                        _ => "a value".into(),
-                                    };
-                                    probe.summary = format!(
-                                        "{what} in {} ms, {} elements read",
-                                        began.elapsed().as_millis(),
-                                        document.read()
-                                    );
-                                }
-                                Err(e) => probe.error = Some(e.to_string()),
-                            }
-                        }
-                    }
-                }
-            }
-            view.lock().expect("the view lock").xpath = Some(probe);
-            repaint();
-        });
-    }
-
     /// Loads the flows folder again; a tree with errors is reported and the last good one kept.
     fn reload_flows(&mut self) {
         let dir = self.config.flows_dir(&self.config_file);
@@ -1156,6 +1313,7 @@ impl Agent {
         let library_changed = config.automations_dir(&self.config_file)
             != self.config.automations_dir(&self.config_file);
         self.config = config;
+        self.config.privacy.apply_api_log();
         self.automations
             .set_settings(self.config.automation.clone());
         if hotkeys_changed && let Some(tray) = &self.tray {
@@ -1455,19 +1613,21 @@ impl Agent {
             });
             if let Some(feedback) = view.feedback.as_mut().filter(|f| f.take == trace.take) {
                 feedback.finish(&trace);
-                // Long enough to read the outcome; errors and answers stay longer.
-                let words = trace.output.split_whitespace().count() as u64;
-                let shown = Duration::from_secs(match (failed, feedback.answer) {
-                    (true, _) => 8,
-                    (false, true) => (6 + words / 3).min(60),
-                    (false, false) => 4,
-                });
-                let commands = self.commands.clone();
-                let take = trace.take;
-                tokio::spawn(async move {
-                    tokio::time::sleep(shown).await;
-                    let _ = commands.send(Command::HideFeedback(take));
-                });
+                // Long enough to read the outcome, errors longer; an answer stays until Close
+                // (or the next take), since reading it may take a while.
+                let shown = match (failed, feedback.answer) {
+                    (true, _) => Some(8),
+                    (false, true) => None,
+                    (false, false) => Some(4),
+                };
+                if let Some(seconds) = shown {
+                    let commands = self.commands.clone();
+                    let take = trace.take;
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(seconds)).await;
+                        let _ = commands.send(Command::HideFeedback(take));
+                    });
+                }
             }
             view.traces.push_front(trace);
             view.traces.truncate(HISTORY);

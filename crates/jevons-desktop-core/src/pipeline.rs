@@ -1428,6 +1428,156 @@ mod tests {
         );
     }
 
+    /// A take of `words` in `app`, from text, through the built-in tree.
+    async fn said(env: &Env, app: &str, words: &str) -> Trace {
+        let (updates, _) = mpsc::unbounded_channel();
+        let mut context = context(None);
+        context.app.process_name = app.into();
+        let start = TakeStart {
+            id: 1,
+            context,
+            entry: None,
+        };
+        run_transcript(env, start, words, &updates).await
+    }
+
+    #[tokio::test]
+    async fn words_starting_with_pregunta_are_a_question_with_no_root_decision() {
+        let (client, seen) = server(prefer(&["dictate"]), "Paul means Friday.").await;
+        let trace = said(
+            &env(client, None),
+            "slack.exe",
+            "Pregunta, ¿qué quiere decir Paul?",
+        )
+        .await;
+        assert_eq!(trace.error, None, "{:?}", trace.notes);
+        assert_eq!(trace.flow[0].chosen.as_deref(), Some("ask"));
+        assert_eq!(
+            trace.flow[0].how.as_deref(),
+            Some("preferred: its transcript rule passed")
+        );
+        let ask = trace.flow[0]
+            .branches
+            .iter()
+            .find(|b| b.name == "ask")
+            .unwrap();
+        assert!(ask.preferred && ask.prefer[0].passed);
+        assert!(
+            seen.decisions
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|d| !d.to_string().contains("\"dictate\"")),
+            "the root was not asked"
+        );
+        assert_eq!(trace.output, "Paul means Friday.");
+    }
+
+    #[tokio::test]
+    async fn in_a_terminal_the_words_are_dictated_and_never_rewritten() {
+        let (client, seen) = server(prefer(&["ask", "rewrite", "verbatim"]), "unused").await;
+        let sink = RecordingSink::new(Some(7));
+        let trace = said(
+            &env(client, Some(&sink)),
+            "WindowsTerminal.exe",
+            "can you check why the build fails?",
+        )
+        .await;
+        assert_eq!(trace.error, None, "{:?}", trace.notes);
+        assert_eq!(
+            trace.flow[0].how.as_deref(),
+            Some("preferred: its app rule passed")
+        );
+        assert_eq!(
+            trace.route(),
+            "dictate → dictate/terminal → _actions/verbatim"
+        );
+        let decisions = seen.decisions.lock().unwrap();
+        assert_eq!(decisions.len(), 1, "only the action is asked");
+        let actions = decisions[0]["questions"]["q00"]["criteria"]
+            .as_object()
+            .unwrap();
+        assert_eq!(actions.keys().collect::<Vec<_>>(), ["insert", "verbatim"]);
+        assert_eq!(
+            sink.requests()[0].text,
+            "can you check why the build fails?"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_root_takes_the_model_s_choice_from_seventy_percent_and_dictates_below() {
+        let (client, seen) = server(prefer_with(&["ask"], 0.86), "It means yes.").await;
+        let trace = said(&env(client, None), "notepad.exe", "what does this mean?").await;
+        assert_eq!(trace.flow[0].chosen.as_deref(), Some("ask"));
+        assert_eq!(trace.flow[0].how.as_deref(), Some("model 0.86"));
+        let state = seen.decisions.lock().unwrap()[0]["state"].clone();
+        assert!(
+            state.as_str().unwrap().contains("(accepts typing)"),
+            "{state}"
+        );
+        let (client, _) = server(prefer_with(&["ask"], 0.65), "unused").await;
+        let trace = said(&env(client, None), "notepad.exe", "what does this mean?").await;
+        assert_eq!(trace.flow[0].chosen.as_deref(), Some("dictate"));
+        assert_eq!(
+            trace.flow[0].how.as_deref(),
+            Some("unsure (ask 0.65): the fallback")
+        );
+    }
+
+    #[tokio::test]
+    async fn in_slack_the_built_in_ask_branch_answers_from_the_root_s_slack_extracts() {
+        let tree = FlowTree::load(&crate::flow::defaults::builtin(), &Catalog::default());
+        assert!(tree.is_valid(), "{:?}", tree.errors);
+        let (client, seen) = server(prefer(&["ask"]), "Five.").await;
+        let recorded: crate::recorded::RecordedTree =
+            serde_json::from_str(include_str!("../../../examples/desktop/trees/slack.json"))
+                .unwrap();
+        let env = Env {
+            flows: Arc::new(tree),
+            reader: Some(Arc::new(crate::flow::extract::Reader::new(
+                Arc::new(crate::recorded::RecordedInspector::new(recorded)),
+                crate::context::Privacy::default(),
+            ))),
+            ..env(client, None)
+        };
+        let (audio, finish) = one_second_of_audio();
+        let (updates, _) = mpsc::unbounded_channel();
+        let start = TakeStart {
+            id: 1,
+            context: ContextSnapshot {
+                app: AppInfo {
+                    process_name: "slack.exe".into(),
+                    ..AppInfo::default()
+                },
+                window: WindowInfo {
+                    title: "general (Channel) - Acme - Slack".into(),
+                    handle: Some(7),
+                    ..WindowInfo::default()
+                },
+                ..ContextSnapshot::default()
+            },
+            entry: None,
+        };
+        let trace = run_take(&env, start, audio, finish, &updates).await;
+        assert_eq!(trace.error, None, "{:?}", trace.notes);
+        assert_eq!(trace.leaf.as_ref().unwrap().node, "ask/slack");
+        let extracts: Vec<_> = trace.flow.iter().flat_map(|f| &f.extracts).collect();
+        let mut names: Vec<&str> = extracts.iter().map(|e| e.name.as_str()).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            ["slack_channels", "slack_conversation", "slack_messages"]
+        );
+        assert!(extracts.iter().all(|e| e.note.is_none()), "{extracts:?}");
+        let generation = serde_json::to_string(&seen.generations.lock().unwrap()[0]).unwrap();
+        assert!(
+            generation.contains("in the conversation general.")
+                && generation.contains("Bo Chen")
+                && generation.contains("Can someone review the release notes?"),
+            "{generation}"
+        );
+    }
+
     #[tokio::test]
     async fn without_approved_automations_the_run_branch_is_no_candidate() {
         let (client, seen) = server(prefer(&["run", "dictate", "verbatim"]), "unused").await;

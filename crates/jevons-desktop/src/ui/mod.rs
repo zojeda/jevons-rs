@@ -11,9 +11,11 @@ mod bubble;
 mod components;
 mod context;
 mod flows;
+mod markdown;
 mod models;
 mod settings;
 mod takes;
+mod workbench;
 
 use crate::agent::{Command, SharedView};
 use anyrender_vello::{VelloRendererOptions, VelloWindowRenderer};
@@ -104,6 +106,7 @@ pub fn run(
         ctx,
         main: None,
         bubble: None,
+        bubble_size: bubble::SIZE,
         bubble_clicks: false,
     };
     event_loop.run_app(&mut shell)?;
@@ -118,14 +121,17 @@ struct Shell {
     main: Option<WindowId>,
     /// The feedback bubble, while it shows.
     bubble: Option<WindowId>,
-    /// Whether the bubble takes clicks (an answer or a confirmation).
+    /// Its size in logical pixels: larger while it shows an answer.
+    bubble_size: (f64, f64),
+    /// Whether the bubble takes clicks and the wheel (an answer or a confirmation).
     bubble_clicks: bool,
 }
 
-/// Where the bubble goes: just above the tray icon (or below it, for a taskbar at the top), and
-/// at the bottom right of the screen when the icon's place is unknown.
+/// Where a bubble of `size` goes: just above the tray icon (or below it, for a taskbar at the
+/// top), and at the bottom right of the screen when the icon's place is unknown.
 fn place_bubble(
     event_loop: &ActiveEventLoop,
+    bubble_size: (f64, f64),
 ) -> Option<(PhysicalPosition<i32>, f64, bubble::Anchor)> {
     let icon = crate::tray::icon_rect();
     let monitor = event_loop
@@ -145,7 +151,7 @@ fn place_bubble(
     let (origin, size) = (monitor.position(), monitor.size());
     let (left, top) = (f64::from(origin.x), f64::from(origin.y));
     let (width, height) = (f64::from(size.width), f64::from(size.height));
-    let (w, h) = (bubble::SIZE.0 * scale, bubble::SIZE.1 * scale);
+    let (w, h) = (bubble_size.0 * scale, bubble_size.1 * scale);
     let gap = 6.0 * scale;
     let (center, y, icon_below) = match icon {
         Some((x, y, iw, ih)) => {
@@ -168,9 +174,12 @@ fn place_bubble(
         ),
     };
     let x = (center - w / 2.0).clamp(left + 8.0 * scale, left + width - w - 8.0 * scale);
+    // A tall bubble never leaves the screen.
+    let y = y.clamp(top + 8.0 * scale, (top + height - h - 8.0 * scale).max(top));
     let anchor = bubble::Anchor {
         tail_x: (center - x) / scale,
         icon_below,
+        width: bubble_size.0,
     };
     Some((PhysicalPosition::new(x as i32, y as i32), scale, anchor))
 }
@@ -178,8 +187,8 @@ fn place_bubble(
 impl Shell {
     /// Opens the feedback bubble without taking the focus from the application being dictated
     /// into. It is a new window each time: winit shows a window without activating it only once.
-    fn open_bubble(&mut self, event_loop: &ActiveEventLoop) {
-        let Some((position, scale, anchor)) = place_bubble(event_loop) else {
+    fn open_bubble(&mut self, event_loop: &ActiveEventLoop, size: (f64, f64)) {
+        let Some((position, scale, anchor)) = place_bubble(event_loop, size) else {
             return;
         };
         let mut vdom = VirtualDom::new(bubble::Bubble);
@@ -192,9 +201,9 @@ impl Shell {
             base_color: peniko::Color::from_rgb8(14, 14, 14),
             ..Default::default()
         });
-        let size = PhysicalSize::new(
-            (bubble::SIZE.0 * scale).round() as u32,
-            (bubble::SIZE.1 * scale).round() as u32,
+        let physical = PhysicalSize::new(
+            (size.0 * scale).round() as u32,
+            (size.1 * scale).round() as u32,
         );
         #[allow(unused_mut)]
         let mut attributes = Window::default_attributes()
@@ -203,7 +212,7 @@ impl Shell {
             .with_resizable(false)
             .with_window_level(WindowLevel::AlwaysOnTop)
             .with_active(false)
-            .with_inner_size(size)
+            .with_inner_size(physical)
             .with_position(position);
         #[cfg(windows)]
         {
@@ -221,6 +230,7 @@ impl Shell {
         let id = view.window_id();
         self.inner.windows.insert(id, view);
         self.bubble = Some(id);
+        self.bubble_size = size;
     }
 
     fn refresh(&mut self, event_loop: &ActiveEventLoop) {
@@ -229,16 +239,24 @@ impl Shell {
             // A call waiting for confirmation shows even with live feedback off.
             let asking = view.feedback.as_ref().is_some_and(|f| f.confirm.is_some());
             let message = view.feedback.as_ref().is_some_and(|f| f.message);
+            // An answer is for reading: it shows even with live feedback off.
+            let answer = view.feedback.as_ref().is_some_and(|f| f.answer);
             let bubble = view.feedback.is_some()
-                && (view.config.dictation.live_feedback || asking || message);
+                && (view.config.dictation.live_feedback || asking || message || answer);
+            // An answer takes the wheel as soon as it streams in, and clicks once it is done.
             let clicks = view
                 .feedback
                 .as_ref()
-                .is_some_and(|f| f.confirm.is_some() || (f.answer && f.done));
+                .is_some_and(|f| f.confirm.is_some() || f.answer);
+            let size = if answer && !asking {
+                bubble::ANSWER_SIZE
+            } else {
+                bubble::SIZE
+            };
             (
                 view.quit,
                 std::mem::take(&mut view.show_window),
-                bubble,
+                bubble.then_some(size),
                 clicks,
             )
         };
@@ -247,11 +265,17 @@ impl Shell {
             return;
         }
         match (bubble, self.bubble) {
-            (true, None) => {
-                self.open_bubble(event_loop);
+            (Some(size), None) => {
+                self.open_bubble(event_loop, size);
                 self.bubble_clicks = false;
             }
-            (false, Some(id)) => {
+            // A new size is a new window: winit shows a window without activating it only once.
+            (Some(size), Some(id)) if size != self.bubble_size => {
+                self.inner.windows.remove(&id);
+                self.open_bubble(event_loop, size);
+                self.bubble_clicks = false;
+            }
+            (None, Some(id)) => {
                 self.bubble = None;
                 self.inner.windows.remove(&id);
             }
@@ -448,6 +472,7 @@ mod tests {
         vdom.insert_any_root_context(Box::new(bubble::Anchor {
             tail_x: 300.0,
             icon_below: true,
+            width: bubble::SIZE.0,
         }));
         let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
         doc.add_user_agent_stylesheet(include_str!("bubble.css"));
@@ -528,14 +553,19 @@ mod tests {
             let feedback = view.feedback.as_mut().unwrap();
             feedback.confirm = None;
             feedback.answer = true;
-            feedback.output = "The launch is on Friday.".into();
+            feedback.output = "## Launch\n\nThe launch is **on Friday**:\n\n1. build\n2. ship\n\n\
+                               | who | when |\n|---|---|\n| Ana | `Fri` |\n"
+                .into();
             feedback.window = Some(7);
         }
         doc.vdom.mark_dirty(ScopeId::APP);
         doc.poll(None);
         let text = doc.root_element().text_content();
         assert!(
-            text.contains("The launch is on Friday.")
+            text.contains("The launch is on Friday:")
+                && text.contains("1.build")
+                && text.contains("Ana")
+                && !text.contains("**")
                 && text.contains("Insert")
                 && text.contains("Copy"),
             "{text}"
@@ -645,5 +675,61 @@ mod tests {
             doc.poll(None);
         }
         std::fs::remove_dir_all(folder).unwrap();
+    }
+    /// The workbench with the root's `slack_messages` chosen, as the "Edit" of a reading picks it.
+    fn workbench_root() -> Element {
+        let rev = REV.fetch_add(1, Ordering::Relaxed);
+        let chosen = use_signal(|| Some(workbench::key("", "slack_messages")));
+        rsx! { workbench::Workbench { rev, chosen } }
+    }
+
+    #[test]
+    fn the_extract_workbench_loads_the_chosen_extract_and_shows_a_trial_in_blitz() {
+        use jevons_desktop_core::flow::extract::{Extracted, Trial};
+        let folder = std::env::temp_dir().join(format!("jevons-ui-bench-{}", std::process::id()));
+        let view = Arc::new(Mutex::new(view(&folder)));
+        let (commands, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let mut vdom = VirtualDom::new(workbench_root);
+        vdom.insert_any_root_context(Box::new(Ctx {
+            view: view.clone(),
+            commands,
+        }));
+        let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("style.css"));
+        doc.initial_build();
+        doc.poll(None);
+        let html = doc.root_element().outer_html();
+        assert!(
+            html.contains("message-list_"),
+            "the expression loads: {html}"
+        );
+        assert!(html.contains("Save to decide.toml"), "{html}");
+        view.lock().unwrap().trial = Some(crate::agent::TrialView {
+            name: "slack_messages".into(),
+            xpath: "//ListItem".into(),
+            window: "slack.exe · general".into(),
+            trial: Trial {
+                found: Some(Extracted {
+                    value: serde_json::json!(["Ana: hi", "Bo: hello"]),
+                    matches: 2,
+                    note: None,
+                }),
+                matched: vec!["ListItem \"Ana: hi\"".into()],
+                ms: 12,
+                ..Trial::default()
+            },
+        });
+        doc.vdom.mark_dirty(ScopeId::APP);
+        doc.poll(None);
+        let text = doc.root_element().text_content();
+        assert!(
+            text.contains("2 matches") && text.contains("Bo: hello"),
+            "{text}"
+        );
+        assert!(
+            text.contains("(for an earlier version of the expression)"),
+            "{text}"
+        );
+        assert!(received.try_recv().is_err(), "nothing is tried until asked");
     }
 }

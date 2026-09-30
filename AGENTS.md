@@ -32,7 +32,7 @@ Inference runs on AMD GPUs through CubeCL/HIP (RDNA3-class, 32-lane waves); the 
 
 ## Coding Style & Naming Conventions
 
-Use rustfmt defaults, four-space indentation, `snake_case` functions/modules, `UpperCamelCase` types, and `SCREAMING_SNAKE_CASE` constants. Do not add unsafe code; the inference crates forbid it and CubeCL kernels launch in checked mode. Keep model ownership on the dedicated worker thread and blocking inference off Tokio executor threads. Keep wire formats in `jevons-api` and services free of HTTP, JSON and async code. In the desktop crates, platform code only goes through safe wrapper crates (no unsafe), shared behaviour belongs in `jevons-desktop-core`, and snapshots, transcripts and keys are never logged.
+Use rustfmt defaults, four-space indentation, `snake_case` functions/modules, `UpperCamelCase` types, and `SCREAMING_SNAKE_CASE` constants. Do not add unsafe code; the inference crates forbid it and CubeCL kernels launch in checked mode. Keep model ownership on the dedicated worker thread and blocking inference off Tokio executor threads. Keep wire formats in `jevons-api` and services free of HTTP, JSON and async code. In the desktop crates, platform code only goes through safe wrapper crates (no unsafe), shared behaviour belongs in `jevons-desktop-core`, and snapshots, transcripts and keys are never logged. The one exception is the API log (`privacy.log_api`, off by default), which writes decision and generation request and response bodies, never keys, to its own file.
 
 ## Testing Guidelines
 

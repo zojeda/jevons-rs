@@ -15,6 +15,7 @@ pub struct Common<'a> {
     pub description: Option<&'a str>,
     pub priority: i32,
     pub when: &'a When,
+    pub prefer: &'a When,
     pub instructions: Option<&'a str>,
     pub delivery: Option<DeliveryMethod>,
     pub max_output_tokens: Option<u32>,
@@ -50,6 +51,11 @@ macro_rules! node_spec {
             /// candidate. Without rules the branch always applies.
             #[serde(default, skip_serializing_if = "is_default_when")]
             pub when: When,
+            /// Rules that choose this branch with no model call: when they pass (and the guard
+            /// does), the parent's decision chooses only among the branches whose `prefer`
+            /// passes. A branch whose `prefer` fails stays a candidate.
+            #[serde(default, skip_serializing_if = "is_default_when")]
+            pub prefer: When,
             /// Added to the instructions of every model call at and below this node, after this
             /// folder's `instructions.md`.
             #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -82,6 +88,7 @@ macro_rules! node_spec {
                     description: self.description.as_deref(),
                     priority: self.priority,
                     when: &self.when,
+                    prefer: &self.prefer,
                     instructions: self.instructions.as_deref(),
                     delivery: self.delivery,
                     max_output_tokens: self.max_output_tokens,
@@ -129,16 +136,16 @@ node_spec! {
         pub question: Option<String>,
         #[serde(default)]
         pub select: Select,
-        /// The branch taken when no guard passes, the model is unsure (below `min_confidence`)
+        /// The branch taken when no guard passes, the model is unsure (below `min_probability`)
         /// or unavailable. It is taken even when its own guard fails.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub fallback: Option<String>,
-        /// Below this probability of the chosen branch, run `enrich` and ask again, then take
-        /// the fallback.
+        /// Below this probability of the branch the model chose (0 to 1), run `enrich` and ask
+        /// again, then take the fallback.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub min_confidence: Option<f64>,
+        pub min_probability: Option<f64>,
         /// Investigations (declared here or above, usually `lazy`) run only when the first answer
-        /// is below `min_confidence`.
+        /// is below `min_probability`.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         pub enrich: Vec<String>,
         /// Take the branches from this folder instead of subfolders, such as `"_actions"`: a
@@ -332,6 +339,10 @@ pub struct ExtractSpec {
     /// `["slack.exe"]`. Other windows also need `privacy.read_other_windows` in the settings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scope: Vec<String>,
+    /// Only when the take is in one of these applications (process-name globs, such as
+    /// `["slack.exe"]`); elsewhere it is not read and its answer is empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub app: Vec<String>,
     /// Run only when a node at or below uses it (in a placeholder, a `$variable` or `enrich`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub lazy: bool,

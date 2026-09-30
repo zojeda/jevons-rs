@@ -2,7 +2,8 @@
 
 use super::Ctx;
 use super::components::{Collapsible, Icon, JsonTree, Switch, badge, icon};
-use crate::agent::Command;
+use super::workbench::{self, Workbench};
+use crate::agent::{Command, ExtractsProbe};
 use dioxus::prelude::*;
 use jevons_desktop_core::flow::Check;
 use jevons_desktop_core::flow::walk::FlowStep;
@@ -22,16 +23,13 @@ pub fn ContextPage(rev: u64, frozen: Signal<bool>) -> Element {
     let error = view.context_error.clone();
     let context = view.context.clone();
     let route = view.route.clone();
-    // The last expression tried: its error, or its summary and matches.
-    let probe = view
-        .xpath
-        .clone()
-        .map(|p| (p.error, p.summary, p.lines.join("\n")));
+    let extracts = view.extracts.clone();
     drop(view);
+    let reread = ctx.clone();
     let capture = ctx.clone();
     let record = ctx.clone();
-    let run = ctx.clone();
-    let mut expression = use_signal(String::new);
+    // The extract the workbench edits; the flow tree's readings can pick one too.
+    let chosen = use_signal(|| None::<String>);
 
     rsx! {
         div { class: "spread",
@@ -150,42 +148,111 @@ pub fn ContextPage(rev: u64, frozen: Signal<bool>) -> Element {
                 }
             }
         }
-        div { class: "dx-card",
-            div { class: "dx-card-header",
-                div {
-                    div { class: "dx-card-title", "XPath" }
-                    div { class: "dx-card-description",
-                        "Try an expression on this window, as [extract] reads it: roles such as ListItem, \
-                         attributes such as @name, @class and @automation_id"
-                    }
-                }
-            }
-            div { class: "dx-card-content",
-                div { class: "row",
-                    input { class: "dx-input mono", placeholder: "//ListItem[last()]",
-                        value: "{expression}", oninput: move |e| expression.set(e.value()) }
-                    button {
-                        class: "dx-button",
-                        "data-size": "sm",
-                        onclick: move |_| run.send(Command::EvaluateXPath(expression())),
-                        "Run"
-                    }
-                }
-                if let Some((error, summary, lines)) = probe {
-                    if let Some(error) = error {
-                        p { class: "error-text", "{error}" }
-                    } else {
-                        p { class: "muted", "{summary}" }
-                        if !lines.is_empty() {
-                            pre { class: "code", "{lines}" }
-                        }
-                    }
-                }
-            }
-        }
+        {extracts_card(extracts, chosen, move || reread.send(Command::ReadExtracts))}
+        Workbench { rev, chosen }
         if !route.is_empty() {
             {route_card(&route)}
         }
+    }
+}
+
+/// The flow tree's `[extract]` values in this window, as a take from here reads them.
+fn extracts_card(
+    probe: Option<ExtractsProbe>,
+    mut chosen: Signal<Option<String>>,
+    reread: impl FnMut() + 'static,
+) -> Element {
+    let mut reread = reread;
+    let probe = probe.unwrap_or_default();
+    let summary = if probe.reading {
+        "Reading…".to_string()
+    } else if probe.window.is_empty() {
+        String::new()
+    } else {
+        format!("In {}", probe.window)
+    };
+    let open = probe.readings.len() <= 4;
+    rsx! {
+        div { class: "dx-card",
+            div { class: "dx-card-header",
+                div {
+                    div { class: "dx-card-title", "Read by the flow tree" }
+                    div { class: "dx-card-description",
+                        "The [extract] values a take from this window can use, read from the interface \
+                         with no model; lazy ones only when a take needs them"
+                    }
+                }
+                button {
+                    class: "dx-button",
+                    "data-style": "outline",
+                    "data-size": "sm",
+                    disabled: probe.reading,
+                    onclick: move |_| reread(),
+                    "Read again"
+                }
+            }
+            div { class: "dx-card-content",
+                if !summary.is_empty() {
+                    p { class: "muted", "{summary}" }
+                }
+                if probe.readings.is_empty() && !probe.reading && !probe.window.is_empty() {
+                    p { class: "muted", "No extract in the flow tree applies to this window." }
+                }
+                div { class: "dx-accordion",
+                    {probe.readings.iter().map(|r| {
+                        let mut about = vec![match r.found.matches {
+                            1 => "1 match".to_string(),
+                            n => format!("{n} matches"),
+                        }];
+                        about.push(format!("{} ms", r.ms));
+                        if r.lazy {
+                            about.push("lazy".into());
+                        }
+                        about.push(if r.node.is_empty() { "/".into() } else { r.node.clone() });
+                        let text = shown(&r.found.value);
+                        rsx! {
+                            Collapsible { key: "{r.node}/{r.name}", title: r.name.clone(), subtitle: Some(about.join(" · ")), open,
+                                div { class: "spread",
+                                    p { class: "mono muted", "{r.xpath}" }
+                                    button { class: "dx-button", "data-style": "outline", "data-size": "sm",
+                                        title: "Edit it in the Extracts card below",
+                                        onclick: {
+                                            let picked = workbench::key(&r.node, &r.name);
+                                            move |_| chosen.set(Some(picked.clone()))
+                                        },
+                                        "Edit"
+                                    }
+                                }
+                                if let Some(note) = &r.found.note {
+                                    p { class: "warn", "{note}" }
+                                }
+                                if text.is_empty() {
+                                    p { class: "muted", "(nothing)" }
+                                } else {
+                                    pre { class: "code", "{text}" }
+                                }
+                            }
+                        }
+                    })}
+                }
+            }
+        }
+    }
+}
+
+/// An extract's answer as text: a string as it is, a list one item per line.
+fn shown(value: &serde_json::Value) -> String {
+    use serde_json::Value;
+    match value {
+        Value::Null => String::new(),
+        Value::String(s) => excerpt(s),
+        Value::Array(items) if items.iter().all(Value::is_string) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(excerpt)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        other => serde_json::to_string_pretty(other).unwrap_or_default(),
     }
 }
 
@@ -237,8 +304,15 @@ pub fn route_card(route: &[FlowStep]) -> Element {
                                             {icon(if b.passed { Icon::Check } else { Icon::Cross })}
                                             span { class: "mono", "{b.name}" }
                                             span { class: "muted", "priority {b.priority} · {b.specificity} rules" }
+                                            if b.preferred {
+                                                {badge("preferred", "accent")}
+                                            }
                                         }
                                         {checks(&b.checks)}
+                                        if !b.prefer.is_empty() {
+                                            p { class: "muted", "[prefer]" }
+                                            {checks(&b.prefer)}
+                                        }
                                     }
                                 })}
                             }

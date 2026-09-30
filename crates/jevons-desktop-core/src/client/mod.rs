@@ -2,6 +2,7 @@
 //! schemas rather than share types with it (which would also pull in the inference stack).
 
 mod chat;
+pub mod log;
 mod realtime;
 mod responses;
 mod systemone;

@@ -1,5 +1,31 @@
 # The root: every take starts here unless its hotkey starts further down.
-question = "What does the user want done with what they said?"
-# When the decision model is unsure or unavailable, the words are dictated.
+question = """
+What does the user want done with what they said? Decide who the words are for: the application \
+(text to type there, including questions meant for the people they write to) or you, the \
+assistant listening (a question to answer for them)."""
+# When the decision model is unsure (the branch it chose below 70%) or unavailable, the words
+# are dictated.
 fallback = "dictate"
-min_confidence = 0.5
+min_probability = 0.7
+
+# In Slack: the open conversation, its latest messages and the channels, read from the window
+# with XPath (no model). Lazy: read only where a branch uses them, such as ask/slack. The
+# inspector's Context tab shows them whenever Slack is in front.
+# The open conversation's sidebar item has no name, so its name comes from the window title,
+# "<conversation> (Channel) - <workspace> - Slack" in any language, without an unread mark.
+[extract.slack_conversation]
+xpath = "normalize-space(translate(substring-before(concat(substring-before(concat(@title, ' - '), ' - '), ' ('), ' ('), '*!', ''))"
+app = ["slack.exe"]
+lazy = true
+
+[extract.slack_messages]
+xpath = "(//ListItem[starts-with(@automation_id, 'message-list_')][.//Text])[position() > last() - 15]/@name"
+as = "list"
+app = ["slack.exe"]
+lazy = true
+
+[extract.slack_channels]
+xpath = "//TreeItem[.//*[has-class(@class, 'p-channel_sidebar__channel')]]"
+as = "list"
+app = ["slack.exe"]
+lazy = true
