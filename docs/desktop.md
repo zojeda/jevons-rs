@@ -81,6 +81,30 @@ The built-in tree:
 
 `AGENTS.md` in the folder is the full reference: every field, placeholders such as `{selection}` and `{chat.messages}`, investigations, tools, agents and the rules the loader enforces. [examples/desktop/flows](../examples/desktop/flows) is the built-in tree.
 
+### Extracts: reading the screen with XPath
+
+When the same elements hold what a branch needs every time, such as a chat's channel list or its last messages, an `[extract]` reads them with an XPath expression. It needs no model, and it reads in tens of milliseconds:
+
+```toml
+[extract.channels]
+xpath = "//TreeItem[.//Group[has-class(@class, 'p-channel_sidebar__channel')]]/@name"
+as = "list"
+
+[extract.messages]
+xpath = "(//ListItem[starts-with(@automation_id, 'message-list_')][.//Text])[position() > last() - 10]"
+as = "table"
+fields = { author = ".//Button[1]/@name", text = "string(.//Text[last()])" }
+lazy = true
+```
+
+- **Vocabulary.** Elements are named by role (`List`, `ListItem`, `TreeItem`, `Edit`…) and attributes are the element's properties (`@name`, `@value`, `@class`, `@automation_id`, `@selected`…). In browsers and Electron apps, `@class` is the page's HTML class list; `has-class()` matches one class. Names follow the user's language, so classes and automation ids make steadier expressions.
+- **Answers.** An extract answers as text, a list, a count, a yes/no, or a table with one column per `fields` expression. The answer is available below as `{channels}` and `{messages.author}`, and decisions and generation read it like an investigation's answer.
+- **Variables.** `$transcript`, `$app` or `$chat.name` take a placeholder's value inside the expression; a value can never change what the expression means.
+- **Scope.** An expression starts at the take's window. `/Window[@app='slack.exe']//…` with `scope = ["slack.exe"]` reads another application's window, under the same permissions as investigations. A leading `//` searches every window the extract may read, and `.//` only the take's.
+- **Search speed.** `//TreeItem[@name = $channel]` runs as one UI Automation search with the role and name as conditions, and fetches the element's properties in the same call.
+
+To write one, type the expression into the **XPath** box on the Context tab, which evaluates it on the window in front, or run `jevons-desktop --xpath "<expression>" --app slack.exe` (or `--tree <file>` for a recorded interface). [automations.md](automations.md) records how Slack's interface looks to UI Automation.
+
 ### Investigations: reading more of the screen
 
 The snapshot a take starts with holds the focused field and its text. When a branch needs more, such as the messages of the open conversation, it declares an investigation, and the built-in context investigator reads the application's interface (UI Automation on Windows) to answer it:
@@ -91,14 +115,15 @@ question = "Which conversation is open in this window, and what are its most rec
 schema = { name = "string", messages = [{ author = "string", time = "string", text = "string" }] }
 ```
 
-The answer is available to that node and every node below it as `{conversation}` and `{conversation.name}`, and generation prompts include it. The investigator is an agent with four tools:
+The answer is available to that node and every node below it as `{conversation}` and `{conversation.name}`, and generation prompts include it. The investigator is an agent with five tools:
 
 - `outline`: an element's descendants as compact lines, where wrappers with no text collapse and unnamed rows show the start of their text;
 - `find`: search below an element by role or text;
+- `xpath`: select elements with an XPath expression, as an extract does;
 - `read`: an element's full text;
 - `list_windows`: only when other windows are allowed.
 
-Elements get short ids as they are seen, and each tool takes one as an enum of the ids seen so far, so the model picks it with a restricted read and a step never names an element that does not exist. The answer is filled into the schema. When an investigation succeeds, the path to the element it read is remembered for that application and question (in the platform cache folder, `investigations.json`), and the next time it is read and answered in one call. The same question twice in a take is answered once.
+Elements get short ids as they are seen, and each tool takes one as an enum of the ids seen so far, so the model picks it with a restricted read and a step never names an element that does not exist. The answer is filled into the schema. When an investigation succeeds, an XPath expression for the element it read is remembered for that application and question (in the platform cache folder, `investigations.json`), and the next time it is read and answered in one call. The take's trace shows the expression, which can become an `[extract]` for that question. The same question twice in a take is answered once.
 
 Investigations read only the window the take started in. To let a question like "is Slack open, and what did Ana say?" read other windows, set `privacy.read_other_windows = true` and list the applications in `privacy.readable_apps`; the investigation's `scope` then names which of them it reads. Password fields are never read, and text is capped at `privacy.max_context_chars` per read.
 
@@ -138,7 +163,76 @@ The **Context** tab shows what the platform reports for the focused window. It u
 
 Below the snapshot, the **Route** card walks the tree for that window by guards and rules alone. It shows each decision's branches with every rule's pattern, the value it was compared with, and whether it passed, and it stops at the first decision the model would make. **Flows → New branch from the current context** writes a folder under a decision (such as `dictate`) whose guard matches that application, page and field (the exact window title is included as a commented-out rule), then opens it for you to add a description and instructions.
 
-## Settings## Settings
+## Automations
+
+An automation is a task you show jevons once and then run again whenever you like: posting a message to a Slack channel, filing a ticket, filling a form. It is a small script ([Rhai](https://rhai.rs/book/)) that finds elements with XPath and acts on them. It lives in the automations library, the `automations` folder next to the settings file.
+
+### Recording a task
+
+1. Choose **Record an automation…** in the tray menu, or press the record hotkey (Settings → Automations). The tray icon turns magenta.
+2. Hold the record hotkey and say what the task is, such as "post a message to a Slack channel". Holding it again later adds a note ("now I pick the channel").
+3. Do the task: click, type and press keys. Push-to-talk dictation works as usual, and what it types is part of the recording.
+4. Tap the record hotkey, or choose **Stop recording**.
+
+**What is recorded:**
+- the element under each click;
+- the text typed into each field, as one step, with backspaces applied;
+- key chords such as Enter or Ctrl+K;
+- switches to another window;
+- the window's interface before each step.
+
+**What is not recorded:** the text of password fields, and jevons' own windows.
+
+A recording is a folder in `~/jevons/recordings`, and it holds what your screen showed, so it stays on your machine.
+
+### Writing the automation
+
+When you stop, jevons writes the automation.
+1. **The plan.** The language model plans it: a name and description, the arguments (the values that should change from one run to the next, such as the channel and the message), and for each step the XPath expression that finds its element. The expressions come from those jevons recorded, each checked to select exactly that element.
+2. **The files.** jevons compiles the plan into `automation.toml` and `script.rhai`, with the recording as a fixture.
+3. **The checks.** The result must pass every check before it is offered for approval, including a dry run that replays the recording step by step.
+
+Without a model, the plan comes from the recording alone: the values you also said become the arguments.
+
+A coding agent can write the automation instead. Each recording folder has:
+- `AGENTS.md`: the instructions, and where the automation goes;
+- `draft/`: the compiled draft;
+- `demonstration.json`: the fixture to replay.
+
+The library's own `AGENTS.md` and `API.md` document the format and the script API, and `examples/desktop/automations/slack-post` is an example.
+
+### Approving
+
+Only approved versions run.
+- **Asking:** the bubble shows what the automation does: its applications, actions and keys, and how many recorded steps it replays.
+- **Answering:** Enter approves it, which pins the hash of its two files in the settings (`[automation.approved]`). Esc keeps it as a draft.
+- **Later:** a draft shows as *review and approve…* in the tray's **Automations** menu.
+- **Edits:** editing either file makes a new version, which needs approving again.
+
+Nothing in the library folder can approve an automation, so a coding agent that edits it cannot let its own script run.
+
+### Running
+
+- **Tray:** each automation has its own entry in the **Automations** menu.
+  - **Run.** When the automation takes arguments, jevons listens: say them ("random, lunch is ready"), then stop dictation from the tray.
+  - **Run step by step.** It asks in the bubble before every action, and stops at the first no.
+  - **Record it again….** Records the task anew and replaces the automation with the new version, which you approve again. Use it when the application changed and the automation stopped finding its elements.
+- **Hotkey:** give it one in Settings → Automations. Hold the hotkey and say the arguments.
+- **By voice:** the built-in `run` branch handles requests like "post to random that lunch is ready". The decision model picks the automation, and the language model fills its arguments.
+- **From flows:** `tool = "script:slack-post"` in a `tool.toml`, a `run.toml` node, or `tools = ["script:*"]` for an agent.
+
+A run asks in the bubble first unless the automation is listed in `automation.unconfirmed`, and **Cancel the current take** stops it. Its trace goes to `~/jevons/traces`: the steps, every action, and the answer, or the error with its kind, line and column. A failed run also keeps the window's interface in the automation's `failures/` folder, to fix the script against.
+
+`--author <recording>` writes an automation from a saved recording, drafted without a model, and prints its checks. `--replace <name>` makes it a new version of an existing automation. `examples/desktop/recordings/slack-post` is a synthetic recording to try it on.
+
+**Limits.** A script:
+- has no file, network or process access;
+- reads and acts only in the applications its manifest names;
+- sends keys and typed text only to a window of those applications;
+- never types into a password field;
+- stops at its deadline (`timeout_s`).
+
+## Settings
 
 The **Settings** tab edits the runtime, dictation and privacy settings. **Apply and save** writes them all at once.
 
@@ -199,7 +293,14 @@ cargo run -p jevons-desktop -- --transcript "what did Ana say about the launch?"
   --context examples/desktop/context-slack.json --flow ask
 ```
 
-`--flow` starts at a branch instead of the root, `--tree` answers investigations from a recorded interface, and `--deliver` types the result into the focused application.
+`--flow` starts at a branch instead of the root, `--tree` answers extracts and investigations from a recorded interface, and `--deliver` types the result into the focused application.
+
+`--xpath <expression>` prints what an expression selects in the window in front, reading that window only (`--app <glob>` picks another application's window, `--tree <file>` a recorded one). It also reports how long it took and how many elements it read.
+
+For the automations library (the settings' one, or `--library <dir>`):
+- `--check-automations [DIR]` checks every automation, dry-running each fixture, and says whether each version is approved.
+- `--dry-run <name>` replays a fixture, or `--recording <file>`, and prints the run's trace. `--args <json>` sets the arguments.
+- `--run <name> --args <json>` runs an approved automation on the live interface.
 
 `--check-flows [DIR]` checks a flows folder (the settings' one by default), printing every problem with its file and line, and fails when there is one. `--init-flows [DIR]` writes the built-in tree into a folder that has none and refreshes `AGENTS.md`, the schemas and `.taplo.toml`.
 
@@ -214,6 +315,8 @@ Every platform layer is a trait in `jevons-desktop-core::platform`. The pipeline
 | Text input | paste, type (SendInput) or set value (UI Automation) | clipboard (Wayland input method, X11 XTest, uinput planned) | clipboard (CGEvent planned) |
 | Microphone | CPAL (WASAPI) | CPAL (ALSA/PulseAudio) | CPAL (CoreAudio) |
 | Hotkey, tray | global-hotkey, tray-icon | global-hotkey (X11), tray-icon (AppIndicator) | not yet |
+| Automation actions | UI Automation patterns, SendInput clicks and keys | not yet | not yet |
+| Recording demonstrations | a low-level hook and UI Automation | not yet | not yet |
 
 Platform code uses safe wrapper crates only; the desktop crates forbid `unsafe`.
 

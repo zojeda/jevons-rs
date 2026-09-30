@@ -23,6 +23,47 @@ pub struct DesktopConfig {
     /// MCP servers whose tools flow nodes may call, as `server:tool`.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub mcp: BTreeMap<String, McpConfig>,
+    /// The automations library, recording demonstrations, and which versions may run.
+    #[serde(skip_serializing_if = "AutomationSettings::is_default")]
+    pub automation: AutomationSettings,
+}
+
+/// `[automation]`: the automations library and the versions the user approved.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AutomationSettings {
+    /// The library folder; `automations` next to this file by default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dir: Option<PathBuf>,
+    /// Where recorded demonstrations go; `~/jevons/recordings` by default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recordings_dir: Option<PathBuf>,
+    /// Starts and stops recording a demonstration. Held while recording, it records a spoken
+    /// note.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record_hotkey: Option<String>,
+    /// A hotkey per automation, by name, such as `slack-post = "Ctrl+Alt+P"`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub hotkeys: BTreeMap<String, String>,
+    /// The version (`sha256:…`) of each automation the user approved. Only the app writes it,
+    /// when the user approves; an automation whose files changed since needs approving again.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub approved: BTreeMap<String, String>,
+    /// Automations that run without asking in the bubble first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unconfirmed: Vec<String>,
+    /// Globs on the flow nodes that may call each automation, by name; unlisted ones allow all.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub allow: BTreeMap<String, Vec<String>>,
+    /// The model the built-in author writes scripts with; the generative model by default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author_model: Option<String>,
+}
+
+impl AutomationSettings {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// What a built-in tool does.
@@ -386,8 +427,29 @@ impl DesktopConfig {
         }
     }
 
-    /// Writes `file`, creating its folder.
+    /// Writes `file`, creating its folder. The approvals are not the settings panel's to change:
+    /// they are kept as the file has them.
     pub fn save(&self, file: &Path) -> Result<(), ConfigError> {
+        let mut saved = self.clone();
+        if let Ok(current) = Self::load(file) {
+            saved.automation.approved = current.automation.approved;
+        }
+        saved.write(file)
+    }
+
+    /// Pins `version` as the approved one of automation `name`, changing nothing else in the
+    /// file; returns the settings as saved.
+    pub fn approve(file: &Path, name: &str, version: &str) -> Result<Self, ConfigError> {
+        let mut config = Self::load(file)?;
+        config
+            .automation
+            .approved
+            .insert(name.to_string(), version.to_string());
+        config.write(file)?;
+        Ok(config)
+    }
+
+    fn write(&self, file: &Path) -> Result<(), ConfigError> {
         let io = |source| ConfigError::Io {
             file: file.into(),
             source,
@@ -403,6 +465,24 @@ impl DesktopConfig {
         self.flows_dir
             .clone()
             .unwrap_or_else(|| config_file.parent().unwrap_or(Path::new(".")).join("flows"))
+    }
+
+    /// The automations library: the configured folder, else `automations` next to the settings.
+    pub fn automations_dir(&self, config_file: &Path) -> PathBuf {
+        self.automation.dir.clone().unwrap_or_else(|| {
+            config_file
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join("automations")
+        })
+    }
+
+    /// Where demonstrations are recorded: the configured folder, else `~/jevons/recordings`.
+    pub fn recordings_dir(&self) -> PathBuf {
+        self.automation
+            .recordings_dir
+            .clone()
+            .unwrap_or_else(|| user_dir().join("recordings"))
     }
 
     /// The models folder: the configured one, else `~/jevons/models`.
@@ -539,6 +619,30 @@ unconfirmed = ["read_file"]
         assert_eq!(placeholders("Bearer ${env:TOKEN} {id}"), ["id"]);
         let shell = "[tools.x]\nkind = \"shell\"\ndescription = \"\"";
         assert!(toml::from_str::<DesktopConfig>(shell).is_err());
+    }
+
+    #[test]
+    fn approvals_are_written_alone_and_saving_the_settings_keeps_them() {
+        let dir = std::env::temp_dir().join(format!("jevons-approve-{}", std::process::id()));
+        let file = dir.join("jevons-desktop.toml");
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut panel = DesktopConfig::default();
+        panel.dictation.language = Some("es".into());
+        panel.save(&file).unwrap();
+        let approved = DesktopConfig::approve(&file, "slack-post", "sha256:abc").unwrap();
+        assert_eq!(approved.dictation.language.as_deref(), Some("es"));
+        // A settings panel opened before the approval saves without dropping it.
+        panel.dictation.language = Some("en".into());
+        panel.save(&file).unwrap();
+        let loaded = DesktopConfig::load(&file).unwrap();
+        assert_eq!(loaded.dictation.language.as_deref(), Some("en"));
+        assert_eq!(loaded.automation.approved["slack-post"], "sha256:abc");
+        assert_eq!(
+            loaded.automations_dir(&file),
+            dir.join("automations"),
+            "next to the settings by default"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

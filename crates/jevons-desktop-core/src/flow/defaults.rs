@@ -6,7 +6,7 @@
 //! generated files. `AGENTS.md` carries a hash of what jevons wrote, so it is updated only until
 //! someone edits it.
 
-use super::spec::{AgentSpec, DecideSpec, GenerateSpec, ToolSpec, TranscriptSpec};
+use super::spec::{AgentSpec, DecideSpec, GenerateSpec, RunSpec, ToolSpec, TranscriptSpec};
 use super::tree::{Catalog, Disk, FlowTree, Memory, NODE_FILES};
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -33,8 +33,10 @@ pub const TREE: &[(&str, &str)] = tree_files![
     "ask/decide.toml",
     "ask/instructions.md",
     "ask/chat/generate.toml",
+    "ask/slack/generate.toml",
     "ask/web-chat/generate.toml",
     "ask/any/generate.toml",
+    "run/run.toml",
     "_actions/insert/generate.toml",
     "_actions/replace/generate.toml",
     "_actions/rewrite/generate.toml",
@@ -144,10 +146,30 @@ fn digest(text: &str) -> String {
 
 /// Writes `AGENTS.md` when it is missing or still exactly what jevons wrote.
 fn agents_md(dir: &Path, report: &mut InitReport) -> std::io::Result<()> {
-    let file = dir.join("AGENTS.md");
+    write_guarded(
+        dir,
+        "AGENTS.md",
+        AGENTS_HEADER,
+        AGENTS_MD,
+        "examples/desktop/flows/AGENTS.md",
+        report,
+    )
+}
+
+/// Writes a guide jevons keeps up to date, when it is missing or still exactly what jevons
+/// wrote (its first line carries the hash of the rest). One the user edited is left alone.
+pub(crate) fn write_guarded(
+    dir: &Path,
+    name: &str,
+    header: &str,
+    body: &str,
+    in_repository: &str,
+    report: &mut InitReport,
+) -> std::io::Result<()> {
+    let file = dir.join(name);
     let fresh = format!(
-        "{AGENTS_HEADER}{}; jevons updates this file until you edit it) -->\n{AGENTS_MD}",
-        digest(AGENTS_MD)
+        "{header}{}; jevons updates this file until you edit it) -->\n{body}",
+        digest(body)
     );
     match std::fs::read_to_string(&file) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -155,22 +177,21 @@ fn agents_md(dir: &Path, report: &mut InitReport) -> std::io::Result<()> {
         Ok(text) if text == fresh => return Ok(()),
         Ok(text) => {
             let unedited = text
-                .strip_prefix(AGENTS_HEADER)
+                .strip_prefix(header)
                 .and_then(|rest| rest.split_once(';'))
                 .zip(text.split_once('\n'))
                 .is_some_and(|((hash, _), (_, body))| digest(body) == hash);
             if !unedited {
-                report.notes.push(
-                    "AGENTS.md was edited, so jevons no longer updates it; the current guide \
-                     is in the jevons repository's examples/desktop/flows/AGENTS.md"
-                        .into(),
-                );
+                report.notes.push(format!(
+                    "{name} was edited, so jevons no longer updates it; the current one is in \
+                     the jevons repository's {in_repository}"
+                ));
                 return Ok(());
             }
         }
     }
     std::fs::write(&file, fresh)?;
-    report.written.push("AGENTS.md".into());
+    report.written.push(name.into());
     Ok(())
 }
 
@@ -201,6 +222,10 @@ pub fn schemas_json() -> Vec<(String, String)> {
         (
             "agent.schema.json".into(),
             pretty(schemars::schema_for!(AgentSpec)),
+        ),
+        (
+            "run.schema.json".into(),
+            pretty(schemars::schema_for!(RunSpec)),
         ),
     ]
 }
@@ -257,7 +282,7 @@ mod tests {
         let insert = tree.find("_actions/insert").unwrap();
         assert_eq!(tree.node(insert).kind(), Kind::Generate);
         let entries: Vec<String> = tree.entries().into_iter().map(|(p, _)| p).collect();
-        assert_eq!(entries, ["ask", "dictate"]);
+        assert_eq!(entries, ["ask", "dictate", "run"]);
     }
 
     #[test]

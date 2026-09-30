@@ -301,6 +301,59 @@ fn build_menu(model: &MenuModel) -> Menu {
             None,
         ));
     }
+    let automations = Submenu::with_id("automations", "Automations", true);
+    for (name, description, approved) in &model.automations {
+        let entry = Submenu::with_id(format!("automation:{name}"), name, true);
+        let _ = entry.append(&MenuItem::with_id(
+            format!("about:{name}"),
+            description,
+            false,
+            None,
+        ));
+        if *approved {
+            let _ = entry.append(&MenuItem::with_id(
+                format!("run:{name}"),
+                "Run",
+                !model.busy,
+                None,
+            ));
+            let _ = entry.append(&MenuItem::with_id(
+                format!("step:{name}"),
+                "Run step by step",
+                !model.busy,
+                None,
+            ));
+        } else {
+            let _ = entry.append(&MenuItem::with_id(
+                format!("approve:{name}"),
+                "Review and approve…",
+                !model.busy,
+                None,
+            ));
+        }
+        let _ = entry.append(&MenuItem::with_id(
+            format!("again:{name}"),
+            "Record it again…",
+            !model.busy,
+            None,
+        ));
+        let _ = automations.append(&entry);
+    }
+    if model.automations.is_empty() {
+        let _ = automations.append(&MenuItem::with_id(
+            "none",
+            "None yet: record one",
+            false,
+            None,
+        ));
+    }
+    let _ = automations.append(&PredefinedMenuItem::separator());
+    let _ = automations.append(&MenuItem::with_id(
+        "automations-folder",
+        "Open the automations folder",
+        true,
+        None,
+    ));
     let live = if model.live {
         "Stop live dictation"
     } else {
@@ -321,6 +374,19 @@ fn build_menu(model: &MenuModel) -> Menu {
             model.context_paused,
             None,
         ),
+        &PredefinedMenuItem::separator(),
+        &MenuItem::with_id(
+            "record",
+            if model.recording {
+                "Stop recording"
+            } else {
+                "Record an automation…"
+            },
+            !model.busy || model.recording,
+            None,
+        ),
+        &automations,
+        &PredefinedMenuItem::separator(),
         &MenuItem::with_id("reload", "Reload the flow tree", true, None),
         &MenuItem::with_id("config", "Open settings folder", true, None),
         &MenuItem::with_id("logs", "Open logs and traces", true, None),
@@ -333,6 +399,14 @@ fn build_menu(model: &MenuModel) -> Menu {
 fn menu_command(id: &str) -> Option<MenuCommand> {
     Some(match id {
         "toggle" => MenuCommand::ToggleDictation,
+        "record" => MenuCommand::ToggleRecording,
+        "automations-folder" => MenuCommand::OpenAutomationsFolder,
+        run if run.starts_with("run:") => MenuCommand::RunAutomation(run[4..].to_string()),
+        step if step.starts_with("step:") => MenuCommand::RunStepByStep(step[5..].to_string()),
+        again if again.starts_with("again:") => MenuCommand::RecordAgain(again[6..].to_string()),
+        approve if approve.starts_with("approve:") => {
+            MenuCommand::ApproveAutomation(approve[8..].to_string())
+        }
         "live" => MenuCommand::ToggleLiveDictation,
         "cancel" => MenuCommand::CancelTake,
         "logs" => MenuCommand::OpenLogsFolder,
@@ -363,5 +437,22 @@ mod tests {
         );
         assert_eq!(menu_command("start"), None);
         assert_eq!(menu_command("feedback"), Some(MenuCommand::ToggleFeedback));
+        assert_eq!(menu_command("record"), Some(MenuCommand::ToggleRecording));
+        assert_eq!(
+            menu_command("run:slack-post"),
+            Some(MenuCommand::RunAutomation("slack-post".into()))
+        );
+        assert_eq!(
+            menu_command("step:slack-post"),
+            Some(MenuCommand::RunStepByStep("slack-post".into()))
+        );
+        assert_eq!(
+            menu_command("again:slack-post"),
+            Some(MenuCommand::RecordAgain("slack-post".into()))
+        );
+        assert_eq!(
+            menu_command("approve:slack-post"),
+            Some(MenuCommand::ApproveAutomation("slack-post".into()))
+        );
     }
 }

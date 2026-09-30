@@ -228,7 +228,9 @@ impl Shell {
             let mut view = self.view.lock().expect("the view lock");
             // A call waiting for confirmation shows even with live feedback off.
             let asking = view.feedback.as_ref().is_some_and(|f| f.confirm.is_some());
-            let bubble = view.feedback.is_some() && (view.config.dictation.live_feedback || asking);
+            let message = view.feedback.as_ref().is_some_and(|f| f.message);
+            let bubble = view.feedback.is_some()
+                && (view.config.dictation.live_feedback || asking || message);
             let clicks = view
                 .feedback
                 .as_ref()

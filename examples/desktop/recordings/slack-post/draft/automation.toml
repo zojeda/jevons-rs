@@ -1,0 +1,13 @@
+description = "Post lunch is ready to the random channel"
+apps = ["slack.exe"]
+returns = { done = "boolean" }
+
+[args.item]
+description = "Which one to choose (it was \"random\")"
+
+[args.text]
+description = "The text to type (it was \"lunch is ready\")"
+
+[[fixtures]]
+recording = "fixtures/slack-post.json"
+args = { item = "random", text = "lunch is ready" }

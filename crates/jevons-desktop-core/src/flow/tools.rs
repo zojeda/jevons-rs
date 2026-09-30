@@ -8,10 +8,13 @@
 //!   output; their tools are `name:tool` in flow files and `name__tool` to the model (whose tool
 //!   names cannot hold a colon).
 //!
+//! - Automations from the library (`script:<name>`) run their approved script.
+//!
 //! Every tool asks in the bubble before it runs unless the settings say otherwise. In a dry run
 //! (headless replays) nothing runs: each call returns what it would have done.
 
 use super::tree::{Catalog, CatalogTool};
+use crate::automation::host::{AutomationHost, SERVER as SCRIPTS};
 use crate::config::{McpConfig, ToolConfig, ToolKind};
 use adk_core::{Content, ReadonlyContext, Tool, ToolContext, Toolset, async_trait};
 use adk_tool::mcp::McpToolset;
@@ -455,6 +458,7 @@ impl Server {
 pub struct ToolHost {
     builtins: BTreeMap<String, Arc<Builtin>>,
     servers: BTreeMap<String, Arc<Server>>,
+    automations: Option<Arc<AutomationHost>>,
     dry_run: bool,
 }
 
@@ -502,8 +506,20 @@ impl ToolHost {
                     )
                 })
                 .collect(),
+            automations: None,
             dry_run: false,
         }
+    }
+
+    /// The automations library, when this host offers it.
+    pub fn automations(&self) -> Option<Arc<AutomationHost>> {
+        self.automations.clone()
+    }
+
+    /// Also offers the library's automations, as `script:<name>`.
+    pub fn with_automations(mut self, automations: Arc<AutomationHost>) -> Self {
+        self.automations = Some(automations);
+        self
     }
 
     /// Nothing runs: every call returns what it would have done.
@@ -513,7 +529,12 @@ impl ToolHost {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.builtins.is_empty() && self.servers.is_empty()
+        self.builtins.is_empty()
+            && self.servers.is_empty()
+            && self
+                .automations
+                .as_ref()
+                .is_none_or(|a| a.library().automations.is_empty())
     }
 
     /// Starts every MCP server and lists its tools; returns the problems, one per server.
@@ -538,6 +559,23 @@ impl ToolHost {
                     parameters: Some(parameters(&tool.config)),
                 },
             );
+        }
+        if let Some(automations) = &self.automations {
+            catalog.servers.insert(SCRIPTS.into(), true);
+            for listed in automations.list() {
+                let note = if listed.approved {
+                    ""
+                } else {
+                    " (not approved yet: it runs once approved from the tray)"
+                };
+                catalog.tools.insert(
+                    format!("{SCRIPTS}:{}", listed.name),
+                    CatalogTool {
+                        description: format!("{}{note}", listed.description),
+                        parameters: Some(listed.parameters),
+                    },
+                );
+            }
         }
         for (name, server) in &self.servers {
             let listed = server.listed.lock().expect("the listing lock").clone();
@@ -597,6 +635,27 @@ impl ToolHost {
                     }
                     out.push(self.wrap(reference, tool.clone(), tool.config.confirm));
                 }
+                Some((SCRIPTS, wanted)) if self.automations.is_some() => {
+                    let automations = self.automations.as_ref().expect("checked");
+                    let tools = automations.tools(wanted);
+                    if tools.is_empty() {
+                        return Err(format!("there is no automation {wanted:?} in the library"));
+                    }
+                    for tool in tools {
+                        let name = tool
+                            .name()
+                            .strip_prefix(&format!("{SCRIPTS}__"))
+                            .unwrap_or_default()
+                            .to_string();
+                        if !allowed(&automations.allow(&name), node) {
+                            return Err(format!(
+                                "the automation {name} does not allow the node {node}"
+                            ));
+                        }
+                        let reference = format!("{SCRIPTS}:{name}");
+                        out.push(self.wrap(&reference, tool, automations.asks(&name)));
+                    }
+                }
                 Some((server_name, wanted)) => {
                     let server = self
                         .servers
@@ -647,6 +706,9 @@ impl ToolHost {
         }
         for (name, tool) in &catalog.tools {
             let confirm = match name.split_once(':') {
+                Some((SCRIPTS, tool)) if self.automations.is_some() => {
+                    self.automations.as_ref().is_some_and(|a| a.asks(tool))
+                }
                 None => self.builtins.get(name).is_some_and(|t| t.config.confirm),
                 Some((server, tool)) => self.servers.get(server).is_some_and(|s| {
                     s.config.confirm && !s.config.unconfirmed.iter().any(|u| u == tool)
@@ -832,6 +894,59 @@ arguments = { text = "Text" }
             .collect();
         let result = tool.run(args).await.unwrap();
         assert_eq!(result["output"], "hello; rm -rf / $(not run)\n");
+    }
+
+    #[tokio::test]
+    async fn automations_are_script_tools_that_ask_and_respect_allow() {
+        let dir = std::env::temp_dir().join(format!("jevons-scripts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("post")).unwrap();
+        std::fs::write(
+            dir.join("post/automation.toml"),
+            "description = \"Posts a message\"\napps = [\"slack.exe\"]\n[args.text]\ndescription = \"The message\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("post/script.rhai"), "#{}\n").unwrap();
+        let mut settings = crate::config::AutomationSettings::default();
+        settings.allow.insert("post".into(), vec!["run".into()]);
+        let host = Arc::new(AutomationHost::new(
+            &dir,
+            settings,
+            Arc::new(crate::platform::Unsupported),
+            Arc::new(crate::platform::Unsupported),
+        ));
+        let tools = ToolHost::new(&BTreeMap::new(), &BTreeMap::new()).with_automations(host);
+        let catalog = tools.catalog();
+        assert!(catalog.servers["script"]);
+        assert!(
+            catalog.tools["script:post"]
+                .description
+                .contains("not approved yet")
+        );
+        assert_eq!(
+            catalog.tools["script:post"].parameters.as_ref().unwrap()["required"],
+            json!(["text"])
+        );
+        let resolved = tools.resolve(&["script:*".into()], "run").await.unwrap();
+        assert_eq!(resolved[0].reference, "script:post");
+        assert_eq!(resolved[0].tool.name(), "script__post");
+        assert!(
+            resolved[0].confirm,
+            "automations ask unless the settings say not to"
+        );
+        assert!(
+            tools
+                .resolve(&["script:post".into()], "ask/any")
+                .await
+                .is_err()
+        );
+        assert!(tools.resolve(&["script:nope".into()], "run").await.is_err());
+        let md = tools.tools_md();
+        assert!(
+            md.contains("## `script:post`") && md.contains("Asks in the bubble"),
+            "{md}"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

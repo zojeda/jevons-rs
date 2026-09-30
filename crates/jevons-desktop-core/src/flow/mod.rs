@@ -9,10 +9,12 @@
 //! - [`defaults`]: the built-in tree and the files jevons writes for editors and agents.
 //! - [`walk`] and [`frame`]: one take through the tree, and what it carries down.
 //! - [`investigate`]: the contract of the built-in context investigator.
+//! - [`extract`]: XPath expressions read from the interface with no model.
 
 pub mod agent;
 pub mod confirm;
 pub mod defaults;
+pub mod extract;
 pub mod frame;
 pub mod guard;
 pub mod investigate;

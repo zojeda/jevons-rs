@@ -1,12 +1,21 @@
 //! The frame: what a take carries down the tree. Each node adds to it and nothing removes from
 //! it: the route, the instructions, the nearest delivery and token settings, and the named
-//! values (investigation answers and a tool's `{result}`) that templates and prompts read.
+//! values (investigation and extract answers, and a tool's `{result}`) that templates and prompts
+//! read.
 
+use super::extract::Extract;
 use super::tree::{Investigation, Node, NodeId};
 use crate::context::ContextSnapshot;
 use crate::platform::DeliveryMethod;
 use serde_json::Value;
 use std::collections::BTreeMap;
+
+/// A value declared `lazy`: read only when something below needs it.
+#[derive(Clone, Debug)]
+pub enum Lazy {
+    Investigation(Investigation),
+    Extract(Extract),
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct Frame {
@@ -16,10 +25,10 @@ pub struct Frame {
     pub route: Vec<String>,
     /// Instructions from the root down, `instructions.md` before each node's inline text.
     pub instructions: Vec<String>,
-    /// Investigation answers by name, and `result`.
+    /// Investigation and extract answers by name, and `result`.
     pub values: BTreeMap<String, Value>,
-    /// Lazy investigations declared on the path and not run yet.
-    pub pending: BTreeMap<String, (NodeId, Investigation)>,
+    /// Lazy investigations and extracts declared on the path and not read yet.
+    pub pending: BTreeMap<String, (NodeId, Lazy)>,
     pub delivery: Option<DeliveryMethod>,
     pub max_output_tokens: Option<u32>,
     pub think: Option<u32>,
@@ -34,8 +43,8 @@ impl Frame {
         }
     }
 
-    /// Takes in a node on the way down: its name, settings and lazy investigations (its
-    /// instructions are added by the walker, which renders them).
+    /// Takes in a node on the way down: its name, settings and lazy values (its instructions
+    /// are added by the walker, which renders them).
     pub fn enter(&mut self, node: &Node) {
         if !node.name.is_empty() {
             self.route.push(node.name.clone());
@@ -46,8 +55,18 @@ impl Frame {
         self.think = common.think.or(self.think);
         for investigation in node.investigations.values() {
             if investigation.spec.lazy && !self.values.contains_key(&investigation.name) {
-                self.pending
-                    .insert(investigation.name.clone(), (node.id, investigation.clone()));
+                self.pending.insert(
+                    investigation.name.clone(),
+                    (node.id, Lazy::Investigation(investigation.clone())),
+                );
+            }
+        }
+        for extract in node.extracts.values() {
+            if extract.spec.lazy && !self.values.contains_key(&extract.name) {
+                self.pending.insert(
+                    extract.name.clone(),
+                    (node.id, Lazy::Extract(extract.clone())),
+                );
             }
         }
     }

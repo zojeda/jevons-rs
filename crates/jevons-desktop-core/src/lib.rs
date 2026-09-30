@@ -13,8 +13,12 @@
 //! - [`delivery`], [`levels`], [`icons`]: paste safety, the microphone meter and the tray
 //!   frames.
 //! - [`catalog`] and [`download`]: the model catalog and resumable, verified downloads.
+//! - [`xpath`]: XPath queries over the accessibility trees of the user's applications.
+//! - [`automation`]: scripts that act on those applications, and the checks on every action.
+//! - [`recording`]: recording a demonstration of a task, to write its automation from.
 #![forbid(unsafe_code)]
 
+pub mod automation;
 pub mod catalog;
 pub mod client;
 pub mod config;
@@ -29,3 +33,5 @@ pub mod levels;
 pub mod pipeline;
 pub mod platform;
 pub mod recorded;
+pub mod recording;
+pub mod xpath;

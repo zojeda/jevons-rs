@@ -85,3 +85,14 @@ read_other_windows = false
 # [mcp.fs]
 # command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "C:/Users/me/notes"]
 # unconfirmed = ["read_file", "list_directory"]   # these run without asking
+
+# Automations: scripts in the library folder (`automations` next to this file), written from
+# recorded demonstrations. An automation runs only once approved in the app, which pins its
+# version here; an edited script needs approving again.
+# [automation]
+# record_hotkey = "Ctrl+Alt+R"                  # start/stop recording; hold it to add a note
+# unconfirmed = ["slack-post"]                  # these run without asking first
+# [automation.hotkeys]
+# slack-post = "Ctrl+Alt+P"                     # say the arguments after pressing it
+# [automation.allow]
+# slack-post = ["run", "ask/*"]                 # the flow nodes that may call it

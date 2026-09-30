@@ -28,6 +28,22 @@ pub fn context_inspector() -> std::sync::Arc<dyn jevons_desktop_core::platform::
     std::sync::Arc::new(jevons_desktop_core::platform::Unsupported)
 }
 
+/// The actor for automations on this platform.
+pub fn ui_actor() -> std::sync::Arc<dyn jevons_desktop_core::platform::UiActor> {
+    #[cfg(windows)]
+    return std::sync::Arc::new(windows::UiaActor);
+    #[cfg(not(windows))]
+    std::sync::Arc::new(jevons_desktop_core::platform::Unsupported)
+}
+
+/// The demonstration recorder for this platform.
+pub fn recorder() -> std::sync::Arc<dyn jevons_desktop_core::platform::Recorder> {
+    #[cfg(windows)]
+    return std::sync::Arc::new(windows::UiaRecorder);
+    #[cfg(not(windows))]
+    std::sync::Arc::new(jevons_desktop_core::platform::Unsupported)
+}
+
 /// The text sink for this platform.
 pub fn text_sink() -> Box<dyn TextSink> {
     #[cfg(windows)]

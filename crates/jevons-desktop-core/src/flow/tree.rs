@@ -7,11 +7,12 @@
 //! the catalog, and how many model decisions a path may take. A tree with errors is reported,
 //! and the app keeps using the last good one.
 
+use super::extract::Extract;
 use super::guard::Guard;
 use super::shape::{Shape, is_identifier};
 use super::spec::{
-    AgentSpec, Common, DecideSpec, GenerateSpec, InvestigateSpec, Output, Select, ToolSpec,
-    TranscriptSpec,
+    AgentSpec, Common, DecideSpec, GenerateSpec, InvestigateSpec, Output, RunSpec, Select,
+    ToolSpec, TranscriptSpec,
 };
 use super::template::{Template, is_builtin};
 use crate::platform::Action;
@@ -27,12 +28,13 @@ pub const MAX_MODEL_DECISIONS: usize = 4;
 pub const MAX_BRANCHES: usize = 128;
 
 /// The node file names, one per kind.
-pub const NODE_FILES: [(&str, Kind); 5] = [
+pub const NODE_FILES: [(&str, Kind); 6] = [
     ("decide.toml", Kind::Decide),
     ("generate.toml", Kind::Generate),
     ("transcript.toml", Kind::Transcript),
     ("tool.toml", Kind::Tool),
     ("agent.toml", Kind::Agent),
+    ("run.toml", Kind::Run),
 ];
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
@@ -43,6 +45,7 @@ pub enum Kind {
     Transcript,
     Tool,
     Agent,
+    Run,
 }
 
 impl Kind {
@@ -65,6 +68,7 @@ pub enum NodeSpec {
     Transcript(TranscriptSpec),
     Tool(ToolSpec),
     Agent(AgentSpec),
+    Run(RunSpec),
 }
 
 impl NodeSpec {
@@ -75,6 +79,7 @@ impl NodeSpec {
             Self::Transcript(s) => s.common(),
             Self::Tool(s) => s.common(),
             Self::Agent(s) => s.common(),
+            Self::Run(s) => s.common(),
         }
     }
 
@@ -85,6 +90,7 @@ impl NodeSpec {
             Self::Transcript(_) => Kind::Transcript,
             Self::Tool(_) => Kind::Tool,
             Self::Agent(_) => Kind::Agent,
+            Self::Run(_) => Kind::Run,
         }
     }
 
@@ -96,6 +102,7 @@ impl NodeSpec {
             Self::Transcript(s) => Some(s.output.unwrap_or(Output::Target)),
             Self::Tool(s) => Some(s.output.unwrap_or(Output::Bubble)),
             Self::Agent(s) => Some(s.output.unwrap_or(Output::Bubble)),
+            Self::Run(s) => Some(s.output.unwrap_or(Output::Bubble)),
         }
     }
 
@@ -106,6 +113,7 @@ impl NodeSpec {
             Kind::Transcript => Self::Transcript(toml::from_str(text)?),
             Kind::Tool => Self::Tool(toml::from_str(text)?),
             Kind::Agent => Self::Agent(toml::from_str(text)?),
+            Kind::Run => Self::Run(toml::from_str(text)?),
         })
     }
 }
@@ -135,6 +143,7 @@ pub struct Node {
     /// Compiled templates by field, such as `prompt`, `question` or `args.title.generate`.
     pub templates: BTreeMap<String, Template>,
     pub investigations: BTreeMap<String, Investigation>,
+    pub extracts: BTreeMap<String, Extract>,
     pub children: Vec<NodeId>,
 }
 
@@ -218,6 +227,9 @@ impl Catalog {
             return None;
         }
         match name.split_once(':') {
+            Some(("script", tool)) if self.servers.contains_key("script") => Some(format!(
+                "there is no automation {tool:?} in the automations library"
+            )),
             Some((server, tool)) => match self.servers.get(server) {
                 None => Some(format!(
                     "no MCP server {server:?} is registered in the desktop settings"
@@ -471,11 +483,12 @@ impl FlowTree {
     }
 }
 
-/// What a node can refer to: the investigations declared on the path to it, and whether a tool
-/// or agent above passed on a `{result}`.
+/// What a node can refer to: the investigations and extracts declared on the path to it, and
+/// whether a tool or agent above passed on a `{result}`.
 #[derive(Clone, Debug, Default)]
 struct Scope {
-    investigations: BTreeMap<String, (Shape, String)>,
+    /// Investigations and extracts by name: their shape and the node that declared them.
+    values: BTreeMap<String, (Shape, String)>,
     result: bool,
     model_decisions: usize,
     /// The route that reached this node, for messages about shared branches.
@@ -556,7 +569,7 @@ impl Loader<'_> {
                         self.error(
                             &join(dir, &file),
                             "unknown node file; a folder holds one of decide.toml, \
-                             generate.toml, transcript.toml, tool.toml or agent.toml",
+                             generate.toml, transcript.toml, tool.toml, agent.toml or run.toml",
                         );
                     }
                 }
@@ -573,8 +586,9 @@ impl Loader<'_> {
             [] => {
                 self.error(
                     dir,
-                    "no node file: add decide.toml, generate.toml, transcript.toml, tool.toml \
-                     or agent.toml (or start the folder name with _ to keep it out of routing)",
+                    "no node file: add decide.toml, generate.toml, transcript.toml, tool.toml, \
+                     agent.toml or run.toml (or start the folder name with _ to keep it out of \
+                     routing)",
                 );
                 return None;
             }
@@ -608,6 +622,7 @@ impl Loader<'_> {
         });
         let templates = self.templates(&file, &spec);
         let investigations = self.investigations(&file, spec.common().investigate);
+        let extracts = self.extracts(&file, spec.common().extract, &investigations);
         let id = NodeId(self.nodes.len());
         self.nodes.push(Node {
             id,
@@ -619,6 +634,7 @@ impl Loader<'_> {
             instructions_md,
             templates,
             investigations,
+            extracts,
             children: Vec::new(),
         });
 
@@ -771,7 +787,7 @@ impl Loader<'_> {
                     }
                 }
             }
-            NodeSpec::Transcript(_) => {}
+            NodeSpec::Transcript(_) | NodeSpec::Run(_) => {}
         }
         let mut templates = BTreeMap::new();
         for (field, text) in fields {
@@ -828,6 +844,45 @@ impl Loader<'_> {
                     );
                 }
                 Err(e) => self.error(file, format!("{at}.{e}")),
+            }
+        }
+        out
+    }
+
+    fn extracts(
+        &mut self,
+        file: &str,
+        specs: &BTreeMap<String, super::spec::ExtractSpec>,
+        investigations: &BTreeMap<String, Investigation>,
+    ) -> BTreeMap<String, Extract> {
+        let mut out = BTreeMap::new();
+        for (name, spec) in specs {
+            if !is_identifier(name) || is_builtin(name) || name == "result" {
+                self.error(
+                    file,
+                    format!(
+                        "extract.{name}: extract names use lowercase letters, digits and _, and \
+                         cannot be a built-in placeholder"
+                    ),
+                );
+                continue;
+            }
+            if investigations.contains_key(name) {
+                self.error(
+                    file,
+                    format!("extract.{name}: an investigation here has the same name"),
+                );
+                continue;
+            }
+            match Extract::compile(name, spec) {
+                Ok(extract) => {
+                    out.insert(name.clone(), extract);
+                }
+                Err(errors) => {
+                    for error in errors {
+                        self.error(file, error);
+                    }
+                }
             }
         }
         out
@@ -993,6 +1048,21 @@ impl Loader<'_> {
                 }
                 self.check_next(file, output, &children);
             }
+            NodeSpec::Run(r) => {
+                for name in r.automations.iter().filter(|n| *n != "*") {
+                    let why = if !self.catalog.servers.contains_key("script") {
+                        Some("the automations library is not available here".to_string())
+                    } else if !self.catalog.tools.contains_key(&format!("script:{name}")) {
+                        Some(format!("there is no automation {name:?} in the library"))
+                    } else {
+                        None
+                    };
+                    if let Some(why) = why {
+                        self.error(file, format!("automations: {why}"));
+                    }
+                }
+                self.check_next(file, output, &children);
+            }
         }
     }
 
@@ -1057,29 +1127,34 @@ impl Loader<'_> {
         } else {
             String::new()
         };
-        for investigation in node.investigations.values() {
-            if let Some((shape, at)) = scope.investigations.get(&investigation.name)
-                && *shape != investigation.shape
+        let declared = node
+            .investigations
+            .values()
+            .map(|i| ("investigate", &i.name, &i.shape))
+            .chain(
+                node.extracts
+                    .values()
+                    .map(|e| ("extract", &e.name, &e.shape)),
+            );
+        for (table, name, shape) in declared {
+            if let Some((known, at)) = scope.values.get(name)
+                && known != shape
             {
                 self.error(
                     &node.file,
-                    format!(
-                        "investigate.{} is declared again, with another schema, below {at}",
-                        investigation.name
-                    ),
+                    format!("{table}.{name} is declared again, with another shape, below {at}"),
                 );
             }
-            scope.investigations.insert(
-                investigation.name.clone(),
-                (investigation.shape.clone(), node.label().to_string()),
-            );
+            scope
+                .values
+                .insert(name.clone(), (shape.clone(), node.label().to_string()));
         }
         // Each route is checked once: shared branches are reached from several decisions.
         let key = (
             id,
             format!(
                 "{:?}{}",
-                scope.investigations.keys().collect::<Vec<_>>(),
+                scope.values.keys().collect::<Vec<_>>(),
                 scope.result
             ),
         );
@@ -1092,13 +1167,38 @@ impl Loader<'_> {
                     }
                 }
             }
+            for extract in node.extracts.values() {
+                for path in extract.variables() {
+                    // An extract cannot read its own answer.
+                    let own = path.first() == Some(&extract.name);
+                    let why = if own {
+                        Some("an extract cannot read its own answer".to_string())
+                    } else {
+                        unresolved(&path, &scope)
+                    };
+                    if let Some(why) = why {
+                        self.error(
+                            &node.file,
+                            format!(
+                                "extract.{}: ${}: {}{via}",
+                                extract.name,
+                                path.join("."),
+                                why.trim_start_matches(&format!("{{{}}}: ", path.join(".")))
+                            ),
+                        );
+                    }
+                }
+            }
         }
         if let NodeSpec::Decide(d) = &node.spec {
             for name in &d.enrich {
-                if !scope.investigations.contains_key(name) {
+                if !scope.values.contains_key(name) {
                     self.error(
                         &node.file,
-                        format!("enrich: no investigation {name:?} is declared here or above{via}"),
+                        format!(
+                            "enrich: no investigation or extract {name:?} is declared here or \
+                             above{via}"
+                        ),
                     );
                 }
             }
@@ -1117,8 +1217,10 @@ impl Loader<'_> {
                 }
             }
         }
-        let passes_result = matches!(node.spec, NodeSpec::Tool(_) | NodeSpec::Agent(_))
-            && node.spec.output() == Some(Output::Next);
+        let passes_result = matches!(
+            node.spec,
+            NodeSpec::Tool(_) | NodeSpec::Agent(_) | NodeSpec::Run(_)
+        ) && node.spec.output() == Some(Output::Next);
         for child in node.children {
             let mut next = scope.clone();
             if passes_result {
@@ -1140,13 +1242,14 @@ fn unresolved(path: &[String], scope: &Scope) -> Option<String> {
             "{result} is only set below a tool or agent with output = \"next\"".to_string()
         });
     }
-    match scope.investigations.get(name) {
+    match scope.values.get(name) {
         None => Some(format!(
-            "{{{}}}: no built-in value or investigation {name:?} is declared here or above",
+            "{{{}}}: no built-in value, investigation or extract {name:?} is declared here or \
+             above",
             path.join(".")
         )),
         Some((shape, _)) if shape.field(fields).is_none() => Some(format!(
-            "{{{}}}: investigate.{name} has no field {:?}",
+            "{{{}}}: {name} has no field {:?}",
             path.join("."),
             fields.join(".")
         )),
@@ -1360,6 +1463,63 @@ mod tests {
     }
 
     #[test]
+    fn extracts_are_checked_and_their_answers_are_placeholders_below() {
+        let e = errors(&tree(&[
+            (
+                "decide.toml",
+                "fallback = \"a\"\nquestion = \"{names} or {rows.author} or {rows.when}?\"\n\
+                 min_confidence = 0.5\nenrich = [\"names\", \"nope\"]\n\
+                 [extract.names]\nxpath = \"//TreeItem/@name\"\nas = \"list\"\n\
+                 [extract.rows]\nxpath = \"//ListItem\"\nas = \"table\"\nfields = { author = \"@name\" }\n\
+                 [extract.broken]\nxpath = \"//ListItem[\"\n\
+                 [extract.scoped]\nxpath = \"//Edit[@name = $window and @class = $names]\"\n\
+                 [extract.later]\nxpath = \"//Edit[@name = $missing]\"\n\
+                 [extract.itself]\nxpath = \"//Edit[@name = $itself]\"\n\
+                 [investigate.twice]\nquestion = \"q\"\nschema = \"string\"\n\
+                 [extract.twice]\nxpath = \"//Edit\"",
+            ),
+            (
+                "a/transcript.toml",
+                "description = \"A {names}\"\ninstructions = \"{rows}\"",
+            ),
+            (
+                "b/transcript.toml",
+                "description = \"B\"\ninstructions = \"{names.x}\"",
+            ),
+        ]));
+        let all = e.join("\n");
+        assert!(all.contains("extract.broken.xpath: column 12"), "{all}");
+        assert!(
+            all.contains("{rows.when}: rows has no field \"when\""),
+            "{all}"
+        );
+        assert!(
+            all.contains("enrich: no investigation or extract \"nope\""),
+            "{all}"
+        );
+        assert!(
+            all.contains("extract.later: $missing: no built-in value"),
+            "{all}"
+        );
+        assert!(
+            all.contains("extract.itself: $itself: an extract cannot read its own answer"),
+            "{all}"
+        );
+        assert!(
+            all.contains("extract.twice: an investigation here has the same name"),
+            "{all}"
+        );
+        assert!(
+            all.contains("{names.x}: {names.x} is text")
+                || all.contains("names has no field \"x\""),
+            "{all}"
+        );
+        assert!(!all.contains("extract.scoped"), "{all}");
+        assert!(!all.contains("{rows.author}"), "{all}");
+        assert_eq!(e.len(), 7, "{all}");
+    }
+
+    #[test]
     fn a_tool_with_next_passes_its_result_to_its_branch() {
         let catalog = Catalog {
             tools: BTreeMap::from([(
@@ -1436,7 +1596,7 @@ mod tests {
         ]);
         let e = errors(&t);
         assert_eq!(e.len(), 1, "{e:?}");
-        assert!(e[0].contains("no investigation \"missing\""));
+        assert!(e[0].contains("no investigation or extract \"missing\""));
         let mut files = vec![("decide.toml".to_string(), "fallback = \"x\"".to_string())];
         let mut dir = String::new();
         for level in 0..5 {

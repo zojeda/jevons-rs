@@ -3,8 +3,68 @@
 //! Notepad's menu bar about 30 times a second and the text being typed turns into menu shortcuts.
 //! While a take runs from a held hotkey, a low-level keyboard hook drops the repeats of that key;
 //! its release, and everything typed, pass through.
+//!
+//! The same hook reports clicks and keys while a demonstration is recorded ([`record`]),
+//! except the input the app sends itself ([`own_input`]).
 
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+/// Input the hook saw while a demonstration is recorded.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub enum Raw {
+    /// The left mouse button went down at this screen point.
+    Click { x: i32, y: i32 },
+    /// A key went down.
+    Key {
+        /// The key's name as accelerators write it: `a`, `enter`, `f5`.
+        key: String,
+        /// The text it types (shift and the layout applied), when it types any.
+        text: Option<String>,
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+        meta: bool,
+    },
+}
+
+/// Where the hook sends input while recording.
+static RECORDING: Mutex<Option<std::sync::mpsc::Sender<Raw>>> = Mutex::new(None);
+/// Until when input is the app's own (it just typed or clicked), and not the user's.
+static OWN_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Starts (with a sender) or stops (with `None`) reporting input.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn record(sender: Option<std::sync::mpsc::Sender<Raw>>) {
+    *RECORDING.lock().expect("the recording lock") = sender;
+}
+
+/// Marks the input of the next moments as the app's own: call it before and after the app
+/// types, pastes or clicks. The hook sees injected input a little after it is sent.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn own_input() {
+    *OWN_UNTIL.lock().expect("the own input lock") =
+        Some(Instant::now() + Duration::from_millis(400));
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_own() -> bool {
+    OWN_UNTIL
+        .lock()
+        .expect("the own input lock")
+        .is_some_and(|until| Instant::now() < until)
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn report(raw: Raw) {
+    if is_own() {
+        return;
+    }
+    if let Some(sender) = RECORDING.lock().expect("the recording lock").as_ref() {
+        let _ = sender.send(raw);
+    }
+}
 
 /// The key of the hotkey held for the running take, as the last part of its accelerator.
 static HELD: Mutex<Option<String>> = Mutex::new(None);
@@ -27,15 +87,78 @@ pub fn start() {
 
 #[cfg(windows)]
 mod windows {
-    use super::HELD;
+    use super::{HELD, Raw, report};
+    use std::sync::Mutex;
+
+    /// The pointer's last position and the modifiers held, for what the hook reports.
+    #[derive(Default)]
+    struct Input {
+        x: f64,
+        y: f64,
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+        meta: bool,
+    }
+
+    static INPUT: Mutex<Input> = Mutex::new(Input {
+        x: 0.0,
+        y: 0.0,
+        ctrl: false,
+        alt: false,
+        shift: false,
+        meta: false,
+    });
+
+    /// Tracks the pointer and modifiers, and reports clicks and keys while recording. It must
+    /// be quick: the hook holds up all input while it runs.
+    fn observe(event: &rdev::Event) {
+        use rdev::{Button, EventType, Key};
+        let mut input = INPUT.lock().expect("the input lock");
+        match event.event_type {
+            EventType::MouseMove { x, y } => {
+                input.x = x;
+                input.y = y;
+            }
+            EventType::ButtonPress(Button::Left) => report(Raw::Click {
+                x: input.x.round() as i32,
+                y: input.y.round() as i32,
+            }),
+            EventType::KeyPress(key) | EventType::KeyRelease(key) => {
+                let down = matches!(event.event_type, EventType::KeyPress(_));
+                match key {
+                    Key::ControlLeft | Key::ControlRight => input.ctrl = down,
+                    Key::Alt | Key::AltGr => input.alt = down,
+                    Key::ShiftLeft | Key::ShiftRight => input.shift = down,
+                    Key::MetaLeft | Key::MetaRight => input.meta = down,
+                    _ if down => report(Raw::Key {
+                        key: key_name(key),
+                        text: event
+                            .name
+                            .clone()
+                            .filter(|t| !t.chars().any(char::is_control)),
+                        ctrl: input.ctrl,
+                        alt: input.alt,
+                        shift: input.shift,
+                        meta: input.meta,
+                    }),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
 
     pub fn start() {
         let spawned = std::thread::Builder::new()
             .name("key-hook".into())
             .spawn(|| {
-                let result = rdev::grab(|event| match event.event_type {
-                    rdev::EventType::KeyPress(key) if is_held(key) => None,
-                    _ => Some(event),
+                let result = rdev::grab(|event| {
+                    observe(&event);
+                    match event.event_type {
+                        rdev::EventType::KeyPress(key) if is_held(key) => None,
+                        _ => Some(event),
+                    }
                 });
                 if let Err(e) = result {
                     tracing::warn!(error = ?e, "The keyboard hook stopped: held hotkeys repeat into the focused application");
@@ -52,7 +175,7 @@ mod windows {
     }
 
     /// The accelerator name (as global-hotkey writes it, lowercased) of an rdev key.
-    fn key_name(key: rdev::Key) -> String {
+    pub(super) fn key_name(key: rdev::Key) -> String {
         use rdev::Key::*;
         let name = match key {
             Space => "space",

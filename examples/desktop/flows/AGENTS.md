@@ -15,7 +15,9 @@ jevons-desktop --transcript "reply that I agree" --context snapshot.json
 
 The second command runs one take headless and prints its trace, with every decision's
 probabilities. Write `snapshot.json` by hand or copy one from the inspector's Context tab (Raw
-JSON); `examples/desktop/*.json` in the jevons repository has two.
+JSON); `examples/desktop/*.json` in the jevons repository has two. Add `--tree tree.json` to read
+extracts and investigations from a recorded interface (the Context tab's **Record tree**), and
+try an extract's expression on its own with `jevons-desktop --xpath "<expression>" --tree tree.json`.
 
 ## Nodes
 
@@ -28,6 +30,7 @@ A node folder holds exactly one node file, whose name is its kind:
 | `transcript.toml` | A leaf: the words as recognized go to `output`, with no model. |
 | `tool.toml` | Calls one registered tool with arguments filled here. |
 | `agent.toml` | A tool-calling loop over registered tools, bounded by `max_steps`. |
+| `run.toml` | Runs one of the user's approved automations, with its arguments filled from what they said. |
 
 A folder may also hold `instructions.md`: prose added to every model call at and below that
 folder, taken exactly as written. Folders whose name starts with `_` or `.` are not nodes: use
@@ -49,6 +52,7 @@ also updates this `AGENTS.md` until someone edits it.
 | `delivery` | How text reaches the application: `paste` (default), `type`, `set_value`, `clipboard`. |
 | `max_output_tokens` | The most tokens a generation writes, for this node and below. |
 | `think` | A thought budget in tokens before a decision or generation. |
+| `[extract.<name>]` | An XPath expression read from the application's interface, with no model (below). |
 | `[investigate.<name>]` | A question for the built-in context investigator (below). |
 
 Instructions add up from the root down. `delivery`, `max_output_tokens` and `think` come from the
@@ -80,7 +84,7 @@ The inspector's Context tab shows every value these rules compare, for the windo
 | `select` | `model` (default): the model chooses. `rules`: the highest `priority`, then the most specific guard; the model only breaks exact ties. |
 | `fallback` | The branch taken when no guard passes, or the model is below `min_confidence` or unavailable. It is taken even if its own guard fails. |
 | `min_confidence` | Below this probability for the chosen branch, run `enrich`, ask again, then take the fallback. |
-| `enrich` | Investigation names to run only when the first answer is unsure. |
+| `enrich` | Extract and investigation names to read only when the first answer is unsure. |
 | `branches` | Take the branches from a shared folder such as `"_actions"` instead of subfolders. |
 | `only` | With `branches`: keep only these of them. |
 | `steps`, `samples` | System One refinement steps (1 to 8) and samples (1 to 32). |
@@ -141,6 +145,79 @@ output = "bubble"
 The agent can always call `investigate` (below). Tool calls ask for confirmation as in
 `tool.toml`. `prompt` sets the task; by default it is the context and what the user said.
 
+## Extracts
+
+An extract reads part of the application's interface with an XPath expression. It is exact and
+fast (tens of milliseconds) and costs no model call, so prefer it to an investigation whenever the
+same elements hold the answer every time:
+
+```toml
+[extract.channels]
+xpath = "//TreeItem[.//Group[has-class(@class, 'p-channel_sidebar__channel')]]/@name"
+as = "list"               # text (default), list, count, exists or table
+limit = 50                # the most matches kept (1 to 500)
+
+[extract.messages]
+xpath = "(//ListItem[starts-with(@automation_id, 'message-list_')][.//Text])[position() > last() - 10]"
+as = "table"
+fields = { author = ".//Button[1]/@name", text = "string(.//Text[last()])" }
+lazy = true               # read only when a node at or below uses {messages} or enrich = ["messages"]
+```
+
+- **Elements** are named by role: the control types UI Automation reports (`Window`, `Pane`,
+  `Group`, `Document`, `List`, `ListItem`, `Tree`, `TreeItem`, `Edit`, `Button`, `Text`,
+  `Hyperlink`, `Image`, `ToolBar`, `Tab`, `TabItem`, `Menu`, `MenuItem`, `CheckBox`, `ComboBox`…).
+  A misspelled role is an error that names the one meant.
+- **Attributes:**
+  - `@name`, `@value` and `@role`;
+  - `@class`, which in browsers and Electron apps is the HTML class list (so `has-class(@class, 'ql-editor')` matches one class);
+  - `@automation_id`;
+  - `@enabled`, `@offscreen`, `@selected`, `@toggled`, `@expanded` (`'true'` or `'false'`);
+  - on windows, `@app`, `@title` and `@front`.
+
+  Names are in the user's language. Prefer classes and automation ids, which are the same in
+  every language.
+- **Paths:** `//` searches below, `/` goes to children, `..` to the parent. The axes are `ancestor::`,
+  `following-sibling::`, `preceding-sibling::` and the other XPath 1.0 axes.
+- **Positions:** `[1]` and `[last()]` count among siblings. `(//ListItem)[last()]` counts over the
+  whole result, and is much faster than `//ListItem[last()]`.
+- **Functions:** XPath 1.0's functions, plus `ends-with`, `lower-case`, `upper-case`,
+  `matches(text, regex)` and `has-class`.
+- **Values:** `string(.)` or an element in `as = "text"` gives an element's text together with its descendants'.
+  Password fields are never read.
+- **Where it starts:** the expression starts at the window the take started in. `/Window[@app='slack.exe']//…` reads
+  another application's window: list it in `scope = ["slack.exe"]`. That also needs the
+  user's permission in the settings.
+- **What `//` covers:** an expression that starts with `//` searches every window the extract may read (the take's own and each `scope` window). One that starts with `.//` stays in the take's window.
+- **Variables:** `$name` takes a placeholder's value, such as `//TreeItem[@name = $transcript]` or
+  `$chat.name`. Values are never pasted into the expression, so they cannot change what it means.
+- **Answers:** available at this node and below as `{channels}` and `{messages}` (JSON), and
+  `{messages.author}` in templates. Decisions and generation prompts see them too.
+- **Lists only hold what is on screen.** A list such as a chat's messages holds only the rows
+  currently rendered.
+
+To find expressions, use the Context tab's **XPath** box on the window in front, or
+`jevons-desktop --xpath "//ListItem" --app slack.exe`. An investigation that succeeds shows the
+XPath it remembered in the take's trace, and that XPath can become an extract.
+
+## `run.toml`
+
+Automations are tasks the user recorded once, in the automations library next to the settings
+(see its `AGENTS.md`). A run node runs one of them:
+
+```toml
+description = "The user asks to run one of their saved automations"
+automations = ["slack-post", "jira-ticket"]   # which it may run; empty or ["*"] for all
+output = "bubble"                              # bubble (default), target, clipboard, none, or next
+```
+
+- **Which one:** with several approved automations, the decision model picks one by their
+  descriptions.
+- **Arguments:** yes/no arguments are answered by the decision model. The others are written by
+  the language model from what the user said, following each argument's description.
+- **Before it runs:** it asks in the bubble first, unless the settings list it as unconfirmed.
+  Only automations the user approved run. The built-in tree's `run` branch runs any of them.
+
 ## Investigations
 
 The context investigator reads the application's interface (UI Automation on Windows) to answer a
@@ -173,7 +250,7 @@ Reading windows other than the one in front also needs the user's permission in 
 | `{clipboard}` | the clipboard text, when the settings allow reading it |
 | `{context}` | all of the above, described for a model |
 | `{route}` | the branches taken so far, such as `dictate/chat` |
-| `{name}`, `{name.field}` | an investigation declared here or above |
+| `{name}`, `{name.field}` | an extract or investigation declared here or above |
 | `{result}`, `{result.field}` | below a tool or agent with `output = "next"` |
 
 Write `{{` and `}}` for literal braces. `instructions.md` is plain prose: no placeholders.
@@ -183,10 +260,12 @@ Write `{{` and `}}` for literal braces. `instructions.md` is plain prose: no pla
 - One node file per folder; unknown fields are errors, reported with their line.
 - A decision has 1 to 128 branches, each with a `description`. `fallback` names one of them.
   If every branch has a guard, a `fallback` is required.
-- Leaves (`generate.toml`, `transcript.toml`) have no branch folders. Tools and agents have one
-  only with `output = "next"`.
+- Leaves (`generate.toml`, `transcript.toml`) have no branch folders. Tools, agents and runs have
+  one only with `output = "next"`.
+- A run node's `automations` name automations in the library.
 - `branches` names a `_` folder under this root; shared folders cannot lead back to themselves.
-- Every placeholder resolves where it is used; `enrich` names investigations in scope.
+- Every placeholder and `$variable` resolves where it is used; `enrich` names extracts and
+  investigations in scope. Every XPath expression parses; an error gives its column.
 - Folders nest at most 8 deep, and a path takes at most 4 model decisions: each costs a model
   call while the user waits.
 - Tool and agent nodes name registered tools, and tool arguments match the tool's schema.

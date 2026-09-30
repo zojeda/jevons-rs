@@ -69,6 +69,8 @@ regex = "1.11"
 reqwest = { version = "0.13", default-features = false, features = ["native-tls", "charset", "json", "multipart", "stream"] }
 rdev = "0.5"
 rfd = "0.17"
+# Automation scripts: pure Rust, Send + Sync, with serde values and signature metadata.
+rhai = { version = "1.26", features = ["sync", "serde", "metadata", "internals"] }
 schemars = "1"
 sha2 = "0.10"
 # Process names for the windows investigations may read (Windows).

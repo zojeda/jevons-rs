@@ -1,0 +1,15 @@
+# Slack: read the open conversation with XPath, which needs no model and takes milliseconds.
+# Rows are the messages Slack has rendered; a follow-up from the same author has no author name.
+description = "In Slack"
+output = "bubble"
+priority = 10
+
+[when]
+app = ["slack.exe"]
+
+[extract.conversation]
+xpath = "normalize-space(//TreeItem[has-class(@class, 'p-channel_sidebar__static_list__item--selected')])"
+
+[extract.messages]
+xpath = "(//ListItem[starts-with(@automation_id, 'message-list_')][.//Text])[position() > last() - 15]/@name"
+as = "list"

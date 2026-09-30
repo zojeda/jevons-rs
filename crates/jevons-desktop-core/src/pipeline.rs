@@ -161,6 +161,8 @@ pub struct Env {
     pub sink: Option<Arc<Mutex<Box<dyn TextSink>>>>,
     /// Answers `[investigate]` questions; without it their answers are empty.
     pub investigator: Option<Arc<dyn Investigate>>,
+    /// Reads `[extract]` expressions; without it their answers are empty.
+    pub reader: Option<Arc<crate::flow::extract::Reader>>,
     /// Approves tool calls that need confirmation; without it they are denied.
     pub confirmer: Option<Arc<crate::flow::confirm::ChannelConfirmer>>,
     /// The tools the settings register; without them tool and agent nodes fail.
@@ -371,6 +373,25 @@ pub async fn run_take(
     }
     let _ = updates.send(Update::Thinking);
     finish_take(env, &start, updates, trace).await
+}
+
+/// Transcribes a take and nothing more: no flow tree, no delivery. For what the user says
+/// while recording a demonstration.
+pub async fn transcribe_only(
+    env: &Env,
+    start: TakeStart,
+    audio: mpsc::UnboundedReceiver<AudioEvent>,
+    finish: oneshot::Receiver<()>,
+    updates: &mpsc::UnboundedSender<Update>,
+) -> Result<String, String> {
+    let mut trace = Trace::new(&start);
+    let text = transcribe(env, audio, finish, updates, &mut trace)
+        .await
+        .map_err(|e| e.to_string())?;
+    if trace.audio_seconds < MIN_TAKE_SECONDS || text.trim().is_empty() {
+        return Err("no speech was recognized".into());
+    }
+    Ok(text.trim().to_string())
 }
 
 /// Walks the flow tree for a transcribed take and sends the leaf's text where it goes.
@@ -987,6 +1008,7 @@ mod tests {
             settings: settings(),
             sink: sink.map(RecordingSink::shared),
             investigator: None,
+            reader: None,
             confirmer: None,
             tools: None,
         }
@@ -1291,6 +1313,193 @@ mod tests {
             .unwrap();
         assert!(!note.passed);
         assert_eq!(note.checks[0].value.as_deref(), Some("hello world"));
+    }
+
+    #[tokio::test]
+    async fn extracts_read_the_interface_with_no_model_and_feed_decisions_and_prompts() {
+        let tree = FlowTree::load(
+            &Memory::new(
+                "test",
+                [
+                    (
+                        "decide.toml",
+                        "fallback = \"other\"\n\
+                         [extract.channels]\n\
+                         xpath = \"//TreeItem[.//Group[has-class(@class, 'p-channel_sidebar__channel')]]/@name\"\n\
+                         as = \"list\"\n\
+                         [extract.last]\n\
+                         xpath = \"string((//ListItem[.//Text])[last()]//Text)\"\n\
+                         lazy = true\n\
+                         [extract.unused]\n\
+                         xpath = \"//Slider\"\n\
+                         lazy = true",
+                    ),
+                    (
+                        "reply/generate.toml",
+                        "description = \"Replies\"\noutput = \"bubble\"\n\
+                         prompt = \"Last: {last}. Channels: {channels}. Said: {transcript}\"\n\
+                         [extract.channels]\n\
+                         xpath = \"//TreeItem[.//Group[has-class(@class, 'p-channel_sidebar__channel')]]/@name\"\n\
+                         as = \"list\"",
+                    ),
+                    ("other/transcript.toml", "description = \"Anything else\""),
+                ],
+            ),
+            &Catalog::default(),
+        );
+        assert!(tree.is_valid(), "{:?}", tree.errors);
+        let (client, seen) = server(prefer(&["reply"]), "Sure.").await;
+        let recorded: crate::recorded::RecordedTree =
+            serde_json::from_str(include_str!("../../../examples/desktop/trees/slack.json"))
+                .unwrap();
+        let env = Env {
+            flows: Arc::new(tree),
+            reader: Some(Arc::new(crate::flow::extract::Reader::new(
+                Arc::new(crate::recorded::RecordedInspector::new(recorded)),
+                crate::context::Privacy::default(),
+            ))),
+            ..env(client, None)
+        };
+        let (audio, finish) = one_second_of_audio();
+        let (updates, _) = mpsc::unbounded_channel();
+        let start = TakeStart {
+            id: 1,
+            context: ContextSnapshot {
+                app: AppInfo {
+                    process_name: "slack.exe".into(),
+                    ..AppInfo::default()
+                },
+                window: WindowInfo {
+                    title: "general (Channel) - Acme - Slack".into(),
+                    handle: Some(7),
+                    ..WindowInfo::default()
+                },
+                ..ContextSnapshot::default()
+            },
+            entry: None,
+        };
+        let trace = run_take(&env, start, audio, finish, &updates).await;
+        assert_eq!(trace.error, None, "{:?}", trace.notes);
+        assert_eq!(trace.leaf.as_ref().unwrap().node, "reply");
+        let root = &trace.flow[0].extracts;
+        assert_eq!(
+            root.len(),
+            1,
+            "lazy extracts wait until something uses them"
+        );
+        assert_eq!(
+            root[0].answer,
+            json!([
+                "general",
+                "launch 3 unread messages",
+                "random",
+                "Ana Silva",
+                "Bo Chen"
+            ])
+        );
+        let decision = serde_json::to_string(&seen.decisions.lock().unwrap()[0]).unwrap();
+        assert!(
+            decision.contains("Ana Silva"),
+            "the decision reads the extract: {decision}"
+        );
+        let reply = &trace.flow[1].extracts;
+        assert_eq!(
+            reply
+                .iter()
+                .map(|e| (e.name.as_str(), e.reused))
+                .collect::<Vec<_>>(),
+            [("channels", true), ("last", false)]
+        );
+        assert_eq!(
+            reply[1].answer,
+            json!("Can someone review the release notes?")
+        );
+        let generation = serde_json::to_string(&seen.generations.lock().unwrap()[0]).unwrap();
+        assert!(
+            generation.contains("Last: Can someone review the release notes?. Channels: [")
+                && generation.contains("Said: hello world"),
+            "{generation}"
+        );
+        assert!(
+            !trace
+                .flow
+                .iter()
+                .any(|f| f.extracts.iter().any(|e| e.name == "unused"))
+        );
+    }
+
+    #[tokio::test]
+    async fn without_approved_automations_the_run_branch_is_no_candidate() {
+        let (client, seen) = server(prefer(&["run", "dictate", "verbatim"]), "unused").await;
+        let sink = RecordingSink::new(Some(7));
+        let trace = take(&env(client, Some(&sink)), None).await;
+        assert_eq!(trace.error, None, "{:?}", trace.notes);
+        let run = trace.flow[0]
+            .branches
+            .iter()
+            .find(|b| b.name == "run")
+            .unwrap();
+        assert!(!run.passed);
+        assert_eq!(run.checks[0].value.as_deref(), Some("0 approved"));
+        let asked = serde_json::to_string(&seen.decisions.lock().unwrap()[0]).unwrap();
+        assert!(
+            !asked.contains("\"run\""),
+            "the model is never offered it: {asked}"
+        );
+        assert_ne!(trace.leaf.unwrap().node, "run");
+    }
+
+    #[tokio::test]
+    async fn a_run_node_fills_an_automation_s_arguments_from_the_words_and_runs_it() {
+        let dir = std::env::temp_dir().join(format!("jevons-run-node-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("open-channel")).unwrap();
+        std::fs::write(
+            dir.join("open-channel/automation.toml"),
+            "description = \"Opens a Slack channel\"\napps = [\"slack.exe\"]\n[args.channel]\ndescription = \"The channel's name\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("open-channel/script.rhai"),
+            "find(\"//TreeItem[.//Text[@name = $channel]]\").invoke();\n`opened ${args.channel}`\n",
+        )
+        .unwrap();
+        let (demonstration, _, _) = crate::recorded::tests::slack_demonstration();
+        let replay = Arc::new(crate::recorded::ReplayActor::new(demonstration));
+        let host = Arc::new(crate::automation::host::AutomationHost::new(
+            &dir,
+            crate::config::AutomationSettings::default(),
+            replay.clone(),
+            replay.clone(),
+        ));
+        let version = host.list()[0].version.clone();
+        let mut settings = crate::config::AutomationSettings::default();
+        settings.approved.insert("open-channel".into(), version);
+        settings.unconfirmed.push("open-channel".into());
+        host.set_settings(settings);
+        let none = std::collections::BTreeMap::new();
+        let tools = Arc::new(
+            ToolHost::new(&none, &std::collections::BTreeMap::new()).with_automations(host),
+        );
+        let tree = FlowTree::load(
+            &Memory::new("test", [("run.toml", "description = \"Runs automations\"")]),
+            &tools.catalog(),
+        );
+        assert!(tree.is_valid(), "{:?}", tree.errors);
+        // The generation writes the argument from what the user said.
+        let (client, _) = server(prefer(&[]), "random").await;
+        let env = Env {
+            flows: Arc::new(tree),
+            tools: Some(tools),
+            ..env(client, None)
+        };
+        let trace = take(&env, None).await;
+        assert_eq!(trace.error, None, "{:?}", trace.notes);
+        assert_eq!(trace.calls[0].tool, "script:open-channel");
+        assert_eq!(trace.calls[0].arguments, json!({"channel": "random"}));
+        assert!(trace.output.contains("opened random"), "{}", trace.output);
+        assert_eq!(replay.done(), 1, "the automation acted");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn tool_host() -> Arc<ToolHost> {

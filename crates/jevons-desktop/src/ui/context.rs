@@ -22,9 +22,16 @@ pub fn ContextPage(rev: u64, frozen: Signal<bool>) -> Element {
     let error = view.context_error.clone();
     let context = view.context.clone();
     let route = view.route.clone();
+    // The last expression tried: its error, or its summary and matches.
+    let probe = view
+        .xpath
+        .clone()
+        .map(|p| (p.error, p.summary, p.lines.join("\n")));
     drop(view);
     let capture = ctx.clone();
     let record = ctx.clone();
+    let run = ctx.clone();
+    let mut expression = use_signal(String::new);
 
     rsx! {
         div { class: "spread",
@@ -138,6 +145,39 @@ pub fn ContextPage(rev: u64, frozen: Signal<bool>) -> Element {
                                     JsonTree { value }
                                 }
                             }
+                        }
+                    }
+                }
+            }
+        }
+        div { class: "dx-card",
+            div { class: "dx-card-header",
+                div {
+                    div { class: "dx-card-title", "XPath" }
+                    div { class: "dx-card-description",
+                        "Try an expression on this window, as [extract] reads it: roles such as ListItem, \
+                         attributes such as @name, @class and @automation_id"
+                    }
+                }
+            }
+            div { class: "dx-card-content",
+                div { class: "row",
+                    input { class: "dx-input mono", placeholder: "//ListItem[last()]",
+                        value: "{expression}", oninput: move |e| expression.set(e.value()) }
+                    button {
+                        class: "dx-button",
+                        "data-size": "sm",
+                        onclick: move |_| run.send(Command::EvaluateXPath(expression())),
+                        "Run"
+                    }
+                }
+                if let Some((error, summary, lines)) = probe {
+                    if let Some(error) = error {
+                        p { class: "error-text", "{error}" }
+                    } else {
+                        p { class: "muted", "{summary}" }
+                        if !lines.is_empty() {
+                            pre { class: "code", "{lines}" }
                         }
                     }
                 }

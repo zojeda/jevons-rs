@@ -8,13 +8,15 @@
 //! is recorded as a [`FlowStep`] with the guards it checked and the probabilities it read.
 
 use super::agent::{self as agents, Task};
-use super::frame::Frame;
+use super::extract::Extract;
+use super::frame::{Frame, Lazy};
 use super::guard::Check;
 use super::investigate::{Inquiry, Investigate};
 use super::investigator::InvestigateTool;
 use super::llm::JevonsLlm;
 use super::spec::{
-    AgentSpec, ArgType, DecideSpec, GenerateSpec, Output, Select, ToolSpec, TranscriptSpec,
+    AgentSpec, ArgSpec, ArgType, DecideSpec, GenerateSpec, Output, RunSpec, Select, ToolSpec,
+    TranscriptSpec,
 };
 use super::tools::result_text;
 use super::tree::{FlowTree, Investigation, Kind, Node, NodeId, NodeSpec};
@@ -56,6 +58,20 @@ pub struct InvestigationTrace {
     pub ms: u64,
 }
 
+/// One extract a take read (or reused).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ExtractTrace {
+    pub name: String,
+    pub xpath: String,
+    pub answer: Value,
+    /// How many nodes the expression selected.
+    pub matches: usize,
+    /// Read earlier in this take.
+    pub reused: bool,
+    pub note: Option<String>,
+    pub ms: u64,
+}
+
 /// A node the walk went through.
 #[derive(Clone, Debug, Serialize)]
 pub struct FlowStep {
@@ -77,6 +93,8 @@ pub struct FlowStep {
     pub decision: Option<DecisionTrace>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub investigations: Vec<InvestigationTrace>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub extracts: Vec<ExtractTrace>,
     pub ms: u64,
 }
 
@@ -91,6 +109,7 @@ impl FlowStep {
             probabilities: BTreeMap::new(),
             decision: None,
             investigations: Vec::new(),
+            extracts: Vec::new(),
             ms: 0,
         }
     }
@@ -271,15 +290,31 @@ impl Walker<'_> {
                         node.children.first().copied()
                     }
                 },
+                NodeSpec::Run(r) => match self.run_automation(node, r).await? {
+                    Ahead::Leaf(leaf) => {
+                        self.step().ms = began.elapsed().as_millis() as u64;
+                        return Ok(leaf);
+                    }
+                    Ahead::Next(result) => {
+                        self.frame.values.insert("result".into(), result);
+                        node.children.first().copied()
+                    }
+                },
             };
             self.step().ms = began.elapsed().as_millis() as u64;
             id = next.expect("decisions choose a branch");
         }
     }
 
-    /// Takes in a node: its settings, the investigations it runs, and its instructions.
+    /// Takes in a node: its settings, the extracts and investigations it runs, and its
+    /// instructions. Extracts come first: they cost no model call.
     async fn enter(&mut self, node: &Node) {
         self.frame.enter(node);
+        for extract in node.extracts.values() {
+            if !extract.spec.lazy {
+                self.extract(extract).await;
+            }
+        }
         for investigation in node.investigations.values() {
             if !investigation.spec.lazy {
                 self.investigate(node.id, investigation).await;
@@ -290,21 +325,110 @@ impl Walker<'_> {
         self.frame.instructions.extend(instructions);
     }
 
-    /// Runs the lazy investigations this node's text refers to.
+    /// Reads the lazy values this node's text refers to.
     async fn resolve_lazy(&mut self, node: &Node) {
         let wanted: Vec<String> = node
             .templates
             .values()
-            .flat_map(|t| t.paths())
-            .filter_map(|path| path.first())
-            .filter(|name| self.frame.pending.contains_key(*name))
-            .cloned()
+            .flat_map(|t| t.paths().map(|p| p.to_vec()).collect::<Vec<_>>())
+            .chain(node.extracts.values().flat_map(Extract::variables))
+            .filter_map(|path| path.first().cloned())
+            .filter(|name| self.frame.pending.contains_key(name))
             .collect();
         for name in wanted {
-            if let Some((at, investigation)) = self.frame.pending.get(&name).cloned() {
-                self.investigate(at, &investigation).await;
+            self.resolve(&name).await;
+        }
+    }
+
+    /// Reads one pending lazy value.
+    async fn resolve(&mut self, name: &str) {
+        match self.frame.pending.get(name).cloned() {
+            Some((at, Lazy::Investigation(investigation))) => {
+                self.investigate(at, &investigation).await
+            }
+            Some((_, Lazy::Extract(extract))) => self.extract(&extract).await,
+            None => {}
+        }
+    }
+
+    /// Reads an extract from the interface, with its `$variables` from the frame.
+    async fn extract(&mut self, extract: &Extract) {
+        // A lazy value an expression uses is read first.
+        self.frame.pending.remove(&extract.name);
+        for path in extract.variables() {
+            if let Some(name) = path.first()
+                && self.frame.pending.contains_key(name)
+            {
+                Box::pin(self.resolve(name)).await;
             }
         }
+        let variables: crate::xpath::Variables = extract
+            .variables()
+            .into_iter()
+            .map(|path| {
+                let value = self.frame.value(&path).unwrap_or_default();
+                (path.join("."), crate::xpath::Value::String(value))
+            })
+            .collect();
+        let key = extract.key(&variables);
+        let began = Instant::now();
+        self.stage(Stage::new(StageKind::Investigating, &extract.name));
+        let (found, reused) = match self.memo.get(&key) {
+            Some(answer) => (
+                super::extract::Extracted {
+                    value: answer.clone(),
+                    matches: 0,
+                    note: None,
+                },
+                true,
+            ),
+            None => {
+                let found = match self.env.reader.clone() {
+                    Some(reader) => {
+                        let owned = extract.clone();
+                        let snapshot = self.frame.snapshot.clone();
+                        tokio::task::spawn_blocking(move || {
+                            reader.read(&owned, &snapshot, &variables)
+                        })
+                        .await
+                        .unwrap_or_else(|e| super::extract::Extracted {
+                            value: extract.shape.empty(),
+                            matches: 0,
+                            note: Some(format!("The extract stopped: {e}")),
+                        })
+                    }
+                    None => super::extract::Extracted {
+                        value: extract.shape.empty(),
+                        matches: 0,
+                        note: Some("No interface reader is available here".into()),
+                    },
+                };
+                self.memo.insert(key, found.value.clone());
+                (found, false)
+            }
+        };
+        let has = super::shape::has_content(&found.value);
+        self.done(
+            &match (reused, has) {
+                (true, _) => "read earlier".to_string(),
+                (false, true) => format!("{} found", found.matches),
+                (false, false) => "nothing found".to_string(),
+            },
+            None,
+            has,
+        );
+        self.frame
+            .values
+            .insert(extract.name.clone(), found.value.clone());
+        self.step().extracts.push(ExtractTrace {
+            name: extract.name.clone(),
+            xpath: extract.spec.xpath.clone(),
+            answer: found.value,
+            matches: found.matches,
+            reused,
+            note: found.note,
+            ms: began.elapsed().as_millis() as u64,
+        });
     }
 
     async fn investigate(&mut self, at: NodeId, investigation: &Investigation) {
@@ -382,9 +506,19 @@ impl Walker<'_> {
         let mut branches = Vec::new();
         let mut candidates = Vec::new();
         for child in self.tree.children(node.id) {
-            let checks = child
+            let mut checks = child
                 .guard
                 .check(&self.frame.snapshot, &self.frame.transcript);
+            // A run branch applies only when it has an approved automation to run.
+            if let NodeSpec::Run(r) = &child.spec {
+                let runnable = self.runnable(r);
+                checks.push(Check {
+                    rule: "automations",
+                    pattern: "an approved automation".into(),
+                    value: Some(format!("{runnable} approved")),
+                    passed: runnable > 0,
+                });
+            }
             let passed = checks.iter().all(|c| c.passed);
             if passed {
                 candidates.push(child.id);
@@ -398,6 +532,22 @@ impl Walker<'_> {
             });
         }
         (branches, candidates)
+    }
+
+    /// How many approved automations a run node may run.
+    fn runnable(&self, r: &RunSpec) -> usize {
+        let Some(automations) = self.env.tools.as_ref().and_then(|t| t.automations()) else {
+            return 0;
+        };
+        automations
+            .list()
+            .into_iter()
+            .filter(|a| {
+                a.approved
+                    && (r.automations.is_empty()
+                        || r.automations.iter().any(|n| n == "*" || *n == a.name))
+            })
+            .count()
     }
 
     /// The candidates that rank first by priority, then guard specificity.
@@ -582,9 +732,7 @@ impl Walker<'_> {
             .collect();
         if !unenriched.is_empty() && self.can_decide() {
             for name in &unenriched {
-                if let Some((at, investigation)) = self.frame.pending.get(name).cloned() {
-                    self.investigate(at, &investigation).await;
-                }
+                self.resolve(name).await;
             }
             if let Some(mut answers) = self
                 .request(node, d, &[(node.id, candidates.to_vec())])
@@ -615,6 +763,7 @@ impl Walker<'_> {
         for _ in 0..super::tree::MAX_DEPTH * 2 {
             let node = self.tree.node(id);
             let needs_context = !node.investigations.is_empty()
+                || !node.extracts.is_empty()
                 || node
                     .template("question")
                     .is_some_and(|q| q.paths().any(|p| !super::template::is_builtin(&p[0])));
@@ -830,6 +979,114 @@ impl Walker<'_> {
         }
     }
 
+    /// Runs one of the library's approved automations: the only one the node allows, or the one
+    /// the decision model chooses by what the user said. Its arguments are filled from what the
+    /// user said, and it runs as the tool `script:<name>`, confirmation included.
+    async fn run_automation(&mut self, node: &Node, r: &RunSpec) -> Result<Ahead, ClientError> {
+        let host = self
+            .env
+            .tools
+            .clone()
+            .ok_or(ClientError::NotServed("Tools (the automations library)"))?;
+        let automations = host
+            .automations()
+            .ok_or(ClientError::NotServed("The automations library"))?;
+        let allowed = |name: &str| {
+            r.automations.is_empty() || r.automations.iter().any(|a| a == "*" || a == name)
+        };
+        let (listed, waiting): (Vec<_>, Vec<_>) = automations
+            .list()
+            .into_iter()
+            .filter(|a| allowed(&a.name))
+            .partition(|a| a.approved);
+        if listed.is_empty() {
+            return Err(ClientError::Protocol(if waiting.is_empty() {
+                "There is no automation to run: record one from the tray menu".into()
+            } else {
+                format!(
+                    "No automation is approved yet ({}): approve one from the tray's Automations \
+                     menu",
+                    waiting
+                        .iter()
+                        .map(|a| a.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }));
+        }
+        let chosen = if listed.len() == 1 {
+            listed[0].clone()
+        } else {
+            self.stage(Stage {
+                kind: StageKind::Deciding,
+                label: "which automation".into(),
+                choices: listed.iter().map(|a| a.name.clone()).collect(),
+            });
+            let criteria: BTreeMap<String, String> = listed
+                .iter()
+                .map(|a| (a.name.clone(), a.description.clone()))
+                .collect();
+            let questions = BTreeMap::from([(
+                "automation".to_string(),
+                Question::Choice {
+                    instructions: Some(
+                        "Which of the user's automations does what they asked for?".into(),
+                    ),
+                    criteria,
+                },
+            )]);
+            let answer = if self.can_decide() {
+                self.system_one(node, questions, None, None).await
+            } else {
+                None
+            };
+            let name = answer
+                .and_then(|a| match a.answers.get("automation") {
+                    Some(Answer::Choice { choice, .. }) => Some(choice.clone()),
+                    _ => None,
+                })
+                .filter(|choice| listed.iter().any(|a| a.name == *choice))
+                .unwrap_or_else(|| listed[0].name.clone());
+            self.done(&name, Some(name.clone()), true);
+            listed
+                .into_iter()
+                .find(|a| a.name == name)
+                .expect("the choice is one of them")
+        };
+        self.step().chosen = Some(chosen.name.clone());
+        let mut args = BTreeMap::new();
+        for (name, schema) in chosen.parameters["properties"]
+            .as_object()
+            .into_iter()
+            .flatten()
+        {
+            let description = schema["description"].as_str().unwrap_or(name);
+            let spec = match schema["type"].as_str() {
+                Some("boolean") => ArgSpec {
+                    noul: Some(format!("{description}?")),
+                    ..ArgSpec::default()
+                },
+                kind => ArgSpec {
+                    generate: Some(format!("{description}, as the user said it")),
+                    kind: match kind {
+                        Some("integer") => Some(ArgType::Integer),
+                        Some("number") => Some(ArgType::Number),
+                        _ => None,
+                    },
+                    ..ArgSpec::default()
+                },
+            };
+            args.insert(name.clone(), spec);
+        }
+        let spec = ToolSpec {
+            tool: format!("script:{}", chosen.name),
+            args,
+            output: r.output,
+            ..ToolSpec::default()
+        };
+        self.tool(node, &spec).await
+    }
+
     /// A tool node's arguments: labels and yes-or-no in one System One request, literal values
     /// from their templates, and written values from the generative model.
     async fn arguments(
@@ -864,6 +1121,7 @@ impl Walker<'_> {
                 let text = node
                     .template(&format!("args.{name}.noul"))
                     .map(|q| q.render(|path| self.frame.value(path)))
+                    .or_else(|| spec.noul.clone())
                     .unwrap_or_default();
                 questions.insert(
                     name.clone(),
@@ -901,6 +1159,7 @@ impl Walker<'_> {
                 let instruction = node
                     .template(&format!("args.{name}.generate"))
                     .map(|g| g.render(|path| self.frame.value(path)))
+                    .or_else(|| spec.generate.clone())
                     .unwrap_or_default();
                 self.write_argument(&t.tool, name, &instruction).await?
             } else {
@@ -1385,14 +1644,15 @@ mod tests {
         let tree = FlowTree::load(&defaults::builtin(), &Catalog::default());
         let examples =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/desktop");
-        let route = |file: &str| -> Vec<String> {
+        let from = |entry: &str, file: &str| -> Vec<String> {
             let text = std::fs::read_to_string(examples.join(file)).unwrap();
             let snapshot: ContextSnapshot = serde_json::from_str(&text).unwrap();
-            preview(&tree, &snapshot, tree.find("dictate").unwrap())
+            preview(&tree, &snapshot, tree.find(entry).unwrap())
                 .into_iter()
                 .map(|s| s.node)
                 .collect()
         };
+        let route = |file: &str| from("dictate", file);
         assert_eq!(
             route("context-slack.json"),
             ["dictate", "dictate/chat", "dictate/chat/thread"]
@@ -1401,6 +1661,8 @@ mod tests {
             route("context-notepad-selection.json"),
             ["dictate", "dictate/notes"]
         );
+        // Slack reads its conversation by XPath rather than with the chat investigation.
+        assert_eq!(from("ask", "context-slack.json"), ["ask", "ask/slack"]);
     }
 
     #[test]

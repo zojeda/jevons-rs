@@ -4,9 +4,14 @@
 
 use crate::runtime::{Runtime, Status};
 use crate::tray::Tray;
+use jevons_desktop_core::automation::author::{self, Authored};
+use jevons_desktop_core::automation::check::CheckReport;
+use jevons_desktop_core::automation::host::AutomationHost;
+use jevons_desktop_core::automation::run::RunTrace;
 use jevons_desktop_core::config::{DesktopConfig, HotkeyMode};
 use jevons_desktop_core::context::ContextSnapshot;
 use jevons_desktop_core::flow::confirm::{ChannelConfirmer, Confirmation};
+use jevons_desktop_core::flow::extract::Reader;
 use jevons_desktop_core::flow::investigate::Investigate;
 use jevons_desktop_core::flow::investigator::{Investigator, PathCache};
 use jevons_desktop_core::flow::tools::ToolHost;
@@ -16,11 +21,14 @@ use jevons_desktop_core::icons::TrayState;
 use jevons_desktop_core::pipeline::{self, Env, StageKind, TakeStart, Trace, Update};
 use jevons_desktop_core::platform::{
     AudioDevice, AudioSource, Binding, CaptureHandle, ContextInspector, ContextProvider,
-    DeliveryOutcome, HotkeyAction, HotkeyEvent, MenuCommand, MenuModel, TextSink, TrayBackend,
+    DeliveryOutcome, HotkeyAction, HotkeyEvent, MenuCommand, MenuModel, Recorder, RecordingHandle,
+    TextSink, TrayBackend, UiActor,
 };
 use jevons_desktop_core::recorded::RecordedTree;
+use jevons_desktop_core::recording::{Session, bundle};
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
@@ -46,6 +54,27 @@ pub enum Command {
     CaptureContextIn(Duration),
     /// Saves the interface of the window in front, for writing flows and investigation tests.
     RecordTree,
+    /// The automations library changed on disk.
+    ReloadAutomations,
+    /// What the user said while recording, transcribed.
+    RecordingNote(Result<String, String>),
+    /// A recording was saved (its folder, steps and description), or why not.
+    RecordingSaved(Result<(PathBuf, usize, String), String>),
+    /// The author wrote an automation from a recording, or why not.
+    Authored(Result<Box<Authored>, String>),
+    /// An automation's checks, for approving it.
+    Reviewed(Box<CheckReport>),
+    /// The user's answer to approving an automation's version.
+    ApprovalAnswered {
+        name: String,
+        version: String,
+        yes: bool,
+    },
+    /// What a running automation does now.
+    AutomationProgress(String),
+    AutomationFinished(Box<RunTrace>),
+    /// Evaluates an XPath expression against the window the Context tab shows.
+    EvaluateXPath(String),
     ReloadFlows,
     RuntimeChanged,
     /// The MCP servers listed their tools: check the flows against them.
@@ -55,6 +84,8 @@ pub enum Command {
     TakeFinished(Box<Trace>),
     /// Hides the feedback bubble of a finished take, unless a newer take shows it.
     HideFeedback(u64),
+    /// Hides a message, unless a newer one replaced it.
+    HideMessage(u64),
     /// A take asks before calling a tool.
     ConfirmRequested(Confirmation),
     /// The user's answer: run the tool or not.
@@ -123,6 +154,10 @@ pub struct Feedback {
     /// The take ended; the bubble hides shortly.
     pub done: bool,
     pub failed: bool,
+    /// A message of its own (recording, automations): it shows even with live feedback off.
+    pub message: bool,
+    /// Which message this is, so an older message's timer never hides a newer one.
+    pub shown: u64,
 }
 
 impl Feedback {
@@ -268,7 +303,22 @@ pub struct View {
     pub watch_context: bool,
     /// The feedback bubble's contents while a take runs and shortly after.
     pub feedback: Option<Feedback>,
+    /// The last XPath expression tried on the Context tab, and what it selected.
+    pub xpath: Option<XPathProbe>,
+    /// The automations library: name, description, and whether this version is approved.
+    pub automations: Vec<(String, String, bool)>,
     pub quit: bool,
+}
+
+/// What an expression tried on the Context tab selected.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct XPathProbe {
+    pub expression: String,
+    /// One per match, or the value.
+    pub lines: Vec<String>,
+    /// Such as "12 matches in 18 ms".
+    pub summary: String,
+    pub error: Option<String>,
 }
 
 pub type SharedView = Arc<Mutex<View>>;
@@ -286,7 +336,21 @@ struct Active {
     finish: Option<oneshot::Sender<()>>,
     /// The pipeline task, aborted when the take is cancelled.
     task: Option<tokio::task::JoinHandle<()>>,
+    /// A note for the recording, transcribed only.
+    note: bool,
 }
+
+/// A demonstration being recorded.
+struct ActiveRecording {
+    /// Taken when the recording stops.
+    session: Arc<Mutex<Option<Session>>>,
+    handle: Option<Box<dyn RecordingHandle>>,
+    /// Turns what the platform reports into steps (it reads the interface, so it blocks).
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+/// The id feedback bubbles of messages (not takes) use.
+const MESSAGE: u64 = u64::MAX;
 
 pub struct Agent {
     config: DesktopConfig,
@@ -299,8 +363,21 @@ pub struct Agent {
     paths: Arc<Mutex<PathCache>>,
     sink: Arc<Mutex<Box<dyn TextSink>>>,
     audio: Box<dyn AudioSource>,
-    /// The tools the settings register.
+    /// The tools the settings register, the library's automations among them.
     tools: Arc<ToolHost>,
+    /// The automations library, and what runs them.
+    automations: Arc<AutomationHost>,
+    actor: Arc<dyn UiActor>,
+    recorder: Arc<dyn Recorder>,
+    recording: Option<ActiveRecording>,
+    /// The record hotkey held: which, since when, and whether this press started recording.
+    record_press: Option<(u32, std::time::Instant, bool)>,
+    /// The automation running outside a take, and its cancel flag.
+    running: Option<(String, Arc<AtomicBool>)>,
+    /// The automation the recording in progress will replace (Record it again).
+    replacing: Option<String>,
+    /// How many messages the bubble has shown.
+    messages: u64,
     flows: Arc<FlowTree>,
     hotkeys: std::collections::HashMap<u32, HotkeyAction>,
     /// The reply to the tool call the bubble asks about.
@@ -313,12 +390,15 @@ pub struct Agent {
     repaint: Arc<dyn Fn() + Send + Sync>,
     commands: mpsc::UnboundedSender<Command>,
     _watcher: Option<notify::RecommendedWatcher>,
+    _library_watcher: Option<notify::RecommendedWatcher>,
 }
 
 /// The platform layers the agent drives.
 pub struct Layers {
     pub context: Box<dyn ContextProvider>,
     pub inspector: Arc<dyn ContextInspector>,
+    pub actor: Arc<dyn UiActor>,
+    pub recorder: Arc<dyn Recorder>,
     pub sink: Box<dyn TextSink>,
     pub audio: Box<dyn AudioSource>,
     pub tray: Option<Tray>,
@@ -336,7 +416,10 @@ impl Agent {
         commands: mpsc::UnboundedSender<Command>,
     ) -> Self {
         let flows_dir = config.flows_dir(&config_file);
-        let tools = Arc::new(ToolHost::new(&config.tools, &config.mcp));
+        let automations = automation_host(&config, &config_file, &layers, &commands);
+        let tools = Arc::new(
+            ToolHost::new(&config.tools, &config.mcp).with_automations(automations.clone()),
+        );
         let (tree, notes) = defaults::open(&flows_dir, &tools.catalog());
         let errors = tree.errors.clone();
         let flows = if tree.is_valid() {
@@ -345,9 +428,20 @@ impl Agent {
             // Nothing good to keep yet: the built-in tree runs until the folder is fixed.
             FlowTree::load(&defaults::builtin(), &Catalog::default())
         };
-        let watcher = watch(&flows_dir, commands.clone());
+        let watcher = watch(&flows_dir, commands.clone(), || Command::ReloadFlows);
+        let library_watcher = watch(automations.dir(), commands.clone(), || {
+            Command::ReloadAutomations
+        });
         let mut agent = Self {
             tools,
+            automations,
+            actor: layers.actor,
+            recorder: layers.recorder,
+            recording: None,
+            record_press: None,
+            running: None,
+            replacing: None,
+            messages: 0,
             flows: Arc::new(flows),
             config,
             config_file,
@@ -367,6 +461,7 @@ impl Agent {
             repaint,
             commands,
             _watcher: watcher,
+            _library_watcher: library_watcher,
         };
         {
             let mut view = agent.view.lock().expect("the view lock");
@@ -380,7 +475,7 @@ impl Agent {
             view.config_file = agent.config_file.clone();
         }
         if let Some(tray) = &agent.tray {
-            tray.hotkeys(Binding::from_settings(&agent.config.dictation));
+            tray.hotkeys(agent.bindings());
         }
         agent.runtime.apply(&agent.config, &agent.config_file);
         agent.publish_menu();
@@ -452,14 +547,22 @@ impl Agent {
         };
         let live = self.active.as_ref().is_some_and(|a| a.live);
         let menu = MenuModel {
-            busy: self.active.is_some(),
+            busy: self.active.is_some() || self.running.is_some(),
             dictating: self.active.as_ref().is_some_and(|a| !a.live),
             live,
             entries: self.flows.entries(),
             start,
             context_paused: paused,
             feedback: self.config.dictation.live_feedback,
+            recording: self.recording.is_some(),
+            automations: self
+                .automations
+                .list()
+                .into_iter()
+                .map(|a| (a.name, a.description, a.approved))
+                .collect(),
         };
+        self.view().automations = menu.automations.clone();
         if let Some(tray) = &mut self.tray {
             tray.set_menu(&menu);
         }
@@ -486,8 +589,18 @@ impl Agent {
                     let yes = *yes;
                     self.confirmed(yes);
                 }
+                Some(HotkeyAction::Record) => self.record_pressed(id),
+                Some(HotkeyAction::Automation { name }) => {
+                    let name = name.clone();
+                    self.automation_hotkey(id, name);
+                }
                 None => {}
             },
+            Command::Hotkey(HotkeyEvent::Released(id))
+                if self.record_press.is_some_and(|(held, ..)| held == id) =>
+            {
+                self.record_released();
+            }
             Command::Hotkey(HotkeyEvent::Released(id)) => {
                 if self
                     .active
@@ -520,11 +633,33 @@ impl Agent {
                 });
             }
             Command::RecordTree => self.record_tree(),
+            Command::EvaluateXPath(expression) => self.evaluate_xpath(expression),
             Command::ToolsListed(problems) => {
                 self.view().tool_problems = problems;
                 self.reload_flows();
             }
             Command::ReloadFlows => self.reload_flows(),
+            Command::ReloadAutomations => {
+                self.automations.reload();
+                // The tools changed: rewrite TOOLS.md and check the flows against them.
+                self.list_tools();
+                self.publish_menu();
+            }
+            Command::RecordingNote(said) => self.recording_note(said),
+            Command::RecordingSaved(saved) => self.recording_saved(saved),
+            Command::Authored(authored) => self.authored(authored),
+            Command::Reviewed(report) => self.reviewed(*report),
+            Command::ApprovalAnswered { name, version, yes } => {
+                self.approval_answered(&name, &version, yes)
+            }
+            Command::AutomationProgress(label) => {
+                if let Some(feedback) = self.view().feedback.as_mut().filter(|f| f.take == MESSAGE)
+                {
+                    feedback.status = label;
+                }
+                self.repaint();
+            }
+            Command::AutomationFinished(trace) => self.automation_finished(*trace),
             Command::ReloadRuntime => self.runtime.apply(&self.config, &self.config_file),
             Command::RuntimeChanged => {
                 let status = self.runtime.status();
@@ -544,6 +679,18 @@ impl Agent {
             Command::ConfirmRequested(confirmation) => self.confirm_requested(confirmation),
             Command::Confirmed(yes) => self.confirmed(yes),
             Command::Bubble(action) => self.bubble(action),
+            Command::HideMessage(shown) => {
+                let mut view = self.view();
+                if view
+                    .feedback
+                    .as_ref()
+                    .is_some_and(|f| f.take == MESSAGE && f.shown == shown && f.done)
+                {
+                    view.feedback = None;
+                    drop(view);
+                    self.repaint();
+                }
+            }
             Command::HideFeedback(take) => {
                 let mut view = self.view();
                 if view
@@ -567,6 +714,10 @@ impl Agent {
             MenuCommand::CancelTake => {
                 if let Some(active) = &self.active {
                     tracing::info!(take = active.id, "Take cancelled");
+                }
+                if let Some((name, cancel)) = &self.running {
+                    tracing::info!(automation = %name, "Automation cancelled");
+                    cancel.store(true, Ordering::Relaxed);
                 }
                 self.cancel_take();
                 self.view().dictating = false;
@@ -609,6 +760,28 @@ impl Agent {
                 self.repaint();
             }
             MenuCommand::ReloadFlows => self.reload_flows(),
+            MenuCommand::ToggleRecording => {
+                if self.recording.is_some() {
+                    self.stop_recording();
+                } else {
+                    self.start_recording();
+                }
+            }
+            MenuCommand::OpenAutomationsFolder => {
+                let dir = self.automations.dir().to_path_buf();
+                let _ = std::fs::create_dir_all(&dir);
+                open_folder(&dir);
+            }
+            MenuCommand::RunAutomation(name) => self.run_automation(&name, None, false),
+            MenuCommand::RunStepByStep(name) => self.run_automation(&name, None, true),
+            MenuCommand::RecordAgain(name) => {
+                self.replacing = Some(name);
+                self.start_recording();
+                if self.recording.is_none() {
+                    self.replacing = None;
+                }
+            }
+            MenuCommand::ApproveAutomation(name) => self.review_automation(&name),
             MenuCommand::OpenConfigFolder => {
                 if let Some(dir) = self.config_file.parent() {
                     let _ = std::fs::create_dir_all(dir);
@@ -633,7 +806,7 @@ impl Agent {
     /// mode. Key repeats and other hotkeys while a take runs change nothing.
     fn hotkey_pressed(&mut self, id: u32, entry: Option<String>, live: bool, mode: HotkeyMode) {
         match &self.active {
-            None => self.begin(entry, Some(id), live, mode == HotkeyMode::Hold),
+            None => self.begin(entry, Some(id), live, mode == HotkeyMode::Hold, None),
             Some(a) if a.source == Some(id) && !a.held && a.capture.is_some() => self.stop_take(),
             Some(_) => {}
         }
@@ -645,7 +818,7 @@ impl Agent {
             Some(active) if !active.live && active.capture.is_some() => self.stop_take(),
             Some(active) if active.live => self.notice("Live dictation is running"),
             Some(_) => self.notice("The last take is still being processed"),
-            None => self.begin(None, None, false, false),
+            None => self.begin(None, None, false, false, None),
         }
     }
 
@@ -654,7 +827,7 @@ impl Agent {
             Some(active) if active.live && active.capture.is_some() => self.stop_take(),
             Some(active) if active.live => {}
             Some(_) => self.notice("Finish the current take first"),
-            None => self.begin(None, None, true, false),
+            None => self.begin(None, None, true, false, None),
         }
     }
 
@@ -717,6 +890,7 @@ impl Agent {
     /// Every hotkey the settings define, plus Enter and Esc while a tool call waits.
     fn bindings(&self) -> Vec<Binding> {
         let mut bindings = Binding::from_settings(&self.config.dictation);
+        bindings.extend(Binding::for_automations(&self.config.automation));
         if self.confirming.is_some() {
             bindings.push(Binding {
                 accelerator: "Enter".into(),
@@ -740,13 +914,22 @@ impl Agent {
         self.confirming = Some(confirmation.reply);
         {
             let mut view = self.view();
-            if let Some(feedback) = view.feedback.as_mut() {
-                feedback.confirm = Some(PendingCall {
-                    tool: confirmation.tool,
-                    arguments,
-                });
-                feedback.status = "Run this tool? Enter runs it, Esc cancels".into();
-            }
+            // Automations run and are approved outside takes: they get a bubble of their own.
+            let feedback = view.feedback.get_or_insert_with(|| Feedback {
+                take: MESSAGE,
+                message: true,
+                ..Feedback::default()
+            });
+            feedback.status = if confirmation.tool.starts_with("Approve ") {
+                "Enter approves this version, Esc keeps it as a draft".into()
+            } else {
+                "Run this? Enter runs it, Esc cancels".into()
+            };
+            feedback.done = false;
+            feedback.confirm = Some(PendingCall {
+                tool: confirmation.tool,
+                arguments,
+            });
         }
         if let Some(tray) = &self.tray {
             tray.hotkeys(self.bindings());
@@ -881,6 +1064,59 @@ impl Agent {
         });
     }
 
+    /// Evaluates an expression against the window the Context tab shows, off the agent thread,
+    /// reading only that window.
+    fn evaluate_xpath(&mut self, expression: String) {
+        use jevons_desktop_core::xpath::{self, Document, Variables, XPath};
+        let inspector = self.inspector.clone();
+        let privacy = self.config.privacy.clone();
+        let snapshot = self.view().context.clone().unwrap_or_default();
+        let view = self.view.clone();
+        let repaint = self.repaint.clone();
+        tokio::task::spawn_blocking(move || {
+            let began = std::time::Instant::now();
+            let mut probe = XPathProbe {
+                expression: expression.clone(),
+                ..XPathProbe::default()
+            };
+            match XPath::parse(&expression) {
+                Err(e) => probe.error = Some(e.to_string()),
+                Ok(parsed) => {
+                    // Only the window the tab shows, as an extract without `scope` reads.
+                    let (windows, note) =
+                        xpath::readable_windows(&*inspector, &snapshot, &[], &privacy);
+                    let mut document = Document::new(&*inspector, &windows);
+                    match document.window(0) {
+                        None => {
+                            probe.error = Some(note.unwrap_or_else(|| "No window to read".into()))
+                        }
+                        Some(window) => {
+                            match document.evaluate(&parsed, window, &Variables::new()) {
+                                Ok(value) => {
+                                    probe.lines = xpath::describe(&mut document, &value, 120);
+                                    let what = match &value {
+                                        xpath::Value::Nodes(nodes) => {
+                                            format!("{} matches", nodes.len())
+                                        }
+                                        _ => "a value".into(),
+                                    };
+                                    probe.summary = format!(
+                                        "{what} in {} ms, {} elements read",
+                                        began.elapsed().as_millis(),
+                                        document.read()
+                                    );
+                                }
+                                Err(e) => probe.error = Some(e.to_string()),
+                            }
+                        }
+                    }
+                }
+            }
+            view.lock().expect("the view lock").xpath = Some(probe);
+            repaint();
+        });
+    }
+
     /// Loads the flows folder again; a tree with errors is reported and the last good one kept.
     fn reload_flows(&mut self) {
         let dir = self.config.flows_dir(&self.config_file);
@@ -911,22 +1147,39 @@ impl Agent {
             return;
         }
         let hotkeys_changed = Binding::from_settings(&config.dictation)
-            != Binding::from_settings(&self.config.dictation);
+            != Binding::from_settings(&self.config.dictation)
+            || Binding::for_automations(&config.automation)
+                != Binding::for_automations(&self.config.automation);
         let flows_changed =
             config.flows_dir(&self.config_file) != self.config.flows_dir(&self.config_file);
         let tools_changed = config.tools != self.config.tools || config.mcp != self.config.mcp;
+        let library_changed = config.automations_dir(&self.config_file)
+            != self.config.automations_dir(&self.config_file);
         self.config = config;
+        self.automations
+            .set_settings(self.config.automation.clone());
         if hotkeys_changed && let Some(tray) = &self.tray {
             tray.hotkeys(self.bindings());
         }
         if flows_changed {
             let dir = self.config.flows_dir(&self.config_file);
             let _ = std::fs::create_dir_all(&dir);
-            self._watcher = watch(&dir, self.commands.clone());
+            self._watcher = watch(&dir, self.commands.clone(), || Command::ReloadFlows);
             self.reload_flows();
         }
-        if tools_changed || flows_changed {
-            self.tools = Arc::new(ToolHost::new(&self.config.tools, &self.config.mcp));
+        if library_changed {
+            let layers = (self.inspector.clone(), self.actor.clone());
+            self.automations =
+                automation_host_over(&self.config, &self.config_file, layers, &self.commands);
+            self._library_watcher = watch(self.automations.dir(), self.commands.clone(), || {
+                Command::ReloadAutomations
+            });
+        }
+        if tools_changed || flows_changed || library_changed {
+            self.tools = Arc::new(
+                ToolHost::new(&self.config.tools, &self.config.mcp)
+                    .with_automations(self.automations.clone()),
+            );
             self.list_tools();
         }
         self.runtime.apply(&self.config, &self.config_file);
@@ -936,7 +1189,14 @@ impl Agent {
 
     /// Starts a take: push-to-talk, or live dictation when `live`. `source` is the hotkey that
     /// started it; when `held`, its release ends the take.
-    fn begin(&mut self, entry: Option<String>, source: Option<u32>, live: bool, held: bool) {
+    fn begin(
+        &mut self,
+        entry: Option<String>,
+        source: Option<u32>,
+        live: bool,
+        held: bool,
+        flows: Option<Arc<FlowTree>>,
+    ) {
         let Some(connection) = self.runtime.connection() else {
             let status = self.runtime.status().describe();
             self.notice(&format!("Dictation is unavailable: {status}"));
@@ -979,7 +1239,7 @@ impl Agent {
         });
         let env = Env {
             client: connection.client,
-            flows: self.flows.clone(),
+            flows: flows.unwrap_or_else(|| self.flows.clone()),
             settings: pipeline::Settings {
                 models: connection.models,
                 realtime: connection.realtime,
@@ -990,6 +1250,10 @@ impl Agent {
             },
             sink: Some(self.sink.clone()),
             investigator,
+            reader: Some(Arc::new(Reader::new(
+                self.inspector.clone(),
+                self.config.privacy.clone(),
+            ))),
             confirmer: Some(Arc::new(ChannelConfirmer::new(confirm))),
             tools: Some(self.tools.clone()),
         };
@@ -1031,6 +1295,7 @@ impl Agent {
             capture: Some(capture),
             finish: Some(finish),
             task: None,
+            note: false,
         });
         // Keep the held hotkey's repeats out of the focused application while the take runs.
         if held && let Some(accelerator) = source.and_then(|id| self.accelerators.get(&id)) {
@@ -1158,6 +1423,18 @@ impl Agent {
         crate::hold::release();
         self.confirmed(false);
         save_trace(&trace);
+        // What jevons typed during a recording is a step of it.
+        if let Some(recording) = &self.recording
+            && matches!(trace.delivery, Some(DeliveryOutcome::Delivered { .. }))
+        {
+            let session = recording.session.clone();
+            let text = trace.output.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Some(session) = session.lock().expect("the session lock").as_mut() {
+                    session.delivered(&text);
+                }
+            });
+        }
         if self.active.as_ref().is_some_and(|a| a.id == trace.take) {
             // The source may have ended by itself (a device error).
             if let Some(active) = self.active.take()
@@ -1198,10 +1475,655 @@ impl Agent {
         self.set_tray(if failed {
             TrayState::Error
         } else {
-            TrayState::Idle
+            self.resting()
         });
         self.publish_menu();
         self.repaint();
+    }
+
+    /// The tray state between takes.
+    fn resting(&self) -> TrayState {
+        if self.recording.is_some() {
+            TrayState::Recording
+        } else {
+            TrayState::Idle
+        }
+    }
+
+    /// Shows a message in the bubble for a few seconds, unless a take has it.
+    fn message(&mut self, status: &str, seconds: u64) {
+        if self.active.as_ref().is_some_and(|a| !a.note) {
+            self.notice(status);
+            return;
+        }
+        self.messages += 1;
+        let shown = self.messages;
+        self.view().feedback = Some(Feedback {
+            take: MESSAGE,
+            status: status.into(),
+            done: true,
+            message: true,
+            shown,
+            ..Feedback::default()
+        });
+        let commands = self.commands.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(seconds)).await;
+            let _ = commands.send(Command::HideMessage(shown));
+        });
+        self.repaint();
+    }
+
+    fn record_hotkey(&self) -> Option<String> {
+        self.config
+            .automation
+            .record_hotkey
+            .clone()
+            .filter(|h| !h.is_empty())
+    }
+
+    /// Starts recording what the user does.
+    fn start_recording(&mut self) {
+        if self.active.is_some() {
+            self.notice("Finish the current take first");
+            return;
+        }
+        let own = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "jevons-desktop.exe".into());
+        let session = Arc::new(Mutex::new(Some(Session::new(
+            self.inspector.clone(),
+            &[own.as_str()],
+            Duration::from_millis(400),
+        ))));
+        let (events, mut observed) = mpsc::unbounded_channel();
+        let handle = match self.recorder.start(events) {
+            Ok(handle) => handle,
+            Err(e) => {
+                self.message(&format!("Cannot record: {e}"), 8);
+                return;
+            }
+        };
+        let steps = session.clone();
+        let worker = std::thread::Builder::new()
+            .name("recording".into())
+            .spawn(move || {
+                if let Some(session) = steps.lock().expect("the session lock").as_mut() {
+                    session.begin();
+                }
+                while let Some(event) = observed.blocking_recv() {
+                    if let Some(session) = steps.lock().expect("the session lock").as_mut() {
+                        session.observe(event);
+                    }
+                }
+            })
+            .ok();
+        self.recording = Some(ActiveRecording {
+            session,
+            handle: Some(handle),
+            worker,
+        });
+        tracing::info!("Recording a demonstration");
+        let how = match self.record_hotkey() {
+            Some(hotkey) => format!(
+                "Recording. Hold {hotkey} and say what this task is, then do it. Tap {hotkey} \
+                 (or use the tray) when you are done."
+            ),
+            None => "Recording: do the task, then stop from the tray menu. (Set a record \
+                     hotkey in the settings to say what the task is.)"
+                .into(),
+        };
+        self.set_tray(TrayState::Recording);
+        self.publish_menu();
+        self.message(&how, 10);
+    }
+
+    /// Stops recording, and saves it off the agent thread.
+    fn stop_recording(&mut self) {
+        let Some(mut recording) = self.recording.take() else {
+            return;
+        };
+        if let Some(handle) = recording.handle.take() {
+            handle.stop();
+        }
+        let commands = self.commands.clone();
+        let recordings = self.config.recordings_dir();
+        let library = self.automations.dir().to_path_buf();
+        let replacing = self.replacing.take();
+        let author_with = self.runtime.connection().and_then(|c| {
+            let model = self
+                .config
+                .automation
+                .author_model
+                .clone()
+                .or(c.models.generative.clone())?;
+            Some((c.client, model))
+        });
+        tokio::spawn(async move {
+            let into = library.clone();
+            let finished = tokio::task::spawn_blocking(move || {
+                if let Some(worker) = recording.worker.take() {
+                    let _ = worker.join();
+                }
+                let session = recording.session.lock().expect("the session lock").take();
+                match session.map(Session::finish) {
+                    None => Err("the recording was lost".to_string()),
+                    Some(done) if done.steps.is_empty() => Err("nothing was recorded".to_string()),
+                    Some(done) => bundle::save(&done, &recordings, &into)
+                        .map(|dir| (done, dir))
+                        .map_err(|e| e.to_string()),
+                }
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+            let (done, dir) = match finished {
+                Ok(saved) => saved,
+                Err(e) => {
+                    let _ = commands.send(Command::RecordingSaved(Err(e)));
+                    return;
+                }
+            };
+            let _ = commands.send(Command::RecordingSaved(Ok((
+                dir.clone(),
+                done.steps.len(),
+                done.description.clone(),
+            ))));
+            let name = dir
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let client = author_with
+                .as_ref()
+                .map(|(client, model)| (client, model.as_str()));
+            let authored = author::author(client, &done, &name, &library, replacing.as_deref())
+                .await
+                .map(Box::new);
+            let _ = commands.send(Command::Authored(authored));
+        });
+        tracing::info!("Recording stopped");
+        self.set_tray(TrayState::Idle);
+        self.publish_menu();
+        self.message("Saving the recording…", 5);
+    }
+
+    fn recording_saved(&mut self, saved: Result<(PathBuf, usize, String), String>) {
+        match saved {
+            Ok((dir, steps, _)) => {
+                tracing::info!(steps, dir = %dir.display(), "Recording saved");
+                self.message(
+                    &format!("Recorded {steps} steps. Writing the automation…"),
+                    60,
+                );
+            }
+            Err(e) => self.message(&format!("The recording was not saved: {e}"), 8),
+        }
+    }
+
+    /// The author wrote an automation: ask the user to approve it.
+    fn authored(&mut self, authored: Result<Box<Authored>, String>) {
+        let authored = match authored {
+            Ok(authored) => authored,
+            Err(e) => {
+                self.message(&format!("The automation was not written: {e}"), 10);
+                return;
+            }
+        };
+        tracing::info!(
+            automation = %authored.automation.name,
+            planned = authored.planned,
+            ok = authored.report.ok(),
+            "Automation written"
+        );
+        self.automations.reload();
+        self.list_tools();
+        self.publish_menu();
+        self.reviewed(authored.report);
+    }
+
+    /// Checks an automation off the agent thread, then shows the result for approving.
+    fn review_automation(&mut self, name: &str) {
+        let library = self.automations.library();
+        let Some(automation) = library.get(name).cloned() else {
+            self.message(&format!("There is no automation {name}"), 5);
+            return;
+        };
+        let commands = self.commands.clone();
+        tokio::task::spawn_blocking(move || {
+            let report = jevons_desktop_core::automation::check::check(&automation);
+            let _ = commands.send(Command::Reviewed(Box::new(report)));
+        });
+        self.message(&format!("Checking {name}…"), 30);
+    }
+
+    /// Shows what an automation does and asks to approve this version, or why it cannot be.
+    fn reviewed(&mut self, report: CheckReport) {
+        if !report.ok() {
+            let problems: Vec<String> = report
+                .errors
+                .iter()
+                .map(|e| e.to_string())
+                .chain(report.fixtures.iter().filter_map(|f| f.problem.clone()))
+                .take(3)
+                .collect();
+            self.message(
+                &format!(
+                    "{} has problems, so it cannot be approved: {}. Fix it in the automations \
+                     folder, or record it again.",
+                    report.name,
+                    problems.join("; ")
+                ),
+                15,
+            );
+            return;
+        }
+        let summary = &report.summary;
+        let mut does: Vec<String> = summary.actions.iter().cloned().collect();
+        does.extend(summary.keys.iter().map(|k| format!("press {k}")));
+        if summary.types_text {
+            does.push("type into the window in front".into());
+        }
+        let replayed: usize = report
+            .fixtures
+            .iter()
+            .filter_map(|f| f.trace.as_ref().and_then(|t| t.replayed))
+            .map(|(done, _)| done)
+            .sum();
+        let arguments = serde_json::json!({
+            "applications": summary.apps,
+            "does": does,
+            "replays": format!("{replayed} recorded steps"),
+            "version": report.version,
+        });
+        if self.confirming.is_some() {
+            // A take waits on its own confirmation: leave it be, and approve later.
+            self.notice(&format!(
+                "{} is ready: approve it from the tray's Automations menu",
+                report.name
+            ));
+            return;
+        }
+        let (reply, answer) = oneshot::channel();
+        let commands = self.commands.clone();
+        let name = report.name.clone();
+        let version = report.version.clone();
+        tokio::spawn(async move {
+            let yes = answer.await.unwrap_or(false);
+            let _ = commands.send(Command::ApprovalAnswered { name, version, yes });
+        });
+        self.confirm_requested(Confirmation {
+            tool: format!("Approve {}?", report.name),
+            arguments,
+            reply,
+        });
+    }
+
+    fn approval_answered(&mut self, name: &str, version: &str, yes: bool) {
+        if !yes {
+            self.message(
+                &format!("{name} stays a draft: approve it later from the tray's Automations menu"),
+                6,
+            );
+            return;
+        }
+        match DesktopConfig::approve(&self.config_file, name, version) {
+            Ok(saved) => {
+                self.config.automation.approved = saved.automation.approved;
+                self.automations
+                    .set_settings(self.config.automation.clone());
+                self.view().config = self.config.clone();
+                tracing::info!(automation = %name, "Automation approved");
+                self.publish_menu();
+                self.message(
+                    &format!("{name} is approved: run it from the tray, a hotkey or by saying it"),
+                    6,
+                );
+            }
+            Err(e) => self.message(&format!("Cannot save the approval: {e}"), 8),
+        }
+    }
+
+    /// A tray item runs an automation: at once when it takes no arguments, else after the user
+    /// says them.
+    fn run_automation(&mut self, name: &str, source: Option<(u32, bool)>, step_by_step: bool) {
+        if self.active.is_some() || self.running.is_some() {
+            self.notice("Finish the current take first");
+            return;
+        }
+        let Some(listed) = self.automations.list().into_iter().find(|a| a.name == name) else {
+            self.message(&format!("There is no automation {name}"), 5);
+            return;
+        };
+        if !listed.approved {
+            self.review_automation(name);
+            return;
+        }
+        let takes_arguments = listed.parameters["required"]
+            .as_array()
+            .is_some_and(|r| !r.is_empty());
+        if !takes_arguments {
+            self.run_now(name, serde_json::Map::new(), step_by_step);
+            return;
+        }
+        // Say the arguments: a take through a one-node tree that runs this automation.
+        let tree = FlowTree::load(
+            &jevons_desktop_core::flow::Memory::new(
+                "automation",
+                [(
+                    "run.toml",
+                    format!("automations = [{name:?}]\noutput = \"bubble\"\n").as_str(),
+                )],
+            ),
+            &self.tools.catalog(),
+        );
+        if !tree.is_valid() {
+            self.message(&format!("{name} cannot run: {:?}", tree.errors), 8);
+            return;
+        }
+        let (id, held) = match source {
+            Some((id, held)) => (Some(id), held),
+            None => (None, false),
+        };
+        self.automations.step_next_run(step_by_step);
+        self.begin(None, id, false, held, Some(Arc::new(tree)));
+        let finish = match (id, held) {
+            (Some(_), true) => "then release the hotkey",
+            (Some(_), false) => "then press the hotkey again",
+            (None, _) => "then choose Stop dictation in the tray",
+        };
+        if let Some(feedback) = self.view().feedback.as_mut() {
+            feedback.status = format!(
+                "Say what {name} needs ({}), {finish}",
+                listed.parameters["properties"]
+                    .as_object()
+                    .map(|p| p.keys().cloned().collect::<Vec<_>>().join(", "))
+                    .unwrap_or_default()
+            );
+        }
+        self.repaint();
+    }
+
+    /// An automation's hotkey went down.
+    fn automation_hotkey(&mut self, id: u32, name: String) {
+        let held = self.config.dictation.hotkey_mode == HotkeyMode::Hold;
+        match &self.active {
+            Some(a) if a.source == Some(id) && !a.held && a.capture.is_some() => self.stop_take(),
+            Some(_) => {}
+            None => self.run_automation(&name, Some((id, held)), false),
+        }
+    }
+
+    /// Runs an approved automation now, asking first when it must, with its progress in the
+    /// bubble.
+    fn run_now(
+        &mut self,
+        name: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+        step_by_step: bool,
+    ) {
+        let host = self.automations.clone();
+        let commands = self.commands.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.running = Some((name.to_string(), cancel.clone()));
+        let asks = host.asks(name);
+        let name = name.to_string();
+        self.message(&format!("Running {name}…"), 300);
+        self.set_tray(TrayState::Thinking { frame: 0 });
+        self.publish_menu();
+        tokio::spawn(async move {
+            if asks {
+                let (reply, answer) = oneshot::channel();
+                let _ = commands.send(Command::ConfirmRequested(Confirmation {
+                    tool: format!("script:{name}"),
+                    arguments: serde_json::Value::Object(arguments.clone()),
+                    reply,
+                }));
+                if !answer.await.unwrap_or(false) {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+            }
+            let progress: jevons_desktop_core::automation::engine::Progress = {
+                let commands = commands.clone();
+                Arc::new(move |label: &str| {
+                    let _ = commands.send(Command::AutomationProgress(format!("{label}…")));
+                })
+            };
+            let trace = if cancel.load(Ordering::Relaxed) {
+                let mut trace = host.run(&name, &arguments, None, cancel.clone(), false);
+                if trace.error.is_none() {
+                    trace.error = Some(jevons_desktop_core::automation::run::AutomationError::new(
+                        jevons_desktop_core::automation::run::ErrorKind::Cancelled,
+                        "not confirmed",
+                    ));
+                }
+                trace
+            } else {
+                tokio::task::spawn_blocking(move || {
+                    host.run(&name, &arguments, Some(progress), cancel, step_by_step)
+                })
+                .await
+                .unwrap_or_else(|e| {
+                    let mut trace = RunTrace::default_for(&e.to_string());
+                    trace.error = Some(jevons_desktop_core::automation::run::AutomationError::new(
+                        jevons_desktop_core::automation::run::ErrorKind::Script,
+                        e.to_string(),
+                    ));
+                    trace
+                })
+            };
+            let _ = commands.send(Command::AutomationFinished(Box::new(trace)));
+        });
+    }
+
+    fn automation_finished(&mut self, trace: RunTrace) {
+        self.running = None;
+        save_run(&trace);
+        let status = match &trace.error {
+            None => {
+                let result = trace
+                    .result
+                    .as_ref()
+                    .filter(|r| !r.is_null())
+                    .map(|r| match r {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    })
+                    .unwrap_or_default();
+                format!("{} done. {result}", trace.automation)
+            }
+            Some(error) => {
+                let at = match (error.line, error.column) {
+                    (Some(line), Some(column)) => format!(" (script.rhai:{line}:{column})"),
+                    _ => String::new(),
+                };
+                format!("{} failed: {}{at}", trace.automation, error.message)
+            }
+        };
+        let failed = trace.error.is_some();
+        tracing::info!(automation = %trace.automation, ok = !failed, ms = trace.ms, "Automation finished");
+        self.message(&status, if failed { 12 } else { 6 });
+        self.set_tray(if failed {
+            TrayState::Error
+        } else {
+            self.resting()
+        });
+        self.publish_menu();
+    }
+
+    /// The record hotkey went down: start recording (and listen for what the task is), or,
+    /// while recording, listen for a note.
+    fn record_pressed(&mut self, id: u32) {
+        let started = self.recording.is_none();
+        if started {
+            self.start_recording();
+            if self.recording.is_none() {
+                return;
+            }
+        }
+        if self.active.is_some() {
+            return;
+        }
+        self.record_press = Some((id, std::time::Instant::now(), started));
+        self.begin_note(id);
+    }
+
+    /// The record hotkey came up: a tap stops the recording; a hold was a note.
+    fn record_released(&mut self) {
+        let Some((_, since, started)) = self.record_press.take() else {
+            return;
+        };
+        if since.elapsed() < Duration::from_millis(500) {
+            if self.active.as_ref().is_some_and(|a| a.note) {
+                self.cancel_take();
+            }
+            if !started {
+                self.stop_recording();
+            } else {
+                self.set_tray(TrayState::Recording);
+            }
+        } else if self.active.as_ref().is_some_and(|a| a.note) {
+            self.stop_take();
+        }
+    }
+
+    /// Listens while the record hotkey is held, and transcribes what the user said for the
+    /// recording.
+    fn begin_note(&mut self, source: u32) {
+        let Some(connection) = self.runtime.connection() else {
+            return;
+        };
+        let (audio, audio_events) = mpsc::unbounded_channel();
+        let capture = match self
+            .audio
+            .start(self.config.dictation.microphone.as_deref(), audio)
+        {
+            Ok(capture) => capture,
+            Err(e) => {
+                self.notice(&format!("Cannot open the microphone: {e}"));
+                return;
+            }
+        };
+        let id = self.next_take;
+        self.next_take += 1;
+        let (finish, finished) = oneshot::channel();
+        let dictation = &self.config.dictation;
+        let env = Env {
+            client: connection.client,
+            flows: self.flows.clone(),
+            settings: pipeline::Settings {
+                models: connection.models,
+                realtime: connection.realtime,
+                language: dictation.language.clone(),
+                ..pipeline::Settings::default()
+            },
+            sink: None,
+            investigator: None,
+            reader: None,
+            confirmer: None,
+            tools: None,
+        };
+        let describing = self
+            .recording
+            .as_ref()
+            .and_then(|r| {
+                r.session
+                    .lock()
+                    .expect("the session lock")
+                    .as_ref()
+                    .map(|s| s.description().is_empty())
+            })
+            .unwrap_or(true);
+        self.view().feedback = Some(Feedback {
+            take: id,
+            status: if describing {
+                "Listening: say what this task is".into()
+            } else {
+                "Listening for a note".into()
+            },
+            message: true,
+            ..Feedback::default()
+        });
+        self.active = Some(Active {
+            id,
+            live: false,
+            source: Some(source),
+            held: true,
+            capture: Some(capture),
+            finish: Some(finish),
+            task: None,
+            note: true,
+        });
+        if let Some(accelerator) = self.accelerators.get(&source) {
+            crate::hold::hold(accelerator);
+        }
+        self.set_tray(TrayState::Listening { level: 0 });
+        let commands = self.commands.clone();
+        let task = tokio::spawn(async move {
+            let (updates, _) = mpsc::unbounded_channel();
+            let start = TakeStart {
+                id,
+                context: ContextSnapshot::default(),
+                entry: None,
+            };
+            let said =
+                pipeline::transcribe_only(&env, start, audio_events, finished, &updates).await;
+            let _ = commands.send(Command::RecordingNote(said));
+        });
+        if let Some(active) = &mut self.active {
+            active.task = Some(task);
+        }
+        self.repaint();
+    }
+
+    fn recording_note(&mut self, said: Result<String, String>) {
+        crate::hold::release();
+        if let Some(active) = self.active.take()
+            && let Some(capture) = active.capture
+        {
+            capture.stop();
+        }
+        match (said, &self.recording) {
+            (Ok(text), Some(recording)) => {
+                let first = {
+                    let mut session = recording.session.lock().expect("the session lock");
+                    match session.as_mut() {
+                        Some(session) => {
+                            let first = session.description().is_empty();
+                            session.describe(&text);
+                            first
+                        }
+                        None => false,
+                    }
+                };
+                self.message(
+                    &if first {
+                        format!("The task: {text}")
+                    } else {
+                        format!("Noted: {text}")
+                    },
+                    5,
+                );
+            }
+            (Ok(_), None) => {}
+            (Err(e), _) => self.message(&format!("Nothing was heard: {e}"), 4),
+        }
+        self.set_tray(self.resting());
+        self.publish_menu();
+    }
+}
+
+/// Writes an automation run's trace next to the take traces.
+fn save_run(trace: &RunTrace) {
+    let dir = jevons_desktop_core::config::user_dir().join("traces");
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    let file = dir.join(format!("{millis}-automation-{}.json", trace.automation));
+    if let Ok(json) = serde_json::to_vec_pretty(trace) {
+        std::thread::spawn(move || {
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(file, json);
+        });
     }
 }
 
@@ -1239,19 +2161,77 @@ fn save_trace(trace: &Trace) {
     });
 }
 
+/// Watches a folder, sending `command()` on each change in it.
 fn watch(
     dir: &std::path::Path,
     commands: mpsc::UnboundedSender<Command>,
+    command: impl Fn() -> Command + Send + 'static,
 ) -> Option<notify::RecommendedWatcher> {
     use notify::Watcher;
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         if event.is_ok_and(|e| !e.kind.is_access()) {
-            let _ = commands.send(Command::ReloadFlows);
+            let _ = commands.send(command());
         }
     })
     .ok()?;
     watcher.watch(dir, notify::RecursiveMode::Recursive).ok()?;
     Some(watcher)
+}
+
+/// The automations library in the settings' folder (its guides written first), over the
+/// platform's layers.
+fn automation_host(
+    config: &DesktopConfig,
+    config_file: &std::path::Path,
+    layers: &Layers,
+    commands: &mpsc::UnboundedSender<Command>,
+) -> Arc<AutomationHost> {
+    automation_host_over(
+        config,
+        config_file,
+        (layers.inspector.clone(), layers.actor.clone()),
+        commands,
+    )
+}
+
+fn automation_host_over(
+    config: &DesktopConfig,
+    config_file: &std::path::Path,
+    (inspector, actor): (Arc<dyn ContextInspector>, Arc<dyn UiActor>),
+    commands: &mpsc::UnboundedSender<Command>,
+) -> Arc<AutomationHost> {
+    let dir = config.automations_dir(config_file);
+    match jevons_desktop_core::automation::defaults::init(&dir) {
+        Ok(report) => {
+            for note in report.notes {
+                tracing::info!(%note, "Automations library");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, dir = %dir.display(), "Cannot prepare the automations library")
+        }
+    }
+    let host = Arc::new(AutomationHost::new(
+        &dir,
+        config.automation.clone(),
+        inspector,
+        actor,
+    ));
+    // A script's confirm() asks in the bubble, like a tool call.
+    let (sender, mut asked) = mpsc::unbounded_channel::<Confirmation>();
+    let forward = commands.clone();
+    tokio::spawn(async move {
+        while let Some(confirmation) = asked.recv().await {
+            let _ = forward.send(Command::ConfirmRequested(confirmation));
+        }
+    });
+    let confirmer = Arc::new(ChannelConfirmer::new(sender));
+    let runtime = tokio::runtime::Handle::current();
+    host.set_confirm(Some(Arc::new(move |question: &str| {
+        // Scripts run on blocking threads, which may wait on the runtime.
+        runtime.block_on(confirmer.ask("confirm", &serde_json::json!({ "question": question })))
+    })));
+    host
 }
 
 /// Opens a folder in the platform file manager.

@@ -79,6 +79,10 @@ pub fn FlowsPage(rev: u64) -> Element {
                 let names: Vec<&str> = node.investigations.keys().map(String::as_str).collect();
                 details.push(format!("investigates {}", names.join(", ")));
             }
+            if !node.extracts.is_empty() {
+                let names: Vec<&str> = node.extracts.keys().map(String::as_str).collect();
+                details.push(format!("extracts {}", names.join(", ")));
+            }
             let text = if builtin {
                 defaults::TREE
                     .iter()

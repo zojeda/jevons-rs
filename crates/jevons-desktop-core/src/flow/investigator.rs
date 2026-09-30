@@ -1,16 +1,17 @@
 //! The context investigator: a built-in agent that reads the interface of the user's
 //! applications (UI Automation on Windows) to answer a question in a fixed shape.
 //!
-//! It navigates with four tools: `outline` (a compact view of an element and its descendants),
-//! `find` (search below an element), `read` (an element's text) and, when the settings allow
-//! other windows, `list_windows`. Elements get short ids (`e12`) as they are seen, and every tool
-//! takes them as an enum of the ids seen so far, so the model picks them with a restricted read
-//! and can never name an element that does not exist. The answer is the agent's structured
-//! output.
+//! It navigates with five tools: `outline` (a compact view of an element and its descendants),
+//! `find` (search below an element), `xpath` (select elements with an expression), `read` (an
+//! element's text) and, when the settings allow other windows, `list_windows`. Elements get
+//! short ids (`e12`) as they are seen, and every tool takes them as an enum of the ids seen so
+//! far, so the model picks them with a restricted read and can never name an element that does
+//! not exist. The answer is the agent's structured output.
 //!
-//! When an answer is found, the path to the element it came from is remembered for that
-//! application and question; the next time it is read directly and answered in one call, and
-//! the agent explores only when that fails.
+//! When an answer is found, an XPath expression for the element it came from is remembered for
+//! that application and question; the next time it is read directly and answered in one call,
+//! and the agent explores only when that fails. The trace shows the expression, which an
+//! `[extract]` can use to read the same element with no model at all.
 
 use super::agent::{self, Task};
 use super::investigate::{Found, Inquiry, Investigate, Progress};
@@ -20,9 +21,9 @@ use crate::client::{ChatMessage, ChatReply, ChatRequest, Client};
 use crate::context::Privacy;
 use crate::platform::{ContextInspector, UiElement, WindowEntry};
 use crate::recorded::{RecordedElement, nest};
+use crate::xpath::{self, Document, Node, Value as XValue, Variables, XPath};
 use adk_core::{Tool, ToolContext, async_trait};
 use futures_util::future::BoxFuture;
-use globset::GlobSetBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -42,27 +43,93 @@ const LINE_NAME: usize = 80;
 const INSTRUCTION: &str = "You investigate the interface of the user's applications to answer \
 a question. Each line of an outline is one element: its id, its role, its name in quotes, and \
 in brackets how many children it has. Use outline to see an element's descendants, find to \
-search below an element by role or text, and read to get all the text of an element. Answer \
-only from what you read, with null for what you could not find, and answer as soon as you \
-have enough.";
+search below an element by role or text, xpath to select elements with an XPath expression \
+over roles and attributes (such as //ListItem[@automation_id] or //Tree//TreeItem/@name), and \
+read to get all the text of an element. Answer only from what you read, with null for what you \
+could not find, and answer as soon as you have enough.";
 
 /// One step from a parent to a child, to find the same element again later.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct Step {
-    pub role: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub class: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub automation_id: Option<String>,
+#[derive(Clone, Debug, PartialEq)]
+struct Step {
+    role: String,
+    class: Option<String>,
+    automation_id: Option<String>,
     /// Among the siblings with the same role, class and automation id.
-    pub index: usize,
+    index: usize,
 }
 
-/// Remembered paths to the element an answer came from, by application and question.
+impl Step {
+    /// The step as XPath: the role, then each property it matched (or its absence), then the
+    /// position among the siblings that pass them.
+    fn xpath(&self) -> String {
+        // A role outside the control types (a recorded tree's, another platform's) is matched
+        // as an attribute.
+        let mut out = if xpath::parse::ROLES.contains(&self.role.as_str()) {
+            self.role.clone()
+        } else {
+            format!("*[@role={}]", literal(&self.role))
+        };
+        for (attribute, value) in [
+            ("class", &self.class),
+            ("automation_id", &self.automation_id),
+        ] {
+            match value {
+                Some(value) => out.push_str(&format!("[@{attribute}={}]", literal(value))),
+                None => out.push_str(&format!("[not(@{attribute})]")),
+            }
+        }
+        out.push_str(&format!("[{}]", self.index + 1));
+        out
+    }
+}
+
+/// Text as an XPath literal, whatever quotes it holds.
+fn literal(text: &str) -> String {
+    if !text.contains('\'') {
+        format!("'{text}'")
+    } else if !text.contains('"') {
+        format!("\"{text}\"")
+    } else {
+        let parts: Vec<String> = text.split('\'').map(|p| format!("'{p}'")).collect();
+        format!("concat({})", parts.join(", \"'\", "))
+    }
+}
+
+/// Where an element is, to find it again: an expression that selected it (or the window), then
+/// the steps down from there.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Locator {
+    base: Option<String>,
+    steps: Vec<Step>,
+}
+
+impl Locator {
+    fn child(&self, step: Step) -> Self {
+        let mut steps = self.steps.clone();
+        steps.push(step);
+        Self {
+            base: self.base.clone(),
+            steps,
+        }
+    }
+
+    /// An expression that selects the element from its window.
+    fn xpath(&self) -> String {
+        let steps: Vec<String> = self.steps.iter().map(Step::xpath).collect();
+        match (&self.base, steps.is_empty()) {
+            (None, true) => ".".into(),
+            (None, false) => steps.join("/"),
+            (Some(base), true) => base.clone(),
+            (Some(base), false) => format!("{base}/{}", steps.join("/")),
+        }
+    }
+}
+
+/// Remembered expressions for the element an answer came from, by application and question.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct PathCache {
     #[serde(default)]
-    paths: BTreeMap<String, Vec<Step>>,
+    paths: BTreeMap<String, String>,
     #[serde(skip)]
     file: Option<PathBuf>,
 }
@@ -94,12 +161,12 @@ impl PathCache {
         digest.iter().take(12).map(|b| format!("{b:02x}")).collect()
     }
 
-    fn get(&self, key: &str) -> Option<&Vec<Step>> {
+    fn get(&self, key: &str) -> Option<&String> {
         self.paths.get(key)
     }
 
-    fn put(&mut self, key: String, path: Vec<Step>) {
-        self.paths.insert(key, path);
+    fn put(&mut self, key: String, xpath: String) {
+        self.paths.insert(key, xpath);
         if let Some(file) = &self.file
             && let Ok(text) = serde_json::to_string_pretty(self)
         {
@@ -117,7 +184,7 @@ struct Seen {
     short: String,
     id: String,
     element: UiElement,
-    path: Vec<Step>,
+    path: Locator,
 }
 
 /// What the navigation tools share during one investigation.
@@ -127,8 +194,8 @@ struct Nav {
     windows: Vec<WindowEntry>,
     seen: Vec<Seen>,
     roles: BTreeSet<String>,
-    /// The path of the last element read, for the cache.
-    last_read: Option<Vec<Step>>,
+    /// Where the last element read is, for the cache.
+    last_read: Option<Locator>,
     steps: Vec<String>,
     progress: Option<Progress>,
 }
@@ -140,12 +207,6 @@ fn step_of(element: &UiElement, index: usize) -> Step {
         automation_id: element.automation_id.clone().filter(|a| !a.is_empty()),
         index,
     }
-}
-
-fn same_kind(a: &UiElement, step: &Step) -> bool {
-    a.role == step.role
-        && a.class.clone().filter(|c| !c.is_empty()) == step.class
-        && a.automation_id.clone().filter(|i| !i.is_empty()) == step.automation_id
 }
 
 fn short_text(text: &str, max: usize) -> String {
@@ -173,13 +234,16 @@ impl Nav {
     }
 
     /// The platform id and path behind a short id.
-    fn resolve(&self, short: &str) -> Option<(String, Vec<Step>)> {
+    fn resolve(&self, short: &str) -> Option<(String, Locator)> {
         if let Some(index) = short
             .strip_prefix('w')
             .and_then(|n| n.parse::<usize>().ok())
             .and_then(|n| n.checked_sub(1))
         {
-            return self.windows.get(index).map(|w| (w.id.clone(), Vec::new()));
+            return self
+                .windows
+                .get(index)
+                .map(|w| (w.id.clone(), Locator::default()));
         }
         self.seen
             .iter()
@@ -188,7 +252,7 @@ impl Nav {
     }
 
     /// Gives an element a short id (once) and returns it.
-    fn register(&mut self, element: &UiElement, path: Vec<Step>) -> String {
+    fn register(&mut self, element: &UiElement, path: Locator) -> String {
         if let Some(seen) = self.seen.iter().find(|s| s.id == element.id) {
             return seen.short.clone();
         }
@@ -270,7 +334,7 @@ impl Nav {
     fn render(
         &mut self,
         elements: &[RecordedElement],
-        path: &[Step],
+        path: &Locator,
         indent: usize,
         depth: usize,
         lines: &mut Vec<String>,
@@ -287,8 +351,7 @@ impl Nav {
                 .entry(kind.clone())
                 .and_modify(|n| *n += 1)
                 .or_insert(0);
-            let mut own = path.to_vec();
-            own.push(step_of(element, index));
+            let own = path.child(step_of(element, index));
             let empty = element.name.trim().is_empty()
                 && element.value.as_deref().is_none_or(|v| v.trim().is_empty());
             if empty && recorded.children.is_empty() {
@@ -349,7 +412,7 @@ impl Nav {
     fn search(
         &mut self,
         elements: &[RecordedElement],
-        path: &[Step],
+        path: &Locator,
         role: Option<&str>,
         text: Option<&str>,
         found: &mut Vec<String>,
@@ -363,8 +426,7 @@ impl Nav {
                 element.automation_id.clone().filter(|a| !a.is_empty()),
             );
             let index = *counts.entry(kind).and_modify(|n| *n += 1).or_insert(0);
-            let mut own = path.to_vec();
-            own.push(step_of(element, index));
+            let own = path.child(step_of(element, index));
             let role_ok = role.is_none_or(|r| element.role.eq_ignore_ascii_case(r));
             let text_ok = text.is_none_or(|t| {
                 !element.password
@@ -454,18 +516,64 @@ impl Nav {
             .join("\n")
     }
 
-    /// The element at `path` below window `window`, found again by its steps.
-    fn locate(&self, window: &str, path: &[Step]) -> Option<String> {
-        let mut id = window.to_string();
-        for step in path {
-            let children = self.inspector.children(&id).ok()?;
-            let child = children
-                .iter()
-                .filter(|c| same_kind(c, step))
-                .nth(step.index)?;
-            id = child.id.clone();
+    /// Selects elements with an expression, from the first window, and lists them with short
+    /// ids the other tools take.
+    fn xpath(&mut self, expression: &str) -> String {
+        let parsed = match XPath::parse(expression) {
+            Ok(parsed) => parsed,
+            Err(e) => return format!("Not an expression: {e}"),
+        };
+        let inspector = self.inspector.clone();
+        let mut document = Document::new(&*inspector, &self.windows);
+        let Some(window) = document.window(0) else {
+            return "There is no window to read.".into();
+        };
+        let value = match document.evaluate(&parsed, window, &Variables::new()) {
+            Ok(value) => value,
+            Err(e) => return format!("Cannot evaluate it: {e}"),
+        };
+        let mut lines = Vec::new();
+        let total = match &value {
+            XValue::Nodes(nodes) => {
+                for (k, node) in nodes.iter().take(20).enumerate() {
+                    match node {
+                        Node::Element(_) if document.window_entry(*node).is_none() => {
+                            let element = document.element(*node).clone();
+                            let short = self.register(
+                                &element,
+                                Locator {
+                                    base: Some(format!("({expression})[{}]", k + 1)),
+                                    steps: Vec::new(),
+                                },
+                            );
+                            let children = element.child_count.unwrap_or(0);
+                            lines.push(self.line(&short, &element, children, 0));
+                        }
+                        _ => lines.extend(xpath::describe(
+                            &mut document,
+                            &XValue::Nodes(vec![*node]),
+                            LINE_NAME,
+                        )),
+                    }
+                }
+                nodes.len()
+            }
+            other => {
+                lines.extend(xpath::describe(&mut document, other, LINE_NAME));
+                1
+            }
+        };
+        self.note(
+            format!("xpath {expression}: {total} found"),
+            "selecting elements",
+        );
+        if total == 0 {
+            return "Nothing matches.".into();
         }
-        Some(id)
+        if total > lines.len() {
+            lines.push(format!("… and {} more", total - lines.len()));
+        }
+        lines.join("\n")
     }
 }
 
@@ -501,6 +609,7 @@ fn summary(elements: &[RecordedElement]) -> String {
 enum Kind {
     Outline,
     Find,
+    XPath,
     Read,
     ListWindows,
 }
@@ -517,6 +626,7 @@ impl Tool for NavTool {
         match self.kind {
             Kind::Outline => "outline",
             Kind::Find => "find",
+            Kind::XPath => "xpath",
             Kind::Read => "read",
             Kind::ListWindows => "list_windows",
         }
@@ -526,6 +636,11 @@ impl Tool for NavTool {
         match self.kind {
             Kind::Outline => "Shows an element and its descendants, one per line, to a depth.",
             Kind::Find => "Searches below an element for elements of a role or containing a text.",
+            Kind::XPath => {
+                "Selects elements with an XPath expression: element names are roles (ListItem, \
+                 TreeItem, Edit), attributes are @name, @value, @class, @automation_id; \
+                 has-class(@class, 'x') matches one class."
+            }
             Kind::Read => "Returns all the text of an element and its descendants.",
             Kind::ListWindows => "Lists the windows it may read.",
         }
@@ -555,6 +670,9 @@ impl Tool for NavTool {
                 }
                 json!({"type": "object", "properties": properties, "required": ["node"]})
             }
+            Kind::XPath => json!({"type": "object", "properties": {
+                "expression": {"type": "string", "description": "An XPath expression, such as //List//ListItem[last()]"},
+            }, "required": ["expression"]}),
             Kind::Read => {
                 json!({"type": "object", "properties": {"node": node}, "required": ["node"]})
             }
@@ -580,6 +698,7 @@ impl Tool for NavTool {
                     nav.outline(&node, depth)
                 }
                 Kind::Find => nav.find(&node, args["role"].as_str(), args["text"].as_str()),
+                Kind::XPath => nav.xpath(args["expression"].as_str().unwrap_or_default()),
                 Kind::Read => nav.read(&node),
                 Kind::ListWindows => nav.list_windows(),
             }
@@ -666,55 +785,12 @@ impl Investigator {
 
     /// The windows an inquiry may read, the take's own first, and a note on what it may not.
     fn windows(&self, inquiry: &Inquiry<'_>) -> (Vec<WindowEntry>, Option<String>) {
-        let all = match self.inspector.windows() {
-            Ok(all) => all,
-            Err(e) => return (Vec::new(), Some(e.to_string())),
-        };
-        let app = inquiry.snapshot.app.process_name.to_lowercase();
-        let title = &inquiry.snapshot.window.title;
-        let mut own: Vec<WindowEntry> = all
-            .iter()
-            .filter(|w| w.app.to_lowercase() == app)
-            .cloned()
-            .collect();
-        own.sort_by_key(|w| (w.title != *title, !w.front));
-        own.truncate(1);
-        let globs = |patterns: &[String]| {
-            let mut set = GlobSetBuilder::new();
-            for pattern in patterns {
-                if let Ok(glob) = globset::GlobBuilder::new(pattern)
-                    .case_insensitive(true)
-                    .build()
-                {
-                    set.add(glob);
-                }
-            }
-            set.build().ok()
-        };
-        let mut note = None;
-        if !inquiry.scope.is_empty() {
-            if !self.privacy.read_other_windows {
-                note = Some(
-                    "Reading other windows is off in the settings (privacy.read_other_windows)"
-                        .to_string(),
-                );
-            } else if let (Some(scope), Some(readable)) =
-                (globs(inquiry.scope), globs(&self.privacy.readable_apps))
-            {
-                for window in &all {
-                    if !own.iter().any(|w| w.id == window.id)
-                        && scope.is_match(&window.app)
-                        && readable.is_match(&window.app)
-                    {
-                        own.push(window.clone());
-                    }
-                }
-            }
-        }
-        if own.is_empty() && note.is_none() {
-            note = Some(format!("No window of {app} is open to read"));
-        }
-        (own, note)
+        xpath::readable_windows(
+            &*self.inspector,
+            inquiry.snapshot,
+            inquiry.scope,
+            &self.privacy,
+        )
     }
 
     /// Answers from a remembered path, if there is one and it still leads to the answer.
@@ -724,7 +800,7 @@ impl Investigator {
         nav: &Arc<Mutex<Nav>>,
         key: &str,
     ) -> Option<Value> {
-        let path = self
+        let expression = self
             .paths
             .lock()
             .expect("the path cache lock")
@@ -733,13 +809,23 @@ impl Investigator {
         let nav = nav.clone();
         let text = tokio::task::spawn_blocking(move || {
             let mut nav = nav.lock().expect("the navigation lock");
-            let window = nav.windows.first()?.id.clone();
-            let id = nav.locate(&window, &path)?;
-            let element = UiElement {
-                id: id.clone(),
-                ..UiElement::default()
-            };
-            let short = nav.register(&element, path);
+            let xpath = XPath::parse(&expression).ok()?;
+            let inspector = nav.inspector.clone();
+            let window = nav.windows.first()?.clone();
+            let mut document = Document::new(&*inspector, std::slice::from_ref(&window));
+            let context = document.window(0)?;
+            let node = *document
+                .select(&xpath, context, &Variables::new())
+                .ok()?
+                .first()?;
+            let element = document.element(node).clone();
+            let short = nav.register(
+                &element,
+                Locator {
+                    base: Some(expression.clone()),
+                    steps: Vec::new(),
+                },
+            );
             let text = nav.read(&short);
             Some(text)
         })
@@ -809,15 +895,16 @@ impl Investigate for Investigator {
                 .await
                 .unwrap_or_default()
             };
-            let mut tools: Vec<Arc<dyn Tool>> = [Kind::Outline, Kind::Find, Kind::Read]
-                .into_iter()
-                .map(|kind| {
-                    Arc::new(NavTool {
-                        kind,
-                        nav: nav.clone(),
-                    }) as Arc<dyn Tool>
-                })
-                .collect();
+            let mut tools: Vec<Arc<dyn Tool>> =
+                [Kind::Outline, Kind::Find, Kind::XPath, Kind::Read]
+                    .into_iter()
+                    .map(|kind| {
+                        Arc::new(NavTool {
+                            kind,
+                            nav: nav.clone(),
+                        }) as Arc<dyn Tool>
+                    })
+                    .collect();
             if others {
                 tools.push(Arc::new(NavTool {
                     kind: Kind::ListWindows,
@@ -850,13 +937,16 @@ impl Investigate for Investigator {
                     let value = serde_json::from_str(&outcome.text)
                         .map(|v| inquiry.shape.conform(&v))
                         .unwrap_or_else(|_| inquiry.shape.empty());
+                    let mut steps = steps;
                     if has_content(&value)
                         && let Some(path) = last_read
                     {
+                        let expression = path.xpath();
+                        steps.push(format!("remembered as the XPath {expression}"));
                         self.paths
                             .lock()
                             .expect("the path cache lock")
-                            .put(key, path);
+                            .put(key, expression);
                     }
                     Found { value, steps, note }
                 }
@@ -1015,6 +1105,45 @@ mod tests {
             "{text}"
         );
         assert!(nav.lock().unwrap().last_read.is_some());
+        let selected = nav.lock().unwrap().xpath("//ListItem[.//Text='Bo']");
+        let short = selected.split_whitespace().next().unwrap().to_string();
+        assert!(
+            selected.starts_with("e") && selected.contains("ListItem"),
+            "{selected}"
+        );
+        assert_eq!(nav.lock().unwrap().read(&short), "Bo\nThanks!");
+        // Seen before by the search, so it keeps the path the search found.
+        let path = nav.lock().unwrap().last_read.as_ref().map(Locator::xpath);
+        assert!(
+            path.as_deref()
+                .is_some_and(|p| p.ends_with("/ListItem[not(@class)][not(@automation_id)][2]")),
+            "{path:?}"
+        );
+        // Selected first by an expression, it is found again by that expression.
+        let mut fresh = Nav {
+            inspector: slack(),
+            max_chars: 2000,
+            windows: slack().windows().unwrap()[..1].to_vec(),
+            seen: Vec::new(),
+            roles: BTreeSet::new(),
+            last_read: None,
+            steps: Vec::new(),
+            progress: None,
+        };
+        let listed = fresh.xpath("//Edit");
+        let short = listed.split_whitespace().next().unwrap().to_string();
+        fresh.read(&short);
+        assert_eq!(
+            fresh.last_read.as_ref().map(Locator::xpath).as_deref(),
+            Some("(//Edit)[1]")
+        );
+        assert!(
+            nav.lock()
+                .unwrap()
+                .xpath("//Listitem")
+                .starts_with("Not an expression: column 3")
+        );
+        assert_eq!(nav.lock().unwrap().xpath("count(//ListItem)"), "2");
     }
 
     #[tokio::test]
@@ -1075,7 +1204,15 @@ mod tests {
         );
         assert_eq!(first["response_format"]["type"], "json_schema");
         let again = investigator.investigate(inquiry()).await;
-        assert_eq!(again.steps[0], "a remembered path");
+        assert_eq!(
+            found.steps.last().map(String::as_str),
+            Some(
+                "remembered as the XPath Pane[not(@class)][not(@automation_id)][1]/\
+                 Group[not(@class)][not(@automation_id)][1]/Group[not(@class)]\
+                 [not(@automation_id)][1]/*[@role='Heading'][not(@class)][not(@automation_id)][1]"
+            )
+        );
+        assert_eq!(again.steps[0], "a remembered path", "{:?}", again.steps);
         assert_eq!(again.value["last_author"], "Bo");
         assert_eq!(seen.lock().unwrap().len(), 4);
         assert!(dir.join("paths.json").exists());

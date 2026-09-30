@@ -15,6 +15,12 @@ Everything runs locally. The speech, decision and language models run inside the
 
 - **Context-aware.** On Windows, UI Automation gives the focused field's role and name, the selection, the text around the caret and the browser's address. Password fields are never read, text is truncated, and the clipboard is read only if you allow it.
 - **A flow tree you can edit.** Each folder holds one node file: `decide.toml` picks a subfolder, `generate.toml` writes with the language model, `transcript.toml` uses the words as heard, and `tool.toml` and `agent.toml` call tools. Guards (`[when]` rules on the application, window, page, field, selection or the words themselves) prune branches with no model call. Instructions add up from the root down. The files reload as soon as you save them, and an `AGENTS.md` in the folder teaches coding agents the format.
+- **Reads more of the screen when a branch asks.** An `[extract]` pulls elements out of the application's interface with an XPath expression (a chat's channels, its last messages), with no model and in tens of milliseconds. An `[investigate]` question sends an agent through the interface when the answer's place is not known in advance.
+- **Automations you show once.**
+  - **Recording:** record a task (click, type, press keys) and say what it is.
+  - **Writing:** jevons writes a script that does it again, taking as arguments what should change, such as the channel and the message. It checks the script by replaying your recording step by step.
+  - **Approving:** you approve that exact version.
+  - **Running:** from then on, run it from the tray, a hotkey, or by saying "post to random that lunch is ready". Scripts act only in their own applications, and each run asks first.
 - **Decides only what rules leave open.** Per-application branches choose by priority; the decision model chooses the rest by the branches' descriptions, asking consecutive decisions in one request, so a dictation usually costs one call. Unsure answers fall back to a safe branch.
 - **Push-to-talk and live dictation.** Each has its own hotkey, and each either listens while held or toggles with a press. In live dictation the app ends a phrase at each pause and keeps all the audio. When you stop, the whole transcript is edited and inserted once.
 - **Live feedback and answers.** A bubble above the tray icon shows the words as they are recognized, then the route taken, the text written and whether it was inserted. Questions are answered there instead of being typed. It never takes the focus. Turn it off from the tray menu.

@@ -1,0 +1,140 @@
+{
+  "description": "Post lunch is ready to the random channel",
+  "notes": [
+    {
+      "ms": 4200,
+      "before_step": 1,
+      "text": "now I write the message"
+    }
+  ],
+  "apps": [
+    "slack.exe"
+  ],
+  "started_at_ms": 1790712000000,
+  "steps": [
+    {
+      "step": 1,
+      "ms": 1500,
+      "app": "slack.exe",
+      "window": "general (Channel) - Acme - Slack",
+      "did": "click TreeItem \"random\" #C03RANDOM33",
+      "target": "TreeItem \"random\" #C03RANDOM33",
+      "deed": {
+        "kind": "act",
+        "target": "w-slack/0/0/0/0/0/0/0/0/1/0/0/2/3",
+        "action": {
+          "action": "click"
+        }
+      },
+      "candidates": [
+        {
+          "xpath": "//TreeItem[@automation_id='C03RANDOM33']",
+          "how": "automation_id",
+          "stable": true
+        },
+        {
+          "xpath": "//TreeItem[.//Text[@name = 'random']]",
+          "how": "text",
+          "stable": false,
+          "value": "random"
+        },
+        {
+          "xpath": "//TreeItem[has-class(@class, 'p-channel_sidebar__static_list__item')][.//Text[@name = 'random']]",
+          "how": "text",
+          "stable": false,
+          "value": "random"
+        },
+        {
+          "xpath": "//TreeItem[has-class(@class, 'p-channel_sidebar__static_list__item--contain')][.//Text[@name = 'random']]",
+          "how": "text",
+          "stable": false,
+          "value": "random"
+        },
+        {
+          "xpath": "Pane[1]/Pane[1]/Pane[1]/Pane[1]/Pane[1]/Document[1]/Group[1]/Group[1]/Pane[1]/Pane[1]/Group[1]/Tree[1]/TreeItem[4]",
+          "how": "path",
+          "stable": true
+        }
+      ],
+      "said": [
+        "random"
+      ]
+    },
+    {
+      "step": 2,
+      "ms": 3000,
+      "app": "slack.exe",
+      "window": "general (Channel) - Acme - Slack",
+      "did": "typed \"lunch is ready\" into Edit \"Message #general\"",
+      "target": "Edit \"Message #general\"",
+      "deed": {
+        "kind": "act",
+        "target": "w-slack/0/0/0/0/0/0/0/0/1/0/1/4",
+        "action": {
+          "action": "type_text",
+          "text": "lunch is ready"
+        }
+      },
+      "candidates": [
+        {
+          "xpath": "//Edit[has-class(@class, 'ql-editor')]",
+          "how": "class",
+          "stable": true
+        },
+        {
+          "xpath": "//Edit[has-class(@class, 'ql-blank')]",
+          "how": "class",
+          "stable": true
+        },
+        {
+          "xpath": "//Edit[has-class(@class, 'ql-editor')][has-class(@class, 'ql-blank')]",
+          "how": "class",
+          "stable": true
+        },
+        {
+          "xpath": "//Group[has-class(@class, 'p-view_contents')]//Edit[has-class(@class, 'ql-editor')]",
+          "how": "anchored",
+          "stable": true
+        },
+        {
+          "xpath": "//Group[has-class(@class, 'p-view_contents')]//Edit[has-class(@class, 'ql-blank')]",
+          "how": "anchored",
+          "stable": true
+        },
+        {
+          "xpath": "//Group[has-class(@class, 'p-view_contents--primary')]//Edit",
+          "how": "anchored",
+          "stable": true
+        },
+        {
+          "xpath": "//Edit[@name = 'Message #general']",
+          "how": "name",
+          "stable": false,
+          "value": "Message #general"
+        },
+        {
+          "xpath": "Pane[1]/Pane[1]/Pane[1]/Pane[1]/Pane[1]/Document[1]/Group[1]/Group[1]/Pane[1]/Pane[1]/Group[2]/Edit[1]",
+          "how": "path",
+          "stable": true
+        }
+      ],
+      "said": [
+        "lunch is ready"
+      ]
+    },
+    {
+      "step": 3,
+      "ms": 4500,
+      "app": "slack.exe",
+      "window": "general (Channel) - Acme - Slack",
+      "did": "pressed enter",
+      "deed": {
+        "kind": "press",
+        "chord": {
+          "modifiers": [],
+          "key": "enter"
+        }
+      }
+    }
+  ]
+}

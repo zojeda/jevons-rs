@@ -36,6 +36,8 @@ pub enum TrayState {
     Loading,
     /// GPU kernels are being autotuned for this model (first runs only).
     Tuning,
+    /// A demonstration is being recorded.
+    Recording,
 }
 
 impl TrayState {
@@ -52,6 +54,10 @@ impl TrayState {
             Self::Tuning => {
                 "jevons: tuning GPU kernels for this model. This happens on the first runs only; \
                  the results are saved"
+            }
+            Self::Recording => {
+                "jevons: recording what you do (hold the record hotkey to say what the task is; \
+                 stop from the tray menu)"
             }
         }
     }
@@ -97,6 +103,7 @@ pub fn frames() -> Vec<(TrayState, Vec<u8>)> {
             dots(frame, [190, 169, 255, 255]),
         )
     }));
+    frames.push((TrayState::Recording, alien(SIZE, MAGENTA)));
     frames
 }
 
@@ -113,6 +120,7 @@ pub fn frame_index(state: TrayState) -> usize {
         TrayState::Listening { level } => listening + usize::from(level.min(MAX_LEVEL)),
         TrayState::Transcribing { frame } => transcribing + usize::from(frame % 3),
         TrayState::Thinking { frame } => transcribing + 3 + usize::from(frame % 3),
+        TrayState::Recording => transcribing + 6,
     }
 }
 
@@ -127,6 +135,7 @@ const AMBER: [f32; 3] = [255.0, 180.0, 60.0];
 const RED: [f32; 3] = [255.0, 92.0, 92.0];
 const GREY: [f32; 3] = [140.0, 150.0, 160.0];
 const BLUE: [f32; 3] = [96.0, 132.0, 255.0];
+const MAGENTA: [f32; 3] = [255.0, 72.0, 190.0];
 /// The head and ear cups.
 const DARK: [f32; 3] = [16.0, 28.0, 38.0];
 

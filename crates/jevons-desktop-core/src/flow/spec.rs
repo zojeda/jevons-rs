@@ -1,6 +1,7 @@
 //! The node files as written. A folder's node file names its kind: `decide.toml`,
-//! `generate.toml`, `transcript.toml`, `tool.toml` or `agent.toml`. Every kind shares the fields
-//! in [`node_spec!`]; unknown fields are errors with their line.
+//! `generate.toml`, `transcript.toml`, `tool.toml`, `agent.toml` or `run.toml`. Every kind shares the fields
+//! in [`node_spec!`] (among them `[investigate.<name>]` and `[extract.<name>]`); unknown fields
+//! are errors with their line.
 
 use super::guard::When;
 use crate::platform::{Action, DeliveryMethod};
@@ -19,6 +20,7 @@ pub struct Common<'a> {
     pub max_output_tokens: Option<u32>,
     pub think: Option<u32>,
     pub investigate: &'a BTreeMap<String, InvestigateSpec>,
+    pub extract: &'a BTreeMap<String, ExtractSpec>,
 }
 
 fn is_zero(value: &i32) -> bool {
@@ -66,6 +68,11 @@ macro_rules! node_spec {
             /// `{name.field}`.
             #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
             pub investigate: BTreeMap<String, InvestigateSpec>,
+            /// XPath expressions read from the interface before this node runs, with no model.
+            /// Each answer is available to this node and every node below it as `{name}` (and
+            /// `{name.field}` for a table).
+            #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+            pub extract: BTreeMap<String, ExtractSpec>,
             $($(#[$fmeta])* pub $field: $ty,)*
         }
 
@@ -80,6 +87,7 @@ macro_rules! node_spec {
                     max_output_tokens: self.max_output_tokens,
                     think: self.think,
                     investigate: &self.investigate,
+                    extract: &self.extract,
                 }
             }
         }
@@ -247,6 +255,20 @@ node_spec! {
     }
 }
 
+node_spec! {
+    /// `run.toml`: runs one of the library's approved automations, chosen by what the user
+    /// said, with its arguments filled from what they said.
+    pub struct RunSpec {
+        /// The automations it may run, by name; empty (the default) or `["*"]` for all.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub automations: Vec<String>,
+        /// Where the automation's answer goes: `bubble` (the default), `target`, `clipboard`,
+        /// `none`, or `next` to continue into the single branch with it as `{result}`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub output: Option<Output>,
+    }
+}
+
 /// `[investigate.<name>]`: a question for the context investigator, answered in `schema`'s shape.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -265,6 +287,52 @@ pub struct InvestigateSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_steps: Option<u32>,
     /// Run only when a node below uses it (in a placeholder or `enrich`), not when this node runs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lazy: bool,
+}
+
+/// What an `[extract]` answer is made of the nodes its expression selects.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtractAs {
+    /// The text of the first match (an element's text with its descendants', or an
+    /// attribute's value), or the expression's value when it is not elements.
+    #[default]
+    Text,
+    /// The text of every match, as a list.
+    List,
+    /// How many elements match.
+    Count,
+    /// Whether anything matches.
+    Exists,
+    /// One row per match, with a column per `fields` expression evaluated from the match.
+    Table,
+}
+
+/// `[extract.<name>]`: an XPath expression over the application's interface, read with no model.
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtractSpec {
+    /// The expression. Element names are roles (`ListItem`, `TreeItem`, `Edit`), attributes are
+    /// `@name`, `@value`, `@class`, `@automation_id` and the like, and `$name` variables take
+    /// placeholders' values, such as `//TreeItem[@name = $transcript]`. It starts at the window
+    /// the take started in; `/Window[@app='slack.exe']` starts at another (see `scope`).
+    pub xpath: String,
+    /// `text` (the default), `list`, `count`, `exists` or `table`.
+    #[serde(default, rename = "as")]
+    pub kind: ExtractAs,
+    /// With `as = "table"`: each column's expression, evaluated from each match, such as
+    /// `{ author = ".//Button[1]/@name", text = "string(.//Text[last()])" }`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fields: BTreeMap<String, String>,
+    /// The most matches kept (1 to 500; 50 by default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    /// Application globs it may read besides the one the take started in, such as
+    /// `["slack.exe"]`. Other windows also need `privacy.read_other_windows` in the settings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scope: Vec<String>,
+    /// Run only when a node at or below uses it (in a placeholder, a `$variable` or `enrich`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub lazy: bool,
 }
