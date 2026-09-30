@@ -58,12 +58,14 @@ struct Args {
     #[arg(long, value_name = "JSON")]
     tree: Option<PathBuf>,
     /// Check a flows folder (by default the settings' one), print its problems and exit.
-    #[arg(long, value_name = "DIR", num_args = 0..=1, default_missing_value = "")]
-    check_flows: Option<PathBuf>,
+    #[arg(long, value_name = "DIR")]
+    #[allow(clippy::option_option)]
+    check_flows: Option<Option<PathBuf>>,
     /// Write the built-in flow tree into a folder that has none (by default the settings'
     /// flows folder), refresh AGENTS.md and the schemas, and exit.
-    #[arg(long, value_name = "DIR", num_args = 0..=1, default_missing_value = "")]
-    init_flows: Option<PathBuf>,
+    #[arg(long, value_name = "DIR")]
+    #[allow(clippy::option_option)]
+    init_flows: Option<Option<PathBuf>>,
 }
 
 impl Args {
@@ -109,12 +111,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
     let config_file = args.config.clone().unwrap_or_else(default_config_file);
     let config = DesktopConfig::load(&config_file)?;
-    let folder = |dir: &PathBuf| {
-        if dir.as_os_str().is_empty() {
-            config.flows_dir(&config_file)
-        } else {
-            dir.clone()
-        }
+    let folder = |dir: &Option<PathBuf>| {
+        dir.clone()
+            .unwrap_or_else(|| config.flows_dir(&config_file))
     };
     if let Some(dir) = &args.check_flows {
         return check_flows(&folder(dir), &config);
@@ -390,4 +389,19 @@ fn start_agent(
             });
         })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flow_commands_take_an_optional_folder() {
+        let bare = Args::try_parse_from(["jevons-desktop", "--init-flows"]).unwrap();
+        assert_eq!(bare.init_flows, Some(None));
+        let dir = Args::try_parse_from(["jevons-desktop", "--check-flows", "D:/flows"]).unwrap();
+        assert_eq!(dir.check_flows, Some(Some(PathBuf::from("D:/flows"))));
+        let neither = Args::try_parse_from(["jevons-desktop"]).unwrap();
+        assert!(!neither.headless());
+    }
 }
