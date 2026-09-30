@@ -72,15 +72,42 @@ html, body, #main {
   text-overflow: ellipsis;
 }
 
-.bubble-steps { display: flex; flex-wrap: nowrap; gap: 6px; overflow: hidden; }
-.bubble-step {
-  font-size: 11px;
-  color: #22e6f2;
-  background: #0c3a40;
-  border-radius: 999px;
-  padding: 1px 8px;
+/* The stages after transcription: decisions, investigations, generation, tool calls. */
+.bubble-stages { display: flex; flex-direction: column; gap: 3px; }
+.bubble-stage {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 16px;
+  font-size: 12px;
   white-space: nowrap;
+  overflow: hidden;
 }
+.bubble-stage-kind { width: 44px; flex-shrink: 0; color: #22e6f2; font-size: 11px; }
+.bubble-stage[data-state="ok"] .bubble-stage-kind { color: #b6fae3; }
+.bubble-stage[data-state="failed"] .bubble-stage-kind { color: #ffb4b4; }
+.bubble-stage-label { color: #e6e6e6; flex-shrink: 0; }
+.bubble-stage-detail {
+  margin-left: auto;
+  padding-left: 6px;
+  color: #a1a1a1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bubble-mark { flex-shrink: 0; }
+.bubble-dots { display: flex; gap: 2px; width: 12px; flex-shrink: 0; }
+.bubble-dots span { width: 3px; height: 3px; border-radius: 2px; background: #3a3a3a; }
+.bubble-dots span[data-on="true"] { background: #22e6f2; }
+.bubble-chip {
+  font-size: 11px;
+  color: #a1a1a1;
+  background: #1c1c1c;
+  border-radius: 999px;
+  padding: 0 7px;
+  flex-shrink: 0;
+}
+.bubble-chip[data-lit="true"] { color: #22e6f2; background: #0c3a40; }
+.bubble-chip[data-chosen="true"] { color: #0e0e0e; background: #b6fae3; }
 
 /* An answer, and a tool call waiting for confirmation: the bubble takes clicks then. */
 .bubble[data-state="answer"] { border-color: #b6fae3; }

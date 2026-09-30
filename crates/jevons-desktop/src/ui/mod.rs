@@ -464,7 +464,32 @@ mod tests {
                 f.heard = "Hello there.".into();
                 f.partial.clear();
             }),
-            Box::new(|f| f.steps.push("Route dictate".into())),
+            Box::new(|f| {
+                f.working = true;
+                f.stages.push(crate::agent::StageView {
+                    kind: jevons_desktop_core::pipeline::StageKind::Deciding,
+                    label: "what to do".into(),
+                    choices: vec!["ask".into(), "dictate".into()],
+                    detail: String::new(),
+                    chosen: None,
+                    ok: None,
+                });
+            }),
+            Box::new(|f| f.frame += 5),
+            Box::new(|f| {
+                let stage = f.stages.last_mut().unwrap();
+                stage.chosen = Some("dictate".into());
+                stage.detail = "0.92".into();
+                stage.ok = Some(true);
+                f.stages.push(crate::agent::StageView {
+                    kind: jevons_desktop_core::pipeline::StageKind::Writing,
+                    label: "text".into(),
+                    choices: Vec::new(),
+                    detail: "writing".into(),
+                    chosen: None,
+                    ok: None,
+                });
+            }),
             Box::new(|f| f.output = "Hello there!".into()),
             Box::new(|f| {
                 f.done = true;
@@ -479,7 +504,10 @@ mod tests {
         }
         let text = doc.root_element().text_content();
         assert!(text.contains("Hello there."), "{text}");
-        assert!(text.contains("Route dictate"), "{text}");
+        assert!(
+            text.contains("what to do") && text.contains("dictate") && text.contains("0.92"),
+            "{text}"
+        );
         assert!(text.contains("Inserted"), "{text}");
         // A tool call waits, then the take answers in the bubble.
         view.lock().unwrap().feedback.as_mut().unwrap().confirm = Some(crate::agent::PendingCall {

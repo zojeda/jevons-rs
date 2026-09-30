@@ -266,7 +266,18 @@ fn replay(
                     pipeline::Update::Delta(text) | pipeline::Update::Output(text) => {
                         eprint!("{text}")
                     }
-                    pipeline::Update::Step(step) => eprintln!("\n· {step}"),
+                    pipeline::Update::Stage(stage) => {
+                        let choices = if stage.choices.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" ({})", stage.choices.join(", "))
+                        };
+                        eprintln!("\n· {:?} {}{choices}", stage.kind, stage.label);
+                    }
+                    pipeline::Update::StageDone { detail, chosen, ok } => {
+                        let chosen = chosen.map_or(String::new(), |c| format!("{c} "));
+                        eprintln!("  {} {chosen}{detail}", if ok { "✓" } else { "✗" });
+                    }
                     _ => {}
                 }
             }

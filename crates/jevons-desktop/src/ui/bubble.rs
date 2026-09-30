@@ -5,8 +5,9 @@
 //! and Esc).
 
 use super::Ctx;
-use crate::agent::{BubbleAction, Command, Feedback};
+use crate::agent::{BubbleAction, Command, Feedback, StageView};
 use dioxus::prelude::*;
+use jevons_desktop_core::pipeline::StageKind;
 
 /// Where the bubble's arrow points: its distance from the bubble's left edge in logical pixels,
 /// and whether the icon is below the bubble (a taskbar at the bottom of the screen).
@@ -52,9 +53,16 @@ pub fn Bubble() -> Element {
             }
         }
     };
+    // The dot breathes while the take works.
+    let glow = if f.animating() {
+        let phase = (f.frame % 8) as f64 / 7.0;
+        0.35 + 0.65 * (1.0 - (2.0 * phase - 1.0).abs())
+    } else {
+        1.0
+    };
     let head = rsx! {
         div { class: "bubble-head",
-            span { class: "bubble-dot" }
+            span { class: "bubble-dot", style: "opacity: {glow:.2}" }
             span { class: "bubble-status", "{f.status}" }
         }
     };
@@ -103,12 +111,95 @@ pub fn Bubble() -> Element {
             if !f.output.is_empty() {
                 div { class: "bubble-output", "→ {f.output}" }
             }
-            if !f.steps.is_empty() {
-                div { class: "bubble-steps",
-                    {f.steps.iter().map(|step| rsx! { span { class: "bubble-step", "{step}" } })}
+            if !f.stages.is_empty() {
+                div { class: "bubble-stages",
+                    {f.stages.iter().rev().take(3).collect::<Vec<_>>().into_iter().rev().enumerate().map(|(i, stage)| stage_row(i, stage, f.frame))}
                 }
             }
             {tail_bottom}
+        }
+    }
+}
+
+/// The most choices a decision row shows before `+n`.
+const CHIPS: usize = 5;
+
+/// One stage: what it is, its choices or progress, and a check, a cross or moving dots.
+fn stage_row(index: usize, stage: &StageView, frame: u64) -> Element {
+    let kind = match stage.kind {
+        StageKind::Deciding => "decide",
+        StageKind::Investigating => "read",
+        StageKind::Writing => "write",
+        StageKind::Answering => "answer",
+        StageKind::Calling => "call",
+        StageKind::Agent => "agent",
+    };
+    let state = match stage.ok {
+        None => "running",
+        Some(true) => "ok",
+        Some(false) => "failed",
+    };
+    let mark = match stage.ok {
+        None => {
+            let lit = (frame / 2 % 3) as usize;
+            rsx! {
+                span { class: "bubble-dots",
+                    {(0..3).map(|d| rsx! { span { key: "{d}", "data-on": if d == lit { "true" } else { "false" } } })}
+                }
+            }
+        }
+        Some(true) => rsx! {
+            svg { class: "bubble-mark", width: "12", height: "12", view_box: "0 0 12 12",
+                path { d: "M2 6.5L5 9.5L10 3", stroke: "#b6fae3", stroke_width: "1.8", fill: "none" }
+            }
+        },
+        Some(false) => rsx! {
+            svg { class: "bubble-mark", width: "12", height: "12", view_box: "0 0 12 12",
+                path { d: "M3 3L9 9M9 3L3 9", stroke: "#ffb4b4", stroke_width: "1.8", fill: "none" }
+            }
+        },
+    };
+    // While a decision runs, its choices light up in turn; then the chosen one stays lit.
+    let scanning = (frame / 3) as usize % stage.choices.len().max(1);
+    let chips: Vec<Element> = stage
+        .choices
+        .iter()
+        .take(CHIPS)
+        .enumerate()
+        .map(|(i, choice)| {
+            let chosen = stage.chosen.as_deref() == Some(choice.as_str());
+            let lit = stage.ok.is_none() && i == scanning;
+            rsx! {
+                span { key: "{choice}", class: "bubble-chip",
+                    "data-chosen": if chosen { "true" } else { "false" },
+                    "data-lit": if lit { "true" } else { "false" },
+                    "{choice}"
+                }
+            }
+        })
+        .collect();
+    let more = stage.choices.len().saturating_sub(CHIPS);
+    // A decision among no choices (a fallback) still shows where it went.
+    let chosen_only = stage
+        .choices
+        .is_empty()
+        .then(|| stage.chosen.clone())
+        .flatten();
+    rsx! {
+        div { key: "{index}-{stage.label}", class: "bubble-stage", "data-state": state,
+            {mark}
+            span { class: "bubble-stage-kind", "{kind}" }
+            span { class: "bubble-stage-label", "{stage.label}" }
+            {chips.into_iter()}
+            if more > 0 {
+                span { class: "bubble-chip", "+{more}" }
+            }
+            if let Some(chosen) = chosen_only {
+                span { class: "bubble-chip", "data-chosen": "true", "{chosen}" }
+            }
+            if !stage.detail.is_empty() {
+                span { class: "bubble-stage-detail", "{stage.detail}" }
+            }
         }
     }
 }

@@ -6,9 +6,13 @@ use super::shape::Shape;
 use crate::context::ContextSnapshot;
 use futures_util::future::BoxFuture;
 use serde_json::Value;
+use std::sync::Arc;
+
+/// Receives what an investigation is doing, as it does it.
+pub type Progress = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// One investigation.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Inquiry<'a> {
     pub name: &'a str,
     /// The question, with its placeholders filled.
@@ -19,6 +23,8 @@ pub struct Inquiry<'a> {
     pub max_steps: u32,
     /// The context when the take started.
     pub snapshot: &'a ContextSnapshot,
+    /// Told each navigation step, for the bubble.
+    pub progress: Option<Progress>,
 }
 
 /// An investigation's answer.

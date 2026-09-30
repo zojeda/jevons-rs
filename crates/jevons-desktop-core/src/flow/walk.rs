@@ -19,7 +19,7 @@ use super::spec::{
 use super::tools::result_text;
 use super::tree::{FlowTree, Investigation, Kind, Node, NodeId, NodeSpec};
 use crate::client::{Answer, ClientError, DecisionRequest, Question, Reasoning, ResponseRequest};
-use crate::pipeline::{DecisionTrace, Env, GenerationTrace, Trace, Update};
+use crate::pipeline::{DecisionTrace, Env, GenerationTrace, Stage, StageKind, Trace, Update};
 use crate::platform::{Action, DeliveryMethod};
 use adk_core::{Tool, ToolConfirmationHandler};
 use serde::Serialize;
@@ -119,6 +119,49 @@ enum Ahead {
     Next(Value),
 }
 
+/// An agent's tool that reports each call as a stage, for the bubble.
+struct Reported {
+    inner: Arc<dyn Tool>,
+    reference: String,
+    updates: UnboundedSender<Update>,
+}
+
+#[adk_core::async_trait]
+impl Tool for Reported {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+    fn parameters_schema(&self) -> Option<Value> {
+        self.inner.parameters_schema()
+    }
+    fn response_schema(&self) -> Option<Value> {
+        self.inner.response_schema()
+    }
+    fn is_read_only(&self) -> bool {
+        self.inner.is_read_only()
+    }
+    async fn execute(
+        &self,
+        ctx: Arc<dyn adk_core::ToolContext>,
+        args: Value,
+    ) -> adk_core::Result<Value> {
+        let _ = self.updates.send(Update::Stage(Stage::new(
+            StageKind::Calling,
+            &self.reference,
+        )));
+        let result = self.inner.execute(ctx, args).await;
+        let _ = self.updates.send(Update::StageDone {
+            detail: if result.is_ok() { "done" } else { "failed" }.into(),
+            chosen: None,
+            ok: result.is_ok(),
+        });
+        result
+    }
+}
+
 /// Where a walk ends: the text and where it goes.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Leaf {
@@ -174,6 +217,20 @@ impl Walker<'_> {
 
     fn note(&mut self, note: impl Into<String>) {
         self.trace.notes.push(note.into());
+    }
+
+    /// A stage starts, for the bubble.
+    fn stage(&self, stage: Stage) {
+        let _ = self.updates.send(Update::Stage(stage));
+    }
+
+    /// The latest open stage ends.
+    fn done(&self, detail: &str, chosen: Option<String>, ok: bool) {
+        let _ = self.updates.send(Update::StageDone {
+            detail: detail.into(),
+            chosen,
+            ok,
+        });
     }
 
     async fn walk(&mut self, start: NodeId) -> Result<Leaf, ClientError> {
@@ -262,9 +319,7 @@ impl Walker<'_> {
             investigation.spec.scope
         );
         let began = Instant::now();
-        let _ = self
-            .updates
-            .send(Update::Step(format!("Looking into {}", investigation.name)));
+        self.stage(Stage::new(StageKind::Investigating, &investigation.name));
         let (answer, reused, steps, note) = match self.memo.get(&key) {
             Some(answer) => (answer.clone(), true, Vec::new(), None),
             None => {
@@ -277,6 +332,12 @@ impl Walker<'_> {
                             scope: &investigation.spec.scope,
                             max_steps: investigation.max_steps,
                             snapshot: &self.frame.snapshot,
+                            progress: Some({
+                                let updates = self.updates.clone();
+                                Arc::new(move |now: &str| {
+                                    let _ = updates.send(Update::Progress(now.to_string()));
+                                })
+                            }),
                         };
                         Investigate::investigate(investigator, inquiry).await
                     }
@@ -291,6 +352,16 @@ impl Walker<'_> {
                 (answer, false, found.steps, found.note)
             }
         };
+        let found = super::shape::has_content(&answer);
+        self.done(
+            match (reused, found) {
+                (true, _) => "answered earlier",
+                (false, true) => "found",
+                (false, false) => "nothing found",
+            },
+            None,
+            found,
+        );
         self.frame
             .values
             .insert(investigation.name.clone(), answer.clone());
@@ -368,6 +439,18 @@ impl Walker<'_> {
     async fn decide(&mut self, node: &Node, d: &DecideSpec) -> Result<NodeId, ClientError> {
         let (branches, candidates) = self.candidates(node);
         self.step().branches = branches;
+        self.stage(Stage {
+            kind: StageKind::Deciding,
+            label: if node.name.is_empty() {
+                "what to do".into()
+            } else {
+                node.name.clone()
+            },
+            choices: candidates
+                .iter()
+                .map(|c| self.tree.node(*c).name.clone())
+                .collect(),
+        });
         let (chosen, how) = if candidates.is_empty() {
             (
                 self.fallback(node, d, &candidates),
@@ -391,15 +474,16 @@ impl Walker<'_> {
             }
         };
         let name = self.tree.node(chosen).name.clone();
+        let detail = match self.step().probabilities.get(&name) {
+            Some(p) if !how.contains("fallback") => format!("{p:.2}"),
+            _ if how.starts_with("rules") => "rules".into(),
+            _ if how.contains("fallback") => "fallback".into(),
+            _ => "only one applies".into(),
+        };
         let step = self.step();
         step.chosen = Some(name.clone());
         step.how = Some(how);
-        let route = if self.frame.route.is_empty() {
-            name
-        } else {
-            format!("{}/{name}", self.frame.route())
-        };
-        let _ = self.updates.send(Update::Step(format!("Route {route}")));
+        self.done(&detail, Some(name), true);
         Ok(chosen)
     }
 
@@ -679,7 +763,14 @@ impl Walker<'_> {
             .map_err(ClientError::Protocol)?
             .remove(0);
         let schema = resolved.tool.parameters_schema();
-        let arguments = self.arguments(node, t, schema.as_ref()).await?;
+        self.stage(Stage::new(StageKind::Calling, &resolved.reference));
+        let arguments = match self.arguments(node, t, schema.as_ref()).await {
+            Ok(arguments) => arguments,
+            Err(e) => {
+                self.done("no arguments", None, false);
+                return Err(e);
+            }
+        };
         let mut record = ToolTrace {
             node: node.label().to_string(),
             tool: resolved.reference.clone(),
@@ -688,10 +779,9 @@ impl Walker<'_> {
             confirmed: None,
         };
         if resolved.confirm || t.confirm {
-            let _ = self.updates.send(Update::Step(format!(
-                "Asking before {}",
-                resolved.reference
-            )));
+            let _ = self
+                .updates
+                .send(Update::Progress("waiting for your confirmation".into()));
             let approved = match &self.env.confirmer {
                 Some(confirmer) => confirmer.ask(&resolved.reference, &arguments).await,
                 None => false,
@@ -699,15 +789,14 @@ impl Walker<'_> {
             record.confirmed = Some(approved);
             if !approved {
                 self.trace.calls.push(record);
+                self.done("not confirmed", None, false);
                 return Err(ClientError::Protocol(format!(
                     "{} did not run: it was not confirmed",
                     resolved.reference
                 )));
             }
         }
-        let _ = self
-            .updates
-            .send(Update::Step(format!("Calling {}", resolved.reference)));
+        let _ = self.updates.send(Update::Progress("running".into()));
         let began = Instant::now();
         let context: Arc<dyn adk_core::ToolContext> =
             Arc::new(adk_tool::SimpleToolContext::new(node.label()));
@@ -720,6 +809,7 @@ impl Walker<'_> {
             Err(e) => {
                 record.result = Some(format!("error: {e}"));
                 self.trace.calls.push(record);
+                self.done("failed", None, false);
                 return Err(ClientError::Protocol(format!(
                     "{}: {e}",
                     resolved.reference
@@ -728,6 +818,7 @@ impl Walker<'_> {
         };
         record.result = Some(result_text(&result).chars().take(600).collect());
         self.trace.calls.push(record);
+        self.done("done", None, true);
         match t.output.unwrap_or(Output::Bubble) {
             Output::Next => Ok(Ahead::Next(result)),
             output => Ok(Ahead::Leaf(self.leaf(
@@ -845,6 +936,9 @@ impl Walker<'_> {
                 "A language model to write tool arguments",
             ));
         };
+        let _ = self
+            .updates
+            .send(Update::Progress(format!("writing {name}")));
         let mut instructions = self.frame.instructions.clone();
         instructions.push(format!(
             "Write only the value of the argument `{name}` for the tool {tool}: {instruction}. \
@@ -900,7 +994,16 @@ impl Walker<'_> {
             .iter()
             .map(|r| (r.tool.name().to_string(), r.reference.clone()))
             .collect();
-        let mut tools: Vec<Arc<dyn Tool>> = resolved.iter().map(|r| r.tool.clone()).collect();
+        let mut tools: Vec<Arc<dyn Tool>> = resolved
+            .iter()
+            .map(|r| {
+                Arc::new(Reported {
+                    inner: r.tool.clone(),
+                    reference: r.reference.clone(),
+                    updates: self.updates.clone(),
+                }) as Arc<dyn Tool>
+            })
+            .collect();
         if let Some(investigator) = &self.env.investigator {
             tools.push(Arc::new(InvestigateTool {
                 investigator: investigator.clone(),
@@ -921,9 +1024,7 @@ impl Walker<'_> {
         if output == Output::Bubble {
             let _ = self.updates.send(Update::Answering);
         }
-        let _ = self
-            .updates
-            .send(Update::Step(format!("Agent with {} tools", tools.len())));
+        self.stage(Stage::new(StageKind::Agent, node.name.clone()));
         let updates = self.updates.clone();
         let llm = JevonsLlm::new(self.env.client.clone(), model)
             .with_think(self.frame.think.unwrap_or(0))
@@ -950,7 +1051,19 @@ impl Walker<'_> {
         self.trace
             .timings
             .push(("agent".into(), began.elapsed().as_millis() as u64));
-        let outcome = outcome.map_err(ClientError::Protocol)?;
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                self.done("failed", None, false);
+                return Err(ClientError::Protocol(e));
+            }
+        };
+        let calls = outcome.calls.len();
+        self.done(
+            &format!("{calls} call{}", if calls == 1 { "" } else { "s" }),
+            None,
+            true,
+        );
         for call in &outcome.calls {
             self.trace.calls.push(ToolTrace {
                 node: node.label().to_string(),
@@ -1070,10 +1183,10 @@ impl Walker<'_> {
             ),
             reasoning: (think > 0).then(|| Reasoning::for_budget(think)),
         };
-        let _ = self.updates.send(Update::Step(match output {
-            Output::Bubble => "Answering with the language model".into(),
-            _ => "Writing with the language model".into(),
-        }));
+        self.stage(match output {
+            Output::Bubble => Stage::new(StageKind::Answering, "answer"),
+            _ => Stage::new(StageKind::Writing, "text"),
+        });
         if output == Output::Bubble {
             let _ = self.updates.send(Update::Answering);
         }
@@ -1097,14 +1210,24 @@ impl Walker<'_> {
         );
         match generated {
             Ok(Ok(text)) => {
+                let words = text.split_whitespace().count();
+                self.done(
+                    &format!("{words} word{}", if words == 1 { "" } else { "s" }),
+                    None,
+                    true,
+                );
                 self.trace.generation = Some(GenerationTrace {
                     request,
                     output: text.clone(),
                 });
                 Ok(self.leaf(node, text.trim().to_string(), output, action))
             }
-            Ok(Err(e)) => Err(e),
+            Ok(Err(e)) => {
+                self.done("failed", None, false);
+                Err(e)
+            }
             Err(_) => {
+                self.done("timed out", None, false);
                 self.trace.generation = Some(GenerationTrace {
                     request,
                     output: String::new(),

@@ -13,7 +13,7 @@ use jevons_desktop_core::flow::tools::ToolHost;
 use jevons_desktop_core::flow::walk::{self, FlowStep};
 use jevons_desktop_core::flow::{Catalog, FlowError, FlowTree, defaults};
 use jevons_desktop_core::icons::TrayState;
-use jevons_desktop_core::pipeline::{self, Env, TakeStart, Trace, Update};
+use jevons_desktop_core::pipeline::{self, Env, StageKind, TakeStart, Trace, Update};
 use jevons_desktop_core::platform::{
     AudioDevice, AudioSource, Binding, CaptureHandle, ContextInspector, ContextProvider,
     DeliveryOutcome, HotkeyAction, HotkeyEvent, MenuCommand, MenuModel, TextSink, TrayBackend,
@@ -80,6 +80,21 @@ pub struct PendingCall {
     pub arguments: String,
 }
 
+/// A stage of the take as the bubble shows it: running, then done.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StageView {
+    pub kind: StageKind,
+    pub label: String,
+    /// A decision's branches.
+    pub choices: Vec<String>,
+    /// What it is doing now while it runs, then what it produced.
+    pub detail: String,
+    /// The branch a decision took.
+    pub chosen: Option<String>,
+    /// `None` while it runs.
+    pub ok: Option<bool>,
+}
+
 /// What the feedback bubble by the tray icon shows about a take.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Feedback {
@@ -91,8 +106,12 @@ pub struct Feedback {
     pub heard: String,
     /// Words of the phrase being spoken.
     pub partial: String,
-    /// The route through the flow tree and the other steps taken.
-    pub steps: Vec<String>,
+    /// The decisions, investigations, generations and tool calls, in order.
+    pub stages: Vec<StageView>,
+    /// Transcription or the stages after it are running: the bubble animates.
+    pub working: bool,
+    /// The animation's frame, advanced while the take works.
+    pub frame: u64,
     /// The text a generation produced.
     pub output: String,
     /// The output is an answer for the user to read, not text typed into the application.
@@ -116,14 +135,48 @@ impl Feedback {
                 self.heard = text.clone();
                 self.partial.clear();
             }
-            Update::Transcribing => self.status = "Transcribing…".into(),
+            Update::Transcribing => {
+                self.status = "Transcribing…".into();
+                self.working = true;
+            }
             Update::Thinking => {
                 self.status = "Thinking…".into();
+                self.working = true;
                 if !self.live && self.heard.is_empty() {
                     self.heard = std::mem::take(&mut self.partial);
                 }
             }
-            Update::Step(step) => self.steps.push(step.clone()),
+            Update::Stage(stage) => {
+                self.working = true;
+                self.status = match stage.kind {
+                    StageKind::Deciding => "Deciding…".to_string(),
+                    StageKind::Investigating => "Reading the screen…".into(),
+                    StageKind::Writing => "Writing…".into(),
+                    StageKind::Answering => "Answering…".into(),
+                    StageKind::Calling => format!("Calling {}…", stage.label),
+                    StageKind::Agent => "Working with tools…".into(),
+                };
+                self.stages.push(StageView {
+                    kind: stage.kind,
+                    label: stage.label.clone(),
+                    choices: stage.choices.clone(),
+                    detail: String::new(),
+                    chosen: None,
+                    ok: None,
+                });
+            }
+            Update::Progress(now) => {
+                if let Some(open) = self.stages.iter_mut().rev().find(|s| s.ok.is_none()) {
+                    open.detail = now.clone();
+                }
+            }
+            Update::StageDone { detail, chosen, ok } => {
+                if let Some(open) = self.stages.iter_mut().rev().find(|s| s.ok.is_none()) {
+                    open.detail = detail.clone();
+                    open.chosen = chosen.clone();
+                    open.ok = Some(*ok);
+                }
+            }
             Update::Output(text) => self.output.push_str(text),
             Update::Answering => {
                 self.answer = true;
@@ -133,9 +186,18 @@ impl Feedback {
         true
     }
 
+    /// Whether the bubble animates: the take works and has not ended.
+    pub fn animating(&self) -> bool {
+        self.working && !self.done && self.confirm.is_none()
+    }
+
     /// The take's outcome.
     fn finish(&mut self, trace: &Trace) {
         self.done = true;
+        self.working = false;
+        for open in self.stages.iter_mut().filter(|s| s.ok.is_none()) {
+            open.ok = Some(trace.error.is_none());
+        }
         self.partial.clear();
         if !trace.transcript.is_empty() {
             self.heard = trace.transcript.clone();
@@ -982,7 +1044,32 @@ impl Agent {
         let mut tray = self.tray.clone();
         let repaint = self.repaint.clone();
         tokio::spawn(async move {
-            while let Some(update) = received.recv().await {
+            // The bubble animates the running stage on its own clock.
+            let mut tick = tokio::time::interval(Duration::from_millis(120));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                let update = tokio::select! {
+                    update = received.recv() => match update {
+                        Some(update) => update,
+                        None => break,
+                    },
+                    _ = tick.tick() => {
+                        let animate = {
+                            let mut view = view.lock().expect("the view lock");
+                            match view.feedback.as_mut().filter(|f| f.take == id && f.animating()) {
+                                Some(feedback) => {
+                                    feedback.frame += 1;
+                                    true
+                                }
+                                None => false,
+                            }
+                        };
+                        if animate {
+                            repaint();
+                        }
+                        continue;
+                    }
+                };
                 let state = {
                     let mut view = view.lock().expect("the view lock");
                     if let Some(feedback) = view.feedback.as_mut().filter(|f| f.take == id) {
@@ -1002,7 +1089,10 @@ impl Agent {
                         }
                         Update::Transcribing => Some(TrayState::Transcribing { frame: 0 }),
                         Update::Thinking => Some(TrayState::Thinking { frame: 0 }),
-                        Update::Step(_) | Update::Answering => None,
+                        Update::Stage(_)
+                        | Update::Progress(_)
+                        | Update::StageDone { .. }
+                        | Update::Answering => None,
                         Update::Output(text) => {
                             view.live_output.push_str(&text);
                             None
@@ -1196,7 +1286,24 @@ mod tests {
             (feedback.heard.as_str(), feedback.partial.as_str()),
             ("Hola a todos.", "")
         );
-        feedback.apply(&Update::Step("Route dictate".into()));
+        feedback.apply(&Update::Stage(jevons_desktop_core::pipeline::Stage {
+            kind: StageKind::Deciding,
+            label: "what to do".into(),
+            choices: vec!["ask".into(), "dictate".into()],
+        }));
+        assert!(feedback.animating());
+        assert_eq!(feedback.status, "Deciding…");
+        feedback.apply(&Update::StageDone {
+            detail: "0.92".into(),
+            chosen: Some("dictate".into()),
+            ok: true,
+        });
+        feedback.apply(&Update::Stage(jevons_desktop_core::pipeline::Stage::new(
+            StageKind::Investigating,
+            "conversation",
+        )));
+        feedback.apply(&Update::Progress("reading e7".into()));
+        assert_eq!(feedback.stages[1].detail, "reading e7");
         let mut trace = Trace::new(&TakeStart {
             id: 1,
             context: ContextSnapshot::default(),
@@ -1214,7 +1321,13 @@ mod tests {
             feedback.output, "",
             "an unchanged transcript is not shown twice"
         );
-        assert_eq!(feedback.steps, ["Route dictate"]);
+        assert_eq!(feedback.stages[0].chosen.as_deref(), Some("dictate"));
+        assert_eq!(
+            feedback.stages[1].ok,
+            Some(true),
+            "open stages close with the take"
+        );
+        assert!(!feedback.animating());
     }
 
     #[test]

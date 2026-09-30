@@ -13,9 +13,9 @@
 //! the agent explores only when that fails.
 
 use super::agent::{self, Task};
-use super::investigate::{Found, Inquiry, Investigate};
+use super::investigate::{Found, Inquiry, Investigate, Progress};
 use super::llm::JevonsLlm;
-use super::shape::Shape;
+use super::shape::{Shape, has_content};
 use crate::client::{ChatMessage, ChatReply, ChatRequest, Client};
 use crate::context::Privacy;
 use crate::platform::{ContextInspector, UiElement, WindowEntry};
@@ -130,6 +130,7 @@ struct Nav {
     /// The path of the last element read, for the cache.
     last_read: Option<Vec<Step>>,
     steps: Vec<String>,
+    progress: Option<Progress>,
 }
 
 fn step_of(element: &UiElement, index: usize) -> Step {
@@ -159,6 +160,14 @@ fn short_text(text: &str, max: usize) -> String {
 }
 
 impl Nav {
+    /// Records a step for the trace and tells the bubble what is happening now.
+    fn note(&mut self, step: String, now: &str) {
+        if let Some(progress) = &self.progress {
+            progress(now);
+        }
+        self.steps.push(step);
+    }
+
     fn window_short(&self, index: usize) -> String {
         format!("w{}", index + 1)
     }
@@ -241,10 +250,10 @@ impl Nav {
         let tree = nest(flat);
         let mut lines = Vec::new();
         self.render(&tree, &path, 0, depth, &mut lines);
-        self.steps.push(format!(
-            "outline {short} (depth {depth}): {} lines",
-            lines.len()
-        ));
+        self.note(
+            format!("outline {short} (depth {depth}): {} lines", lines.len()),
+            &format!("looking at {short}"),
+        );
         if lines.is_empty() {
             return format!("{short} has no readable elements below it.");
         }
@@ -321,12 +330,15 @@ impl Nav {
         let tree = nest(flat);
         let mut found = Vec::new();
         self.search(&tree, &path, role, text.as_deref(), &mut found);
-        self.steps.push(format!(
-            "find below {short} (role {}, text {}): {} found",
-            role.unwrap_or("any"),
-            text.as_deref().unwrap_or("any"),
-            found.len()
-        ));
+        self.note(
+            format!(
+                "find below {short} (role {}, text {}): {} found",
+                role.unwrap_or("any"),
+                text.as_deref().unwrap_or("any"),
+                found.len()
+            ),
+            &format!("searching {short}"),
+        );
         if found.is_empty() {
             return "Nothing matches.".into();
         }
@@ -413,8 +425,10 @@ impl Nav {
             text.push('…');
         }
         self.last_read = Some(path);
-        self.steps
-            .push(format!("read {short}: {} characters", text.chars().count()));
+        self.note(
+            format!("read {short}: {} characters", text.chars().count()),
+            &format!("reading {short}"),
+        );
         if text.is_empty() {
             "It has no text.".into()
         } else {
@@ -423,7 +437,7 @@ impl Nav {
     }
 
     fn list_windows(&mut self) -> String {
-        self.steps.push("list_windows".into());
+        self.note("list_windows".into(), "listing windows");
         self.windows
             .iter()
             .enumerate()
@@ -617,6 +631,7 @@ impl Tool for InvestigateTool {
                 scope: &[],
                 max_steps: 8,
                 snapshot: &self.snapshot,
+                progress: None,
             })
             .await;
         Ok(found.value)
@@ -754,17 +769,6 @@ impl Investigator {
     }
 }
 
-/// Whether an answer holds anything but nulls and empty lists.
-fn has_content(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Array(items) => items.iter().any(has_content),
-        Value::Object(map) => map.values().any(has_content),
-        Value::String(s) => !s.trim().is_empty(),
-        _ => true,
-    }
-}
-
 impl Investigate for Investigator {
     fn investigate<'a>(&'a self, inquiry: Inquiry<'a>) -> BoxFuture<'a, Found> {
         Box::pin(async move {
@@ -785,6 +789,7 @@ impl Investigate for Investigator {
                 roles: BTreeSet::new(),
                 last_read: None,
                 steps: Vec::new(),
+                progress: inquiry.progress.clone(),
             }));
             let key = PathCache::key(
                 &inquiry.snapshot.app.process_name,
@@ -972,6 +977,7 @@ mod tests {
             roles: BTreeSet::new(),
             last_read: None,
             steps: Vec::new(),
+            progress: None,
         }));
         let outline = nav.lock().unwrap().outline("w1", 3);
         // The three unnamed groups collapse; the heading and the list show.
@@ -1039,6 +1045,7 @@ mod tests {
             scope: &[],
             max_steps: 6,
             snapshot: &snapshot,
+            progress: None,
         };
         let found = investigator.investigate(inquiry()).await;
         assert_eq!(
@@ -1088,6 +1095,7 @@ mod tests {
             scope: &scope,
             max_steps: 4,
             snapshot: &snapshot,
+            progress: None,
         };
         let closed = Investigator::new(
             client.clone(),

@@ -186,12 +186,55 @@ pub enum Update {
     Heard(String),
     Transcribing,
     Thinking,
-    /// A step of processing, such as the route through the flow tree.
-    Step(String),
+    /// A stage of processing started: a decision, an investigation, a generation, a tool call.
+    /// It runs until a [`Update::StageDone`]; stages nest (an agent's tool calls), so a done
+    /// closes the latest stage still open.
+    Stage(Stage),
+    /// What the running stage is doing now, such as the element an investigation reads.
+    Progress(String),
+    /// The latest open stage ended: what it chose or produced, and whether it worked.
+    StageDone {
+        detail: String,
+        /// The branch a decision took.
+        chosen: Option<String>,
+        ok: bool,
+    },
     /// Generated text.
     Output(String),
     /// The text being generated is an answer for the bubble, not text for the application.
     Answering,
+}
+
+/// What a stage does, for the bubble's icon and animation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StageKind {
+    Deciding,
+    Investigating,
+    Writing,
+    Answering,
+    Calling,
+    Agent,
+}
+
+/// A stage as it starts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Stage {
+    pub kind: StageKind,
+    /// A few words, such as `dictate` or `conversation`.
+    pub label: String,
+    /// A decision's branches, before it chooses.
+    pub choices: Vec<String>,
+}
+
+impl Stage {
+    pub fn new(kind: StageKind, label: impl Into<String>) -> Self {
+        Self {
+            kind,
+            label: label.into(),
+            choices: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -1072,6 +1115,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn every_decision_and_the_generation_report_their_stages_in_order() {
+        let (client, _) = server(prefer(&["dictate", "rewrite"]), "Dear team.").await;
+        let sink = RecordingSink::new(Some(7));
+        let env = env(client, Some(&sink));
+        let (audio, finish) = one_second_of_audio();
+        let (updates, mut shown) = mpsc::unbounded_channel();
+        let start = TakeStart {
+            id: 1,
+            context: context(Some("hi all")),
+            entry: None,
+        };
+        let trace = run_take(&env, start, audio, finish, &updates).await;
+        assert_eq!(trace.error, None, "{:?}", trace.notes);
+        let mut stages = Vec::new();
+        while let Ok(update) = shown.try_recv() {
+            match update {
+                Update::Stage(stage) => stages.push(format!(
+                    "{:?} {} [{}]",
+                    stage.kind,
+                    stage.label,
+                    stage.choices.join(" ")
+                )),
+                Update::StageDone { detail, chosen, ok } => {
+                    stages.push(format!("→ {} {detail} {ok}", chosen.unwrap_or_default()))
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            stages,
+            [
+                "Deciding what to do [ask dictate]",
+                "→ dictate 0.90 true",
+                "Deciding dictate [any notes]",
+                "→ notes rules true",
+                "Deciding notes [insert replace rewrite verbatim]",
+                "→ rewrite 0.90 true",
+                "Writing text []",
+                "→  2 words true",
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn a_question_is_answered_in_the_bubble_and_never_typed() {
         let (client, seen) = server(prefer(&["ask"]), "It is five o'clock.").await;
         let sink = RecordingSink::new(Some(7));
@@ -1468,7 +1555,7 @@ confirm = false
         assert!(
             shown
                 .iter()
-                .any(|u| matches!(u, Update::Step(s) if s.starts_with("Route")))
+                .any(|u| matches!(u, Update::StageDone { chosen: Some(c), .. } if c == "dictate"))
         );
     }
 

@@ -187,6 +187,17 @@ impl Shape {
     }
 }
 
+/// Whether an answer holds anything but nulls and empty lists.
+pub fn has_content(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Array(items) => items.iter().any(has_content),
+        Value::Object(map) => map.values().any(has_content),
+        Value::String(s) => !s.trim().is_empty(),
+        _ => true,
+    }
+}
+
 /// Lowercase letters, digits and `_`, starting with a letter.
 pub fn is_identifier(name: &str) -> bool {
     let mut chars = name.chars();
