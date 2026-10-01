@@ -5,7 +5,7 @@
 //! unclosed `**` stays literal until its end arrives.
 
 use dioxus::prelude::*;
-use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 /// A piece of the parsed answer.
 #[derive(Clone, Debug, PartialEq)]
@@ -107,6 +107,64 @@ fn parse(text: &str) -> Vec<Node> {
         add(&mut open, &mut root, Node::Element(kind, children));
     }
     root
+}
+
+/// `text` without its Markdown: the words as the bubble shows them, for copying. Lists keep a
+/// `- ` or `1. ` before each item, tables a tab between cells, code its lines.
+pub fn plain(text: &str) -> String {
+    let options =
+        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    let mut out = String::new();
+    let mut lists: Vec<Option<u64>> = Vec::new();
+    let end_line = |out: &mut String| {
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+    };
+    for event in Parser::new_ext(text, options) {
+        match event {
+            Event::Start(Tag::List(start)) => {
+                end_line(&mut out);
+                lists.push(start);
+            }
+            Event::End(TagEnd::List(_)) => {
+                lists.pop();
+                if lists.is_empty() {
+                    out.push('\n');
+                }
+            }
+            Event::Start(Tag::Item) => {
+                end_line(&mut out);
+                out.push_str(&"  ".repeat(lists.len().saturating_sub(1)));
+                match lists.last_mut() {
+                    Some(Some(n)) => {
+                        out.push_str(&format!("{n}. "));
+                        *n += 1;
+                    }
+                    _ => out.push_str("- "),
+                }
+            }
+            Event::End(TagEnd::Item | TagEnd::TableHead | TagEnd::TableRow) => end_line(&mut out),
+            Event::End(TagEnd::TableCell) => out.push('\t'),
+            Event::End(
+                TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::CodeBlock | TagEnd::BlockQuote(_),
+            ) => {
+                end_line(&mut out);
+                if lists.is_empty() {
+                    out.push('\n');
+                }
+            }
+            Event::Text(t) | Event::Code(t) | Event::Html(t) | Event::InlineHtml(t) => {
+                out.push_str(&t)
+            }
+            Event::InlineMath(t) | Event::DisplayMath(t) => out.push_str(&t),
+            Event::SoftBreak => out.push(' '),
+            Event::HardBreak | Event::Rule => out.push('\n'),
+            Event::TaskListMarker(done) => out.push_str(if done { "[x] " } else { "[ ] " }),
+            _ => {}
+        }
+    }
+    out.trim_end().to_string()
 }
 
 /// `text` as Markdown elements.
@@ -242,6 +300,20 @@ mod tests {
         };
         assert!(matches!(&table[0], Node::Element(Kind::Head, cells) if cells.len() == 2));
         assert_eq!(text(&table[1..]), "AnaFri");
+    }
+
+    #[test]
+    fn plain_text_drops_the_markup_and_keeps_the_layout() {
+        let text = plain(
+            "## Launch\n\nThe launch is **on Friday**, not `Thursday`.\n\n\
+             1. Build\n2. Ship\n\n- [x] docs\n\n```\nfn main() {}\n```\n\n\
+             | who | when |\n|---|---|\n| Ana | Fri |\n",
+        );
+        assert_eq!(
+            text,
+            "Launch\n\nThe launch is on Friday, not Thursday.\n\n1. Build\n2. Ship\n\n\
+             - [x] docs\n\nfn main() {}\n\nwho\twhen\t\nAna\tFri"
+        );
     }
 
     #[test]

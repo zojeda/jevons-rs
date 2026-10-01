@@ -31,6 +31,8 @@ const TAIL: f64 = 18.0;
 pub fn Bubble() -> Element {
     let ctx = use_context::<Ctx>();
     let anchor = use_context::<Anchor>();
+    // An answer shown as plain, selectable text instead of its formatting.
+    let selecting = use_signal(|| false);
     let feedback = ctx.view.lock().expect("the view lock").feedback.clone();
     let Some(f) = feedback else {
         return rsx! { div { class: "bubble" } };
@@ -92,7 +94,7 @@ pub fn Bubble() -> Element {
         };
     }
     if f.answer {
-        return answer(&ctx, &f, head, tail_top, tail_bottom);
+        return answer(&ctx, &f, selecting, head, tail_top, tail_bottom);
     }
     let quiet = f.heard.is_empty() && f.partial.is_empty();
     rsx! {
@@ -209,17 +211,22 @@ fn stage_row(index: usize, stage: &StageView, frame: u64) -> Element {
     }
 }
 
-/// A finished answer: the question, the answer and what to do with it.
+/// A finished answer: the question, the answer and what to do with it. Blitz selects text only
+/// in text fields, so Select text shows the answer's Markdown in one, to select any part of it
+/// and copy it with Ctrl+C.
 fn answer(
     ctx: &Ctx,
     f: &Feedback,
+    selecting: Signal<bool>,
     head: Element,
     tail_top: Option<Element>,
     tail_bottom: Option<Element>,
 ) -> Element {
-    let (copy, insert, close) = (ctx.clone(), ctx.clone(), ctx.clone());
+    let (copy, raw, insert, close) = (ctx.clone(), ctx.clone(), ctx.clone(), ctx.clone());
     let can_insert = f.window.is_some();
     let tail = if tail_bottom.is_some() { "down" } else { "up" };
+    let mut toggle = selecting;
+    let select = selecting();
     rsx! {
         div { class: "bubble", "data-state": "answer",
             "data-tail": tail,
@@ -228,14 +235,25 @@ fn answer(
             if !f.heard.is_empty() {
                 div { class: "bubble-asked", "{f.heard}" }
             }
-            div { class: "bubble-answer", {markdown::render(&f.output)} }
+            div { class: "bubble-answer",
+                if select {
+                    textarea { class: "bubble-select", value: "{f.output}" }
+                } else {
+                    {markdown::render(&f.output)}
+                }
+            }
             if f.done {
                 div { class: "bubble-actions",
-                button { class: "bubble-button", onclick: move |_| close.send(Command::Bubble(BubbleAction::Close)), "Close" }
-                if can_insert {
-                    button { class: "bubble-button", onclick: move |_| insert.send(Command::Bubble(BubbleAction::Insert)), "Insert" }
-                }
-                button { class: "bubble-button", "data-primary": "true", onclick: move |_| copy.send(Command::Bubble(BubbleAction::Copy)), "Copy" }
+                    button { class: "bubble-button", onclick: move |_| close.send(Command::Bubble(BubbleAction::Close)), "Close" }
+                    if can_insert {
+                        button { class: "bubble-button", onclick: move |_| insert.send(Command::Bubble(BubbleAction::Insert)), "Insert" }
+                    }
+                    button { class: "bubble-button", "data-on": if select { "true" } else { "false" },
+                        onclick: move |_| toggle.set(!select),
+                        if select { "Done selecting" } else { "Select text" }
+                    }
+                    button { class: "bubble-button", onclick: move |_| raw.send(Command::Bubble(BubbleAction::Copy { raw: true })), "Copy raw" }
+                    button { class: "bubble-button", "data-primary": "true", onclick: move |_| copy.send(Command::Bubble(BubbleAction::Copy { raw: false })), "Copy" }
                 }
             }
             {tail_bottom}

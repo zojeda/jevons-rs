@@ -206,3 +206,22 @@ html, body, #main {
   padding: 3px 10px;
 }
 .bubble-button[data-primary="true"] { background: #0c3a40; border-color: #22e6f2; color: #fafafa; }
+
+/* Select text: the answer's Markdown in a field, where Blitz can select it (drag, Ctrl+A) and
+   Ctrl+C copies the selection. */
+.bubble-select {
+  width: 100%;
+  min-height: 100%;
+  height: auto;
+  padding: 6px 8px;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  background: #141414;
+  color: #e6e6e6;
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 13px;
+  line-height: 18px;
+  white-space: pre-wrap;
+}
+.bubble-select:focus { border-color: #22e6f2; outline: none; }
+.bubble-button[data-on="true"] { border-color: #22e6f2; color: #22e6f2; }
