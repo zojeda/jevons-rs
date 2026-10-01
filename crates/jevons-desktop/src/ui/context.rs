@@ -8,6 +8,7 @@ use crate::agent::{Command, ExtractsProbe};
 use dioxus::prelude::*;
 use jevons_desktop_core::flow::Check;
 use jevons_desktop_core::flow::walk::FlowStep;
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 #[component]
@@ -273,8 +274,33 @@ fn excerpt(text: &str) -> String {
 /// A route through the flow tree, each decision with its branches, every rule checked and, when
 /// the model was asked, each branch's probability. `about` says whose route it is.
 pub fn route_card(route: &[FlowStep], about: &str) -> Element {
+    rsx! { RouteTree { route: RouteProp(route.to_vec()), about: about.to_string() } }
+}
+
+/// A route, compared by what the tree shows of it.
+#[derive(Clone)]
+pub struct RouteProp(Vec<FlowStep>);
+
+impl PartialEq for RouteProp {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.len() == other.0.len()
+            && self.0.iter().zip(&other.0).all(|(a, b)| {
+                (&a.node, &a.chosen, &a.how, &a.branches, &a.probabilities)
+                    == (&b.node, &b.chosen, &b.how, &b.branches, &b.probabilities)
+            })
+    }
+}
+
+/// The route as a tree, drawn like the Flows tab's: each decision's branches on a guide line, the
+/// chosen one marked and the next decision nested under it, down to where the walk ended. A
+/// branch's rule checks unfold under it.
+#[component]
+fn RouteTree(route: RouteProp, about: String) -> Element {
+    let route = route.0;
+    let unfolded = use_signal(BTreeSet::<String>::new);
     let path: Vec<String> = route.iter().filter_map(|s| s.chosen.clone()).collect();
     let end = route.last().and_then(|s| s.how.clone());
+    let root = route.first();
     rsx! {
         div { class: "dx-card",
             div { class: "dx-card-header",
@@ -290,49 +316,126 @@ pub fn route_card(route: &[FlowStep], about: &str) -> Element {
                 if let Some(end) = end {
                     p { class: "muted", "{end}" }
                 }
-                div { class: "dx-accordion",
-                    {route.iter().enumerate().map(|(i, step)| {
-                        let title = step.node.clone();
-                        let subtitle = match (&step.chosen, &step.how) {
-                            (Some(chosen), Some(how)) => format!("→ {chosen} ({how})"),
-                            (None, Some(how)) => how.clone(),
-                            _ => format!("{:?}", step.kind).to_lowercase(),
-                        };
-                        let open = i + 1 == route.len();
-                        rsx! {
-                            Collapsible { key: "{step.node}", title, subtitle: Some(subtitle), open,
-                                if step.branches.is_empty() {
-                                    p { class: "muted", "A leaf: the walk ends here." }
+                if let Some(first) = root {
+                    div { class: "flow-tree",
+                        div { class: "flow-node",
+                            div { class: "flow-row", "data-route": "true",
+                                span { class: "flow-spacer" }
+                                span { class: "flow-label",
+                                    span { class: "flow-kind", "data-kind": kind_word(first.kind), "{kind_word(first.kind)}" }
+                                    span { class: "flow-name", "{first.node}" }
+                                    {step_notes(first)}
                                 }
-                                {step.branches.iter().map(|b| {
-                                    let probability = step.probabilities.get(&b.name).map(|p| format!("{:.0}%", p * 100.0));
-                                    let chosen = step.chosen.as_deref() == Some(b.name.as_str());
-                                    rsx! {
-                                        div { class: "row",
-                                            {icon(if b.passed { Icon::Check } else { Icon::Cross })}
-                                            span { class: "mono", "{b.name}" }
-                                            if let Some(p) = probability {
-                                                {badge(&p, if chosen { "accent" } else { "secondary" })}
-                                            } else if chosen {
-                                                {badge("chosen", "accent")}
-                                            }
-                                            span { class: "muted", "priority {b.priority} · {b.specificity} rules" }
-                                            if b.preferred {
-                                                {badge("preferred", "accent")}
-                                            }
-                                        }
-                                        {checks(&b.checks)}
-                                        if !b.prefer.is_empty() {
-                                            p { class: "muted", "[prefer]" }
-                                            {checks(&b.prefer)}
-                                        }
-                                    }
-                                })}
                             }
+                            {decision(&route, 0, unfolded)}
                         }
-                    })}
+                    }
                 }
             }
+        }
+    }
+}
+
+fn kind_word(kind: jevons_desktop_core::flow::Kind) -> &'static str {
+    use jevons_desktop_core::flow::Kind;
+    match kind {
+        Kind::Decide => "decide",
+        Kind::Generate => "generate",
+        Kind::Transcript => "transcript",
+        Kind::Tool => "tool",
+        Kind::Agent => "agent",
+        Kind::Run => "run",
+    }
+}
+
+/// How a step chose (or that the walk ended there), and what it read.
+fn step_notes(step: &FlowStep) -> Element {
+    let how = match (&step.chosen, &step.how) {
+        (_, Some(how)) => how.clone(),
+        (None, None) if step.branches.is_empty() => "the walk ends here".into(),
+        _ => String::new(),
+    };
+    let reads = step.extracts.len() + step.investigations.len();
+    rsx! {
+        if !how.is_empty() {
+            span { class: "flow-what", "{how}" }
+        }
+        if reads > 0 {
+            span { class: "flow-notes", "read {reads} from the screen" }
+        }
+    }
+}
+
+/// Step `i`'s branches; the chosen one heads the next step, nested beneath it.
+fn decision(route: &[FlowStep], i: usize, unfolded: Signal<BTreeSet<String>>) -> Element {
+    let step = &route[i];
+    if step.branches.is_empty() {
+        return rsx! {};
+    }
+    rsx! {
+        div { class: "flow-children",
+            {step.branches.iter().map(|b| {
+                let chosen = step.chosen.as_deref() == Some(b.name.as_str());
+                let next = chosen.then(|| route.get(i + 1)).flatten();
+                let key = format!("{i}/{}", b.name);
+                let open = unfolded.read().contains(&key);
+                let probability = step.probabilities.get(&b.name).map(|p| format!("{:.0}%", p * 100.0));
+                let failed: Vec<&str> = b.checks.iter().filter(|c| !c.passed).map(|c| c.rule).collect();
+                let has_rules = !b.checks.is_empty() || !b.prefer.is_empty();
+                let toggle = key.clone();
+                let mut set = unfolded;
+                rsx! {
+                    div { class: "flow-node", key: "{key}",
+                        div { class: "flow-row",
+                            "data-route": if chosen { "true" } else { "false" },
+                            "data-off": if b.passed { "false" } else { "true" },
+                            if has_rules {
+                                button { class: "flow-toggle",
+                                    onclick: move |_| {
+                                        let mut s = set.write();
+                                        if !s.remove(&toggle) {
+                                            s.insert(toggle.clone());
+                                        }
+                                    },
+                                    {icon(if open { Icon::ChevronDown } else { Icon::ChevronRight })}
+                                }
+                            } else {
+                                span { class: "flow-spacer" }
+                            }
+                            span { class: "flow-label",
+                                {icon(if b.passed { Icon::Check } else { Icon::Cross })}
+                                if let Some(next) = next {
+                                    span { class: "flow-kind", "data-kind": kind_word(next.kind), "{kind_word(next.kind)}" }
+                                }
+                                span { class: "flow-name", "{b.name}" }
+                                if let Some(p) = probability {
+                                    {badge(&p, if chosen { "accent" } else { "secondary" })}
+                                }
+                                if b.preferred {
+                                    {badge("preferred", "accent")}
+                                }
+                                if let Some(next) = next {
+                                    {step_notes(next)}
+                                } else if !failed.is_empty() {
+                                    span { class: "flow-notes", "failed: {failed.join(\", \")}" }
+                                }
+                            }
+                        }
+                        if open {
+                            div { class: "route-checks",
+                                {checks(&b.checks)}
+                                if !b.prefer.is_empty() {
+                                    p { class: "muted", "[prefer]" }
+                                    {checks(&b.prefer)}
+                                }
+                            }
+                        }
+                        if next.is_some() {
+                            {decision(route, i + 1, unfolded)}
+                        }
+                    }
+                }
+            })}
         }
     }
 }
