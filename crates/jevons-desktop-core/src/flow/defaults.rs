@@ -60,17 +60,18 @@ pub fn builtin() -> Memory {
     Memory::new(BUILTIN, files)
 }
 
-/// Loads the tree in `dir`, first writing the built-in tree when the folder has none. The notes
-/// from writing it (such as an `AGENTS.md` left alone) come back with the tree.
-pub fn open(dir: &Path, catalog: &Catalog) -> (FlowTree, Vec<String>) {
-    let notes = match init(dir) {
-        Ok(report) => report.notes,
-        Err(e) => vec![format!(
+/// Loads the tree in `dir`, first writing the built-in tree when the folder has none. What
+/// writing it did (the files written, and notes such as an `AGENTS.md` left alone) comes back
+/// with the tree.
+pub fn open(dir: &Path, catalog: &Catalog) -> (FlowTree, InitReport) {
+    let report = init(dir).unwrap_or_else(|e| InitReport {
+        written: Vec::new(),
+        notes: vec![format!(
             "Cannot write the flows folder {}: {e}",
             dir.display()
         )],
-    };
-    (FlowTree::load(&Disk::new(dir), catalog), notes)
+    });
+    (FlowTree::load(&Disk::new(dir), catalog), report)
 }
 
 /// Writes `TOOLS.md` (the registered tools, from [`ToolHost::tools_md`]) when it changed.

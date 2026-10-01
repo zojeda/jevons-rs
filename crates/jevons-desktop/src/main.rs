@@ -8,7 +8,8 @@
 //! and prints its trace. `--check-flows` and `--init-flows` check and prepare a flows folder.
 //! `--xpath <expr>` prints what an expression selects in the interface (or in `--tree`).
 //! `--check-automations`, `--dry-run <name>` and `--run <name>` check, replay and run the
-//! automations library.
+//! automations library. `--reset-settings` puts the default settings folder back (its git
+//! history keeps the earlier one), and `--clear <what>` clears logs, traces and recordings.
 #![forbid(unsafe_code)]
 // A tray app: no console window on Windows. Logs go to a file; --replay output can be redirected.
 #![cfg_attr(windows, windows_subsystem = "windows")]
@@ -28,6 +29,7 @@ use jevons_desktop_core::config::{DesktopConfig, default_config_file};
 use jevons_desktop_core::context::ContextSnapshot;
 use jevons_desktop_core::fake::FileAudioSource;
 use jevons_desktop_core::flow::{FlowTree, defaults};
+use jevons_desktop_core::history::{self, History};
 use jevons_desktop_core::pipeline::{self, Env, TakeStart};
 use jevons_desktop_core::platform::AudioSource;
 use std::path::PathBuf;
@@ -105,6 +107,38 @@ struct Args {
     /// With --author: replace this automation (a new version, to approve again).
     #[arg(long, value_name = "NAME")]
     replace: Option<String>,
+    /// Put the default settings, flow tree and automations library back in the settings
+    /// folder, and exit. Its git history keeps what was there. Quit the tray app first, or use
+    /// its menu instead.
+    #[arg(long)]
+    reset_settings: bool,
+    /// Clear history and exit: `logs`, `traces` (of takes and automation runs), `trees`
+    /// (recorded interfaces), `recordings` (demonstrations) or `all`; several separated by
+    /// commas.
+    #[arg(long, value_name = "WHAT", value_enum, value_delimiter = ',')]
+    clear: Vec<Clear>,
+}
+
+/// What `--clear` clears.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum Clear {
+    Logs,
+    Traces,
+    Trees,
+    Recordings,
+    All,
+}
+
+impl Clear {
+    fn kinds(self) -> &'static [History] {
+        match self {
+            Self::Logs => &[History::Logs],
+            Self::Traces => &[History::Traces],
+            Self::Trees => &[History::Trees],
+            Self::Recordings => &[History::Recordings],
+            Self::All => &History::ALL,
+        }
+    }
 }
 
 impl Args {
@@ -118,6 +152,8 @@ impl Args {
             || self.dry_run.is_some()
             || self.run.is_some()
             || self.author.is_some()
+            || self.reset_settings
+            || !self.clear.is_empty()
     }
 }
 
@@ -154,7 +190,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::error!(thread = thread.name().unwrap_or("unnamed"), %info, %backtrace, "Panic");
     }));
     let config_file = args.config.clone().unwrap_or_else(default_config_file);
+    // Before loading the settings: a reset also mends a file that does not load.
+    if args.reset_settings {
+        return reset_settings(&config_file);
+    }
     let config = DesktopConfig::load(&config_file)?;
+    if !args.clear.is_empty() {
+        return clear_history(&args.clear, &config);
+    }
     let folder = |dir: &Option<PathBuf>| {
         dir.clone()
             .unwrap_or_else(|| config.flows_dir(&config_file))
@@ -168,6 +211,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for file in &report.written {
             println!("wrote {}", dir.join(file).display());
         }
+        commit_written(
+            &config_file,
+            report.written.iter().map(|f| dir.join(f)).collect(),
+            "Write the built-in flow tree (--init-flows)",
+        );
         for note in &report.notes {
             println!("note: {note}");
         }
@@ -347,6 +395,14 @@ fn author_automation(
             &library,
             args.replace.as_deref(),
         ))?;
+    commit_written(
+        config_file,
+        vec![authored.automation.dir.clone()],
+        &format!(
+            "Write the automation {} from a recording (--author)",
+            authored.automation.name
+        ),
+    );
     let report = &authored.report;
     println!(
         "wrote {} ({}): {}",
@@ -479,13 +535,65 @@ fn check_flows(
     Ok(())
 }
 
-/// `~/jevons/logs/jevons-desktop.log`; the previous run's log is kept next to it.
+/// `~/jevons/logs/jevons-desktop.log`; the previous run's log is kept next to it. It is opened
+/// to append, so clearing the logs can empty it while the app writes.
 fn log_file() -> Option<std::fs::File> {
     let dir = jevons_desktop_core::config::user_dir().join("logs");
     std::fs::create_dir_all(&dir).ok()?;
-    let file = dir.join("jevons-desktop.log");
+    let file = dir.join(history::DESKTOP_LOG);
     let _ = std::fs::rename(&file, dir.join("jevons-desktop.previous.log"));
-    std::fs::File::create(file).ok()
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(file)
+        .ok()
+}
+
+/// `--reset-settings`: the defaults back in the settings folder.
+fn reset_settings(config_file: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let report = jevons_desktop_core::settings::reset(config_file).map_err(|e| e.to_string())?;
+    if !report.removed.is_empty() {
+        println!("removed {}", report.removed.join(", "));
+    }
+    println!(
+        "{}: the default settings, flow tree and automations library{}",
+        report.dir.display(),
+        if report.repository.is_some() {
+            ", committed"
+        } else {
+            ""
+        }
+    );
+    for note in &report.notes {
+        println!("note: {note}");
+    }
+    Ok(())
+}
+
+/// `--clear`: each kind of history asked for, once.
+fn clear_history(what: &[Clear], config: &DesktopConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let kinds: std::collections::BTreeSet<History> =
+        what.iter().flat_map(|w| w.kinds()).copied().collect();
+    let mut failed = false;
+    for kind in kinds {
+        let cleared = history::clear(kind, config);
+        println!("{cleared} in {}", cleared.dir.display());
+        failed |= !cleared.failed.is_empty();
+    }
+    if failed {
+        return Err("some files could not be removed; see above".into());
+    }
+    Ok(())
+}
+
+/// Commits files a headless command wrote in the settings folder, when it is jevons' repository.
+fn commit_written(config_file: &std::path::Path, paths: Vec<PathBuf>, message: &str) {
+    let dir = jevons_desktop_core::settings::folder(config_file);
+    if let Some(repository) = jevons_desktop_core::git::Repository::open(dir)
+        && let Err(e) = repository.commit(&paths, message)
+    {
+        eprintln!("note: cannot commit to the settings folder: {e}");
+    }
 }
 
 /// One headless take, from audio or text, for scripted end-to-end checks.
@@ -532,8 +640,8 @@ fn replay(
     for problem in tokio.block_on(tools.start()) {
         eprintln!("note: {problem}");
     }
-    let (flows, notes) = defaults::open(&config.flows_dir(&config_file), &tools.catalog());
-    for note in notes {
+    let (flows, report) = defaults::open(&config.flows_dir(&config_file), &tools.catalog());
+    for note in report.notes {
         eprintln!("note: {note}");
     }
     if !flows.is_valid() {
@@ -730,5 +838,17 @@ mod tests {
         assert_eq!(dir.check_flows, Some(Some(PathBuf::from("D:/flows"))));
         let neither = Args::try_parse_from(["jevons-desktop"]).unwrap();
         assert!(!neither.headless());
+    }
+
+    #[test]
+    fn clearing_takes_kinds_of_history_or_all_of_it() {
+        let some = Args::try_parse_from(["jevons-desktop", "--clear", "logs,traces"]).unwrap();
+        assert_eq!(some.clear, [Clear::Logs, Clear::Traces]);
+        assert!(some.headless());
+        let all = Args::try_parse_from(["jevons-desktop", "--clear", "all"]).unwrap();
+        assert_eq!(all.clear[0].kinds(), History::ALL);
+        assert!(Args::try_parse_from(["jevons-desktop", "--clear", "models"]).is_err());
+        let reset = Args::try_parse_from(["jevons-desktop", "--reset-settings"]).unwrap();
+        assert!(reset.headless());
     }
 }

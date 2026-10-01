@@ -423,6 +423,10 @@ pub enum MenuCommand {
     ToggleFeedback,
     ReloadFlows,
     OpenConfigFolder,
+    /// Asks, then puts the default settings, flow tree and automations library back.
+    ResetSettings,
+    /// Asks, then clears these kinds of history.
+    ClearHistory(Vec<crate::history::History>),
     /// Starts or stops recording a demonstration.
     ToggleRecording,
     RunAutomation(String),

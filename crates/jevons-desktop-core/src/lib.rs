@@ -17,6 +17,9 @@
 //! - [`interface`]: the inspector's browser of a window's accessibility tree, with selectors.
 //! - [`automation`]: scripts that act on those applications, and the checks on every action.
 //! - [`recording`]: recording a demonstration of a task, to write its automation from.
+//! - [`settings`] and [`git`]: the settings folder, filled with the defaults and kept in a git
+//!   repository of its own, and its reset.
+//! - [`history`]: clearing the logs, traces and recordings.
 #![forbid(unsafe_code)]
 
 pub mod automation;
@@ -29,6 +32,8 @@ pub mod download;
 #[cfg(any(test, feature = "testing"))]
 pub mod fake;
 pub mod flow;
+pub mod git;
+pub mod history;
 pub mod icons;
 pub mod interface;
 pub mod levels;
@@ -36,4 +41,5 @@ pub mod pipeline;
 pub mod platform;
 pub mod recorded;
 pub mod recording;
+pub mod settings;
 pub mod xpath;
