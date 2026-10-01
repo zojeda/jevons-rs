@@ -33,7 +33,13 @@ pub fn App() -> Element {
     revision.set(revision.get() + 1);
     let rev = revision.get();
 
+    let initial = ctx.view.lock().expect("the view lock").config.clone();
+    // The settings being edited live here, not in the page: they survive switching tabs, and the
+    // save bar outside the scrolling page saves them.
+    let draft = use_context_provider(|| settings::SettingsDraft::new(initial));
+
     let mut view = ctx.view.lock().expect("the view lock");
+    draft.follow(&view.config);
     // The agent reads the focused window twice a second while the Context tab shows it.
     view.watch_context = tab() == Tab::Context && !frozen();
     let (status, status_style) = match &view.runtime {
@@ -58,6 +64,7 @@ pub fn App() -> Element {
         (view.dictating || !view.live_transcript.is_empty()).then(|| view.live_transcript.clone());
     let writing = (!view.live_output.is_empty()).then(|| view.live_output.clone());
     drop(view);
+    let unsaved = draft.dirty();
 
     rsx! {
         div { class: "app",
@@ -76,11 +83,15 @@ pub fn App() -> Element {
                             "data-state": if tab() == t { "active" } else { "inactive" },
                             onclick: move |_| tab.set(t),
                             "{label}"
+                            if t == Tab::Settings && unsaved {
+                                span { class: "tab-dot", title: "Unsaved settings" }
+                            }
                         }
                     })}
                 }
             }
             div { class: "page",
+                "data-dirty": if tab() == Tab::Settings && unsaved { "true" } else { "false" },
                 match tab() {
                     Tab::Context => rsx! { context::ContextPage { rev, frozen } },
                     Tab::Takes => rsx! { takes::TakesPage { rev } },
@@ -88,6 +99,9 @@ pub fn App() -> Element {
                     Tab::Settings => rsx! { settings::SettingsPage { rev } },
                     Tab::Models => rsx! { models::ModelsPage { rev } },
                 }
+            }
+            if tab() == Tab::Settings && unsaved {
+                {settings::footer(&ctx, draft)}
             }
             if let Some(text) = hearing {
                 div { class: "live", strong { "Hearing" } "{text}" }

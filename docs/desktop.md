@@ -45,7 +45,7 @@ Every step goes into a trace: the context, each node with the guards it checked,
 
 ## The flow tree
 
-The flow tree lives in the `flows` folder next to the settings file (`flows_dir` moves it). On the first run jevons writes the built-in tree there, with an `AGENTS.md` that documents the format for people and coding agents, a JSON Schema per node file in `_schemas/`, and a `.taplo.toml` that maps them for editors. When a new version of jevons changes the built-in tree, a folder that still holds an earlier built-in tree, unedited, is brought up to the new one (the **Flows** tab says so); a folder you edited is never touched, and `--init-flows` into an empty folder gives you the new tree to compare. The files reload as soon as you save them. A tree with problems is reported in the **Flows** tab with each file and line, and the last tree that loaded cleanly keeps running.
+The flow tree lives in the `flows` folder next to the settings file (`flows_dir` moves it). On the first run jevons writes the built-in tree there, with an `AGENTS.md` that documents the format for people and coding agents, a JSON Schema per node file in `_schemas/`, and a `.taplo.toml` that maps them for editors. When a new version of jevons changes the built-in tree, a folder that still holds an earlier built-in tree, unedited, is brought up to the new one (the **Flows** tab says so); a folder you edited is never touched, and `--init-flows` into an empty folder gives you the new tree to compare. The files reload as soon as you save them. A tree with problems is reported in the **Flows** tab with each file and line, and the last tree that loaded cleanly keeps running. The **Flows** tab draws the tree with each branch indented under the decision that chooses it: a node's kind, what it does (who chooses and the fallback, or where its output goes), its guard and `[prefer]` rules and its priority. Shared branches (`_actions`) say so under each decision that uses them, and the route the Context tab's window takes is marked. Branches fold and unfold, and selecting a node shows its rules in full and its file, with **Open file**.
 
 Each folder is a node, and the file in it names its kind:
 
@@ -253,7 +253,7 @@ A run asks in the bubble first unless the automation is listed in `automation.un
 
 ## Settings
 
-The **Settings** tab edits the runtime, dictation and privacy settings. **Apply and save** writes them all at once.
+The **Settings** tab edits the runtime, dictation and privacy settings. A change marks the page (a bar on its left and a dot on the tab) and shows a bar under it, in view however far you scroll: **Apply and save** writes them all at once, and **Revert** drops them. Changes are kept while you visit other tabs.
 
 - **Runtime.**
   - *Run the models in this app* loads them in-process.

@@ -714,10 +714,31 @@ impl Node {
     /// TODO: z-index
     /// (If multiple children are positioned at the position then a random one will be recursed into)
     pub fn hit(&self, x: f32, y: f32) -> Option<HitResult> {
+        let size = self.final_layout.size;
+
+        // jevons: a node that clips its overflow (as painting does: any overflow but visible)
+        // takes only points inside its own box. Without this, a scrolled container claimed
+        // points above it, its content scrolled there, so a page scrolled under a fixed top
+        // bar took the bar's clicks.
+        let clips = self.primary_styles().is_some_and(|styles| {
+            use style::values::computed::Overflow;
+            let overflow = styles.get_box();
+            !matches!(overflow.overflow_x, Overflow::Visible)
+                || !matches!(overflow.overflow_y, Overflow::Visible)
+        });
+        if clips {
+            let (bx, by) = (
+                x - self.final_layout.location.x,
+                y - self.final_layout.location.y,
+            );
+            if bx < 0.0 || by < 0.0 || bx > size.width || by > size.height {
+                return None;
+            }
+        }
+
         let mut x = x - self.final_layout.location.x + self.scroll_offset.x as f32;
         let mut y = y - self.final_layout.location.y + self.scroll_offset.y as f32;
 
-        let size = self.final_layout.size;
         let matches_self = !(x < 0.0
             || x > size.width + self.scroll_offset.x as f32
             || y < 0.0
