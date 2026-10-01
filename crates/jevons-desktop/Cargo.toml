@@ -54,6 +54,9 @@ uiautomation = { workspace = true, features = ["pattern"] }
 [dev-dependencies]
 # Real mouse events for the headless click tests.
 blitz-traits = "=0.2.0"
+# Painting a page into a recording scene, to check what is drawn where.
+anyrender = "=0.6.2"
+blitz-paint = "=0.2.1"
 
 [lints]
 workspace = true
