@@ -18,15 +18,17 @@ use jevons_desktop_core::flow::tools::ToolHost;
 use jevons_desktop_core::flow::walk::{self, FlowStep};
 use jevons_desktop_core::flow::{Catalog, FlowError, FlowTree, defaults};
 use jevons_desktop_core::icons::TrayState;
+use jevons_desktop_core::interface;
 use jevons_desktop_core::pipeline::{self, Env, StageKind, TakeStart, Trace, Update};
 use jevons_desktop_core::platform::{
     AudioDevice, AudioSource, Binding, CaptureHandle, ContextInspector, ContextProvider,
     DeliveryOutcome, HotkeyAction, HotkeyEvent, MenuCommand, MenuModel, Recorder, RecordingHandle,
-    TextSink, TrayBackend, UiActor,
+    TextSink, TrayBackend, UiActor, UiElement, WindowEntry,
 };
 use jevons_desktop_core::recorded::RecordedTree;
 use jevons_desktop_core::recording::{Session, bundle};
-use std::collections::VecDeque;
+use jevons_desktop_core::xpath::selector::Candidate;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -85,6 +87,33 @@ pub enum Command {
     SaveExtract(Box<TrialRequest>),
     /// Reads the flow tree's extracts in the window the Context tab shows again.
     ReadExtracts,
+    /// Reads the top of the interface of the window the Context tab shows, anew.
+    InterfaceLoad,
+    /// Opens an element of the interface: its children, or (`all`) everything below it.
+    InterfaceOpen {
+        id: String,
+        all: bool,
+    },
+    /// Closes an element of the interface (its children stay read).
+    InterfaceClose(String),
+    /// Reads the next page of an element's children.
+    InterfaceMore(String),
+    /// Opens the interface from the window down to this many levels.
+    InterfaceExpand(usize),
+    /// Closes every element of the interface.
+    InterfaceCollapse,
+    /// Searches the whole window for elements holding this text (empty clears the search).
+    InterfaceSearch(String),
+    /// A search finished: its tree's generation, its text, and what it found or why not.
+    InterfaceSearched(u64, String, Result<interface::Found, String>),
+    /// Opens the interface down to an element (ids from the window's child down) and selects it.
+    InterfaceReveal(Vec<String>),
+    /// Opens the interface down to the element that had the focus in the Context tab's snapshot.
+    InterfaceFocus,
+    /// Selects an element of the interface: its properties and the selectors that find it.
+    InterfaceSelect(Box<UiElement>),
+    /// The selectors of the selected element were found (or not).
+    InterfaceFound,
     ReloadFlows,
     RuntimeChanged,
     /// The MCP servers listed their tools: check the flows against them.
@@ -321,6 +350,8 @@ pub struct View {
     pub saved: Option<Result<String, Vec<String>>>,
     /// What the flow tree's extracts read in the window the Context tab shows.
     pub extracts: Option<ExtractsProbe>,
+    /// The Context tab's interface browser: the window's tree as far as it was opened.
+    pub interface: Option<InterfaceView>,
     /// The automations library: name, description, and whether this version is approved.
     pub automations: Vec<(String, String, bool)>,
     pub quit: bool,
@@ -365,6 +396,57 @@ struct Workbench {
     window: Option<String>,
 }
 
+/// The interface of the window the Context tab showed when it was loaded, level by level.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct InterfaceView {
+    /// Counts loads, so reads for a tree that was loaded again are dropped.
+    pub generation: u64,
+    /// The window it is the interface of; its id is empty until the top is read.
+    pub window: WindowEntry,
+    /// The window as the Context tab tells windows apart, to notice when it shows another.
+    pub key: String,
+    /// The levels read, by their parent's id (the window's id for the top).
+    pub levels: HashMap<String, interface::Level>,
+    /// The elements shown open.
+    pub open: HashSet<String>,
+    /// The elements whose children are being read (the empty id for the top).
+    pub loading: HashSet<String>,
+    /// Why the last read failed: its elements no longer match the window, so it is reloaded.
+    pub failed: Option<String>,
+    /// An "open all below" read its most elements before reaching its depth.
+    pub stopped: bool,
+    /// What the last reveal or "show focused" could not do.
+    pub note: Option<String>,
+    /// A reveal is reading the way down to an element.
+    pub revealing: bool,
+    /// The row to scroll into view once it is laid out (the window takes it).
+    pub reveal: Option<String>,
+    pub search: Option<InterfaceSearch>,
+    pub selected: Option<UiElement>,
+    /// The selected element's selectors, or why there are none; `None` while they are found.
+    pub selectors: Option<Result<Vec<Candidate>, String>>,
+}
+
+/// The interface browser's search: its text, and what it found (`None` while it runs).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct InterfaceSearch {
+    pub query: String,
+    pub found: Option<Result<interface::Found, String>>,
+}
+
+/// What the interface browser reveals: an element by its way down, or the snapshot's focus.
+enum Reveal {
+    Path(Vec<String>),
+    Focused(String),
+}
+
+/// How deep "open all below" goes, and the most elements it (and "expand to level") reads.
+const OPEN_DEPTH: usize = 6;
+const OPEN_BUDGET: usize = 1_500;
+/// The most elements a search reads, and how long it may take (checked between its reads).
+const SEARCH_BUDGET: usize = 5_000;
+const SEARCH_DEADLINE: Duration = Duration::from_secs(2);
+
 /// The flow tree's extracts, read in the window the Context tab shows.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ExtractsProbe {
@@ -378,7 +460,7 @@ pub struct ExtractsProbe {
 pub type SharedView = Arc<Mutex<View>>;
 
 /// A window as the Context tab's readings tell windows apart: its application and title.
-fn window_key(snapshot: &ContextSnapshot) -> String {
+pub fn window_key(snapshot: &ContextSnapshot) -> String {
     format!("{} · {}", snapshot.app.process_name, snapshot.window.title)
 }
 
@@ -440,6 +522,12 @@ pub struct Agent {
     /// The window (and tree) the Context tab's extracts were last read in.
     extracts_read: Option<String>,
     workbench: Workbench,
+    /// Selectors are being found for the interface browser; the latest selection waits.
+    finding: bool,
+    selection: Option<UiElement>,
+    /// A search runs in the interface browser; the latest text asked for meanwhile waits.
+    searching: bool,
+    search_next: Option<String>,
     flows: Arc<FlowTree>,
     hotkeys: std::collections::HashMap<u32, HotkeyAction>,
     /// The reply to the tool call the bubble asks about.
@@ -507,6 +595,10 @@ impl Agent {
             messages: 0,
             extracts_read: None,
             workbench: Workbench::default(),
+            finding: false,
+            selection: None,
+            searching: false,
+            search_next: None,
             flows: Arc::new(flows),
             config,
             config_file,
@@ -734,6 +826,92 @@ impl Agent {
             }
             Command::SaveExtract(request) => self.save_extract(*request),
             Command::ReadExtracts => self.read_extracts(true),
+            Command::InterfaceLoad => self.load_interface(),
+            Command::InterfaceOpen { id, all } => self.open_interface(id, all),
+            Command::InterfaceClose(id) => {
+                if let Some(browser) = self.view().interface.as_mut() {
+                    browser.open.remove(&id);
+                }
+                self.repaint();
+            }
+            Command::InterfaceMore(id) => self.more_interface(id),
+            Command::InterfaceExpand(depth) => self.expand_interface(depth),
+            Command::InterfaceCollapse => {
+                if let Some(browser) = self.view().interface.as_mut() {
+                    browser.open.retain(|id| *id == browser.window.id);
+                }
+                self.repaint();
+            }
+            Command::InterfaceSearch(query) => {
+                let query = query.trim().to_string();
+                if let Some(browser) = self.view().interface.as_mut() {
+                    browser.search = (!query.is_empty()).then(|| InterfaceSearch {
+                        query: query.clone(),
+                        found: None,
+                    });
+                }
+                if query.is_empty() {
+                    self.search_next = None;
+                } else if self.searching {
+                    self.search_next = Some(query);
+                } else {
+                    self.search_interface(query);
+                }
+                self.repaint();
+            }
+            Command::InterfaceSearched(generation, query, found) => {
+                self.searching = false;
+                if let Some(search) = self
+                    .view()
+                    .interface
+                    .as_mut()
+                    .filter(|b| b.generation == generation)
+                    .and_then(|b| b.search.as_mut())
+                    .filter(|s| s.query == query)
+                {
+                    search.found = Some(found);
+                }
+                if let Some(next) = self.search_next.take() {
+                    self.search_interface(next);
+                }
+                self.repaint();
+            }
+            Command::InterfaceReveal(path) => self.reveal_interface(Reveal::Path(path)),
+            Command::InterfaceFocus => {
+                let focused = self
+                    .view()
+                    .context
+                    .as_ref()
+                    .and_then(|c| c.focused.as_ref())
+                    .and_then(|f| f.id.clone());
+                match focused {
+                    Some(id) => self.reveal_interface(Reveal::Focused(id)),
+                    None => {
+                        if let Some(browser) = self.view().interface.as_mut() {
+                            browser.note = Some(
+                                "The snapshot has no focused element to show (capture again with \
+                                 the element focused)"
+                                    .into(),
+                            );
+                        }
+                        self.repaint();
+                    }
+                }
+            }
+            Command::InterfaceSelect(element) => {
+                // Its properties show at once; its selectors once a search is free.
+                if let Some(browser) = self.view().interface.as_mut() {
+                    browser.selected = Some((*element).clone());
+                    browser.selectors = None;
+                }
+                self.selection = Some(*element);
+                self.find_selectors();
+                self.repaint();
+            }
+            Command::InterfaceFound => {
+                self.finding = false;
+                self.find_selectors();
+            }
             Command::ToolsListed(problems) => {
                 self.view().tool_problems = problems;
                 self.reload_flows();
@@ -1027,6 +1205,368 @@ impl Agent {
                 window: window_key(&snapshot),
                 trial,
             })));
+        });
+        self.repaint();
+    }
+
+    /// Reads the top of the interface of the window the Context tab shows, replacing the tree,
+    /// off the agent thread.
+    fn load_interface(&mut self) {
+        let Some(snapshot) = self.view().context.clone() else {
+            return;
+        };
+        let generation = {
+            let mut view = self.view();
+            let generation = view.interface.as_ref().map_or(0, |b| b.generation) + 1;
+            view.interface = Some(InterfaceView {
+                generation,
+                key: window_key(&snapshot),
+                loading: HashSet::from([String::new()]),
+                ..InterfaceView::default()
+            });
+            generation
+        };
+        self.selection = None;
+        let inspector = self.inspector.clone();
+        let privacy = self.config.privacy.clone();
+        let view = self.view.clone();
+        let repaint = self.repaint.clone();
+        tokio::task::spawn_blocking(move || {
+            let read = interface::window(&*inspector, &snapshot, &privacy).and_then(|window| {
+                let level = interface::level(&*inspector, &window.id).map_err(|e| e.to_string());
+                level.map(|level| (window, level))
+            });
+            let mut view = view.lock().expect("the view lock");
+            if let Some(browser) = view
+                .interface
+                .as_mut()
+                .filter(|b| b.generation == generation)
+            {
+                browser.loading.clear();
+                match read {
+                    Ok((window, level)) => {
+                        browser.levels.insert(window.id.clone(), level);
+                        browser.open.insert(window.id.clone());
+                        browser.window = window;
+                    }
+                    Err(e) => browser.failed = Some(e),
+                }
+            }
+            drop(view);
+            repaint();
+        });
+        self.repaint();
+    }
+
+    /// Opens an element of the interface browser, reading its children (or, with `all`,
+    /// everything below it to a depth) off the agent thread, one read per element at a time.
+    fn open_interface(&mut self, id: String, all: bool) {
+        let (generation, known) = {
+            let mut view = self.view();
+            let Some(browser) = view.interface.as_mut() else {
+                return;
+            };
+            browser.open.insert(id.clone());
+            if browser.loading.contains(&id) || (!all && browser.levels.contains_key(&id)) {
+                drop(view);
+                self.repaint();
+                return;
+            }
+            browser.loading.insert(id.clone());
+            let known = if all {
+                browser.levels.clone()
+            } else {
+                HashMap::new()
+            };
+            (browser.generation, known)
+        };
+        let inspector = self.inspector.clone();
+        let view = self.view.clone();
+        let repaint = self.repaint.clone();
+        tokio::task::spawn_blocking(move || {
+            let read = if all {
+                interface::open_below(&*inspector, &id, OPEN_DEPTH, OPEN_BUDGET, &known)
+            } else {
+                interface::level(&*inspector, &id).map(|level| interface::Opened {
+                    levels: vec![(id.clone(), level)],
+                    stopped: false,
+                })
+            };
+            let mut view = view.lock().expect("the view lock");
+            if let Some(browser) = view
+                .interface
+                .as_mut()
+                .filter(|b| b.generation == generation)
+            {
+                browser.loading.remove(&id);
+                match read {
+                    Ok(opened) => {
+                        browser.stopped = opened.stopped;
+                        for (parent, level) in opened.levels {
+                            if all {
+                                browser.open.insert(parent.clone());
+                            }
+                            browser.levels.insert(parent, level);
+                        }
+                    }
+                    Err(e) => {
+                        browser.open.remove(&id);
+                        browser.failed = Some(format!(
+                            "Its elements no longer match the window ({e}): reload the tree"
+                        ));
+                    }
+                }
+            }
+            drop(view);
+            repaint();
+        });
+        self.repaint();
+    }
+
+    /// Reads the next page of an element's children, off the agent thread, appending it when
+    /// the level is still as it was.
+    fn more_interface(&mut self, id: String) {
+        let (generation, offset) = {
+            let mut view = self.view();
+            let Some(browser) = view.interface.as_mut() else {
+                return;
+            };
+            let Some(offset) = browser.levels.get(&id).map(|l| l.elements.len()) else {
+                return;
+            };
+            if !browser.loading.insert(id.clone()) {
+                return;
+            }
+            (browser.generation, offset)
+        };
+        let inspector = self.inspector.clone();
+        let view = self.view.clone();
+        let repaint = self.repaint.clone();
+        tokio::task::spawn_blocking(move || {
+            let read = interface::page(&*inspector, &id, offset, interface::PER_LEVEL);
+            let mut view = view.lock().expect("the view lock");
+            if let Some(browser) = view
+                .interface
+                .as_mut()
+                .filter(|b| b.generation == generation)
+            {
+                browser.loading.remove(&id);
+                match read {
+                    Ok(page) => {
+                        if let Some(level) = browser
+                            .levels
+                            .get_mut(&id)
+                            .filter(|l| l.elements.len() == offset)
+                        {
+                            level.elements.extend(page.elements);
+                            level.total = page.total;
+                        }
+                    }
+                    Err(e) => {
+                        browser.failed = Some(format!(
+                            "Its elements no longer match the window ({e}): reload the tree"
+                        ));
+                    }
+                }
+            }
+            drop(view);
+            repaint();
+        });
+        self.repaint();
+    }
+
+    /// Opens the interface from the window down to `depth` levels, reading the levels it lacks
+    /// (at most [`OPEN_BUDGET`] elements) off the agent thread; everything deeper closes.
+    fn expand_interface(&mut self, depth: usize) {
+        let (generation, window, known) = {
+            let mut view = self.view();
+            let Some(browser) = view.interface.as_mut() else {
+                return;
+            };
+            let window = browser.window.id.clone();
+            if window.is_empty() || !browser.loading.insert(window.clone()) {
+                return;
+            }
+            (browser.generation, window, browser.levels.clone())
+        };
+        let inspector = self.inspector.clone();
+        let view = self.view.clone();
+        let repaint = self.repaint.clone();
+        tokio::task::spawn_blocking(move || {
+            let read = interface::open_below(&*inspector, &window, depth, OPEN_BUDGET, &known);
+            let mut view = view.lock().expect("the view lock");
+            if let Some(browser) = view
+                .interface
+                .as_mut()
+                .filter(|b| b.generation == generation)
+            {
+                browser.loading.remove(&window);
+                match read {
+                    Ok(opened) => {
+                        browser.stopped = opened.stopped;
+                        browser.open.clear();
+                        for (parent, level) in opened.levels {
+                            browser.open.insert(parent.clone());
+                            browser.levels.insert(parent, level);
+                        }
+                    }
+                    Err(e) => {
+                        browser.failed = Some(format!(
+                            "The window no longer matches the tree ({e}): reload it"
+                        ));
+                    }
+                }
+            }
+            drop(view);
+            repaint();
+        });
+        self.repaint();
+    }
+
+    /// Searches the whole window of the interface browser for `query`, off the agent thread.
+    fn search_interface(&mut self, query: String) {
+        let Some((generation, window)) = self
+            .view()
+            .interface
+            .as_ref()
+            .filter(|b| !b.window.id.is_empty())
+            .map(|b| (b.generation, b.window.id.clone()))
+        else {
+            return;
+        };
+        self.searching = true;
+        let inspector = self.inspector.clone();
+        let commands = self.commands.clone();
+        tokio::task::spawn_blocking(move || {
+            let found =
+                interface::search(&*inspector, &window, &query, SEARCH_BUDGET, SEARCH_DEADLINE)
+                    .map_err(|e| {
+                        format!("The window could not be searched ({e}): reload the tree")
+                    });
+            let _ = commands.send(Command::InterfaceSearched(generation, query, found));
+        });
+    }
+
+    /// Opens the interface browser down to an element and selects it, reading the levels on
+    /// the way off the agent thread; the window then scrolls its row into view.
+    fn reveal_interface(&mut self, target: Reveal) {
+        let (generation, window, known) = {
+            let mut view = self.view();
+            let Some(browser) = view.interface.as_mut().filter(|b| !b.window.id.is_empty()) else {
+                return;
+            };
+            if browser.revealing {
+                return;
+            }
+            browser.revealing = true;
+            browser.note = None;
+            (
+                browser.generation,
+                browser.window.id.clone(),
+                browser.levels.clone(),
+            )
+        };
+        let inspector = self.inspector.clone();
+        let view = self.view.clone();
+        let commands = self.commands.clone();
+        let repaint = self.repaint.clone();
+        tokio::task::spawn_blocking(move || {
+            let path = match target {
+                Reveal::Path(path) => Ok(path),
+                Reveal::Focused(id) => interface::ancestry(&*inspector, &id)
+                    .map_err(|e| {
+                        format!(
+                            "The focused element is gone ({e}): reload the tree or capture again"
+                        )
+                    })
+                    .and_then(|chain| match chain.split_first() {
+                        Some((top, path)) if *top == window => Ok(path.to_vec()),
+                        _ => Err(
+                            "The focused element is in another window than this tree's: \
+                                  reload the tree"
+                                .to_string(),
+                        ),
+                    }),
+            };
+            let revealed = path.and_then(|path| {
+                interface::reveal(&*inspector, &known, &window, &path)
+                    .map(|r| (path.len(), r))
+                    .map_err(|e| format!("The window no longer matches the tree ({e}): reload it"))
+            });
+            let mut chosen = None;
+            let mut guard = view.lock().expect("the view lock");
+            if let Some(browser) = guard
+                .interface
+                .as_mut()
+                .filter(|b| b.generation == generation)
+            {
+                browser.revealing = false;
+                match revealed {
+                    Ok((asked, revealed)) => {
+                        for (parent, level) in revealed.levels {
+                            browser.levels.insert(parent, level);
+                        }
+                        browser.open.insert(window.clone());
+                        let reached = revealed.reached.len();
+                        for (i, element) in revealed.reached.iter().enumerate() {
+                            if i + 1 < reached {
+                                browser.open.insert(element.id.clone());
+                            }
+                        }
+                        if reached < asked {
+                            browser.note = Some(
+                                "The element is no longer in the window (its nearest ancestor is \
+                                 selected): reload the tree"
+                                    .into(),
+                            );
+                        }
+                        chosen = revealed.reached.last().cloned();
+                        browser.reveal = chosen.as_ref().map(|e| e.id.clone());
+                    }
+                    Err(note) => browser.note = Some(note),
+                }
+            }
+            drop(guard);
+            if let Some(element) = chosen {
+                let _ = commands.send(Command::InterfaceSelect(Box::new(element)));
+            }
+            repaint();
+        });
+        self.repaint();
+    }
+
+    /// Finds the selectors of the element selected in the interface browser, off the agent
+    /// thread: one search at a time, the latest selection waiting for the one running.
+    fn find_selectors(&mut self) {
+        if self.finding {
+            return;
+        }
+        let Some(element) = self.selection.take() else {
+            return;
+        };
+        let (generation, window) = match self.view().interface.as_ref() {
+            Some(browser) => (browser.generation, browser.window.clone()),
+            None => return,
+        };
+        self.finding = true;
+        let inspector = self.inspector.clone();
+        let view = self.view.clone();
+        let commands = self.commands.clone();
+        tokio::task::spawn_blocking(move || {
+            let found = interface::selectors(&*inspector, &window, &element.id);
+            if let Some(browser) = view
+                .lock()
+                .expect("the view lock")
+                .interface
+                .as_mut()
+                .filter(|b| {
+                    b.generation == generation
+                        && b.selected.as_ref().is_some_and(|s| s.id == element.id)
+                })
+            {
+                browser.selectors = Some(found);
+            }
+            let _ = commands.send(Command::InterfaceFound);
         });
         self.repaint();
     }

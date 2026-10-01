@@ -2,6 +2,7 @@
 
 use super::Ctx;
 use super::components::{Collapsible, Icon, JsonTree, Switch, badge, icon};
+use super::interface::Interface;
 use super::workbench::{self, Workbench};
 use crate::agent::{Command, ExtractsProbe};
 use dioxus::prelude::*;
@@ -30,6 +31,8 @@ pub fn ContextPage(rev: u64, frozen: Signal<bool>) -> Element {
     let record = ctx.clone();
     // The extract the workbench edits; the flow tree's readings can pick one too.
     let chosen = use_signal(|| None::<String>);
+    // An expression the interface browser sends to the workbench to try.
+    let draft = use_signal(|| None::<String>);
 
     rsx! {
         div { class: "spread",
@@ -149,7 +152,8 @@ pub fn ContextPage(rev: u64, frozen: Signal<bool>) -> Element {
             }
         }
         {extracts_card(extracts, chosen, move || reread.send(Command::ReadExtracts))}
-        Workbench { rev, chosen }
+        Workbench { rev, chosen, draft }
+        Interface { rev, draft }
         if !route.is_empty() {
             {route_card(&route)}
         }

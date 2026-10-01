@@ -229,8 +229,11 @@ extract that applies to the window in front (lazy ones included) and shows each 
 its table columns, and see its answer and what it matched, read as a take would (its `app`,
 `scope` and `$variables` included). **Live** tries each edit after a pause in typing and again when
 the window changes. **Save** writes the expression back into its node file (keeping the file's
-comments) once the tree still loads, and **Copy as TOML** gives a new one to paste here. From a
-shell: `jevons-desktop --xpath "//ListItem" --app slack.exe`. An investigation that succeeds
+comments) once the tree still loads, and **Copy as TOML** gives a new one to paste here. The
+**Interface** card browses the window's accessibility tree: search it for a text you see on
+screen (or **Show focused**), select the element to see the expressions that select it alone (by
+automation id, class, a stable ancestor, its text, its name or its position), and **Try in
+workbench** to start an extract from one. From a shell: `jevons-desktop --xpath "//ListItem" --app slack.exe`. An investigation that succeeds
 shows the XPath it remembered in the take's trace, and that XPath can become an extract.
 
 ## `run.toml`

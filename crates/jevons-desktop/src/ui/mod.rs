@@ -11,6 +11,7 @@ mod bubble;
 mod components;
 mod context;
 mod flows;
+mod interface;
 mod markdown;
 mod models;
 mod settings;
@@ -287,6 +288,14 @@ impl Shell {
             let _ = window.window.set_cursor_hittest(clicks);
             self.bubble_clicks = clicks;
         }
+        // An element the interface browser revealed, to scroll into view once rendered.
+        let reveal = self
+            .view
+            .lock()
+            .expect("the view lock")
+            .interface
+            .as_mut()
+            .and_then(|b| b.reveal.take());
         for (id, window) in self.inner.windows.iter_mut() {
             if show && Some(*id) == self.main {
                 window.window.set_visible(true);
@@ -297,6 +306,11 @@ impl Shell {
             let doc = window.downcast_doc_mut::<DioxusDocument>();
             doc.vdom.mark_dirty(ScopeId::APP);
             window.poll();
+            if Some(*id) == self.main
+                && let Some(row) = &reveal
+            {
+                interface::scroll_into_view(window.downcast_doc_mut::<DioxusDocument>(), row);
+            }
             window.request_redraw();
         }
     }
@@ -731,5 +745,334 @@ mod tests {
             "{text}"
         );
         assert!(received.try_recv().is_err(), "nothing is tried until asked");
+    }
+
+    /// The interface browser beside the workbench, sharing the draft as the Context page does;
+    /// the draft starts with an expression, as **Try in workbench** sets it.
+    fn interface_root() -> Element {
+        let rev = REV.fetch_add(1, Ordering::Relaxed);
+        let chosen = use_signal(|| None::<String>);
+        let draft = use_signal(|| Some("//Edit[has-class(@class, 'ql-editor')]".to_string()));
+        rsx! {
+            workbench::Workbench { rev, chosen, draft }
+            interface::Interface { rev, draft }
+        }
+    }
+
+    #[test]
+    fn the_interface_browser_shows_the_opened_tree_and_hands_a_selector_to_the_workbench() {
+        use crate::agent::{Command, InterfaceView};
+        use jevons_desktop_core::interface as browse;
+        use jevons_desktop_core::platform::ContextInspector;
+        use jevons_desktop_core::recorded::RecordedInspector;
+        let folder = std::env::temp_dir().join(format!("jevons-ui-iface-{}", std::process::id()));
+        let view = Arc::new(Mutex::new(view(&folder)));
+        let (commands, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let mut vdom = VirtualDom::new(interface_root);
+        vdom.insert_any_root_context(Box::new(Ctx {
+            view: view.clone(),
+            commands,
+        }));
+        let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("style.css"));
+        doc.initial_build();
+        doc.poll(None);
+        // The draft becomes a new expression, tried at once; the browser reads its window.
+        let mut sent = Vec::new();
+        while let Ok(command) = received.try_recv() {
+            sent.push(command);
+        }
+        assert!(
+            sent.iter().any(|c| matches!(c, Command::TryExtract(r)
+                if r.file.is_none() && r.spec.xpath.contains("ql-editor"))),
+            "{sent:?}"
+        );
+        assert!(sent.iter().any(|c| matches!(c, Command::InterfaceLoad)));
+        // The agent's reads, from the recorded Slack window.
+        let inspector = RecordedInspector::new(
+            serde_json::from_str(include_str!(
+                "../../../../examples/desktop/trees/slack.json"
+            ))
+            .unwrap(),
+        );
+        let window = inspector.windows().unwrap().remove(0);
+        let opened =
+            browse::open_below(&inspector, &window.id, 64, 10_000, &Default::default()).unwrap();
+        let mut browser = InterfaceView {
+            generation: 1,
+            window: window.clone(),
+            key: "slack.exe · general (Channel) - Acme - Slack".into(),
+            ..InterfaceView::default()
+        };
+        for (parent, level) in opened.levels {
+            browser.open.insert(parent.clone());
+            browser.levels.insert(parent, level);
+        }
+        let composer = browser
+            .levels
+            .values()
+            .flat_map(|l| l.elements.iter())
+            .find(|e| e.role == "Edit")
+            .cloned()
+            .unwrap();
+        browser.selectors = Some(browse::selectors(&inspector, &window, &composer.id));
+        browser.selected = Some(composer);
+        view.lock().unwrap().interface = Some(browser);
+        doc.vdom.mark_dirty(ScopeId::APP);
+        doc.poll(None);
+        let text = doc.root_element().text_content();
+        assert!(
+            text.contains("Message #general") && text.contains("ql-editor"),
+            "{text}"
+        );
+        assert!(text.contains("Try in workbench"), "{text}");
+        // The tab shows another window (Notepad) than the tree's.
+        assert!(text.contains("This tree is of slack.exe"), "{text}");
+    }
+
+    /// The interface browser alone, as the Context page shows it.
+    fn browser_root() -> Element {
+        let rev = REV.fetch_add(1, Ordering::Relaxed);
+        let draft = use_signal(|| None::<String>);
+        rsx! { interface::Interface { rev, draft } }
+    }
+
+    /// Clicks the middle of the element `selector` finds, as the window would: the pointer moves
+    /// there, then the button goes down and up.
+    fn click(doc: &mut DioxusDocument, selector: &str) {
+        use blitz_traits::events::{
+            BlitzMouseButtonEvent, MouseEventButton, MouseEventButtons, UiEvent,
+        };
+        doc.resolve(0.0);
+        let node = doc
+            .query_selector(selector)
+            .unwrap()
+            .unwrap_or_else(|| panic!("nothing matches {selector}"));
+        let (x, y) = {
+            let node = doc.get_node(node).unwrap();
+            let at = node.absolute_position(0.0, 0.0);
+            let size = node.final_layout.size;
+            assert!(
+                size.width >= 16.0 && size.height >= 16.0,
+                "{selector}: {size:?}"
+            );
+            (at.x + size.width / 2.0, at.y + size.height / 2.0)
+        };
+        let event = || BlitzMouseButtonEvent {
+            x,
+            y,
+            button: MouseEventButton::Main,
+            buttons: MouseEventButtons::Primary,
+            mods: Default::default(),
+        };
+        doc.handle_ui_event(UiEvent::MouseMove(event()));
+        doc.handle_ui_event(UiEvent::MouseDown(event()));
+        doc.handle_ui_event(UiEvent::MouseUp(event()));
+        doc.poll(None);
+    }
+
+    #[test]
+    fn interface_rows_toggle_by_their_chevron_and_select_by_their_label_with_real_clicks() {
+        use crate::agent::{Command, InterfaceSearch, InterfaceView};
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        use jevons_desktop_core::interface as browse;
+        use jevons_desktop_core::platform::ContextInspector;
+        use jevons_desktop_core::recorded::RecordedInspector;
+        let inspector = RecordedInspector::new(
+            serde_json::from_str(include_str!(
+                "../../../../examples/desktop/trees/slack.json"
+            ))
+            .unwrap(),
+        );
+        let window = inspector.windows().unwrap().remove(0);
+        let composer = inspector
+            .subtree(&window.id, 64, 10_000)
+            .unwrap()
+            .into_iter()
+            .map(|(_, e)| e)
+            .find(|e| e.role == "Edit")
+            .unwrap();
+        let folder = std::env::temp_dir().join(format!("jevons-ui-clicks-{}", std::process::id()));
+        let mut state = view(&folder);
+        let context = ContextSnapshot {
+            app: AppInfo {
+                process_name: "slack.exe".into(),
+                ..AppInfo::default()
+            },
+            window: WindowInfo {
+                title: window.title.clone(),
+                ..WindowInfo::default()
+            },
+            focused: Some(Focused {
+                id: Some(composer.id.clone()),
+                role: "Edit".into(),
+                ..Focused::default()
+            }),
+            ..ContextSnapshot::default()
+        };
+        let top = browse::level(&inspector, &window.id).unwrap();
+        let pane = top.elements[0].id.clone();
+        state.interface = Some(InterfaceView {
+            generation: 1,
+            window: window.clone(),
+            key: crate::agent::window_key(&context),
+            levels: [(window.id.clone(), top)].into(),
+            open: [window.id.clone()].into(),
+            ..InterfaceView::default()
+        });
+        state.context = Some(context);
+        let view = Arc::new(Mutex::new(state));
+        let (commands, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let mut vdom = VirtualDom::new(browser_root);
+        vdom.insert_any_root_context(Box::new(Ctx {
+            view: view.clone(),
+            commands,
+        }));
+        let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("style.css"));
+        doc.set_viewport(Viewport::new(1400, 3000, 1.0, ColorScheme::Dark));
+        doc.initial_build();
+        doc.poll(None);
+        let mut sent = || {
+            let mut out = Vec::new();
+            while let Ok(command) = received.try_recv() {
+                out.push(command);
+            }
+            out
+        };
+        let rerender = |doc: &mut DioxusDocument| {
+            doc.vdom.mark_dirty(ScopeId::APP);
+            doc.poll(None);
+        };
+        sent();
+
+        // The chevron opens the pane, and nothing is selected.
+        click(&mut doc, &format!("[data-toggle=\"{pane}\"]"));
+        let got = sent();
+        assert!(
+            matches!(got.as_slice(), [Command::InterfaceOpen { id, all: false }] if *id == pane),
+            "{got:?}"
+        );
+        // The agent reads it; the same chevron now closes it.
+        {
+            let mut state = view.lock().unwrap();
+            let browser = state.interface.as_mut().unwrap();
+            browser
+                .levels
+                .insert(pane.clone(), browse::level(&inspector, &pane).unwrap());
+            browser.open.insert(pane.clone());
+        }
+        rerender(&mut doc);
+        click(&mut doc, &format!("[data-toggle=\"{pane}\"]"));
+        let got = sent();
+        assert!(
+            matches!(got.as_slice(), [Command::InterfaceClose(id)] if *id == pane),
+            "{got:?}"
+        );
+        // The label selects, and opens nothing.
+        click(&mut doc, &format!("[data-row=\"{pane}\"] .iface-label"));
+        let got = sent();
+        assert!(
+            matches!(got.as_slice(), [Command::InterfaceSelect(e)] if e.id == pane),
+            "{got:?}"
+        );
+
+        // A level read in part ends with a button that reads more of it.
+        view.lock()
+            .unwrap()
+            .interface
+            .as_mut()
+            .unwrap()
+            .levels
+            .get_mut(&pane)
+            .unwrap()
+            .total += 300;
+        rerender(&mut doc);
+        let text = doc.root_element().text_content();
+        assert!(text.contains("more"), "{text}");
+        click(&mut doc, &format!("[data-more=\"{pane}\"]"));
+        let got = sent();
+        assert!(
+            matches!(got.as_slice(), [Command::InterfaceMore(id)] if *id == pane),
+            "{got:?}"
+        );
+
+        // Expand to a level, collapse all, and show the focused element.
+        click(&mut doc, "[data-level=\"3\"]");
+        click(&mut doc, "[data-action=\"collapse\"]");
+        click(&mut doc, "[data-action=\"show-focused\"]");
+        let got = sent();
+        assert!(
+            matches!(
+                got.as_slice(),
+                [
+                    Command::InterfaceExpand(3),
+                    Command::InterfaceCollapse,
+                    Command::InterfaceFocus
+                ]
+            ),
+            "{got:?}"
+        );
+
+        // A search's matches list where they are; choosing one reveals it.
+        let found = browse::search(
+            &inspector,
+            &window.id,
+            "release notes",
+            5_000,
+            std::time::Duration::from_secs(2),
+        )
+        .unwrap();
+        let ids = found.hits[0].ids();
+        view.lock().unwrap().interface.as_mut().unwrap().search = Some(InterfaceSearch {
+            query: "release notes".into(),
+            found: Some(Ok(found)),
+        });
+        rerender(&mut doc);
+        let text = doc.root_element().text_content();
+        assert!(text.contains("2 matches"), "{text}");
+        click(&mut doc, ".iface-result");
+        let got = sent();
+        assert!(
+            matches!(got.as_slice(), [Command::InterfaceReveal(path)] if *path == ids),
+            "{got:?}"
+        );
+
+        // With the whole window open the box scrolls, and a revealed row comes into view.
+        {
+            let mut state = view.lock().unwrap();
+            let browser = state.interface.as_mut().unwrap();
+            let all = browse::open_below(&inspector, &window.id, 64, 10_000, &Default::default())
+                .unwrap();
+            for (parent, level) in all.levels {
+                browser.open.insert(parent.clone());
+                browser.levels.insert(parent, level);
+            }
+        }
+        rerender(&mut doc);
+        let last = ids.last().unwrap();
+        assert!(interface::scroll_into_view(&mut doc, last));
+        let tree = doc.query_selector(".iface-tree").unwrap().unwrap();
+        let row = doc
+            .query_selector(&format!("[data-row=\"{last}\"]"))
+            .unwrap()
+            .unwrap();
+        let (scroll, height) = {
+            let tree = doc.get_node(tree).unwrap();
+            (
+                tree.scroll_offset.y,
+                f64::from(tree.final_layout.size.height),
+            )
+        };
+        assert!(scroll > 0.0, "the box scrolled");
+        let top = f64::from(
+            doc.get_node(row).unwrap().absolute_position(0.0, 0.0).y
+                - doc.get_node(tree).unwrap().absolute_position(0.0, 0.0).y,
+        );
+        assert!(
+            top >= scroll && top <= scroll + height,
+            "{top} in {scroll}+{height}"
+        );
+        std::fs::remove_dir_all(&folder).ok();
     }
 }
