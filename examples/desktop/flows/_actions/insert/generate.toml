@@ -1,0 +1,2 @@
+description = "Type the dictated words at the cursor, edited to fit the field and the text around it (formatting, tone, or a spoken command such as 'new line')."
+action = "insert"

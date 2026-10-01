@@ -88,6 +88,8 @@ pub struct Decoder {
     head: Tensor<2>,
     head_bias: Tensor<2>,
     outputs: usize,
+    /// Added to the token logits `[1, vocab]`: very negative for tokens decoding may not emit.
+    mask: Option<Tensor<2>>,
 }
 
 /// Per-layer LSTM state `[1, hidden]`, after `tokens` emitted tokens.
@@ -133,7 +135,21 @@ impl Decoder {
             head: load.tensor_f32("joint.head.weight", [outputs, h])?,
             head_bias: row("joint.head.bias", outputs)?,
             outputs,
+            mask: None,
         })
+    }
+
+    /// Restricts decoding to the tokens `allowed` marks (one flag per vocabulary token, the
+    /// blank included); `None` allows every token.
+    pub fn restrict(&mut self, allowed: Option<&[bool]>) {
+        self.mask = allowed.map(|allowed| {
+            assert_eq!(allowed.len(), self.vocab, "one flag per token");
+            let bias = allowed
+                .iter()
+                .map(|&ok| if ok { 0.0 } else { -1e9 })
+                .collect::<Vec<f32>>();
+            Tensor::from_data(TensorData::new(bias, [1, self.vocab]), &self.device)
+        });
     }
 
     /// Projects encoder rows `[rows, d]` into the joint space `[rows, hidden]`. Pass the whole
@@ -176,7 +192,11 @@ impl Decoder {
     fn choose(&self, rows: Tensor<2>, prediction: &Tensor<2>) -> Vec<Choice> {
         let [n, _] = rows.dims();
         let logits = linear(relu(rows + prediction.clone()), &self.head) + self.head_bias.clone();
-        let tokens = greedy(logits.clone().slice([0..n, 0..self.vocab]));
+        let mut token_logits = logits.clone().slice([0..n, 0..self.vocab]);
+        if let Some(mask) = &self.mask {
+            token_logits = token_logits + mask.clone();
+        }
+        let tokens = greedy(token_logits);
         let durations = logits.slice([0..n, self.vocab..self.outputs]).argmax(1);
         let durations = durations
             .into_data()

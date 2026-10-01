@@ -1,0 +1,56 @@
+[package]
+name = "jevons-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Context-aware dictation from the tray, over the jevons runtime."
+
+[features]
+default = ["embedded"]
+# Load the models in the app (pulls in the inference stack). Without it, only a remote jevons
+# server can be used.
+embedded = ["dep:jevons-api"]
+
+[dependencies]
+jevons-api = { workspace = true, optional = true }
+jevons-audio.workspace = true
+jevons-desktop-core = { workspace = true, features = ["testing"] }
+active-win-pos-rs.workspace = true
+arboard.workspace = true
+clap.workspace = true
+cpal.workspace = true
+anyrender_vello.workspace = true
+blitz-shell.workspace = true
+dioxus.workspace = true
+dioxus-native.workspace = true
+peniko.workspace = true
+winit.workspace = true
+global-hotkey.workspace = true
+globset.workspace = true
+notify.workspace = true
+pulldown-cmark.workspace = true
+rfd.workspace = true
+serde_json.workspace = true
+tao.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tray-icon.workspace = true
+uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# A keyboard hook that swallows a held hotkey's auto-repeats (see hold.rs).
+rdev = { workspace = true, features = ["unstable_grab"] }
+device_query.workspace = true
+enigo.workspace = true
+sysinfo.workspace = true
+uiautomation = { workspace = true, features = ["pattern"] }
+
+[dev-dependencies]
+# The headless page-rendering test drives the document directly.
+blitz-dom = { version = "=0.2.4", default-features = false }
+
+[lints]
+workspace = true

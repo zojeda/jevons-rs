@@ -1,0 +1,102 @@
+{
+  "windows": [
+    {
+      "window": { "id": "w-slack", "app": "slack.exe", "title": "general (Channel) - Acme - Slack", "front": true },
+      "children": [
+        { "role": "Pane", "class": "RootView", "children": [
+          { "role": "Pane", "class": "NonClientView", "children": [
+            { "role": "Pane", "class": "WinFrameView", "children": [
+              { "role": "Pane", "class": "ClientView", "children": [
+                { "role": "Pane", "class": "View", "children": [
+                  { "role": "Document", "name": "general (Channel) - Acme - Slack", "automation_id": "RootWebArea", "children": [
+                    { "role": "Group", "class": "p-ia4_body windows use-slack-font", "children": [
+                      { "role": "Group", "class": "p-client_container", "children": [
+                        { "role": "ToolBar", "name": "History navigation", "class": "p-ia4_top_nav p-ia4_top_nav--windows", "children": [
+                          { "role": "Button", "name": "Back", "class": "c-button-unstyled" },
+                          { "role": "Button", "name": "Forward", "class": "c-button-unstyled" },
+                          { "role": "Button", "name": "Search Acme", "class": "c-button-unstyled p-top_nav__search" }
+                        ]},
+                        { "role": "Pane", "class": "p-client_workspace_wrapper", "children": [
+                          { "role": "Pane", "class": "p-client_workspace__tabpanel", "children": [
+                            { "role": "Group", "class": "p-view_contents p-view_contents--sidebar", "children": [
+                              { "role": "ToolBar", "name": "Actions", "class": "p-ia4_sidebar_header p-ia4_home_header" },
+                              { "role": "Edit", "name": "Channel or user name", "class": "c-filter_input__input mousetrap" },
+                              { "role": "Tree", "name": "Channels and direct messages", "class": "c-virtual_list__scroll_container", "children": [
+                                { "role": "TreeItem", "name": "Channels", "automation_id": "sectionHeading-L01C5ABCD", "class": "p-channel_sidebar__static_list__item p-channel_sidebar__static_list__item--section_header_focus c-virtual_list__item", "children": [
+                                  { "role": "Group", "children": [ { "role": "Text", "name": "Channels" } ] }
+                                ]},
+                                { "role": "TreeItem", "name": "general", "automation_id": "C01GENERAL1", "class": "p-channel_sidebar__static_list__item p-channel_sidebar__static_list__item--contain p-channel_sidebar__static_list__item__row_container p-channel_sidebar__static_list__item--selected c-virtual_list__item", "children": [
+                                  { "role": "Group", "class": "p-channel_sidebar__channel p-channel_sidebar__channel--selected p-channel_sidebar__channel--show-avatars", "children": [ { "role": "Text", "name": "general" } ] }
+                                ]},
+                                { "role": "TreeItem", "name": "launch 3 unread messages", "automation_id": "C02LAUNCH22", "class": "p-channel_sidebar__static_list__item p-channel_sidebar__static_list__item--contain p-channel_sidebar__static_list__item__row_container c-virtual_list__item", "children": [
+                                  { "role": "Group", "class": "p-channel_sidebar__channel p-channel_sidebar__channel--unread p-channel_sidebar__channel--show-avatars", "children": [ { "role": "Text", "name": "launch" } ] }
+                                ]},
+                                { "role": "TreeItem", "name": "random", "automation_id": "C03RANDOM33", "class": "p-channel_sidebar__static_list__item p-channel_sidebar__static_list__item--contain p-channel_sidebar__static_list__item__row_container c-virtual_list__item", "children": [
+                                  { "role": "Group", "class": "p-channel_sidebar__channel p-channel_sidebar__channel--show-avatars", "children": [ { "role": "Text", "name": "random" } ] }
+                                ]},
+                                { "role": "TreeItem", "name": "Direct messages", "automation_id": "sectionHeading-L02D6EFGH", "class": "p-channel_sidebar__static_list__item p-channel_sidebar__static_list__item--section_header_focus c-virtual_list__item", "children": [
+                                  { "role": "Group", "children": [ { "role": "Text", "name": "Direct messages" } ] }
+                                ]},
+                                { "role": "TreeItem", "name": "Ana Silva", "automation_id": "D04ANASILVA", "class": "p-channel_sidebar__static_list__item p-channel_sidebar__static_list__item--contain p-channel_sidebar__static_list__item__row_container c-virtual_list__item", "children": [
+                                  { "role": "Group", "class": "p-channel_sidebar__channel p-channel_sidebar__channel--im p-channel_sidebar__channel--show-avatars", "children": [ { "role": "Text", "name": "Ana Silva" } ] }
+                                ]},
+                                { "role": "TreeItem", "name": "Bo Chen", "automation_id": "D05BOCHEN55", "class": "p-channel_sidebar__static_list__item p-channel_sidebar__static_list__item--contain p-channel_sidebar__static_list__item__row_container c-virtual_list__item", "children": [
+                                  { "role": "Group", "class": "p-channel_sidebar__channel p-channel_sidebar__channel--im p-channel_sidebar__channel--show-avatars", "children": [ { "role": "Text", "name": "Bo Chen" } ] }
+                                ]}
+                              ]}
+                            ]},
+                            { "role": "Group", "class": "p-view_contents p-view_contents--primary", "children": [
+                              { "role": "ToolBar", "name": "Primary view actions", "class": "p-view_header p-view_header--primary-background", "children": [
+                                { "role": "Button", "name": "general", "class": "c-button-unstyled p-view_header__big_button" }
+                              ]},
+                              { "role": "Tab", "name": "Views of general", "class": "draggable_tabs_container__AGMar", "children": [
+                                { "role": "TabItem", "name": "Messages", "automation_id": "channel" },
+                                { "role": "TabItem", "name": "Files", "automation_id": "files" }
+                              ]},
+                              { "role": "List", "name": "general (channel)", "class": "sr-only", "children": [
+                                { "role": "ListItem", "name": "Yesterday", "automation_id": "message-list_1790650800000.divider", "class": "c-virtual_list__item c-virtual_list__item--sticky" },
+                                { "role": "ListItem", "name": "Ana Silva: The launch moved to Friday. 10:02 AM", "automation_id": "message-list_1790703615.453899", "class": "c-virtual_list__item", "children": [
+                                  { "role": "Document", "class": "c-message_kit__hover", "children": [
+                                    { "role": "Button", "name": "Ana Silva", "class": "c-message__sender_button" },
+                                    { "role": "Hyperlink", "name": "10:02 AM", "class": "c-link c-timestamp" },
+                                    { "role": "Text", "name": "The launch moved to Friday.", "class": "p-rich_text_section" }
+                                  ]}
+                                ]},
+                                { "role": "ListItem", "name": "Bo Chen: Thanks! I will update the plan. 10:05 AM", "automation_id": "message-list_1790703757.020409", "class": "c-virtual_list__item", "children": [
+                                  { "role": "Document", "class": "c-message_kit__hover", "children": [
+                                    { "role": "Button", "name": "Bo Chen", "class": "c-message__sender_button" },
+                                    { "role": "Hyperlink", "name": "10:05 AM", "class": "c-link c-timestamp" },
+                                    { "role": "Text", "name": "Thanks! I will update the plan.", "class": "p-rich_text_section" },
+                                    { "role": "Group", "name": "1 reaction", "class": "c-message_kit__reaction_bar c-reaction_bar", "children": [
+                                      { "role": "Button", "name": "thumbs up 1", "class": "c-button-unstyled c-reaction" }
+                                    ]}
+                                  ]}
+                                ]},
+                                { "role": "ListItem", "name": "New", "automation_id": "message-list_unreadDivider", "class": "c-virtual_list__item" },
+                                { "role": "ListItem", "name": "Ana Silva: Can someone review the release notes? 11:40 AM", "automation_id": "message-list_1790708884.683899", "class": "c-virtual_list__item", "children": [
+                                  { "role": "Document", "class": "c-message_kit__hover", "children": [
+                                    { "role": "Button", "name": "Ana Silva", "class": "c-message__sender_button" },
+                                    { "role": "Hyperlink", "name": "11:40 AM", "class": "c-link c-timestamp" },
+                                    { "role": "Text", "name": "Can someone review the release notes?", "class": "p-rich_text_section" }
+                                  ]}
+                                ]},
+                                { "role": "ListItem", "automation_id": "message-list_bottomSpacer", "class": "c-virtual_list__item" }
+                              ]},
+                              { "role": "ToolBar", "name": "Formatting", "class": "c-wysiwyg_container__formatting" },
+                              { "role": "Edit", "name": "Message #general", "class": "ql-editor ql-blank" },
+                              { "role": "Button", "name": "Send now", "class": "c-button-unstyled c-icon_button c-wysiwyg_container__button--send" }
+                            ]}
+                          ]}
+                        ]}
+                      ]}
+                    ]}
+                  ]}
+                ]}
+              ]}
+            ]}
+          ]}
+        ]}
+      ]
+    }
+  ]
+}

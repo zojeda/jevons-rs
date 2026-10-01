@@ -24,8 +24,12 @@ pub fn hip(index: usize) -> Device {
         use cubecl::config::{CubeClRuntimeConfig, RuntimeConfig, cache::CacheConfig};
         let mut config = CubeClRuntimeConfig::from_current_dir().override_from_env();
         config.compilation.cache = true;
-        config.environment.path = CacheConfig::Directory(cache_dir());
-        CubeClRuntimeConfig::set(config);
+        let dir = cache_dir();
+        jevons_kernels::discard_empty_caches(&dir);
+        config.environment.path = CacheConfig::Directory(dir);
+        // Another model's runtime (DiffusionGemma's kernels) may have configured CubeCL first
+        // in this process; keep its configuration rather than panic.
+        CubeClRuntimeConfig::try_set(config);
     });
     Device::rocm(index)
 }

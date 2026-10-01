@@ -7,6 +7,7 @@ use axum::http::StatusCode;
 use jevons_core::{Error, ModelConfig, ModelInfo};
 use jevons_decision::Decide;
 use jevons_diffusion::{Decoding, DiffusionEngine};
+use jevons_generative::tools::{self, Question, Read, Steps, ToolRequest, ToolTurn};
 use jevons_generative::{Generate, Generation, GenerationRequest};
 use std::thread::JoinHandle;
 use tokio::sync::{mpsc, oneshot};
@@ -23,13 +24,21 @@ pub(crate) enum Job {
         seed: Option<u64>,
         updates: mpsc::UnboundedSender<Update>,
     },
+    /// A turn that may call a tool or answer in a structured format.
+    Tools {
+        request: ToolRequest,
+        seed: Option<u64>,
+        updates: mpsc::UnboundedSender<Update>,
+    },
 }
 
-/// Progress of a generation job: answer text as it is decided, then the result.
+/// Progress of a generation job: answer text as it is decided, then the result, or the tool
+/// call the turn made instead.
 #[derive(Debug)]
 pub enum Update {
     Text(String),
     Done(Result<Generation, Error>),
+    Called(crate::openai::Call),
 }
 
 #[derive(Clone)]
@@ -59,6 +68,21 @@ impl Client {
     ) -> Result<mpsc::UnboundedReceiver<Update>, ApiError> {
         let (updates, receiver) = mpsc::unbounded_channel();
         self.submit(Job::Generate {
+            request,
+            seed,
+            updates,
+        })?;
+        Ok(receiver)
+    }
+
+    /// Queues a turn with tools or a structured answer.
+    pub fn tools(
+        &self,
+        request: ToolRequest,
+        seed: Option<u64>,
+    ) -> Result<mpsc::UnboundedReceiver<Update>, ApiError> {
+        let (updates, receiver) = mpsc::unbounded_channel();
+        self.submit(Job::Tools {
             request,
             seed,
             updates,
@@ -106,6 +130,7 @@ pub async fn start(
                         if reply.is_closed() {
                             continue;
                         }
+                        tracing::info!("Restricted canvas read started");
                         let _ = reply.send(evaluate(&mut engine, &request, &model_id, seed));
                     }
                     Job::Generate {
@@ -116,6 +141,7 @@ pub async fn start(
                         if updates.is_closed() {
                             continue;
                         }
+                        tracing::info!("Generation started");
                         let result =
                             engine.generate(&request, request_seed.unwrap_or(seed), &mut |text| {
                                 updates.send(Update::Text(text.into())).is_ok()
@@ -129,11 +155,90 @@ pub async fn start(
                         }
                         let _ = updates.send(Update::Done(result));
                     }
+                    Job::Tools {
+                        request,
+                        seed: request_seed,
+                        updates,
+                    } => {
+                        if updates.is_closed() {
+                            continue;
+                        }
+                        tracing::info!(tools = request.tools.len(), "Tool turn started");
+                        let mut steps = EngineSteps {
+                            engine: &mut engine,
+                            seed: request_seed.unwrap_or(seed),
+                        };
+                        let result = tools::respond(&mut steps, &request, &mut |text| {
+                            updates.send(Update::Text(text.into())).is_ok()
+                        });
+                        let update = match result {
+                            Ok(ToolTurn::Answer(generation)) => Update::Done(Ok(generation)),
+                            Ok(ToolTurn::Call {
+                                name,
+                                arguments,
+                                prompt_tokens,
+                                completion_tokens,
+                            }) => {
+                                tracing::info!(tool = %name, "Tool turn called a tool");
+                                Update::Called(crate::openai::Call {
+                                    name,
+                                    arguments: arguments.to_string(),
+                                    prompt_tokens,
+                                    completion_tokens,
+                                })
+                            }
+                            Err(error) => Update::Done(Err(error)),
+                        };
+                        let _ = updates.send(update);
+                    }
                 }
             }
         })?;
     let info = ready_receiver.await??;
     Ok((Client { sender }, thread, info))
+}
+
+/// The tool steps on the engine: restricted reads for choices, generation for text.
+struct EngineSteps<'a> {
+    engine: &'a mut DiffusionEngine,
+    seed: u64,
+}
+
+impl Steps for EngineSteps<'_> {
+    fn read(&mut self, state: &str, questions: &[Question]) -> Result<Read, Error> {
+        let questions: Vec<crate::system_one::compiler::TextQuestion<'_>> = questions
+            .iter()
+            .map(|q| crate::system_one::compiler::TextQuestion {
+                instructions: Some(q.text.clone()),
+                options: q
+                    .options
+                    .iter()
+                    .map(|(label, description)| {
+                        (
+                            label.as_str(),
+                            (!description.is_empty()).then(|| description.clone()),
+                        )
+                    })
+                    .collect(),
+            })
+            .collect();
+        let input =
+            crate::system_one::compiler::compile_text(state, &questions, self.engine.codes())
+                .map_err(|e| Error::InvalidInput(e.to_string()))?;
+        let read = self.engine.read(&input, self.seed)?;
+        Ok(Read {
+            probabilities: read.slots.into_iter().map(|s| s.probabilities).collect(),
+            prompt_tokens: read.prompt_tokens,
+        })
+    }
+
+    fn write(
+        &mut self,
+        request: &GenerationRequest,
+        on_text: &mut dyn FnMut(&str) -> bool,
+    ) -> Result<Generation, Error> {
+        self.engine.generate(request, self.seed, on_text)
+    }
 }
 
 fn evaluate(

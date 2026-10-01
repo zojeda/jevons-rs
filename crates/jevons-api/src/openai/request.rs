@@ -1,7 +1,9 @@
 //! Request validation for the three APIs.
 use crate::openai::OpenAiError;
+use crate::openai::tools::{History, parse_format, parse_tool_choice, parse_tools};
+use jevons_generative::tools::{Schema, Tool, ToolChoice, ToolRequest};
 use jevons_generative::{GenerationPrompt, GenerationRequest, MAX_STOP_SEQUENCES, Message, Role};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Api {
@@ -23,8 +25,16 @@ pub struct OpenAiRequest {
     /// Chat and text completions: add a usage chunk to the stream.
     pub include_usage: bool,
     pub seed: Option<u64>,
+    /// Function tools the model may call.
+    pub tools: Vec<Tool>,
+    pub tool_choice: ToolChoice,
+    /// The shape of a structured answer (`json_schema` or `json_object` formats).
+    pub answer: Option<Schema>,
     /// Echoed by the Responses API.
     pub(crate) instructions: Option<String>,
+    pub(crate) echo_tools: Value,
+    pub(crate) echo_tool_choice: Value,
+    pub(crate) echo_format: Value,
     pub(crate) temperature: Option<f64>,
     pub(crate) top_p: Option<f64>,
     pub(crate) effort: Option<String>,
@@ -185,7 +195,10 @@ fn role(name: &str, param: &str) -> Result<Role, OpenAiError> {
         "system" | "developer" => Ok(Role::System),
         "user" => Ok(Role::User),
         "assistant" => Ok(Role::Assistant),
-        "tool" | "function" => Err(OpenAiError::unsupported(param, "tool messages")),
+        "function" => Err(OpenAiError::unsupported(
+            param,
+            "function messages; use tool",
+        )),
         _ => Err(OpenAiError::invalid(
             format!("unknown role {name:?}"),
             Some(param),
@@ -227,15 +240,42 @@ fn chat_messages(value: Option<&Value>) -> Result<Vec<Message>, OpenAiError> {
             Some("messages"),
         ));
     };
+    let mut history = History::default();
     items
         .iter()
         .map(|item| {
-            if item.get("tool_calls").is_some_and(|v| !v.is_null()) {
-                return Err(OpenAiError::unsupported("messages", "tool calls"));
+            let role_name = item["role"].as_str().unwrap_or_default();
+            let text = || match &item["content"] {
+                Value::Null => Ok(String::new()),
+                content => content_text(content, &["text"], "messages"),
+            };
+            if let Some(calls) = item.get("tool_calls").filter(|v| !v.is_null()) {
+                let calls = calls.as_array().ok_or_else(|| {
+                    OpenAiError::invalid("tool_calls must be an array", Some("messages"))
+                })?;
+                let calls: Vec<(&str, &str, &str)> = calls
+                    .iter()
+                    .map(|c| {
+                        (
+                            c["id"].as_str().unwrap_or_default(),
+                            c["function"]["name"].as_str().unwrap_or_default(),
+                            c["function"]["arguments"].as_str().unwrap_or("{}"),
+                        )
+                    })
+                    .collect();
+                return Ok(history.calls(&text()?, calls));
             }
-            let role = role(item["role"].as_str().unwrap_or_default(), "messages")?;
-            let text = content_text(&item["content"], &["text"], "messages")?;
-            Ok(Message { role, text })
+            if role_name == "tool" {
+                let id = item["tool_call_id"].as_str().ok_or_else(|| {
+                    OpenAiError::invalid("tool messages need a tool_call_id", Some("messages"))
+                })?;
+                return Ok(history.result(id, &text()?));
+            }
+            let role = role(role_name, "messages")?;
+            Ok(Message {
+                role,
+                text: text()?,
+            })
         })
         .collect()
 }
@@ -257,9 +297,31 @@ fn response_input(
             text: text.clone(),
         }),
         Some(Value::Array(items)) => {
+            let mut history = History::default();
             for item in items {
                 match item["type"].as_str() {
                     None | Some("message") => {}
+                    Some("function_call") => {
+                        messages.push(history.calls(
+                            "",
+                            [(
+                                item["call_id"].as_str().unwrap_or_default(),
+                                item["name"].as_str().unwrap_or_default(),
+                                item["arguments"].as_str().unwrap_or("{}"),
+                            )],
+                        ));
+                        continue;
+                    }
+                    Some("function_call_output") => {
+                        let output = match &item["output"] {
+                            Value::String(s) => s.clone(),
+                            other => content_text(other, &["input_text", "output_text"], "input")?,
+                        };
+                        messages.push(
+                            history.result(item["call_id"].as_str().unwrap_or_default(), &output),
+                        );
+                        continue;
+                    }
                     Some(kind) => {
                         return Err(OpenAiError::unsupported("input", &format!("{kind} items")));
                     }
@@ -310,6 +372,12 @@ impl OpenAiRequest {
         ]);
         let metadata = object.get("metadata").cloned().unwrap_or(Value::Null);
         let mut include_usage = false;
+        let mut tools = Vec::new();
+        let mut tool_choice = ToolChoice::Auto;
+        let mut answer = None;
+        let mut echo_tools = json!([]);
+        let mut echo_tool_choice = json!("none");
+        let mut echo_format = json!({"type": "text"});
         let (prompt, max_tokens, think, stop, instructions, effort) = match api {
             Api::ChatCompletions => {
                 let messages = chat_messages(f.get("messages"))?;
@@ -331,14 +399,12 @@ impl OpenAiRequest {
                 f.only("top_logprobs", &[0.into()], "log probabilities")?;
                 f.only("frequency_penalty", &[0.into(), 0.0.into()], "penalties")?;
                 f.only("presence_penalty", &[0.into(), 0.0.into()], "penalties")?;
-                f.none_or_empty("tools", "tools")?;
-                f.only("tool_choice", &["none".into(), "auto".into()], "tools")?;
-                f.only("parallel_tool_calls", &[true.into(), false.into()], "tools")?;
-                f.only(
-                    "response_format",
-                    &[serde_json::json!({"type": "text"})],
-                    "structured output",
-                )?;
+                tools = parse_tools(f.get("tools"), "tools")?;
+                tool_choice = parse_tool_choice(f.get("tool_choice"), &tools)?;
+                f.boolean("parallel_tool_calls")?;
+                if let Some(format) = f.get("response_format") {
+                    answer = parse_format(format, "response_format")?;
+                }
                 f.only(
                     "modalities",
                     &[serde_json::json!(["text"])],
@@ -423,14 +489,29 @@ impl OpenAiRequest {
                 f.only("previous_response_id", &[], "responses are not stored")?;
                 f.only("conversation", &[], "responses are not stored")?;
                 f.only("background", &[false.into()], "background responses")?;
-                f.none_or_empty("tools", "tools")?;
-                f.only("tool_choice", &["none".into(), "auto".into()], "tools")?;
-                f.only("parallel_tool_calls", &[true.into(), false.into()], "tools")?;
-                f.only(
-                    "text",
-                    &[serde_json::json!({"format": {"type": "text"}})],
-                    "structured output",
-                )?;
+                tools = parse_tools(f.get("tools"), "tools")?;
+                tool_choice = parse_tool_choice(f.get("tool_choice"), &tools)?;
+                f.boolean("parallel_tool_calls")?;
+                echo_tools = object.get("tools").cloned().unwrap_or_else(|| json!([]));
+                echo_tool_choice = object
+                    .get("tool_choice")
+                    .cloned()
+                    .unwrap_or_else(|| json!(if tools.is_empty() { "none" } else { "auto" }));
+                if let Some(text) = f.get("text") {
+                    if let Some(key) = text
+                        .as_object()
+                        .and_then(|t| t.keys().find(|k| *k != "format"))
+                    {
+                        return Err(OpenAiError::unsupported(
+                            &format!("text.{key}"),
+                            "only text.format",
+                        ));
+                    }
+                    if let Some(format) = text.get("format") {
+                        answer = parse_format(format, "text.format")?;
+                        echo_format = format.clone();
+                    }
+                }
                 f.only("truncation", &["disabled".into()], "truncation")?;
                 f.none_or_empty("include", "extra output")?;
                 f.only("top_logprobs", &[0.into()], "log probabilities")?;
@@ -461,12 +542,46 @@ impl OpenAiRequest {
             stream,
             include_usage,
             seed,
+            tools,
+            tool_choice,
+            answer,
             instructions,
+            echo_tools,
+            echo_tool_choice,
+            echo_format,
             temperature,
             top_p,
             effort,
             metadata,
         })
+    }
+}
+
+impl OpenAiRequest {
+    /// Whether the answer needs the tool-calling steps: tools that may be called, or a
+    /// structured format.
+    pub fn uses_tools(&self) -> bool {
+        (!self.tools.is_empty() && self.tool_choice != ToolChoice::None) || self.answer.is_some()
+    }
+
+    /// The Generative service's tool request for this conversation.
+    pub fn tool_request(&self) -> ToolRequest {
+        let messages = match &self.generation.prompt {
+            GenerationPrompt::Chat(messages) => messages.clone(),
+            GenerationPrompt::Text(text) => vec![Message {
+                role: Role::User,
+                text: text.clone(),
+            }],
+        };
+        ToolRequest {
+            messages,
+            tools: self.tools.clone(),
+            choice: self.tool_choice.clone(),
+            answer: self.answer.clone(),
+            max_tokens: self.generation.max_tokens,
+            think: self.generation.think,
+            stop: self.generation.stop.clone(),
+        }
     }
 }
 
@@ -526,10 +641,10 @@ mod tests {
     fn unsupported_parameters_are_rejected_not_ignored() {
         for (extra, param) in [
             (json!({"n": 2}), "n"),
-            (json!({"tools": [{"type": "function"}]}), "tools"),
+            (json!({"tools": [{"type": "web_search"}]}), "tools"),
             (json!({"logprobs": true}), "logprobs"),
             (
-                json!({"response_format": {"type": "json_object"}}),
+                json!({"response_format": {"type": "grammar"}}),
                 "response_format",
             ),
             (json!({"frequency_penalty": 0.5}), "frequency_penalty"),
@@ -608,11 +723,75 @@ mod tests {
         assert_eq!(simple.generation.max_tokens, None);
         for bad in [
             json!({"model": "m", "input": "Hi", "previous_response_id": "resp_1"}),
-            json!({"model": "m", "input": [{"type": "function_call_output", "output": "x"}]}),
+            json!({"model": "m", "input": [{"type": "web_search_call", "id": "x"}]}),
+            json!({"model": "m", "input": "Hi", "text": {"verbosity": "low"}}),
             json!({"model": "m", "input": "Hi", "reasoning": {"summary": "auto"}}),
             json!({"model": "m", "instructions": "only instructions", "input": []}),
         ] {
             assert!(OpenAiRequest::parse(Api::Responses, &bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn chat_tool_history_and_tools_reach_the_tool_request() {
+        let request = OpenAiRequest::parse(
+            Api::ChatCompletions,
+            &json!({"model": "m",
+                "tools": [{"type": "function", "function": {"name": "get_weather",
+                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}],
+                "tool_choice": "required", "parallel_tool_calls": false,
+                "messages": [
+                    {"role": "user", "content": "Weather in Oslo?"},
+                    {"role": "assistant", "content": null, "tool_calls": [{"id": "call_1", "type": "function",
+                        "function": {"name": "get_weather", "arguments": "{\"city\":\"Oslo\"}"}}]},
+                    {"role": "tool", "tool_call_id": "call_1", "content": "3 °C"}
+                ]}),
+        )
+        .unwrap();
+        assert!(request.uses_tools());
+        let tools = request.tool_request();
+        assert_eq!(tools.choice, ToolChoice::Required);
+        assert_eq!(tools.messages.len(), 3);
+        assert!(
+            tools.messages[1]
+                .text
+                .contains("[Called the tool get_weather")
+        );
+        assert_eq!(tools.messages[2].role, Role::User);
+        assert_eq!(
+            tools.messages[2].text,
+            "[The tool get_weather returned: 3 °C]"
+        );
+        let plain = chat(json!({"tools": [{"type": "function", "function": {"name": "x"}}], "tool_choice": "none"})).unwrap();
+        assert!(!plain.uses_tools(), "tool_choice none generates as usual");
+        let structured = chat(json!({"response_format": {"type": "json_schema",
+            "json_schema": {"name": "a", "schema": {"type": "object", "properties": {"n": {"type": "integer"}}}}}}))
+        .unwrap();
+        assert!(structured.uses_tools() && structured.answer.is_some());
+    }
+
+    #[test]
+    fn responses_function_items_and_text_format_parse() {
+        let request = OpenAiRequest::parse(
+            Api::Responses,
+            &json!({"model": "m",
+                "tools": [{"type": "function", "name": "lookup", "parameters": {"type": "object",
+                    "properties": {"q": {"type": "string"}}, "required": ["q"]}}],
+                "text": {"format": {"type": "json_schema", "name": "out", "schema": {"type": "boolean"}}},
+                "input": [
+                    {"role": "user", "content": "Is it up?"},
+                    {"type": "function_call", "call_id": "c9", "name": "lookup", "arguments": "{\"q\":\"status\"}"},
+                    {"type": "function_call_output", "call_id": "c9", "output": "all green"}
+                ]}),
+        )
+        .unwrap();
+        let tools = request.tool_request();
+        assert_eq!(
+            tools.messages[2].text,
+            "[The tool lookup returned: all green]"
+        );
+        assert!(matches!(tools.answer, Some(Schema::Boolean { .. })));
+        assert_eq!(request.echo_tool_choice, json!("auto"));
+        assert_eq!(request.echo_format["name"], "out");
     }
 }

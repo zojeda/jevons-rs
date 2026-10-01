@@ -54,6 +54,11 @@ serve *args:
 serve-release *args:
     cargo run --release --locked -p jevons-rs -- "$@"
 
+# From WSL: build jevons-desktop (release) on Windows, install and start it; or --no-run, --build.
+[group('Run')]
+desktop-windows *args:
+    scripts/windows-desktop.sh "$@"
+
 # Classify a material description; set DIFFUSION_MODEL or pass --model PATH.
 [group('Run')]
 scm prompt *args:

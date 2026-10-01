@@ -209,7 +209,22 @@ impl Live {
         }
         let events = match &mut self.vad {
             Some(vad) => vad.push(&resampled),
-            None => return out,
+            None => {
+                // Without turn detection the buffered audio is one turn from its first sample,
+                // so live passes stream deltas over it until the client commits.
+                if self.turn.is_none() && !self.buffer.is_empty() {
+                    let item_id = self.new_item();
+                    self.turn = Some(Turn {
+                        item_id,
+                        start: self.buffer_start,
+                        passed_at: self.buffer_start,
+                        hypothesis: Vec::new(),
+                        agreed: 0,
+                        sent: String::new(),
+                    });
+                }
+                return out;
+            }
         };
         for event in events {
             match event {
@@ -319,11 +334,11 @@ impl Live {
         if self.active.is_none()
             && let Some(committed) = self.committed.pop_front()
         {
-            match self
-                .speech
-                .worker
-                .transcribe(committed.samples.clone(), true)
-            {
+            match self.speech.worker.transcribe(
+                committed.samples.clone(),
+                self.session.config().language.clone(),
+                true,
+            ) {
                 Ok(updates) => self.active = Some((committed, updates)),
                 Err(_) => {
                     out.push(self.session.failed(
@@ -344,7 +359,12 @@ impl Live {
         {
             let from = turn.start.saturating_sub(self.buffer_start);
             turn.passed_at = end;
-            if let Ok(reply) = self.speech.worker.pass(self.buffer[from..].to_vec()) {
+            let language = self.session.config().language.clone();
+            if let Ok(reply) = self
+                .speech
+                .worker
+                .pass(self.buffer[from..].to_vec(), language)
+            {
                 self.partial = Some((turn.item_id.clone(), reply));
             }
         }
@@ -730,6 +750,42 @@ mod tests {
         assert_eq!(
             next(&mut socket).await["error"]["code"],
             "input_audio_buffer_commit_empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn manual_turns_stream_live_deltas_before_the_commit() {
+        let mut socket = connect(&server(None).await, "realtime").await.unwrap();
+        next(&mut socket).await;
+        send(
+            &mut socket,
+            json!({"type": "session.update", "session": {"type": "transcription", "audio": {"input": {"turn_detection": null}}}}),
+        )
+        .await;
+        next(&mut socket).await;
+        append(&mut socket, &spoken(4, 24000)).await;
+        // No commit yet: the live passes alone send words.
+        let events = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            until(
+                &mut socket,
+                "conversation.item.input_audio_transcription.delta",
+            ),
+        )
+        .await
+        .expect("a live delta before the commit");
+        assert!(!deltas(&events).is_empty());
+        send(&mut socket, json!({"type": "input_audio_buffer.commit"})).await;
+        let events = until(&mut socket, "conversation.item.done").await;
+        let completed = events
+            .iter()
+            .find(|e| e["type"] == "conversation.item.input_audio_transcription.completed")
+            .unwrap();
+        assert!(
+            completed["transcript"]
+                .as_str()
+                .unwrap()
+                .starts_with("w1 w2 w3 w4")
         );
     }
 

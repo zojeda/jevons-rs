@@ -11,7 +11,7 @@ use jevons_audio::LogMel;
 use jevons_burn::weights::Loader;
 use jevons_burn::{DType, Device, Tensor, TensorData};
 use jevons_core::{
-    Error, Result, SpeechConfig, SpeechInfo, SpeechModel, SpeechToken, TextTokenizer,
+    Error, Result, Script, SpeechConfig, SpeechInfo, SpeechModel, SpeechToken, TextTokenizer,
 };
 use jevons_formats::safetensors::Checkpoint;
 use jevons_tokenizer::hf::HfTokenizer;
@@ -35,6 +35,8 @@ pub struct Parakeet {
     info: SpeechInfo,
     encoder: Encoder,
     decoder: Decoder,
+    /// The script decoding is restricted to.
+    script: Option<Script>,
 }
 
 fn load_error(error: impl std::fmt::Display) -> Error {
@@ -87,6 +89,7 @@ impl Parakeet {
             info,
             encoder,
             decoder,
+            script: None,
         })
     }
 
@@ -146,6 +149,31 @@ impl SpeechModel for Parakeet {
     fn detokenize(&self, ids: &[u32]) -> Result<String> {
         let ids: Vec<i32> = ids.iter().map(|&id| id as i32).collect();
         self.tokenizer.decode(&ids)
+    }
+
+    /// Parakeet detects the language per window and can take a name for another language's,
+    /// writing it in that alphabet; this masks the tokens of other scripts.
+    fn set_language(&mut self, language: Option<&str>) -> Result<()> {
+        let script = match language {
+            Some(language) => Some(Script::of_language(language).ok_or_else(|| {
+                Error::InvalidInput(format!("{language:?} is not an ISO-639-1 code"))
+            })?),
+            None => None,
+        };
+        if script != self.script {
+            let allowed = script.map(|script| {
+                (0..self.config.vocab_size as u32)
+                    .map(|id| {
+                        self.tokenizer
+                            .piece(id)
+                            .is_none_or(|piece| script.writes(&piece))
+                    })
+                    .collect::<Vec<bool>>()
+            });
+            self.decoder.restrict(allowed.as_deref());
+            self.script = script;
+        }
+        Ok(())
     }
 }
 

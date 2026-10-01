@@ -26,6 +26,28 @@ fn finish_reason(finish: FinishReason) -> &'static str {
     }
 }
 
+/// A tool call the model made: the answer of a turn that calls a tool instead of replying.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Call {
+    pub name: String,
+    /// The arguments as a JSON object, serialized.
+    pub arguments: String,
+    pub prompt_tokens: usize,
+    pub completion_tokens: usize,
+}
+
+impl Call {
+    fn usage(&self) -> Generation {
+        Generation {
+            text: String::new(),
+            prompt_tokens: self.prompt_tokens,
+            completion_tokens: self.completion_tokens,
+            reasoning_tokens: 0,
+            finish: FinishReason::Stop,
+        }
+    }
+}
+
 fn completion_usage(g: &Generation) -> Value {
     json!({
         "prompt_tokens": g.prompt_tokens,
@@ -62,6 +84,46 @@ impl OpenAiRequest {
             }),
             Api::Responses => self.response_object(id, created, model, Some(g)),
         }
+    }
+
+    /// The complete response of a turn that calls a tool.
+    pub fn call_response(&self, id: &str, created: u64, model: &str, call: &Call) -> Value {
+        match self.api {
+            Api::Responses => {
+                let mut body = self.response_object(id, created, model, Some(&call.usage()));
+                body["output"] = json!([Self::call_item(id, call, "completed")]);
+                body
+            }
+            _ => json!({
+                "id": format!("chatcmpl-{id}"),
+                "object": "chat.completion",
+                "created": created,
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": null, "refusal": null,
+                        "annotations": [], "tool_calls": [Self::chat_call(id, call)]},
+                    "logprobs": null,
+                    "finish_reason": "tool_calls",
+                }],
+                "usage": completion_usage(&call.usage()),
+            }),
+        }
+    }
+
+    fn chat_call(id: &str, call: &Call) -> Value {
+        json!({"id": format!("call_{id}"), "type": "function",
+            "function": {"name": call.name, "arguments": call.arguments}})
+    }
+
+    fn call_item(id: &str, call: &Call, status: &str) -> Value {
+        let arguments = if status == "completed" {
+            call.arguments.as_str()
+        } else {
+            ""
+        };
+        json!({"type": "function_call", "id": format!("fc_{id}"), "call_id": format!("call_{id}"),
+            "name": call.name, "arguments": arguments, "status": status})
     }
 
     fn message_item(id: &str, text: &str, status: &str) -> Value {
@@ -119,9 +181,9 @@ impl OpenAiRequest {
             "reasoning": {"effort": self.effort, "summary": null},
             "store": false,
             "temperature": self.temperature.unwrap_or(1.0),
-            "text": {"format": {"type": "text"}},
-            "tool_choice": "none",
-            "tools": [],
+            "text": {"format": self.echo_format},
+            "tool_choice": self.echo_tool_choice,
+            "tools": self.echo_tools,
             "top_p": self.top_p.unwrap_or(1.0),
             "truncation": "disabled",
             "usage": usage,
@@ -281,6 +343,74 @@ impl Stream {
         }
     }
 
+    /// Every event of a streamed turn that calls a tool: it is known whole once decided, so the
+    /// arguments come in one delta.
+    pub fn call(&mut self, call: &Call) -> Vec<Event> {
+        let done = Event {
+            name: None,
+            data: "[DONE]".into(),
+        };
+        match self.request.api {
+            Api::Responses => {
+                let started =
+                    self.request
+                        .response_object(&self.id, self.created, &self.model, None);
+                let mut finished = self.request.response_object(
+                    &self.id,
+                    self.created,
+                    &self.model,
+                    Some(&call.usage()),
+                );
+                let item = OpenAiRequest::call_item(&self.id, call, "completed");
+                finished["output"] = json!([item]);
+                let item_id = format!("fc_{}", self.id);
+                let arguments = call.arguments.clone();
+                vec![
+                    self.event("response.created", json!({"response": started})),
+                    self.event("response.in_progress", json!({"response": started})),
+                    self.event("response.output_item.added", json!({"output_index": 0,
+                        "item": OpenAiRequest::call_item(&self.id, call, "in_progress")})),
+                    self.event("response.function_call_arguments.delta", json!({
+                        "item_id": item_id, "output_index": 0, "delta": arguments})),
+                    self.event("response.function_call_arguments.done", json!({
+                        "item_id": item_id, "output_index": 0, "name": call.name, "arguments": call.arguments})),
+                    self.event("response.output_item.done", json!({"output_index": 0, "item": item})),
+                    self.event("response.completed", json!({"response": finished})),
+                ]
+            }
+            _ => {
+                let opening = json!({"index": 0, "id": format!("call_{}", self.id), "type": "function",
+                    "function": {"name": call.name, "arguments": ""}});
+                let mut events = vec![
+                    Event::data(self.chunk(
+                        json!([{"index": 0, "delta": {"role": "assistant", "content": null}, "logprobs": null, "finish_reason": null}]),
+                        None,
+                    )),
+                    Event::data(self.chunk(
+                        json!([{"index": 0, "delta": {"tool_calls": [opening]}, "logprobs": null, "finish_reason": null}]),
+                        None,
+                    )),
+                    Event::data(self.chunk(
+                        json!([{"index": 0, "delta": {"tool_calls": [{"index": 0, "function": {"arguments": call.arguments}}]},
+                            "logprobs": null, "finish_reason": null}]),
+                        None,
+                    )),
+                    Event::data(self.chunk(
+                        json!([{"index": 0, "delta": {}, "logprobs": null, "finish_reason": "tool_calls"}]),
+                        None,
+                    )),
+                ];
+                if self.request.include_usage {
+                    events.push(Event::data(
+                        self.chunk(json!([]), Some(completion_usage(&call.usage()))),
+                    ));
+                }
+                events.push(done);
+                events
+            }
+        }
+    }
+
     /// A failure after the stream started.
     pub fn error(&mut self, error: &crate::openai::OpenAiError) -> Vec<Event> {
         match self.request.api {
@@ -367,6 +497,81 @@ mod tests {
         assert!(chunks[0].get("usage").is_none());
         let body = completion.response("x", 1, "local", &generation(FinishReason::Stop));
         assert_eq!(body["choices"][0]["text"], "Hello there");
+    }
+
+    fn call() -> Call {
+        Call {
+            name: "get_weather".into(),
+            arguments: "{\"city\":\"Oslo\"}".into(),
+            prompt_tokens: 30,
+            completion_tokens: 8,
+        }
+    }
+
+    #[test]
+    fn chat_tool_calls_follow_the_openai_shapes() {
+        let chat = request(
+            Api::ChatCompletions,
+            json!({"model": "m", "messages": [{"role": "user", "content": "Weather?"}],
+            "tools": [{"type": "function", "function": {"name": "get_weather"}}],
+            "stream": true, "stream_options": {"include_usage": true}}),
+        );
+        let body = chat.call_response("abc", 7, "local", &call());
+        let message = &body["choices"][0]["message"];
+        assert!(message["content"].is_null());
+        assert_eq!(message["tool_calls"][0]["id"], "call_abc");
+        assert_eq!(
+            message["tool_calls"][0]["function"]["arguments"],
+            "{\"city\":\"Oslo\"}"
+        );
+        assert_eq!(body["choices"][0]["finish_reason"], "tool_calls");
+        assert_eq!(body["usage"]["total_tokens"], 38);
+        let chunks = data(&chat.stream("abc", 7, "local").call(&call()));
+        assert_eq!(
+            chunks[1]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"],
+            "get_weather"
+        );
+        let arguments: String = chunks
+            .iter()
+            .filter_map(|c| {
+                c["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"].as_str()
+            })
+            .collect();
+        assert_eq!(arguments, "{\"city\":\"Oslo\"}");
+        assert_eq!(chunks[3]["choices"][0]["finish_reason"], "tool_calls");
+        assert_eq!(chunks[4]["usage"]["prompt_tokens"], 30);
+    }
+
+    #[test]
+    fn responses_tool_calls_are_function_call_items() {
+        let responses = request(
+            Api::Responses,
+            json!({"model": "m", "input": "Weather?", "stream": true,
+            "tools": [{"type": "function", "name": "get_weather"}]}),
+        );
+        let body = responses.call_response("r2", 5, "local", &call());
+        assert_eq!(body["output"][0]["type"], "function_call");
+        assert_eq!(body["output"][0]["call_id"], "call_r2");
+        assert_eq!(body["tools"][0]["name"], "get_weather");
+        assert_eq!(body["tool_choice"], "auto");
+        let events = responses.stream("r2", 5, "local").call(&call());
+        let names: Vec<_> = events.iter().map(|e| e.name.unwrap()).collect();
+        assert_eq!(
+            names,
+            [
+                "response.created",
+                "response.in_progress",
+                "response.output_item.added",
+                "response.function_call_arguments.delta",
+                "response.function_call_arguments.done",
+                "response.output_item.done",
+                "response.completed",
+            ]
+        );
+        let bodies = data(&events);
+        assert_eq!(bodies[2]["item"]["arguments"], "");
+        assert_eq!(bodies[4]["arguments"], "{\"city\":\"Oslo\"}");
+        assert_eq!(bodies[6]["response"]["output"][0]["status"], "completed");
     }
 
     #[test]

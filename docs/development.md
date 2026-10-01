@@ -8,7 +8,9 @@ The workspace is layered: the API on top, three services, the diffusion layer th
 
 | Layer | Crate | Responsibility |
 | --- | --- | --- |
-| API | `jevons-api` | Routes, authentication, settings, the wire formats, the model workers and Realtime sessions; `run` starts the server |
+| Desktop | `jevons-desktop` | The tray dictation binary: tray and hotkey thread, agent, inspector and settings window, CPAL microphone, per-OS context and text input, the embedded or remote runtime ([guide](desktop.md)) |
+| | `jevons-desktop-core` | Platform-free desktop behaviour: the platform traits, context snapshots, the flow tree (node files, guards, validation, the walker), the take pipeline, the typed API client, gestures, paste safety, tray frames, the model catalog and downloads |
+| API | `jevons-api` | Routes, authentication, settings, the wire formats, the model workers and Realtime sessions; `load` starts the workers, `serve` serves them on a listener, and `run` does both for the server |
 | | `jevons-rs` | The server binary (`main.rs`: logging, then `jevons_api::run`) |
 | Services | `jevons-generative` | Free-form answers: chat framing, the answer budget, an optional thought, streaming with stop-sequence holdback (`Generate`) |
 | | `jevons-decision` | Restricted-canvas reads: slot preparation, chunking, samples, sequential reads, restricted softmax (`Decide`); the `jevons-scm` CLI and the `golden` example |
@@ -29,6 +31,8 @@ The project was previously named `llama-cpp-system-one`, after its original llam
 
 | Crate | Modules |
 | --- | --- |
+| `jevons-desktop` | `agent`, `tray`, `audio`, `runtime`, `platform::{windows}`, `ui::{context, takes, flows, settings, models, bubble}` |
+| `jevons-desktop-core` | `platform`, `context`, `flow::{spec, guard, tree, walk, frame, shape, template, defaults, investigate}`, `pipeline`, `client::{realtime, responses, systemone, transcriptions}`, `config`, `gesture`, `delivery`, `levels`, `icons`, `catalog`, `download`, `fake` |
 | `jevons-api` | `http`, `handlers`, `middleware`, `error`, `config`, `server`, `realtime`, `openai::{request, response, audio, realtime, error}`, `system_one::{request, compiler, response, error}`, `workers::{diffusion, speech}` |
 | `jevons-generative` | `generate`, `request` |
 | `jevons-decision` | `read`, `request`, `probability` |
@@ -48,6 +52,7 @@ Put each change in the layer it belongs to:
 - **Service policy** goes in its service crate: chat framing and streaming, read orchestration, windowing and segments. Services take typed requests and return typed results, with no HTTP, JSON or async code.
 - **What Generative and Decision share** goes in `jevons-diffusion`: token generation, decoding modes, the prompt cache discipline.
 - **Architecture specifics** (chat markers, image encoding, weights) go in the model implementation.
+- **Desktop behaviour** shared by every OS (pipeline, flow tree, gestures, tray states) goes in `jevons-desktop-core`; only the implementations of its platform traits go in `jevons-desktop/src/platform`.
 
 The diffusion engine talks to the model through the `DiffusionModel` trait in `jevons-core/src/model.rs`. The service unit tests drive it with the scripted `FakeModel` from `jevons_diffusion::fake`, so sampling and framing are tested without a GPU. Router tests exercise the HTTP contract with scripted workers. We keep model ownership on a dedicated worker thread and blocking inference off Tokio executor threads. The workspace contains no unsafe code: the library crates forbid it, and CubeCL kernels launch in checked mode. See the [CubeCL backend guide](cubecl.md) for kernel tests and design.
 
@@ -60,6 +65,12 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
+
+GitHub Actions runs two workflows:
+- `release.yml` checks the whole workspace on pull requests and pushes to `main`, then publishes each push to `main` as a release with both binaries.
+- `desktop.yml` lints and tests the desktop crates on pushes to `dev` and `main` and on pull requests that touch them. It then builds `jevons-desktop` for Windows (with its `.pdb`) and Linux, and uploads each package as a run artifact, kept 30 days. Start it by hand from the Actions tab (*Run workflow*).
+
+Neither workflow needs a GPU: the HIP libraries load at run time, and `.github/hipconfig.rs` pins the binding layout.
 
 For inference changes, set `DIFFUSION_MODEL` (and `DIFFUSION_MMPROJ` for the image test) and the [ROCm/WSL environment](build.md#rocmhip), then run the model tests. Run each in its own process: every test loads the 17.7 GB model, and on APUs that memory is system memory.
 

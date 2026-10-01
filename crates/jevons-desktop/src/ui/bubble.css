@@ -1,0 +1,207 @@
+/* The feedback bubble above the tray icon, in the window's dark theme. */
+* { box-sizing: border-box; }
+
+html, body, #main {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: #0e0e0e;
+  color: #e6e6e6;
+  font-family: "Segoe UI", "Inter", system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  overflow: hidden;
+}
+
+.bubble {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  height: 100%;
+  padding: 10px 14px;
+  border: 1px solid #22e6f2;
+}
+.bubble[data-tail="down"] { padding-bottom: 16px; }
+.bubble[data-tail="up"] { padding-top: 16px; }
+.bubble[data-state="failed"] { border-color: #ffb4b4; }
+.bubble[data-state="done"] { border-color: #b6fae3; }
+
+.bubble-tail { position: absolute; }
+.bubble[data-tail="down"] .bubble-tail { bottom: 0; }
+.bubble[data-tail="up"] .bubble-tail { top: 0; }
+
+.bubble-head { display: flex; align-items: center; gap: 8px; }
+.bubble-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 4px;
+  background: #22e6f2;
+  flex-shrink: 0;
+}
+.bubble[data-state="failed"] .bubble-dot { background: #ffb4b4; }
+.bubble[data-state="done"] .bubble-dot { background: #b6fae3; }
+.bubble-status {
+  font-size: 12px;
+  color: #a1a1a1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The latest words stay in view: older ones scroll off the top. */
+.bubble-text {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  overflow: hidden;
+}
+.bubble-text p { margin: 0; font-size: 15px; color: #fafafa; }
+.bubble-partial { color: #a1a1a1; }
+.bubble-hint { color: #5d5d5d; }
+
+.bubble-output {
+  font-size: 13px;
+  color: #b6fae3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The stages after transcription: decisions, investigations, generation, tool calls. */
+.bubble-stages { display: flex; flex-direction: column; gap: 3px; }
+.bubble-stage {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 16px;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.bubble-stage-kind { width: 44px; flex-shrink: 0; color: #22e6f2; font-size: 11px; }
+.bubble-stage[data-state="ok"] .bubble-stage-kind { color: #b6fae3; }
+.bubble-stage[data-state="failed"] .bubble-stage-kind { color: #ffb4b4; }
+.bubble-stage-label { color: #e6e6e6; flex-shrink: 0; }
+.bubble-stage-detail {
+  margin-left: auto;
+  padding-left: 6px;
+  color: #a1a1a1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bubble-mark { flex-shrink: 0; }
+.bubble-dots { display: flex; gap: 2px; width: 12px; flex-shrink: 0; }
+.bubble-dots span { width: 3px; height: 3px; border-radius: 2px; background: #3a3a3a; }
+.bubble-dots span[data-on="true"] { background: #22e6f2; }
+.bubble-chip {
+  font-size: 11px;
+  color: #a1a1a1;
+  background: #1c1c1c;
+  border-radius: 999px;
+  padding: 0 7px;
+  flex-shrink: 0;
+}
+.bubble-chip[data-lit="true"] { color: #22e6f2; background: #0c3a40; }
+.bubble-chip[data-chosen="true"] { color: #0e0e0e; background: #b6fae3; }
+
+/* An answer, and a tool call waiting for confirmation: the bubble takes clicks then. */
+.bubble[data-state="answer"] { border-color: #b6fae3; }
+.bubble[data-state="answer"] .bubble-dot { background: #b6fae3; }
+.bubble[data-state="confirm"] { border-color: #ffd27a; }
+.bubble[data-state="confirm"] .bubble-dot { background: #ffd27a; }
+.bubble-asked {
+  font-size: 12px;
+  color: #a1a1a1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The answer scrolls with the wheel; its Markdown is styled below. */
+.bubble-answer {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 6px;
+  font-size: 14px;
+  color: #e6e6e6;
+}
+
+.md { display: flex; flex-direction: column; gap: 8px; }
+.md-p { margin: 0; }
+.md strong { color: #fafafa; font-weight: 700; }
+.md em { font-style: italic; color: #f0f0f0; }
+.md-strike { text-decoration: line-through; color: #a1a1a1; }
+.md-link { color: #22e6f2; text-decoration: underline; }
+.md-image { color: #a1a1a1; }
+.md-h { color: #fafafa; font-weight: 700; line-height: 1.25; }
+.md-h[data-level="1"] { font-size: 19px; }
+.md-h[data-level="2"] { font-size: 17px; color: #b6fae3; }
+.md-h[data-level="3"] { font-size: 15px; color: #22e6f2; }
+.md-h[data-level="4"], .md-h[data-level="5"], .md-h[data-level="6"] { font-size: 14px; color: #d4d4d4; }
+.md-code {
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 12.5px;
+  color: #ffd27a;
+  background: #1c1c1c;
+  border-radius: 4px;
+  padding: 0 4px;
+}
+.md-pre {
+  background: #161616;
+  border: 1px solid #2a2a2a;
+  border-radius: 6px;
+  padding: 6px 8px;
+  overflow-x: auto;
+}
+.md-pre pre {
+  margin: 0;
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 12.5px;
+  color: #d4d4d4;
+  white-space: pre-wrap;
+}
+.md-lang { font-size: 10px; color: #5d5d5d; text-transform: uppercase; margin-bottom: 2px; }
+.md-quote {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-left: 3px solid #22e6f2;
+  padding-left: 10px;
+  color: #c8c8c8;
+}
+.md-list { display: flex; flex-direction: column; gap: 3px; }
+.md-item { display: flex; gap: 6px; }
+.md-marker { flex-shrink: 0; min-width: 14px; color: #22e6f2; text-align: right; }
+.md-item-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.md-task { color: #b6fae3; }
+.md-rule { height: 1px; background: #3a3a3a; }
+.md-table { border-collapse: collapse; font-size: 13px; }
+.md-table th, .md-table td { border: 1px solid #3a3a3a; padding: 2px 8px; text-align: left; }
+.md-table th { background: #1c1c1c; color: #fafafa; }
+.bubble-question { font-size: 15px; color: #fafafa; }
+.bubble-args {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  overflow: hidden;
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 12px;
+  color: #d4d4d4;
+  white-space: pre-wrap;
+}
+.bubble-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.bubble-button {
+  font-family: inherit;
+  font-size: 12px;
+  color: #e6e6e6;
+  background: #1c1c1c;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  padding: 3px 10px;
+}
+.bubble-button[data-primary="true"] { background: #0c3a40; border-color: #22e6f2; color: #fafafa; }

@@ -1,0 +1,10 @@
+# In a chat app, read the open conversation first.
+description = "In a chat application"
+output = "bubble"
+
+[when]
+app = ["slack.exe", "*teams*", "discord*", "whatsapp*", "telegram*"]
+
+[investigate.conversation]
+question = "Which conversation is open in this window, and what are its most recent messages?"
+schema = { name = "string", messages = [{ author = "string", time = "string", text = "string" }] }

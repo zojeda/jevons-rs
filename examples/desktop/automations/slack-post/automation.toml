@@ -1,0 +1,13 @@
+description = "Posts a message to a Slack channel or direct message"
+apps = ["slack.exe"]
+returns = { posted = "boolean", channel = "string" }
+
+[args.channel]
+description = "The channel's or person's name as the sidebar shows it, without #"
+
+[args.message]
+description = "The message to post, as it should read"
+
+[[fixtures]]
+recording = "fixtures/post.json"
+args = { channel = "random", message = "lunch is ready" }

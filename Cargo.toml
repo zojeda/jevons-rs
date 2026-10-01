@@ -14,6 +14,7 @@ jevons-audio = { path = "crates/jevons-audio" }
 jevons-burn = { path = "crates/jevons-burn" }
 jevons-core = { path = "crates/jevons-core" }
 jevons-decision = { path = "crates/jevons-decision" }
+jevons-desktop-core = { path = "crates/jevons-desktop-core" }
 jevons-diffusion = { path = "crates/jevons-diffusion" }
 jevons-formats = { path = "crates/jevons-formats" }
 jevons-gemma4-diffusion = { path = "crates/jevons-gemma4-diffusion" }
@@ -34,12 +35,54 @@ thiserror = "2"
 base64 = "0.22"
 futures-util = { version = "0.3", default-features = false }
 toml = "1"
+# The inspector saves an edited extract into its node file, keeping comments and layout.
+toml_edit = "0.25"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "signal", "time"] }
 tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
+# Desktop agent.
+# Agents and MCP: default features off, so no model providers, skills or TLS come in.
+adk-agent = { version = "2.2", default-features = false }
+adk-core = { version = "2.2", default-features = false }
+adk-runner = { version = "2.2", default-features = false }
+adk-session = { version = "2.2", default-features = false }
+adk-tool = { version = "2.2", default-features = false, features = ["mcp"] }
+active-win-pos-rs = "0.11"
+arboard = "3.6"
+cpal = "0.18"
+device_query = "4"
+directories = "6"
+anyrender_vello = { version = "=0.6.2", default-features = false }
+blitz-shell = { version = "=0.2.3", default-features = false }
+dioxus = { version = "=0.7.10", default-features = false, features = ["macro", "html", "signals", "hooks"] }
+# `hot-reload` is required: 0.7.10 does not build without it.
+dioxus-native = { version = "=0.7.10", default-features = false, features = ["hot-reload", "system-fonts"] }
+peniko = "=0.5.0"
+winit = "=0.30.13"
+enigo = "0.6"
+global-hotkey = "0.8"
+globset = "0.4"
+notify = "8"
+# Markdown answers in the feedback bubble: the parser only (no HTML writer, no CLI).
+pulldown-cmark = { version = "0.13", default-features = false }
+regex = "1.11"
+# Native TLS: SChannel on Windows and Security.framework on macOS need no C toolchain.
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "charset", "json", "multipart", "stream"] }
+rdev = "0.5"
+rfd = "0.17"
+# Automation scripts: pure Rust, Send + Sync, with serde values and signature metadata.
+rhai = { version = "1.26", features = ["sync", "serde", "metadata", "internals"] }
+schemars = "1"
+sha2 = "0.10"
+# Process names for the windows investigations may read (Windows).
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+tao = "0.37"
+tokio-tungstenite = "0.29"
+tray-icon = "0.25"
+uiautomation = "0.25"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
@@ -50,7 +93,16 @@ undocumented_unsafe_blocks = "deny"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+# File and line in panic backtraces (in a separate .pdb on Windows, so the binaries stay small).
+debug = "line-tables-only"
 
 # Windows HIP library names; see third_party/cubecl-hip-sys/README.jevons.md.
 [patch.crates-io]
 cubecl-hip-sys = { path = "third_party/cubecl-hip-sys" }
+# derive_more imports that clash with cubecl's derive_more features; see
+# third_party/stylo/README.jevons.md.
+stylo = { path = "third_party/stylo" }
+# Stale ElementId mappings that drop live nodes; see third_party/dioxus-native-dom/README.jevons.md.
+dioxus-native-dom = { path = "third_party/dioxus-native-dom" }
+# Moving a node within its parent dropped it; see third_party/blitz-dom/README.jevons.md.
+blitz-dom = { path = "third_party/blitz-dom" }

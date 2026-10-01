@@ -29,7 +29,8 @@ uuid.workspace = true
 
 [dev-dependencies]
 futures-util = { workspace = true, features = ["sink"] }
-tokio-tungstenite = "0.29"
+tokio = { workspace = true, features = ["io-util"] }
+tokio-tungstenite.workspace = true
 tower.workspace = true
 
 [lints]

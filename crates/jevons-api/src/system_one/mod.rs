@@ -3,7 +3,7 @@
 //! Requests are validated before compilation; responses restore the original
 //! question IDs and convert distributions into the requested answer kinds.
 
-mod compiler;
+pub(crate) mod compiler;
 mod error;
 mod request;
 mod response;

@@ -1,0 +1,10 @@
+# Terminals: a command, or a prompt for a coding agent such as Claude Code. The terminal's buffer
+# is not the user's text, so it is never rewritten.
+description = "A terminal"
+priority = 35
+branches = "_actions"
+only = ["insert", "verbatim"]
+instructions = "The user is typing into a terminal: usually a prompt for a coding agent such as Claude Code, sometimes a shell command. Keep their words and meaning; fix only recognition errors and punctuation. No Markdown."
+
+[when]
+app = ["windowsterminal.exe", "wt.exe", "conhost.exe", "cmd.exe", "powershell.exe", "pwsh.exe", "alacritty*", "wezterm*", "kitty", "konsole", "gnome-terminal*", "xterm", "iterm*", "ghostty*", "warp*"]

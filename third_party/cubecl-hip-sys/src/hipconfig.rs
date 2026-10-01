@@ -4,14 +4,36 @@ use regex::Regex;
 
 pub const HIPCONFIG: &str = "hipconfig";
 
-/// Retrieve the ROCM_PATH with `hipconfig -R` command.
+/// Retrieve the ROCM_PATH: the `ROCM_PATH` or `HIP_PATH` variable when it names an install,
+/// else the `hipconfig -R` command.
 pub fn get_rocm_path() -> std::io::Result<String> {
-    exec_hipconfig(&["-R"])
+    match install_from_env(&["ROCM_PATH", "HIP_PATH"]) {
+        Some(path) => Ok(path),
+        None => exec_hipconfig(&["-R"]),
+    }
 }
 
-/// Retrieve the HIP_PATH with `hipconfig -p` command.
+/// Retrieve the HIP_PATH: the `HIP_PATH` or `ROCM_PATH` variable when it names an install,
+/// else the `hipconfig -p` command. The Windows HIP SDK sets `HIP_PATH` but does not put
+/// `hipconfig` on the PATH.
 pub fn get_hip_path() -> std::io::Result<String> {
-    exec_hipconfig(&["-p"])
+    match install_from_env(&["HIP_PATH", "ROCM_PATH"]) {
+        Some(path) => Ok(path),
+        None => exec_hipconfig(&["-p"]),
+    }
+}
+
+/// The first of `variables` naming a folder with HIP headers, without trailing separators.
+fn install_from_env(variables: &[&str]) -> Option<String> {
+    variables.iter().find_map(|variable| {
+        let value = std::env::var(variable).ok()?;
+        let path = value.trim_end_matches(['/', '\\']);
+        std::path::Path::new(path)
+            .join("include")
+            .join("hip")
+            .is_dir()
+            .then(|| path.to_string())
+    })
 }
 
 /// Retrieve the HIP patch number from the `hipconfig --version` output

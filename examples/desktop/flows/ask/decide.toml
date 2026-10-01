@@ -1,0 +1,12 @@
+description = """
+The user talks to you, the assistant listening, and wants an answer shown to them rather than \
+typed: a question about what is on screen, the selected text or the open conversation ("what \
+does Paul mean here?", "¿qué significa esto?", "summarize this thread"), or a question in \
+general. Likely when the focused element does not accept typing, such as a message selected in a \
+chat. Words that start with "Pregunta" or "Question" are always for you."""
+select = "rules"
+fallback = "any"
+
+# "Pregunta: ¿qué dice Paul?" or "Question: …" at the start: ask, with no model call.
+[prefer]
+transcript = "(?i)^\\W*(pregunta|question)\\b"
