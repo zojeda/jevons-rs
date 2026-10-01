@@ -67,10 +67,20 @@ cargo test --workspace --locked
 ```
 
 GitHub Actions runs two workflows:
-- `release.yml` checks the whole workspace on pull requests and pushes to `main`, then publishes each push to `main` as a release with both binaries.
+- `release.yml` checks the whole workspace on pull requests and pushes to `main`, then publishes each push to `main` as a release (`v0.1.<run>`) with both binaries.
 - `desktop.yml` lints and tests the desktop crates on pushes to `dev` and `main` and on pull requests that touch them. It then builds `jevons-desktop` for Windows (with its `.pdb`) and Linux, and uploads each package as a run artifact, kept 30 days. Start it by hand from the Actions tab (*Run workflow*).
 
-Neither workflow needs a GPU: the HIP libraries load at run time, and `.github/hipconfig.rs` pins the binding layout.
+Neither workflow needs a GPU: the HIP libraries load at run time, and `.github/hipconfig.rs` pins the binding layout (`JEVONS_HIP_VERSION`).
+
+`.github/package-name.sh` names every package, and the executables in it, as `<product>-<version>-<os>-<arch>-<backend>`:
+
+| Build | Package |
+|-------|---------|
+| Push to `dev` | `jevons-desktop-0.1.0-dev.57.g065def7-windows-x86_64-hip-rocm7.2.zip` |
+| Pull request 12 | `jevons-desktop-0.1.0-pr12.58.g065def7-linux-x86_64-hip-rocm7.2.tar.gz` |
+| Release `v0.1.88` | `jevons-rs-0.1.88-windows-x86_64-hip-rocm7.2.zip` |
+
+A release's version is its tag; other builds are pre-releases of the workspace version, with the branch, run number and commit. The backend is the GPU runtime compiled in and the driver release it needs, taken from `JEVONS_HIP_VERSION` (7.2.53211 is ROCm 7.2). Inside, `jevons-desktop.exe` becomes `jevons-desktop-0.1.0-dev.57.g065def7-windows-x86_64-hip-rocm7.2.exe`, and a release's `jevons-rs` and `jevons-desktop` carry the same suffix; local builds keep the short names. The `.pdb` keeps its linker name, `jevons_desktop.pdb`, which is the one the executable looks for. Both build matrices have a `backend` column (only `hip` today): a CUDA or WGPU build is another row with its setup step, once a Cargo feature selects that backend, plus its name in `package-name.sh`.
 
 For inference changes, set `DIFFUSION_MODEL` (and `DIFFUSION_MMPROJ` for the image test) and the [ROCm/WSL environment](build.md#rocmhip), then run the model tests. Run each in its own process: every test loads the 17.7 GB model, and on APUs that memory is system memory.
 
