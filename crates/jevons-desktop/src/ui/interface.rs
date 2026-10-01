@@ -4,8 +4,9 @@
 //! - Each row's chevron button opens or closes it; its label selects it. A level shows its
 //!   first children, and an inline button reads the next page.
 //! - **Expand to level** and **Collapse all** open and close the tree at once.
-//! - The search reads the whole window for a text (name, value, class, automation id, role);
-//!   choosing a match opens the tree down to it, selects it and scrolls it into view.
+//! - The search reads the whole window for a text (name, value, class, automation id, role),
+//!   as a person reads it: case, accents and spacing aside, whole or word by word. Choosing a
+//!   match opens the tree down to it, selects it and scrolls it into view.
 //! - **Show focused** does the same for the element that had the focus in the tab's snapshot.
 //!
 //! Selecting an element shows its properties and its selectors, checked to select it alone;
@@ -129,8 +130,18 @@ fn named(element: &UiElement, max: usize) -> String {
 }
 
 /// Where a match sits: its last few ancestors, by role.
+/// Where a match sits: its last few ancestors by role when the search worked them out, else
+/// its first classes.
 fn way(hit: &Hit) -> String {
-    let roles: Vec<&str> = hit.path.iter().map(|e| e.role.as_str()).collect();
+    let Some(path) = &hit.path else {
+        return hit
+            .element
+            .class
+            .as_deref()
+            .map(classes)
+            .unwrap_or_default();
+    };
+    let roles: Vec<&str> = path.iter().map(|e| e.role.as_str()).collect();
     let tail = roles.len().saturating_sub(4);
     let mut out = roles[tail..].join(" › ");
     if tail > 0 {
@@ -405,8 +416,19 @@ fn results(ctx: &Ctx, found: Option<Result<Found, String>>, searching: bool) -> 
     if found.stopped {
         summary.push_str(" · stopped early: the window has more");
     }
+    let unread = match found.unread {
+        0 => None,
+        1 => Some("1 part of the window could not be read".to_string()),
+        n => Some(format!("{n} parts of the window could not be read")),
+    };
     rsx! {
         p { class: "muted", "{summary}" }
+        if let Some(unread) = unread {
+            p { class: "warn", "{unread}" }
+        }
+        if let Some(problem) = &found.problem {
+            p { class: "warn", "{problem}" }
+        }
         if !found.hits.is_empty() {
             div { class: "iface-results",
                 {found.hits.into_iter().enumerate().map(|(i, hit)| {
@@ -414,10 +436,14 @@ fn results(ctx: &Ctx, found: Option<Result<Found, String>>, searching: bool) -> 
                     let ids = hit.ids();
                     let label = named(&hit.element, 50);
                     let place = way(&hit);
+                    let exact = hit.exact;
                     rsx! {
                         div { key: "{i}", class: "iface-result",
                             onclick: move |_| reveal.send(Command::InterfaceReveal(ids.clone())),
                             span { class: "iface-role", "{label}" }
+                            if !exact {
+                                span { class: "muted", "every word" }
+                            }
                             span { class: "iface-class", "{place}" }
                         }
                     }
