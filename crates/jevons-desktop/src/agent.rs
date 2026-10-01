@@ -157,12 +157,15 @@ pub enum BubbleAction {
     Close,
 }
 
-/// A tool call waiting for the user in the bubble.
+/// A question waiting for the user in the bubble: a tool call, or one of the app's own.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PendingCall {
-    pub tool: String,
-    /// The arguments, as readable JSON.
-    pub arguments: String,
+    /// Such as "Run notes:create_note?".
+    pub question: String,
+    /// What it is about: a tool call's arguments as readable JSON, or the app's own lines.
+    pub details: String,
+    /// The word on the button that goes ahead, such as "Run".
+    pub action: String,
 }
 
 /// A stage of the take as the bubble shows it: running, then done.
@@ -1123,28 +1126,40 @@ impl Agent {
                 }
             }
             MenuCommand::ResetSettings => {
-                let dir = settings::folder(&self.config_file).display().to_string();
+                let question = PendingCall {
+                    question: "Reset the settings to the defaults?".into(),
+                    details: format!(
+                        "In {}: the settings (models, hotkeys, tools, approvals), the flow tree \
+                         and the automations library.\nThe earlier settings stay in the folder's \
+                         git history.",
+                        settings::folder(&self.config_file).display()
+                    ),
+                    action: "Reset".into(),
+                };
                 self.ask(
-                    "Reset the settings to the defaults?",
-                    serde_json::json!({
-                        "folder": dir,
-                        "resets": "the settings (models, hotkeys, tools, approvals), the flow \
-                                   tree and the automations library",
-                        "keeps": "the earlier settings, in the folder's git history",
-                    }),
+                    question,
+                    "Enter resets them, Esc keeps them",
                     Command::ResetAnswered,
                 );
             }
             MenuCommand::ClearHistory(kinds) => {
-                let what: Vec<String> = kinds
-                    .iter()
-                    .map(|k| format!("{} in {}", k.label(), k.dir(&self.config).display()))
-                    .collect();
-                self.ask(
-                    "Clear the history?",
-                    serde_json::json!({ "removes": what }),
-                    move |yes| Command::ClearAnswered { kinds, yes },
-                );
+                let question = PendingCall {
+                    question: match kinds.as_slice() {
+                        [kind] => format!("Clear {}?", kind.label()),
+                        _ => "Clear all the history?".into(),
+                    },
+                    details: kinds
+                        .iter()
+                        .map(|k| {
+                            format!("Removes {} in {}", k.label(), k.dir(&self.config).display())
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    action: "Clear".into(),
+                };
+                self.ask(question, "Enter clears it, Esc keeps it", move |yes| {
+                    Command::ClearAnswered { kinds, yes }
+                });
             }
             MenuCommand::Quit => {
                 self.cancel_take();
@@ -1745,12 +1760,26 @@ impl Agent {
 
     /// Shows a tool call in the bubble and waits for the user.
     fn confirm_requested(&mut self, confirmation: Confirmation) {
+        let arguments = serde_json::to_string_pretty(&confirmation.arguments).unwrap_or_default();
+        tracing::info!(tool = %confirmation.tool, "Waiting for confirmation");
+        let question = PendingCall {
+            question: format!("Run {}?", confirmation.tool),
+            details: arguments,
+            action: "Run".into(),
+        };
+        self.show_question(
+            confirmation.reply,
+            question,
+            "Run this? Enter runs it, Esc cancels",
+        );
+    }
+
+    /// Shows a question in the bubble, with `hint` above it, and waits for the user.
+    fn show_question(&mut self, reply: oneshot::Sender<bool>, question: PendingCall, hint: &str) {
         if let Some(previous) = self.confirming.take() {
             let _ = previous.send(false);
         }
-        let arguments = serde_json::to_string_pretty(&confirmation.arguments).unwrap_or_default();
-        tracing::info!(tool = %confirmation.tool, "Waiting for confirmation");
-        self.confirming = Some(confirmation.reply);
+        self.confirming = Some(reply);
         {
             let mut view = self.view();
             // Automations run and are approved outside takes: they get a bubble of their own.
@@ -1759,19 +1788,9 @@ impl Agent {
                 message: true,
                 ..Feedback::default()
             });
-            feedback.status = if confirmation.tool.starts_with("Approve ") {
-                "Enter approves this version, Esc keeps it as a draft".into()
-            } else if confirmation.tool.ends_with('?') {
-                // A question of the app's own, such as resetting the settings.
-                "Enter goes ahead, Esc cancels".into()
-            } else {
-                "Run this? Enter runs it, Esc cancels".into()
-            };
+            feedback.status = hint.into();
             feedback.done = false;
-            feedback.confirm = Some(PendingCall {
-                tool: confirmation.tool,
-                arguments,
-            });
+            feedback.confirm = Some(question);
         }
         if let Some(tray) = &self.tray {
             tray.hotkeys(self.bindings());
@@ -2024,25 +2043,22 @@ impl Agent {
     /// command.
     fn ask(
         &mut self,
-        question: &str,
-        details: serde_json::Value,
+        question: PendingCall,
+        hint: &str,
         answered: impl FnOnce(bool) -> Command + Send + 'static,
     ) {
         if self.confirming.is_some() {
             self.message("Answer the question in the bubble first", 5);
             return;
         }
+        tracing::info!(question = %question.question, "Waiting for an answer");
         let (reply, answer) = oneshot::channel();
         let commands = self.commands.clone();
         tokio::spawn(async move {
             let yes = answer.await.unwrap_or(false);
             let _ = commands.send(answered(yes));
         });
-        self.confirm_requested(Confirmation {
-            tool: question.into(),
-            arguments: details,
-            reply,
-        });
+        self.show_question(reply, question, hint);
     }
 
     /// Puts the default settings folder back and runs with it.
@@ -2647,12 +2663,6 @@ impl Agent {
             .filter_map(|f| f.trace.as_ref().and_then(|t| t.replayed))
             .map(|(done, _)| done)
             .sum();
-        let arguments = serde_json::json!({
-            "applications": summary.apps,
-            "does": does,
-            "replays": format!("{replayed} recorded steps"),
-            "version": report.version,
-        });
         if self.confirming.is_some() {
             // A take waits on its own confirmation: leave it be, and approve later.
             self.notice(&format!(
@@ -2661,19 +2671,27 @@ impl Agent {
             ));
             return;
         }
-        let (reply, answer) = oneshot::channel();
-        let commands = self.commands.clone();
+        let question = PendingCall {
+            question: format!("Approve {}?", report.name),
+            details: format!(
+                "In: {}\nDoes: {}\nReplays {replayed} recorded steps\nVersion: {}",
+                summary.apps.join(", "),
+                if does.is_empty() {
+                    "reads only".to_string()
+                } else {
+                    does.join(", ")
+                },
+                report.version
+            ),
+            action: "Approve".into(),
+        };
         let name = report.name.clone();
         let version = report.version.clone();
-        tokio::spawn(async move {
-            let yes = answer.await.unwrap_or(false);
-            let _ = commands.send(Command::ApprovalAnswered { name, version, yes });
-        });
-        self.confirm_requested(Confirmation {
-            tool: format!("Approve {}?", report.name),
-            arguments,
-            reply,
-        });
+        self.ask(
+            question,
+            "Enter approves this version, Esc keeps it as a draft",
+            move |yes| Command::ApprovalAnswered { name, version, yes },
+        );
     }
 
     fn approval_answered(&mut self, name: &str, version: &str, yes: bool) {
@@ -3100,12 +3118,21 @@ fn save_trace(trace: &Trace) {
 fn watch(
     dir: &std::path::Path,
     commands: mpsc::UnboundedSender<Command>,
-    command: impl Fn() -> Command + Send + 'static,
+    command: impl Fn() -> Command + Send + Sync + 'static,
 ) -> Option<notify::RecommendedWatcher> {
     use notify::Watcher;
+    // A burst of changes (a reset, a checkout, an editor saving) sends one command, a moment
+    // after the first change.
+    let pending = Arc::new(AtomicBool::new(false));
+    let command = Arc::new(command);
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        if event.is_ok_and(|e| !e.kind.is_access()) {
-            let _ = commands.send(command());
+        if event.is_ok_and(|e| !e.kind.is_access()) && !pending.swap(true, Ordering::AcqRel) {
+            let (pending, commands, command) = (pending.clone(), commands.clone(), command.clone());
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(250));
+                pending.store(false, Ordering::Release);
+                let _ = commands.send(command());
+            });
         }
     })
     .ok()?;
