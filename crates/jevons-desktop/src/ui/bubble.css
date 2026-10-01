@@ -131,7 +131,10 @@ html, body, #main {
   color: #e6e6e6;
 }
 
-.md { display: flex; flex-direction: column; gap: 8px; }
+/* pre-wrap: Blitz drops the spaces where a text meets a bold or code span under normal white
+   space ("incluye**mensajes**"); the renderer only puts single spaces in text, so nothing else
+   changes. */
+.md { display: flex; flex-direction: column; gap: 8px; white-space: pre-wrap; }
 .md-p { margin: 0; }
 .md strong { color: #fafafa; font-weight: 700; }
 .md em { font-style: italic; color: #f0f0f0; }
@@ -177,7 +180,9 @@ html, body, #main {
 .md-list { display: flex; flex-direction: column; gap: 3px; }
 .md-item { display: flex; gap: 6px; }
 .md-marker { flex-shrink: 0; min-width: 14px; color: #22e6f2; text-align: right; }
-.md-item-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+/* A block, not a flex column: an item's text, bold and code are inline and flow on one line. */
+.md-item-body { flex: 1; min-width: 0; display: block; }
+.md-item-body > .md-p + .md-p, .md-item-body > .md-list { margin-top: 4px; }
 .md-task { color: #b6fae3; }
 .md-rule { height: 1px; background: #3a3a3a; }
 .md-table { border-collapse: collapse; font-size: 13px; }

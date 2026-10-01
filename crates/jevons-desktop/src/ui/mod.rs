@@ -1380,6 +1380,47 @@ mod tests {
         assert!(doc.query_selector("textarea").unwrap().is_none());
     }
 
+    fn answer_root() -> Element {
+        rsx! {
+            div { class: "bubble-answer",
+                {markdown::render(
+                    "El texto incluye **mensajes y fotos** del caso.\n\n\
+                     - La evidencia consiste en **capturas de pantalla**.\n- Otro `punto`.\n",
+                )}
+            }
+        }
+    }
+
+    #[test]
+    fn answers_keep_the_spaces_around_bold_text_and_list_items_flow_as_one_line() {
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        let mut doc = DioxusDocument::new(VirtualDom::new(answer_root), DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("bubble.css"));
+        doc.set_viewport(Viewport::new(500, 400, 1.0, ColorScheme::Dark));
+        doc.initial_build();
+        doc.poll(None);
+        doc.resolve(0.0);
+        // The text each block lays out as one run, as Blitz builds it.
+        let runs: Vec<String> = doc
+            .query_selector_all(".md-p, .md-item-body")
+            .unwrap()
+            .into_iter()
+            .filter_map(|id| {
+                let node = doc.get_node(id).unwrap();
+                let layout = node.element_data()?.inline_layout_data.as_ref()?;
+                Some(layout.text.clone())
+            })
+            .collect();
+        assert_eq!(
+            runs,
+            [
+                "El texto incluye mensajes y fotos del caso.",
+                "La evidencia consiste en capturas de pantalla.",
+                "Otro punto.",
+            ]
+        );
+    }
+
     /// A text field, for the paint check below.
     fn field_root() -> Element {
         rsx! { input { class: "dx-input", value: "//TreeItem" } }
