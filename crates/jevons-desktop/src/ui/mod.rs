@@ -1075,4 +1075,105 @@ mod tests {
         );
         std::fs::remove_dir_all(&folder).ok();
     }
+
+    /// A text field, for the paint check below.
+    fn field_root() -> Element {
+        rsx! { input { class: "dx-input", value: "//TreeItem" } }
+    }
+
+    #[test]
+    fn the_text_caret_is_painted_in_the_field_s_text_colour_on_the_dark_theme() {
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        let mut doc = DioxusDocument::new(VirtualDom::new(field_root), DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("style.css"));
+        doc.set_viewport(Viewport::new(800, 200, 1.0, ColorScheme::Dark));
+        doc.initial_build();
+        doc.poll(None);
+        let field = doc.query_selector("input").unwrap().unwrap();
+        assert!(doc.set_focus_to(field));
+        doc.resolve(0.0);
+        let mut painted = Painted::default();
+        blitz_paint::paint_scene(&mut painted, &doc, 1.0, 800, 200);
+        // The caret is the thin, tall fill of a focused field.
+        let caret = painted
+            .fills
+            .iter()
+            .find(|(r, _)| {
+                r.width() > 0.5 && r.width() <= 2.0 && (8.0..=40.0).contains(&r.height())
+            })
+            .expect("a caret");
+        assert_ne!(
+            caret.1,
+            [0, 0, 0, 255],
+            "a black caret is invisible on the dark theme"
+        );
+        assert!(caret.1[..3].iter().all(|c| *c > 128), "{:?}", caret.1);
+    }
+
+    /// A scene that records what is filled where.
+    #[derive(Default)]
+    struct Painted {
+        fills: Vec<(peniko::kurbo::Rect, [u8; 4])>,
+    }
+
+    impl anyrender::PaintScene for Painted {
+        fn reset(&mut self) {}
+        fn push_layer(
+            &mut self,
+            _blend: impl Into<peniko::BlendMode>,
+            _alpha: f32,
+            _transform: peniko::kurbo::Affine,
+            _clip: &impl peniko::kurbo::Shape,
+        ) {
+        }
+        fn pop_layer(&mut self) {}
+        fn stroke<'a>(
+            &mut self,
+            _style: &peniko::kurbo::Stroke,
+            _transform: peniko::kurbo::Affine,
+            _brush: impl Into<anyrender::PaintRef<'a>>,
+            _brush_transform: Option<peniko::kurbo::Affine>,
+            _shape: &impl peniko::kurbo::Shape,
+        ) {
+        }
+        fn fill<'a>(
+            &mut self,
+            _style: peniko::Fill,
+            transform: peniko::kurbo::Affine,
+            brush: impl Into<anyrender::PaintRef<'a>>,
+            _brush_transform: Option<peniko::kurbo::Affine>,
+            shape: &impl peniko::kurbo::Shape,
+        ) {
+            if let anyrender::PaintRef::Solid(color) = brush.into() {
+                let rgba = color.to_rgba8();
+                self.fills.push((
+                    transform.transform_rect_bbox(shape.bounding_box()),
+                    [rgba.r, rgba.g, rgba.b, rgba.a],
+                ));
+            }
+        }
+        fn draw_glyphs<'a, 's: 'a>(
+            &'s mut self,
+            _font: &'a peniko::FontData,
+            _font_size: f32,
+            _hint: bool,
+            _normalized_coords: &'a [anyrender::NormalizedCoord],
+            _style: impl Into<peniko::StyleRef<'a>>,
+            _brush: impl Into<anyrender::PaintRef<'a>>,
+            _brush_alpha: f32,
+            _transform: peniko::kurbo::Affine,
+            _glyph_transform: Option<peniko::kurbo::Affine>,
+            _glyphs: impl Iterator<Item = anyrender::Glyph>,
+        ) {
+        }
+        fn draw_box_shadow(
+            &mut self,
+            _transform: peniko::kurbo::Affine,
+            _rect: peniko::kurbo::Rect,
+            _brush: peniko::Color,
+            _radius: f64,
+            _std_dev: f64,
+        ) {
+        }
+    }
 }
