@@ -14,6 +14,7 @@
 //!   frames.
 //! - [`catalog`] and [`download`]: the model catalog and resumable, verified downloads.
 //! - [`xpath`]: XPath queries over the accessibility trees of the user's applications.
+//! - [`interface`]: the inspector's browser of a window's accessibility tree, with selectors.
 //! - [`automation`]: scripts that act on those applications, and the checks on every action.
 //! - [`recording`]: recording a demonstration of a task, to write its automation from.
 #![forbid(unsafe_code)]
@@ -29,6 +30,7 @@ pub mod download;
 pub mod fake;
 pub mod flow;
 pub mod icons;
+pub mod interface;
 pub mod levels;
 pub mod pipeline;
 pub mod platform;

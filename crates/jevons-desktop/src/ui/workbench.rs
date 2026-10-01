@@ -42,10 +42,15 @@ fn parse_fields(text: &str) -> BTreeMap<String, String> {
 }
 
 /// `chosen` selects the extract to edit (a [`key`], or `None` for a new expression); the
-/// "Read by the flow tree" card sets it too. `rev` changes with every repaint, so a trial's
-/// answer shows as it arrives.
+/// "Read by the flow tree" card sets it too. `draft` brings an expression from the interface
+/// browser: it becomes a new expression, tried at once. `rev` changes with every repaint, so a
+/// trial's answer shows as it arrives.
 #[component]
-pub fn Workbench(rev: u64, chosen: Signal<Option<String>>) -> Element {
+pub fn Workbench(
+    rev: u64,
+    chosen: Signal<Option<String>>,
+    draft: Option<Signal<Option<String>>>,
+) -> Element {
     let _ = rev;
     let ctx = use_context::<Ctx>();
     let view = ctx.view.lock().expect("the view lock");
@@ -113,6 +118,37 @@ pub fn Workbench(rev: u64, chosen: Signal<Option<String>>) -> Element {
                 base.set(None);
             }
         }
+    });
+
+    // An expression from the interface browser: a new expression, as text, tried at once.
+    let drafts = ctx.clone();
+    use_effect(move || {
+        let Some(mut draft) = draft else {
+            return;
+        };
+        let Some(expression) = draft() else {
+            return;
+        };
+        draft.set(None);
+        chosen.set(None);
+        name.set(String::new());
+        xpath.set(expression.clone());
+        kind.set(ExtractAs::Text);
+        fields.set(String::new());
+        drafts.send(Command::TryExtract(Box::new(TrialRequest {
+            file: None,
+            name: String::new(),
+            spec: ExtractSpec {
+                xpath: expression,
+                kind: ExtractAs::Text,
+                fields: BTreeMap::new(),
+                limit: None,
+                scope: Vec::new(),
+                app: Vec::new(),
+                lazy: false,
+            },
+            debounce: false,
+        })));
     });
 
     let request = move |debounce: bool| {

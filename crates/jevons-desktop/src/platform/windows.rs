@@ -79,7 +79,9 @@ fn automation(request: Request) {
                     }
                     match request {
                         Request::Snapshot(privacy, reply) => {
-                            let _ = reply.send(automation.and_then(|a| snapshot(a, &privacy)));
+                            let _ = reply.send(
+                                automation.and_then(|a| snapshot(a, &privacy, &mut elements)),
+                            );
                         }
                         Request::SetValue(text, reply) => {
                             let _ = reply.send(automation.and_then(|a| set_value(a, &text)));
@@ -948,13 +950,19 @@ fn windows(
 fn snapshot(
     automation: &UIAutomation,
     privacy: &Privacy,
+    elements: &mut HashMap<String, UIElement>,
 ) -> Result<ContextSnapshot, PlatformError> {
     let mut snapshot = window_snapshot()?;
     match automation.get_focused_element() {
         Ok(element) => {
             let max = privacy.max_context_chars as i32;
-            let (focused, errors) = read_element(&element, max);
+            let (mut focused, errors) = read_element(&element, max);
             snapshot.errors.extend(errors);
+            // Remembered by its id, so the inspector can walk up to it from the window.
+            focused.id = element_id(&element);
+            if let Some(id) = &focused.id {
+                elements.insert(id.clone(), element.clone());
+            }
             if let Ok(class) = element.get_classname() {
                 snapshot.extras.insert("class".into(), class);
             }

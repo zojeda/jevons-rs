@@ -6117,6 +6117,7 @@ dependencies = [
  "arboard",
  "blitz-dom",
  "blitz-shell",
+ "blitz-traits",
  "clap",
  "cpal",
  "device_query",

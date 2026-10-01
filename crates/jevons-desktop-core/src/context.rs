@@ -44,6 +44,10 @@ pub struct WindowInfo {
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(default)]
 pub struct Element {
+    /// The accessibility layer's id for it, as [`crate::platform::UiElement::id`] gives
+    /// elements: the inspector finds it in the window's tree by it while it exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     /// The accessibility role or control type, such as `Edit` or `Document`.
     pub role: String,
     pub name: String,

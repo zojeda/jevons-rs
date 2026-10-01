@@ -13,6 +13,7 @@ pub enum Icon {
     ChevronRight,
     Check,
     Cross,
+    Plus,
 }
 
 pub fn icon(icon: Icon) -> Element {
@@ -22,6 +23,7 @@ pub fn icon(icon: Icon) -> Element {
         Icon::ChevronRight => ("M9 6l6 6-6 6", "#a1a1a1"),
         Icon::Check => ("M5 12.5l4.5 4.5L19 7.5", "#b6fae3"),
         Icon::Cross => ("M7 7l10 10M17 7L7 17", "#ffb4b4"),
+        Icon::Plus => ("M12 5v14M5 12h14", "#22e6f2"),
     };
     rsx! {
         svg {
