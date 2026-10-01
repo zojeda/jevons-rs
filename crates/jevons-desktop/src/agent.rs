@@ -106,7 +106,8 @@ pub enum Command {
     InterfaceSearch(String),
     /// A search finished: its tree's generation, its text, and what it found or why not.
     InterfaceSearched(u64, String, Result<interface::Found, String>),
-    /// Opens the interface down to an element (ids from the window's child down) and selects it.
+    /// Opens the interface down to an element and selects it: the ids from the window's child
+    /// down, or just the element's (its ancestors are then found by walking up from it).
     InterfaceReveal(Vec<String>),
     /// Opens the interface down to the element that had the focus in the Context tab's snapshot.
     InterfaceFocus,
@@ -434,9 +435,11 @@ pub struct InterfaceSearch {
     pub found: Option<Result<interface::Found, String>>,
 }
 
-/// What the interface browser reveals: an element by its way down, or the snapshot's focus.
+/// What the interface browser reveals: an element by its way down, an element found by
+/// walking up from it, or the snapshot's focus (found the same way).
 enum Reveal {
     Path(Vec<String>),
+    Element(String),
     Focused(String),
 }
 
@@ -876,7 +879,10 @@ impl Agent {
                 }
                 self.repaint();
             }
-            Command::InterfaceReveal(path) => self.reveal_interface(Reveal::Path(path)),
+            Command::InterfaceReveal(path) => self.reveal_interface(match path.as_slice() {
+                [only] => Reveal::Element(only.clone()),
+                _ => Reveal::Path(path),
+            }),
             Command::InterfaceFocus => {
                 let focused = self
                     .view()
@@ -1471,21 +1477,24 @@ impl Agent {
         let commands = self.commands.clone();
         let repaint = self.repaint.clone();
         tokio::task::spawn_blocking(move || {
-            let path = match target {
-                Reveal::Path(path) => Ok(path),
-                Reveal::Focused(id) => interface::ancestry(&*inspector, &id)
-                    .map_err(|e| {
-                        format!(
-                            "The focused element is gone ({e}): reload the tree or capture again"
-                        )
-                    })
+            let (id, what, again) = match target {
+                Reveal::Path(path) => (Err(path), "", ""),
+                Reveal::Element(id) => (Ok(id), "The element", "search again or reload the tree"),
+                Reveal::Focused(id) => (
+                    Ok(id),
+                    "The focused element",
+                    "reload the tree or capture again",
+                ),
+            };
+            let path = match id {
+                Err(path) => Ok(path),
+                Ok(id) => interface::ancestry(&*inspector, &id)
+                    .map_err(|e| format!("{what} is gone ({e}): {again}"))
                     .and_then(|chain| match chain.split_first() {
                         Some((top, path)) if *top == window => Ok(path.to_vec()),
-                        _ => Err(
-                            "The focused element is in another window than this tree's: \
-                                  reload the tree"
-                                .to_string(),
-                        ),
+                        _ => Err(format!(
+                            "{what} is in another window than this tree's: reload the tree"
+                        )),
                     }),
             };
             let revealed = path.and_then(|path| {
