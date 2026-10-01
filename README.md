@@ -59,7 +59,7 @@ cargo run --release --locked -p jevons-desktop
 
 From WSL, `just desktop-windows` does the same natively on Windows. It mirrors your working tree (uncommitted changes included) into a Windows clone (`%USERPROFILE%\src\jevons-rs`), builds it in release mode, installs it into `%USERPROFILE%\jevons` and starts it; `--no-run` leaves it stopped and `--build` only builds. See [scripts/windows-desktop.sh](scripts/windows-desktop.sh).
 
-The app starts in the tray, with no console window. The [Desktop workflow](.github/workflows/desktop.yml) also builds it for Windows and Linux on every push to `dev` and `main`: download the package from the run's artifacts.
+The app starts in the tray, with no console window. The [Desktop workflow](.github/workflows/desktop.yml) also builds it for Windows and Linux on every push to `dev` and `main`: download the package from the run's artifacts. The package and the executable in it are named for the build, the platform and the GPU backend with the driver release it needs, such as `jevons-desktop-0.1.0-dev.57.g065def7-windows-x86_64-hip-rocm7.2.exe` (ROCm/HIP 7.2); its `README.txt` says what to install.
 
 1. **Download the models.** Open the window (**Show context inspector** in the tray menu) and go to **Models**. Press **Download** on DiffusionGemma (about 18 GB, with its vision projector) and Parakeet (2.5 GB). They go to `~/jevons/models`, or to a folder you choose. Nothing downloads by itself, and **Use existing…** points at models already on disk.
 2. **Wait for the first load.** The icon is blue while the models load. On the first runs on a machine it turns amber while GPU kernels are tuned, which takes a few minutes and is cached for later runs.

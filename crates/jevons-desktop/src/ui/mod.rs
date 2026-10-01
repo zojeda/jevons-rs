@@ -11,7 +11,9 @@ mod bubble;
 mod components;
 mod context;
 mod flows;
+mod interface;
 mod markdown;
+pub(crate) use markdown::plain as plain_text;
 mod models;
 mod settings;
 mod takes;
@@ -287,6 +289,14 @@ impl Shell {
             let _ = window.window.set_cursor_hittest(clicks);
             self.bubble_clicks = clicks;
         }
+        // An element the interface browser revealed, to scroll into view once rendered.
+        let reveal = self
+            .view
+            .lock()
+            .expect("the view lock")
+            .interface
+            .as_mut()
+            .and_then(|b| b.reveal.take());
         for (id, window) in self.inner.windows.iter_mut() {
             if show && Some(*id) == self.main {
                 window.window.set_visible(true);
@@ -297,6 +307,11 @@ impl Shell {
             let doc = window.downcast_doc_mut::<DioxusDocument>();
             doc.vdom.mark_dirty(ScopeId::APP);
             window.poll();
+            if Some(*id) == self.main
+                && let Some(row) = &reveal
+            {
+                interface::scroll_into_view(window.downcast_doc_mut::<DioxusDocument>(), row);
+            }
             window.request_redraw();
         }
     }
@@ -731,5 +746,792 @@ mod tests {
             "{text}"
         );
         assert!(received.try_recv().is_err(), "nothing is tried until asked");
+    }
+
+    /// The interface browser beside the workbench, sharing the draft as the Context page does;
+    /// the draft starts with an expression, as **Try in workbench** sets it.
+    fn interface_root() -> Element {
+        let rev = REV.fetch_add(1, Ordering::Relaxed);
+        let chosen = use_signal(|| None::<String>);
+        let draft = use_signal(|| Some("//Edit[has-class(@class, 'ql-editor')]".to_string()));
+        rsx! {
+            workbench::Workbench { rev, chosen, draft }
+            interface::Interface { rev, draft }
+        }
+    }
+
+    #[test]
+    fn the_interface_browser_shows_the_opened_tree_and_hands_a_selector_to_the_workbench() {
+        use crate::agent::{Command, InterfaceView};
+        use jevons_desktop_core::interface as browse;
+        use jevons_desktop_core::platform::ContextInspector;
+        use jevons_desktop_core::recorded::RecordedInspector;
+        let folder = std::env::temp_dir().join(format!("jevons-ui-iface-{}", std::process::id()));
+        let view = Arc::new(Mutex::new(view(&folder)));
+        let (commands, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let mut vdom = VirtualDom::new(interface_root);
+        vdom.insert_any_root_context(Box::new(Ctx {
+            view: view.clone(),
+            commands,
+        }));
+        let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("style.css"));
+        doc.initial_build();
+        doc.poll(None);
+        // The draft becomes a new expression, tried at once; the browser reads its window.
+        let mut sent = Vec::new();
+        while let Ok(command) = received.try_recv() {
+            sent.push(command);
+        }
+        assert!(
+            sent.iter().any(|c| matches!(c, Command::TryExtract(r)
+                if r.file.is_none() && r.spec.xpath.contains("ql-editor"))),
+            "{sent:?}"
+        );
+        assert!(sent.iter().any(|c| matches!(c, Command::InterfaceLoad)));
+        // The agent's reads, from the recorded Slack window.
+        let inspector = RecordedInspector::new(
+            serde_json::from_str(include_str!(
+                "../../../../examples/desktop/trees/slack.json"
+            ))
+            .unwrap(),
+        );
+        let window = inspector.windows().unwrap().remove(0);
+        let opened =
+            browse::open_below(&inspector, &window.id, 64, 10_000, &Default::default()).unwrap();
+        let mut browser = InterfaceView {
+            generation: 1,
+            window: window.clone(),
+            key: "slack.exe · general (Channel) - Acme - Slack".into(),
+            ..InterfaceView::default()
+        };
+        for (parent, level) in opened.levels {
+            browser.open.insert(parent.clone());
+            browser.levels.insert(parent, level);
+        }
+        let composer = browser
+            .levels
+            .values()
+            .flat_map(|l| l.elements.iter())
+            .find(|e| e.role == "Edit")
+            .cloned()
+            .unwrap();
+        browser.selectors = Some(browse::selectors(&inspector, &window, &composer.id));
+        browser.selected = Some(composer);
+        view.lock().unwrap().interface = Some(browser);
+        doc.vdom.mark_dirty(ScopeId::APP);
+        doc.poll(None);
+        let text = doc.root_element().text_content();
+        assert!(
+            text.contains("Message #general") && text.contains("ql-editor"),
+            "{text}"
+        );
+        assert!(text.contains("Try in workbench"), "{text}");
+        // The tab shows another window (Notepad) than the tree's.
+        assert!(text.contains("This tree shows slack.exe"), "{text}");
+    }
+
+    /// The interface browser alone, as the Context page shows it.
+    fn browser_root() -> Element {
+        let rev = REV.fetch_add(1, Ordering::Relaxed);
+        let draft = use_signal(|| None::<String>);
+        rsx! { interface::Interface { rev, draft } }
+    }
+
+    /// Clicks the middle of the element `selector` finds, as the window would: the pointer moves
+    /// there, then the button goes down and up.
+    fn click(doc: &mut DioxusDocument, selector: &str) {
+        doc.resolve(0.0);
+        let node = doc
+            .query_selector(selector)
+            .unwrap()
+            .unwrap_or_else(|| panic!("nothing matches {selector}"));
+        click_node(doc, node, selector);
+    }
+
+    /// Clicks the first element matching `selector` whose text holds `text`.
+    fn click_text(doc: &mut DioxusDocument, selector: &str, text: &str) {
+        doc.resolve(0.0);
+        let node = doc
+            .query_selector_all(selector)
+            .unwrap()
+            .into_iter()
+            .find(|n| doc.get_node(*n).unwrap().text_content().contains(text))
+            .unwrap_or_else(|| panic!("no {selector} says {text}"));
+        click_node(doc, node, selector);
+    }
+
+    fn click_node(doc: &mut DioxusDocument, node: usize, selector: &str) {
+        use blitz_traits::events::{
+            BlitzMouseButtonEvent, MouseEventButton, MouseEventButtons, UiEvent,
+        };
+        let (x, y) = {
+            let node = doc.get_node(node).unwrap();
+            let at = node.absolute_position(0.0, 0.0);
+            let size = node.final_layout.size;
+            assert!(
+                size.width >= 16.0 && size.height >= 16.0,
+                "{selector}: {size:?}"
+            );
+            (at.x + size.width / 2.0, at.y + size.height / 2.0)
+        };
+        let event = || BlitzMouseButtonEvent {
+            x,
+            y,
+            button: MouseEventButton::Main,
+            buttons: MouseEventButtons::Primary,
+            mods: Default::default(),
+        };
+        doc.handle_ui_event(UiEvent::MouseMove(event()));
+        doc.handle_ui_event(UiEvent::MouseDown(event()));
+        doc.handle_ui_event(UiEvent::MouseUp(event()));
+        doc.poll(None);
+    }
+
+    #[test]
+    fn interface_rows_toggle_by_their_chevron_and_select_by_their_label_with_real_clicks() {
+        use crate::agent::{Command, InterfaceSearch, InterfaceView};
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        use jevons_desktop_core::interface as browse;
+        use jevons_desktop_core::platform::ContextInspector;
+        use jevons_desktop_core::recorded::RecordedInspector;
+        let inspector = RecordedInspector::new(
+            serde_json::from_str(include_str!(
+                "../../../../examples/desktop/trees/slack.json"
+            ))
+            .unwrap(),
+        );
+        let window = inspector.windows().unwrap().remove(0);
+        let composer = inspector
+            .subtree(&window.id, 64, 10_000)
+            .unwrap()
+            .into_iter()
+            .map(|(_, e)| e)
+            .find(|e| e.role == "Edit")
+            .unwrap();
+        let folder = std::env::temp_dir().join(format!("jevons-ui-clicks-{}", std::process::id()));
+        let mut state = view(&folder);
+        let context = ContextSnapshot {
+            app: AppInfo {
+                process_name: "slack.exe".into(),
+                ..AppInfo::default()
+            },
+            window: WindowInfo {
+                title: window.title.clone(),
+                ..WindowInfo::default()
+            },
+            focused: Some(Focused {
+                id: Some(composer.id.clone()),
+                role: "Edit".into(),
+                ..Focused::default()
+            }),
+            ..ContextSnapshot::default()
+        };
+        let top = browse::level(&inspector, &window.id).unwrap();
+        let pane = top.elements[0].id.clone();
+        state.interface = Some(InterfaceView {
+            generation: 1,
+            window: window.clone(),
+            key: crate::agent::window_key(&context),
+            levels: [(window.id.clone(), top)].into(),
+            open: [window.id.clone()].into(),
+            ..InterfaceView::default()
+        });
+        state.context = Some(context);
+        let view = Arc::new(Mutex::new(state));
+        let (commands, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let mut vdom = VirtualDom::new(browser_root);
+        vdom.insert_any_root_context(Box::new(Ctx {
+            view: view.clone(),
+            commands,
+        }));
+        let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("style.css"));
+        doc.set_viewport(Viewport::new(1400, 3000, 1.0, ColorScheme::Dark));
+        doc.initial_build();
+        doc.poll(None);
+        let mut sent = || {
+            let mut out = Vec::new();
+            while let Ok(command) = received.try_recv() {
+                out.push(command);
+            }
+            out
+        };
+        let rerender = |doc: &mut DioxusDocument| {
+            doc.vdom.mark_dirty(ScopeId::APP);
+            doc.poll(None);
+        };
+        sent();
+
+        // The chevron opens the pane, and nothing is selected.
+        click(&mut doc, &format!("[data-toggle=\"{pane}\"]"));
+        let got = sent();
+        assert!(
+            matches!(got.as_slice(), [Command::InterfaceOpen { id, all: false }] if *id == pane),
+            "{got:?}"
+        );
+        // The agent reads it; the same chevron now closes it.
+        {
+            let mut state = view.lock().unwrap();
+            let browser = state.interface.as_mut().unwrap();
+            browser
+                .levels
+                .insert(pane.clone(), browse::level(&inspector, &pane).unwrap());
+            browser.open.insert(pane.clone());
+        }
+        rerender(&mut doc);
+        click(&mut doc, &format!("[data-toggle=\"{pane}\"]"));
+        let got = sent();
+        assert!(
+            matches!(got.as_slice(), [Command::InterfaceClose(id)] if *id == pane),
+            "{got:?}"
+        );
+        // The label selects, and opens nothing.
+        click(&mut doc, &format!("[data-row=\"{pane}\"] .iface-label"));
+        let got = sent();
+        assert!(
+            matches!(got.as_slice(), [Command::InterfaceSelect(e)] if e.id == pane),
+            "{got:?}"
+        );
+
+        // A level read in part ends with a button that reads more of it.
+        view.lock()
+            .unwrap()
+            .interface
+            .as_mut()
+            .unwrap()
+            .levels
+            .get_mut(&pane)
+            .unwrap()
+            .total += 300;
+        rerender(&mut doc);
+        let text = doc.root_element().text_content();
+        assert!(text.contains("more"), "{text}");
+        click(&mut doc, &format!("[data-more=\"{pane}\"]"));
+        let got = sent();
+        assert!(
+            matches!(got.as_slice(), [Command::InterfaceMore(id)] if *id == pane),
+            "{got:?}"
+        );
+
+        // Expand to a level, collapse all, and show the focused element.
+        click(&mut doc, "[data-level=\"3\"]");
+        click(&mut doc, "[data-action=\"collapse\"]");
+        click(&mut doc, "[data-action=\"show-focused\"]");
+        let got = sent();
+        assert!(
+            matches!(
+                got.as_slice(),
+                [
+                    Command::InterfaceExpand(3),
+                    Command::InterfaceCollapse,
+                    Command::InterfaceFocus
+                ]
+            ),
+            "{got:?}"
+        );
+
+        // A search's matches list where they are; choosing one reveals it.
+        let found = browse::search(
+            &inspector,
+            &window.id,
+            "release notes",
+            5_000,
+            std::time::Duration::from_secs(2),
+        )
+        .unwrap();
+        let ids = found.hits[0].ids();
+        view.lock().unwrap().interface.as_mut().unwrap().search = Some(InterfaceSearch {
+            query: "release notes".into(),
+            found: Some(Ok(found)),
+        });
+        rerender(&mut doc);
+        let text = doc.root_element().text_content();
+        assert!(text.contains("2 matches"), "{text}");
+        click(&mut doc, ".iface-result");
+        let got = sent();
+        assert!(
+            matches!(got.as_slice(), [Command::InterfaceReveal(path)] if *path == ids),
+            "{got:?}"
+        );
+
+        // With the whole window open the box scrolls, and a revealed row comes into view.
+        {
+            let mut state = view.lock().unwrap();
+            let browser = state.interface.as_mut().unwrap();
+            let all = browse::open_below(&inspector, &window.id, 64, 10_000, &Default::default())
+                .unwrap();
+            for (parent, level) in all.levels {
+                browser.open.insert(parent.clone());
+                browser.levels.insert(parent, level);
+            }
+        }
+        rerender(&mut doc);
+        let last = ids.last().unwrap();
+        assert!(interface::scroll_into_view(&mut doc, last));
+        let tree = doc.query_selector(".iface-tree").unwrap().unwrap();
+        let row = doc
+            .query_selector(&format!("[data-row=\"{last}\"]"))
+            .unwrap()
+            .unwrap();
+        let (scroll, height) = {
+            let tree = doc.get_node(tree).unwrap();
+            (
+                tree.scroll_offset.y,
+                f64::from(tree.final_layout.size.height),
+            )
+        };
+        assert!(scroll > 0.0, "the box scrolled");
+        let top = f64::from(
+            doc.get_node(row).unwrap().absolute_position(0.0, 0.0).y
+                - doc.get_node(tree).unwrap().absolute_position(0.0, 0.0).y,
+        );
+        assert!(
+            top >= scroll && top <= scroll + height,
+            "{top} in {scroll}+{height}"
+        );
+        std::fs::remove_dir_all(&folder).ok();
+    }
+
+    fn app_root() -> Element {
+        rsx! { app::App {} }
+    }
+
+    #[test]
+    fn the_tabs_take_clicks_while_the_page_is_scrolled() {
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        let folder = std::env::temp_dir().join(format!("jevons-ui-tabs-{}", std::process::id()));
+        let view = Arc::new(Mutex::new(view(&folder)));
+        let (commands, _received) = tokio::sync::mpsc::unbounded_channel();
+        let mut vdom = VirtualDom::new(app_root);
+        vdom.insert_any_root_context(Box::new(Ctx {
+            view: view.clone(),
+            commands,
+        }));
+        let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("style.css"));
+        doc.set_viewport(Viewport::new(1000, 600, 1.0, ColorScheme::Dark));
+        doc.initial_build();
+        doc.poll(None);
+        doc.resolve(0.0);
+        // The page scrolled far down: its content now lies under the tab bar.
+        let page = doc.query_selector(".page").unwrap().unwrap();
+        doc.get_node_mut(page).unwrap().scroll_offset = blitz_dom::Point { x: 0.0, y: 400.0 };
+        click(&mut doc, ".dx-tabs-trigger:nth-child(2)");
+        let active = doc
+            .query_selector(".dx-tabs-trigger[data-state=\"active\"]")
+            .unwrap()
+            .unwrap();
+        assert_eq!(doc.get_node(active).unwrap().text_content(), "Takes");
+    }
+
+    #[test]
+    fn edited_settings_mark_the_page_and_save_from_a_bar_that_shows_only_then() {
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        let folder = std::env::temp_dir().join(format!("jevons-ui-dirty-{}", std::process::id()));
+        let view = Arc::new(Mutex::new(view(&folder)));
+        let (commands, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let mut vdom = VirtualDom::new(app_root);
+        vdom.insert_any_root_context(Box::new(Ctx {
+            view: view.clone(),
+            commands,
+        }));
+        let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("style.css"));
+        // Tall enough that the whole settings page is in view: what is scrolled out takes no clicks.
+        doc.set_viewport(Viewport::new(1000, 4000, 1.0, ColorScheme::Dark));
+        doc.initial_build();
+        doc.poll(None);
+        let shows =
+            |doc: &DioxusDocument, selector: &str| doc.query_selector(selector).unwrap().is_some();
+        click_text(&mut doc, ".dx-tabs-trigger", "Settings");
+        assert!(!shows(&doc, ".save-bar") && !shows(&doc, ".tab-dot"));
+        // A change marks the page and the tab, and the save bar appears.
+        click_text(&mut doc, ".switch-row", "Include the clipboard");
+        assert!(shows(&doc, ".save-bar") && shows(&doc, ".tab-dot"));
+        assert!(shows(&doc, ".page[data-dirty=\"true\"]"));
+        assert!(
+            doc.root_element()
+                .text_content()
+                .contains("Unsaved changes")
+        );
+        // Revert drops it.
+        click_text(&mut doc, ".save-bar .dx-button", "Revert");
+        assert!(!shows(&doc, ".save-bar") && !shows(&doc, ".tab-dot"));
+        // Changed again and applied: the agent gets the settings, and the bar goes.
+        click_text(&mut doc, ".switch-row", "Include the clipboard");
+        click_text(&mut doc, ".save-bar .dx-button", "Apply and save");
+        let mut applied = None;
+        while let Ok(command) = received.try_recv() {
+            if let crate::agent::Command::Apply(config) = command {
+                applied = Some(config);
+            }
+        }
+        let applied = applied.expect("Apply sent");
+        assert!(applied.privacy.read_clipboard);
+        assert_eq!(applied.models, view.lock().unwrap().config.models);
+        // The agent saves them; the window follows and nothing is pending.
+        view.lock().unwrap().config = *applied;
+        doc.vdom.mark_dirty(ScopeId::APP);
+        doc.poll(None);
+        assert!(!shows(&doc, ".save-bar") && !shows(&doc, ".tab-dot"));
+    }
+
+    fn flows_root() -> Element {
+        rsx! { flows::FlowsPage { rev: REV.fetch_add(1, Ordering::Relaxed) } }
+    }
+
+    #[test]
+    fn the_flow_tree_nests_branches_folds_them_and_shows_a_node_in_full() {
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        let folder = std::env::temp_dir().join(format!("jevons-ui-flows-{}", std::process::id()));
+        let mut state = view(&folder);
+        state.flows = flows();
+        let context = state.context.clone().unwrap();
+        state.route = walk::preview(&state.flows, &context, state.flows.root());
+        let view = Arc::new(Mutex::new(state));
+        let (commands, _received) = tokio::sync::mpsc::unbounded_channel();
+        let mut vdom = VirtualDom::new(flows_root);
+        vdom.insert_any_root_context(Box::new(Ctx { view, commands }));
+        let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("style.css"));
+        doc.set_viewport(Viewport::new(1200, 6000, 1.0, ColorScheme::Dark));
+        doc.initial_build();
+        doc.poll(None);
+        let names = |doc: &DioxusDocument, selector: &str| -> Vec<String> {
+            doc.query_selector_all(selector)
+                .unwrap()
+                .into_iter()
+                .map(|n| doc.get_node(n).unwrap().text_content())
+                .collect()
+        };
+        // dictate's branches sit two levels down, under the root and under dictate.
+        let nested = names(
+            &doc,
+            ".flow-children .flow-children > .flow-node > .flow-row .flow-name",
+        );
+        assert!(nested.contains(&"terminal".to_string()), "{nested:?}");
+        // Shared actions say where they come from.
+        assert!(
+            names(&doc, ".flow-shared")
+                .iter()
+                .any(|s| s == "shared from _actions")
+        );
+        // dictate's row: its toggle folds it, its label selects it.
+        doc.resolve(0.0);
+        let dictate = doc
+            .query_selector_all(".flow-row")
+            .unwrap()
+            .into_iter()
+            .find(|n| {
+                let row = doc.get_node(*n).unwrap();
+                doc.get_node(row.children[1])
+                    .unwrap()
+                    .text_content()
+                    .contains("decidedictate")
+            })
+            .unwrap();
+        let (toggle, label) = {
+            let row = doc.get_node(dictate).unwrap();
+            (row.children[0], row.children[1])
+        };
+        click_node(&mut doc, label, ".flow-label");
+        doc.resolve(0.0);
+        click_node(&mut doc, toggle, ".flow-toggle");
+        let nested = names(
+            &doc,
+            ".flow-children .flow-children > .flow-node > .flow-row .flow-name",
+        );
+        assert!(!nested.contains(&"terminal".to_string()), "{nested:?}");
+        // Selecting dictate showed it in full.
+        let text = doc.root_element().text_content();
+        assert!(
+            text.contains("Applies when") && text.contains("dictate/decide.toml"),
+            "{text}"
+        );
+    }
+
+    /// The route of a Slack reply through the built-in dictate branch, three decisions deep.
+    fn route_root() -> Element {
+        let tree = FlowTree::load(&defaults::builtin(), &Catalog::default());
+        let context = ContextSnapshot {
+            app: AppInfo {
+                process_name: "slack.exe".into(),
+                ..AppInfo::default()
+            },
+            focused: Some(Focused {
+                role: "Edit".into(),
+                name: "Reply to thread".into(),
+                is_editable: true,
+                selection: Some("hi".into()),
+                ..Focused::default()
+            }),
+            ..ContextSnapshot::default()
+        };
+        let route = walk::preview(&tree, &context, tree.find("dictate").unwrap());
+        rsx! { {context::route_card(&route, "A take's route")} }
+    }
+
+    #[test]
+    fn a_route_nests_each_decision_under_the_branch_it_took() {
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        let mut doc = DioxusDocument::new(VirtualDom::new(route_root), DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("style.css"));
+        doc.set_viewport(Viewport::new(1200, 3000, 1.0, ColorScheme::Dark));
+        doc.initial_build();
+        doc.poll(None);
+        let names = |doc: &DioxusDocument, selector: &str| -> Vec<String> {
+            doc.query_selector_all(selector)
+                .unwrap()
+                .into_iter()
+                .map(|n| doc.get_node(n).unwrap().text_content())
+                .collect()
+        };
+        // dictate → chat → thread, each a level deeper, on the chosen rows.
+        let chosen = names(&doc, ".flow-row[data-route=\"true\"] .flow-name");
+        assert_eq!(chosen, ["dictate", "chat", "thread"], "{chosen:?}");
+        let deep = names(
+            &doc,
+            ".flow-children .flow-children > .flow-node > .flow-row .flow-name",
+        );
+        assert!(deep.contains(&"thread".to_string()), "{deep:?}");
+        // A branch not taken folds its rule checks until asked.
+        assert!(doc.query_selector(".route-checks").unwrap().is_none());
+        doc.resolve(0.0);
+        let code = doc
+            .query_selector_all(".flow-row[data-off=\"true\"]")
+            .unwrap()
+            .into_iter()
+            .find(|n| doc.get_node(*n).unwrap().text_content().contains("code"))
+            .map(|row| doc.get_node(row).unwrap().children[0])
+            .unwrap();
+        click_node(&mut doc, code, ".flow-toggle");
+        let checks = names(&doc, ".route-checks");
+        assert!(checks.iter().any(|c| c.contains("app")), "{checks:?}");
+    }
+
+    #[test]
+    fn an_answer_turns_into_selectable_text_and_copies_as_plain_text_or_markdown() {
+        use crate::agent::{BubbleAction, Command, Feedback};
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        let folder = std::env::temp_dir().join(format!("jevons-ui-select-{}", std::process::id()));
+        let view = Arc::new(Mutex::new(view(&folder)));
+        view.lock().unwrap().feedback = Some(Feedback {
+            take: 1,
+            answer: true,
+            done: true,
+            status: "Answered".into(),
+            output: "The launch is **on Friday**.".into(),
+            ..Feedback::default()
+        });
+        let (commands, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let mut vdom = VirtualDom::new(bubble::Bubble);
+        vdom.insert_any_root_context(Box::new(Ctx {
+            view: view.clone(),
+            commands,
+        }));
+        vdom.insert_any_root_context(Box::new(bubble::Anchor {
+            tail_x: 300.0,
+            icon_below: true,
+            width: bubble::ANSWER_SIZE.0,
+        }));
+        let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("bubble.css"));
+        doc.set_viewport(Viewport::new(
+            bubble::ANSWER_SIZE.0 as u32,
+            bubble::ANSWER_SIZE.1 as u32,
+            1.0,
+            ColorScheme::Dark,
+        ));
+        doc.initial_build();
+        doc.poll(None);
+        assert!(doc.query_selector("textarea").unwrap().is_none());
+        click_text(&mut doc, ".bubble-button", "Select text");
+        doc.resolve(0.0);
+        let field = doc
+            .query_selector("textarea")
+            .unwrap()
+            .expect("a text field");
+        let text = doc
+            .get_node(field)
+            .unwrap()
+            .element_data()
+            .unwrap()
+            .text_input_data()
+            .unwrap()
+            .editor
+            .text()
+            .to_string();
+        assert!(
+            text.contains("**on Friday**"),
+            "the Markdown as written: {text}"
+        );
+        click_text(&mut doc, ".bubble-button", "Copy raw");
+        click(&mut doc, ".bubble-button[data-primary=\"true\"]");
+        let mut copies = Vec::new();
+        while let Ok(command) = received.try_recv() {
+            if let Command::Bubble(BubbleAction::Copy { raw }) = command {
+                copies.push(raw);
+            }
+        }
+        assert_eq!(copies, [true, false]);
+        // Back to the formatted answer.
+        click_text(&mut doc, ".bubble-button", "Done selecting");
+        assert!(doc.query_selector("textarea").unwrap().is_none());
+    }
+
+    fn answer_root() -> Element {
+        rsx! {
+            div { class: "bubble-answer",
+                {markdown::render(
+                    "El texto incluye **mensajes y fotos** del caso.\n\n\
+                     - La evidencia consiste en **capturas de pantalla**.\n- Otro `punto`.\n",
+                )}
+            }
+        }
+    }
+
+    #[test]
+    fn answers_keep_the_spaces_around_bold_text_and_list_items_flow_as_one_line() {
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        let mut doc = DioxusDocument::new(VirtualDom::new(answer_root), DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("bubble.css"));
+        doc.set_viewport(Viewport::new(500, 400, 1.0, ColorScheme::Dark));
+        doc.initial_build();
+        doc.poll(None);
+        doc.resolve(0.0);
+        // The text each block lays out as one run, as Blitz builds it.
+        let runs: Vec<String> = doc
+            .query_selector_all(".md-p, .md-item-body")
+            .unwrap()
+            .into_iter()
+            .filter_map(|id| {
+                let node = doc.get_node(id).unwrap();
+                let layout = node.element_data()?.inline_layout_data.as_ref()?;
+                Some(layout.text.clone())
+            })
+            .collect();
+        assert_eq!(
+            runs,
+            [
+                "El texto incluye mensajes y fotos del caso.",
+                "La evidencia consiste en capturas de pantalla.",
+                "Otro punto.",
+            ]
+        );
+    }
+
+    /// A text field, for the paint check below.
+    fn field_root() -> Element {
+        rsx! { input { class: "dx-input", value: "//TreeItem" } }
+    }
+
+    #[test]
+    fn the_text_caret_is_painted_in_the_field_s_text_colour_on_the_dark_theme() {
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        let mut doc = DioxusDocument::new(VirtualDom::new(field_root), DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("style.css"));
+        doc.set_viewport(Viewport::new(800, 200, 1.0, ColorScheme::Dark));
+        doc.initial_build();
+        doc.poll(None);
+        let field = doc.query_selector("input").unwrap().unwrap();
+        assert!(doc.set_focus_to(field));
+        doc.resolve(0.0);
+        let mut painted = Painted::default();
+        blitz_paint::paint_scene(&mut painted, &doc, 1.0, 800, 200);
+        // The caret is the thin, tall fill of a focused field.
+        let caret = painted
+            .fills
+            .iter()
+            .find(|(r, _)| {
+                r.width() > 0.5 && r.width() <= 2.0 && (8.0..=40.0).contains(&r.height())
+            })
+            .expect("a caret");
+        assert_ne!(
+            caret.1,
+            [0, 0, 0, 255],
+            "a black caret is invisible on the dark theme"
+        );
+        assert!(caret.1[..3].iter().all(|c| *c > 128), "{:?}", caret.1);
+        // The caret (and the text it stands in) sits in the middle of the field, not at its top.
+        let node = doc.get_node(field).unwrap();
+        let (top, height) = (
+            f64::from(node.absolute_position(0.0, 0.0).y),
+            f64::from(node.final_layout.size.height),
+        );
+        let middle = (caret.0.y0 + caret.0.y1) / 2.0;
+        assert!(
+            (middle - (top + height / 2.0)).abs() <= 2.0,
+            "caret {:?} in a field from {top} to {}",
+            caret.0,
+            top + height
+        );
+    }
+
+    /// A scene that records what is filled where.
+    #[derive(Default)]
+    struct Painted {
+        fills: Vec<(peniko::kurbo::Rect, [u8; 4])>,
+    }
+
+    impl anyrender::PaintScene for Painted {
+        fn reset(&mut self) {}
+        fn push_layer(
+            &mut self,
+            _blend: impl Into<peniko::BlendMode>,
+            _alpha: f32,
+            _transform: peniko::kurbo::Affine,
+            _clip: &impl peniko::kurbo::Shape,
+        ) {
+        }
+        fn pop_layer(&mut self) {}
+        fn stroke<'a>(
+            &mut self,
+            _style: &peniko::kurbo::Stroke,
+            _transform: peniko::kurbo::Affine,
+            _brush: impl Into<anyrender::PaintRef<'a>>,
+            _brush_transform: Option<peniko::kurbo::Affine>,
+            _shape: &impl peniko::kurbo::Shape,
+        ) {
+        }
+        fn fill<'a>(
+            &mut self,
+            _style: peniko::Fill,
+            transform: peniko::kurbo::Affine,
+            brush: impl Into<anyrender::PaintRef<'a>>,
+            _brush_transform: Option<peniko::kurbo::Affine>,
+            shape: &impl peniko::kurbo::Shape,
+        ) {
+            if let anyrender::PaintRef::Solid(color) = brush.into() {
+                let rgba = color.to_rgba8();
+                self.fills.push((
+                    transform.transform_rect_bbox(shape.bounding_box()),
+                    [rgba.r, rgba.g, rgba.b, rgba.a],
+                ));
+            }
+        }
+        fn draw_glyphs<'a, 's: 'a>(
+            &'s mut self,
+            _font: &'a peniko::FontData,
+            _font_size: f32,
+            _hint: bool,
+            _normalized_coords: &'a [anyrender::NormalizedCoord],
+            _style: impl Into<peniko::StyleRef<'a>>,
+            _brush: impl Into<anyrender::PaintRef<'a>>,
+            _brush_alpha: f32,
+            _transform: peniko::kurbo::Affine,
+            _glyph_transform: Option<peniko::kurbo::Affine>,
+            _glyphs: impl Iterator<Item = anyrender::Glyph>,
+        ) {
+        }
+        fn draw_box_shadow(
+            &mut self,
+            _transform: peniko::kurbo::Affine,
+            _rect: peniko::kurbo::Rect,
+            _brush: peniko::Color,
+            _radius: f64,
+            _std_dev: f64,
+        ) {
+        }
     }
 }

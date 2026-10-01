@@ -1,8 +1,10 @@
 //! The recent takes, step by step.
 
 use super::Ctx;
-use super::components::{Collapsible, JsonTree, badge, copy};
+use super::components::{Collapsible, CopyButton, JsonTree, badge};
+use super::context::route_card;
 use dioxus::prelude::*;
+use jevons_desktop_core::config::HotkeyMode;
 use jevons_desktop_core::pipeline::Trace;
 use jevons_desktop_core::platform::DeliveryOutcome;
 
@@ -13,6 +15,14 @@ pub fn TakesPage(rev: u64) -> Element {
     let view = ctx.view.lock().expect("the view lock");
     let traces: Vec<Trace> = view.traces.iter().cloned().collect();
     let hotkey = view.config.dictation.hotkey.clone();
+    let how = match view.config.dictation.hotkey_mode {
+        HotkeyMode::Hold => {
+            format!("Hold {hotkey} while speaking; the text is inserted when you release it.")
+        }
+        HotkeyMode::Toggle => {
+            format!("Press {hotkey}, speak, and press it again; the text is inserted then.")
+        }
+    };
     drop(view);
     let folder = jevons_desktop_core::config::user_dir().join("traces");
 
@@ -24,12 +34,13 @@ pub fn TakesPage(rev: u64) -> Element {
         if traces.is_empty() {
             div { class: "dx-card",
                 div { class: "dx-card-content",
-                    p { class: "muted", "No takes yet. Hold {hotkey} while speaking; the text is inserted when you release it." }
+                    p { class: "muted", "No takes yet. {how}" }
                 }
             }
-        }
-        div { class: "dx-accordion",
-            {traces.into_iter().map(|trace| rsx! { TakeItem { key: "{trace.take}-{trace.turn:?}", trace: TraceProp(trace) } })}
+        } else {
+            div { class: "dx-accordion",
+                {traces.into_iter().map(|trace| rsx! { TakeItem { key: "{trace.take}-{trace.turn:?}", trace: TraceProp(trace) } })}
+            }
         }
     }
 }
@@ -59,16 +70,31 @@ fn TakeItem(trace: TraceProp) -> Element {
         None => ("typed", "success"),
     };
     let title = format!(
-        "#{}{turn} · {} · {:.1} s",
-        trace.take, trace.context.app.process_name, trace.audio_seconds
+        "#{}{turn} · {} · {} · {:.1} s",
+        trace.take,
+        ago(trace.started_at_ms),
+        trace.context.app.process_name,
+        trace.audio_seconds
     );
-    let summary: String = trace
+    let what: String = trace
         .error
         .clone()
         .unwrap_or_else(|| trace.output.chars().take(70).collect());
+    let summary = format!("{status} · {what}");
     let mut rows: Vec<(&str, String)> = vec![("Transcript", trace.transcript.clone())];
     if let Some(path) = trace.transcription {
-        rows.push(("Transcribed by", format!("{path:?}")));
+        rows.push((
+            "Transcribed",
+            match path {
+                jevons_desktop_core::pipeline::TranscriptionPath::Realtime => {
+                    "live, while speaking"
+                }
+                jevons_desktop_core::pipeline::TranscriptionPath::Upload => {
+                    "after speaking (upload)"
+                }
+            }
+            .into(),
+        ));
     }
     rows.push(("Route", trace.route()));
     if let Some(leaf) = &trace.leaf {
@@ -114,7 +140,7 @@ fn TakeItem(trace: TraceProp) -> Element {
     let json = serde_json::to_string_pretty(&value).unwrap_or_default();
 
     rsx! {
-        Collapsible { title, subtitle: Some(summary), open: false,
+        Collapsible { title, subtitle: Some(summary), open: false, status: Some(trace.error.is_none()),
             div { class: "row", {badge(status, style)} }
             div { class: "kv",
                 {rows.into_iter().map(|(k, v)| rsx! {
@@ -127,17 +153,28 @@ fn TakeItem(trace: TraceProp) -> Element {
                 p { class: "error-text", "{error}" }
             }
             div { class: "row",
-                button {
-                    class: "dx-button",
-                    "data-style": "outline",
-                    "data-size": "sm",
-                    onclick: move |_| copy(&json),
-                    "Copy trace as JSON"
-                }
+                CopyButton { text: json, label: "Copy trace as JSON".to_string() }
+            }
+            if !trace.flow.is_empty() {
+                {route_card(&trace.flow, "How this take went through the flow tree: each decision, its branches' rules and, when the model was asked, their probabilities")}
             }
             Collapsible { title: "Full trace: context, route, decisions, prompt".to_string(), subtitle: None, open: false,
                 JsonTree { value }
             }
         }
+    }
+}
+
+/// How long ago a take started, such as "just now", "12 min ago" or "3 h ago".
+fn ago(started_at_ms: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
+    let seconds = now.saturating_sub(started_at_ms) / 1000;
+    match seconds {
+        0..60 => "just now".into(),
+        60..3600 => format!("{} min ago", seconds / 60),
+        3600..86_400 => format!("{} h ago", seconds / 3600),
+        _ => format!("{} d ago", seconds / 86_400),
     }
 }

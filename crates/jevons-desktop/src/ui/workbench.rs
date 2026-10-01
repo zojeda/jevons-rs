@@ -4,7 +4,7 @@
 //! typing and again when the window changes; Save writes the edit into its node file.
 
 use super::Ctx;
-use super::components::{Choice, Collapsible, Select, Switch, copy};
+use super::components::{Choice, Collapsible, CopyButton, Select, Switch};
 use crate::agent::{Command, TrialRequest};
 use dioxus::prelude::*;
 use jevons_desktop_core::flow::extract;
@@ -42,10 +42,15 @@ fn parse_fields(text: &str) -> BTreeMap<String, String> {
 }
 
 /// `chosen` selects the extract to edit (a [`key`], or `None` for a new expression); the
-/// "Read by the flow tree" card sets it too. `rev` changes with every repaint, so a trial's
-/// answer shows as it arrives.
+/// "Read by the flow tree" card sets it too. `draft` brings an expression from the interface
+/// browser: it becomes a new expression, tried at once. `rev` changes with every repaint, so a
+/// trial's answer shows as it arrives.
 #[component]
-pub fn Workbench(rev: u64, chosen: Signal<Option<String>>) -> Element {
+pub fn Workbench(
+    rev: u64,
+    chosen: Signal<Option<String>>,
+    draft: Option<Signal<Option<String>>>,
+) -> Element {
     let _ = rev;
     let ctx = use_context::<Ctx>();
     let view = ctx.view.lock().expect("the view lock");
@@ -53,6 +58,7 @@ pub fn Workbench(rev: u64, chosen: Signal<Option<String>>) -> Element {
     let trial = view.trial.clone();
     let trying = view.trying;
     let saved = view.saved.clone();
+    let has_window = view.context.is_some();
     drop(view);
 
     let mut name = use_signal(String::new);
@@ -115,6 +121,37 @@ pub fn Workbench(rev: u64, chosen: Signal<Option<String>>) -> Element {
         }
     });
 
+    // An expression from the interface browser: a new expression, as text, tried at once.
+    let drafts = ctx.clone();
+    use_effect(move || {
+        let Some(mut draft) = draft else {
+            return;
+        };
+        let Some(expression) = draft() else {
+            return;
+        };
+        draft.set(None);
+        chosen.set(None);
+        name.set(String::new());
+        xpath.set(expression.clone());
+        kind.set(ExtractAs::Text);
+        fields.set(String::new());
+        drafts.send(Command::TryExtract(Box::new(TrialRequest {
+            file: None,
+            name: String::new(),
+            spec: ExtractSpec {
+                xpath: expression,
+                kind: ExtractAs::Text,
+                fields: BTreeMap::new(),
+                limit: None,
+                scope: Vec::new(),
+                app: Vec::new(),
+                lazy: false,
+            },
+            debounce: false,
+        })));
+    });
+
     let request = move |debounce: bool| {
         let mut spec = base().unwrap_or_else(|| ExtractSpec {
             xpath: String::new(),
@@ -172,7 +209,7 @@ pub fn Workbench(rev: u64, chosen: Signal<Option<String>>) -> Element {
         div { class: "dx-card",
             div { class: "dx-card-header",
                 div {
-                    div { class: "dx-card-title", "Extracts" }
+                    div { class: "dx-card-title", "Extract workbench" }
                     div { class: "dx-card-description",
                         "Try any [extract] of the flow tree, or a new one, on this window as a take reads it; \
                          edit it and save it back"
@@ -235,10 +272,13 @@ pub fn Workbench(rev: u64, chosen: Signal<Option<String>>) -> Element {
                             }
                         })}
                     }
-                    button { class: "dx-button", "data-size": "sm",
-                        disabled: xpath().trim().is_empty(),
+                    button { class: "dx-button", "data-style": "accent", "data-size": "sm",
+                        disabled: xpath().trim().is_empty() || !has_window,
                         onclick: move |_| run.send(Command::TryExtract(request(false))),
                         "Try"
+                    }
+                    if !has_window {
+                        span { class: "muted", "Switch to an application first: Try reads its window." }
                     }
                     if can_save {
                         button { class: "dx-button", "data-style": "outline", "data-size": "sm",
@@ -246,15 +286,13 @@ pub fn Workbench(rev: u64, chosen: Signal<Option<String>>) -> Element {
                             "{save_label}"
                         }
                     }
-                    button { class: "dx-button", "data-style": "outline", "data-size": "sm",
+                    CopyButton {
+                        text: extract::as_toml(
+                            &if name().trim().is_empty() { "new".to_string() } else { name().trim().to_string() },
+                            &request(false).spec,
+                        ),
+                        label: "Copy as TOML".to_string(),
                         disabled: xpath().trim().is_empty(),
-                        title: "Copy [extract.<name>] as TOML, to paste into a node file",
-                        onclick: move |_| {
-                            let spec = request(false).spec;
-                            let label = if name().trim().is_empty() { "new".to_string() } else { name().trim().to_string() };
-                            copy(&extract::as_toml(&label, &spec));
-                        },
-                        "Copy as TOML"
                     }
                 }
                 if kind() == ExtractAs::Table {

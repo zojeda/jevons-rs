@@ -191,31 +191,40 @@ pub fn ModelsPage(rev: u64) -> Element {
                     let is_set = selection(&config, service).is_some();
                     let pick_ctx = ctx.clone();
                     let pick_config = config.clone();
+                    let (file_ctx, file_config) = (ctx.clone(), config.clone());
                     let clear_ctx = ctx.clone();
                     let clear_config = config.clone();
                     rsx! {
                         div { class: "field", key: "{name}",
                             span { class: "field-label", "{name}" }
                             div { class: "row",
-                                span { class: "mono grow", "{current}" }
+                                span { class: "mono grow wrap-anywhere", "{current}" }
+                                // A GGUF file (DiffusionGemma), or a checkpoint folder (Nemotron,
+                                // Parakeet): one dialog each, so cancelling one opens nothing else.
+                                if service != Service::Speech {
+                                    button { class: "dx-button", "data-style": "outline", "data-size": "xs",
+                                        onclick: move |_| {
+                                            let picked = rfd::FileDialog::new().add_filter("GGUF", &["gguf"]).pick_file();
+                                            if let Some(path) = picked {
+                                                let mut config = file_config.clone();
+                                                *selection_mut(&mut config, service) =
+                                                    Some(ModelRef { path, mmproj: None, catalog: None });
+                                                apply(&file_ctx, config);
+                                            }
+                                        },
+                                        "GGUF file…"
+                                    }
+                                }
                                 button { class: "dx-button", "data-style": "outline", "data-size": "xs",
                                     onclick: move |_| {
-                                        let picked = if service == Service::Speech {
-                                            rfd::FileDialog::new().pick_folder()
-                                        } else {
-                                            rfd::FileDialog::new()
-                                                .add_filter("GGUF", &["gguf"])
-                                                .pick_file()
-                                                .or_else(|| rfd::FileDialog::new().pick_folder())
-                                        };
-                                        if let Some(path) = picked {
+                                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
                                             let mut config = pick_config.clone();
                                             *selection_mut(&mut config, service) =
                                                 Some(ModelRef { path, mmproj: None, catalog: None });
                                             apply(&pick_ctx, config);
                                         }
                                     },
-                                    "Use existing…"
+                                    "Checkpoint folder…"
                                 }
                                 if is_set {
                                     button { class: "dx-button", "data-style": "ghost", "data-size": "xs",

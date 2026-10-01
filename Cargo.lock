@@ -403,6 +403,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyrender_svg"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f40554c3b19e6298c6210d21902796cb02f4dd1a472f393bb94a067c2c9562bc"
+dependencies = [
+ "anyrender",
+ "image",
+ "kurbo 0.12.0",
+ "peniko",
+ "thiserror 2.0.20",
+ "usvg",
+]
+
+[[package]]
 name = "anyrender_vello"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1031,10 +1045,9 @@ dependencies = [
 [[package]]
 name = "blitz-paint"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "027aa42b3795589c9d7ae0238ac3087f9f22b58f9643fc22c4dc1ef1ef3413b2"
 dependencies = [
  "anyrender",
+ "anyrender_svg",
  "blitz-dom",
  "blitz-traits",
  "color",
@@ -1044,6 +1057,7 @@ dependencies = [
  "peniko",
  "stylo",
  "taffy",
+ "usvg",
 ]
 
 [[package]]
@@ -1054,6 +1068,7 @@ checksum = "61ecda230035f39b13383f08e0cfc7159c92d194650ac8d57871a207ea0e52b7"
 dependencies = [
  "android-activity",
  "anyrender",
+ "arboard",
  "blitz-dom",
  "blitz-paint",
  "blitz-traits",
@@ -3622,6 +3637,7 @@ dependencies = [
  "anyrender_vello",
  "anyrender_vello_cpu",
  "blitz-dom",
+ "blitz-paint",
  "blitz-shell",
  "blitz-traits",
  "dioxus-asset-resolver",
@@ -6113,10 +6129,13 @@ name = "jevons-desktop"
 version = "0.1.0"
 dependencies = [
  "active-win-pos-rs",
+ "anyrender",
  "anyrender_vello",
  "arboard",
  "blitz-dom",
+ "blitz-paint",
  "blitz-shell",
+ "blitz-traits",
  "clap",
  "cpal",
  "device_query",

@@ -22,6 +22,9 @@ clap.workspace = true
 cpal.workspace = true
 anyrender_vello.workspace = true
 blitz-shell.workspace = true
+# The document behind the window, to scroll the interface browser to an element (Blitz has no
+# scrollIntoView); the same crate dioxus-native renders with.
+blitz-dom = { version = "=0.2.4", default-features = false }
 dioxus.workspace = true
 dioxus-native.workspace = true
 peniko.workspace = true
@@ -49,8 +52,11 @@ sysinfo.workspace = true
 uiautomation = { workspace = true, features = ["pattern"] }
 
 [dev-dependencies]
-# The headless page-rendering test drives the document directly.
-blitz-dom = { version = "=0.2.4", default-features = false }
+# Real mouse events for the headless click tests.
+blitz-traits = "=0.2.0"
+# Painting a page into a recording scene, to check what is drawn where.
+anyrender = "=0.6.2"
+blitz-paint = "=0.2.1"
 
 [lints]
 workspace = true

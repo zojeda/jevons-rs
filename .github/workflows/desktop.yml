@@ -15,6 +15,7 @@ on:
       - "Cargo.lock"
       - "jevons-desktop.example.toml"
       - ".github/hipconfig.rs"
+      - ".github/package-name.sh"
       - ".github/workflows/desktop.yml"
   pull_request:
     paths: *paths
@@ -29,7 +30,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # HIP binding layout compiled into the app: the ROCm version it is tested on.
+  # HIP binding layout compiled into the app: the ROCm version it is tested on, which the
+  # packages name. scripts/windows-desktop.sh reads this line.
   JEVONS_HIP_VERSION: "7.2.53211"
 
 jobs:
@@ -63,11 +65,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # One row per platform and GPU backend; .github/package-name.sh names each package.
+        # A CUDA or WGPU build is one more row (backend: cuda or wgpu) with its setup step next
+        # to "Pin the HIP bindings", once a Cargo feature selects that backend for the build.
         include:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            backend: hip
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            backend: hip
     runs-on: ${{ matrix.os }}
     # The embedded runtime (Burn, CubeCL, the models) makes a long first build.
     timeout-minutes: 120
@@ -76,20 +83,20 @@ jobs:
       - name: Name the build
         shell: bash
         run: |
-          short="${GITHUB_SHA::7}"
-          echo "VERSION=${GITHUB_REF_NAME//\//-}-$short" >> "$GITHUB_ENV"
-          echo "JEVONS_BUILD=${GITHUB_REF_NAME} ${short} (run ${GITHUB_RUN_NUMBER})" >> "$GITHUB_ENV"
+          bash .github/package-name.sh jevons-desktop ${{ matrix.target }} ${{ matrix.backend }} >> "$GITHUB_ENV"
+          echo "JEVONS_BUILD=${GITHUB_REF_NAME} ${GITHUB_SHA::7} (run ${GITHUB_RUN_NUMBER})" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: desktop-${{ matrix.target }}
+          key: desktop-${{ matrix.target }}-${{ matrix.backend }}
       - uses: actions/setup-python@v5
         # Blitz's CSS engine (stylo) generates code with Python at build time.
         with:
           python-version: "3.12"
       - name: Pin the HIP bindings
+        if: matrix.backend == 'hip'
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/bin"
@@ -107,41 +114,41 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          name="jevons-desktop-$VERSION-${{ matrix.target }}"
           release="target/${{ matrix.target }}/release"
-          mkdir -p "dist/$name"
+          mkdir -p "dist/$PACKAGE"
+          # The executable takes the package's name; local builds stay jevons-desktop.
+          cp "$release/jevons-desktop$EXE_SUFFIX" "dist/$PACKAGE/$PACKAGE$EXE_SUFFIX"
           if [ "${{ runner.os }}" = "Windows" ]; then
-            # The .pdb gives the log's panic backtraces their files and lines.
-            cp "$release/jevons-desktop.exe" "$release/jevons_desktop.pdb" "dist/$name/"
-          else
-            cp "$release/jevons-desktop" "dist/$name/"
+            # The .pdb gives the log's panic backtraces their files and lines. It keeps the
+            # linker's name: the executable records it, and Windows looks for it next to it.
+            cp "$release/jevons_desktop.pdb" "dist/$PACKAGE/"
           fi
-          cp jevons-desktop.example.toml "dist/$name/"
-          cp docs/desktop.md "dist/$name/GUIDE.md"
-          cp -r examples/desktop/flows "dist/$name/flows"
-          cat > "dist/$name/README.txt" <<README
+          cp jevons-desktop.example.toml "dist/$PACKAGE/"
+          cp docs/desktop.md "dist/$PACKAGE/GUIDE.md"
+          cp -r examples/desktop/flows "dist/$PACKAGE/flows"
+          cat > "dist/$PACKAGE/README.txt" <<README
           jevons-desktop $JEVONS_BUILD, context-aware dictation and automation from the tray.
 
-          Needs an AMD RDNA3-class GPU with ROCm/HIP 7.2 (on Windows, the AMD driver and the
-          AMD HIP SDK). Start jevons-desktop, open the window from the tray menu (Show context
-          inspector), and download the models in the Models tab. GUIDE.md covers the flow tree,
-          settings and hotkeys. The app writes its flow tree into the flows folder next to the
-          settings file on the first run; flows/ here is the same tree, with AGENTS.md
-          describing the format. Logs and traces go to the jevons folder in your home.
+          Needs $REQUIRES.
+
+          Start $PACKAGE$EXE_SUFFIX
+          (GUIDE.md calls it jevons-desktop; it runs under any name), open the window from the
+          tray menu (Show context inspector), and download the models in the Models tab.
+          GUIDE.md covers the flow tree, settings and hotkeys. The app writes its flow tree
+          into the flows folder next to the settings file on the first run; flows/ here is the
+          same tree, with AGENTS.md describing the format. Logs and traces go to the jevons
+          folder in your home.
           README
           cd dist
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            archive="$name.zip"
-            7z a -tzip "$archive" "$name" > /dev/null
-          else
-            archive="$name.tar.gz"
-            tar czf "$archive" "$name"
-          fi
-          rm -r "$name"
-          sha256sum "$archive" > "$archive.sha256"
+          case "$ARCHIVE" in
+            *.zip) 7z a -tzip "$ARCHIVE" "$PACKAGE" > /dev/null ;;
+            *) tar czf "$ARCHIVE" "$PACKAGE" ;;
+          esac
+          rm -r "$PACKAGE"
+          sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
       - uses: actions/upload-artifact@v4
         with:
-          name: jevons-desktop-${{ env.VERSION }}-${{ matrix.target }}
+          name: ${{ env.PACKAGE }}
           path: dist/*
           if-no-files-found: error
           retention-days: 30

@@ -13,6 +13,7 @@ pub enum Icon {
     ChevronRight,
     Check,
     Cross,
+    Plus,
 }
 
 pub fn icon(icon: Icon) -> Element {
@@ -22,6 +23,7 @@ pub fn icon(icon: Icon) -> Element {
         Icon::ChevronRight => ("M9 6l6 6-6 6", "#a1a1a1"),
         Icon::Check => ("M5 12.5l4.5 4.5L19 7.5", "#b6fae3"),
         Icon::Cross => ("M7 7l10 10M17 7L7 17", "#ffb4b4"),
+        Icon::Plus => ("M12 5v14M5 12h14", "#22e6f2"),
     };
     rsx! {
         svg {
@@ -344,10 +346,27 @@ fn JsonNode(label: String, value: Value, depth: usize) -> Element {
     }
 }
 
-/// Copies `text` to the clipboard.
-pub fn copy(text: &str) {
-    if let Ok(mut clipboard) = arboard::Clipboard::new() {
-        let _ = clipboard.set_text(text);
+/// Copies `text` to the clipboard; the error says why it could not.
+pub fn copy(text: &str) -> Result<(), String> {
+    arboard::Clipboard::new()
+        .and_then(|mut clipboard| clipboard.set_text(text))
+        .map_err(|e| e.to_string())
+}
+
+/// A button that copies `text` and then says whether it did, until the text changes.
+#[component]
+pub fn CopyButton(text: String, label: String, #[props(default)] disabled: bool) -> Element {
+    let mut done = use_signal(|| None::<(String, bool)>);
+    let shown = match &*done.read() {
+        Some((copied, true)) if *copied == text => "Copied".to_string(),
+        Some((copied, false)) if *copied == text => "Copy failed".to_string(),
+        _ => label.clone(),
+    };
+    rsx! {
+        button { class: "dx-button", "data-style": "outline", "data-size": "sm", disabled,
+            onclick: move |_| done.set(Some((text.clone(), copy(&text).is_ok()))),
+            "{shown}"
+        }
     }
 }
 
