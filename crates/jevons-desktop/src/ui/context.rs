@@ -28,7 +28,7 @@ pub fn ContextPage(rev: u64, frozen: Signal<bool>) -> Element {
     drop(view);
     let reread = ctx.clone();
     let capture = ctx.clone();
-    let record = ctx.clone();
+    let is_frozen = frozen();
     // The extract the workbench edits; the flow tree's readings can pick one too.
     let chosen = use_signal(|| None::<String>);
     // An expression the interface browser sends to the workbench to try.
@@ -51,19 +51,6 @@ pub fn ContextPage(rev: u64, frozen: Signal<bool>) -> Element {
                         capture.send(Command::CaptureContextIn(Duration::from_secs(3)));
                     },
                     "Capture in 3 s"
-                }
-                Switch {
-                    checked: raw(),
-                    label: "Raw JSON".to_string(),
-                    onchange: move |on| raw.set(on),
-                }
-                button {
-                    class: "dx-button",
-                    "data-style": "outline",
-                    "data-size": "sm",
-                    title: "Save this window's interface to ~/jevons/trees, for writing investigations and replaying them with --tree",
-                    onclick: move |_| record.send(Command::RecordTree),
-                    "Record tree"
                 }
             }
             span { class: "muted", "{backends}" }
@@ -124,7 +111,18 @@ pub fn ContextPage(rev: u64, frozen: Signal<bool>) -> Element {
                         div { class: "dx-card-header",
                             div {
                                 div { class: "dx-card-title", "Focused window" }
-                                div { class: "dx-card-description", "What the accessibility layer reports right now" }
+                                div { class: "dx-card-description",
+                                    if is_frozen {
+                                        "Frozen: the window captured when you froze the tab or pressed Capture in 3 s"
+                                    } else {
+                                        "What the accessibility layer reports for the window in front, twice a second"
+                                    }
+                                }
+                            }
+                            Switch {
+                                checked: raw(),
+                                label: "Raw JSON".to_string(),
+                                onchange: move |on| raw.set(on),
                             }
                         }
                         div { class: "dx-card-content",
@@ -151,12 +149,14 @@ pub fn ContextPage(rev: u64, frozen: Signal<bool>) -> Element {
                 }
             }
         }
-        {extracts_card(extracts, chosen, move || reread.send(Command::ReadExtracts))}
-        Workbench { rev, chosen, draft }
-        Interface { rev, draft }
+        // From the short answer to the tools: where a take goes, what the tree reads, then the
+        // interface and the workbench right under it, which its selectors are tried in.
         if !route.is_empty() {
-            {route_card(&route)}
+            {route_card(&route, "Where a take from here goes, by guards and rules alone, with each rule checked")}
         }
+        {extracts_card(extracts, chosen, move || reread.send(Command::ReadExtracts))}
+        Interface { rev, draft }
+        Workbench { rev, chosen, draft }
     }
 }
 
@@ -270,7 +270,9 @@ fn excerpt(text: &str) -> String {
 }
 
 /// The route the context takes before any model decision, with every guard checked.
-pub fn route_card(route: &[FlowStep]) -> Element {
+/// A route through the flow tree, each decision with its branches, every rule checked and, when
+/// the model was asked, each branch's probability. `about` says whose route it is.
+pub fn route_card(route: &[FlowStep], about: &str) -> Element {
     let path: Vec<String> = route.iter().filter_map(|s| s.chosen.clone()).collect();
     let end = route.last().and_then(|s| s.how.clone());
     rsx! {
@@ -278,7 +280,7 @@ pub fn route_card(route: &[FlowStep]) -> Element {
             div { class: "dx-card-header",
                 div {
                     div { class: "dx-card-title", "Route" }
-                    div { class: "dx-card-description", "Where a take from here goes, by guards and rules alone, with each rule checked" }
+                    div { class: "dx-card-description", "{about}" }
                 }
                 div { class: "row",
                     {badge(&if path.is_empty() { "/".to_string() } else { path.join(" / ") }, "accent")}
@@ -303,10 +305,17 @@ pub fn route_card(route: &[FlowStep]) -> Element {
                                     p { class: "muted", "A leaf: the walk ends here." }
                                 }
                                 {step.branches.iter().map(|b| {
+                                    let probability = step.probabilities.get(&b.name).map(|p| format!("{:.0}%", p * 100.0));
+                                    let chosen = step.chosen.as_deref() == Some(b.name.as_str());
                                     rsx! {
                                         div { class: "row",
                                             {icon(if b.passed { Icon::Check } else { Icon::Cross })}
                                             span { class: "mono", "{b.name}" }
+                                            if let Some(p) = probability {
+                                                {badge(&p, if chosen { "accent" } else { "secondary" })}
+                                            } else if chosen {
+                                                {badge("chosen", "accent")}
+                                            }
                                             span { class: "muted", "priority {b.priority} · {b.specificity} rules" }
                                             if b.preferred {
                                                 {badge("preferred", "accent")}

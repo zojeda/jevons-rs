@@ -827,7 +827,7 @@ mod tests {
         );
         assert!(text.contains("Try in workbench"), "{text}");
         // The tab shows another window (Notepad) than the tree's.
-        assert!(text.contains("This tree is of slack.exe"), "{text}");
+        assert!(text.contains("This tree shows slack.exe"), "{text}");
     }
 
     /// The interface browser alone, as the Context page shows it.

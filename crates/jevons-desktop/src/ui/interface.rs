@@ -13,7 +13,7 @@
 //! **Try in workbench** loads one into the extract workbench as a new expression and tries it.
 
 use super::Ctx;
-use super::components::{Icon, badge, copy, icon};
+use super::components::{CopyButton, Icon, badge, icon};
 use crate::agent::{Command, InterfaceView, window_key};
 use blitz_dom::BaseDocument;
 use dioxus::prelude::*;
@@ -209,15 +209,15 @@ pub fn Interface(rev: u64, draft: Signal<Option<String>>) -> Element {
     drop(view);
     let mut query = use_signal(String::new);
 
-    // The first time the card shows with a window, it reads that window's top level.
-    let start = ctx.clone();
-    let first = browser.is_none() && shown.is_some();
-    use_hook(move || {
-        if first {
-            start.send(Command::InterfaceLoad);
-        }
-    });
+    // The first render with a window (even one after mounting, when the app has just started
+    // and no context was read yet) reads that window's top level, once.
+    let asked = use_hook(|| std::rc::Rc::new(std::cell::Cell::new(false)));
+    if browser.is_none() && shown.is_some() && !asked.get() {
+        asked.set(true);
+        ctx.send(Command::InterfaceLoad);
+    }
 
+    let record = ctx.clone();
     let (reload, focus, search, enter, clear, collapse, open_all) = (
         ctx.clone(),
         ctx.clone(),
@@ -263,7 +263,9 @@ pub fn Interface(rev: u64, draft: Signal<Option<String>>) -> Element {
                     div { class: "dx-card-title", "Interface" }
                     div { class: "dx-card-description",
                         "This window's accessibility tree: find the element an expression should select, \
-                         then try its selectors in the workbench"
+                         then try its selectors in the workbench below. Show focused opens the tree down \
+                         to the element that had the focus; Record tree saves it to ~/jevons/trees, to \
+                         replay with --tree."
                     }
                 }
                 div { class: "row",
@@ -279,6 +281,11 @@ pub fn Interface(rev: u64, draft: Signal<Option<String>>) -> Element {
                         onclick: move |_| reload.send(Command::InterfaceLoad),
                         "Reload"
                     }
+                    button { class: "dx-button", "data-style": "outline", "data-size": "sm",
+                        disabled: shown.is_none(),
+                        onclick: move |_| record.send(Command::RecordTree),
+                        "Record tree"
+                    }
                 }
             }
             div { class: "dx-card-content",
@@ -291,7 +298,7 @@ pub fn Interface(rev: u64, draft: Signal<Option<String>>) -> Element {
                     Some(b) => rsx! {
                         if let Some((was, now)) = elsewhere {
                             div { class: "row",
-                                p { class: "warn", "This tree is of {was}; the tab now shows {now}." }
+                                p { class: "warn", "This tree shows {was}; the tab now shows {now}." }
                                 button { class: "dx-button", "data-size": "sm",
                                     onclick: {
                                         let load = ctx.clone();
@@ -368,7 +375,7 @@ pub fn Interface(rev: u64, draft: Signal<Option<String>>) -> Element {
                             }
                             if b.stopped {
                                 p { class: "muted",
-                                    "The tree stopped opening at its most elements: open deeper elements one at a time."
+                                    "Stopped after reading 1,500 elements: open deeper elements one at a time."
                                 }
                             }
                             if revealing {
@@ -407,7 +414,7 @@ fn results(ctx: &Ctx, found: Option<Result<Found, String>>, searching: bool) -> 
         Some(Ok(found)) => found,
     };
     let mut summary = match found.total {
-        0 => "No element holds it".to_string(),
+        0 => "No element contains this text".to_string(),
         1 => "1 match".to_string(),
         n if n > found.hits.len() => format!("{n} matches, the first {} listed", found.hits.len()),
         n => format!("{n} matches"),
@@ -442,7 +449,7 @@ fn results(ctx: &Ctx, found: Option<Result<Found, String>>, searching: bool) -> 
                             onclick: move |_| reveal.send(Command::InterfaceReveal(ids.clone())),
                             span { class: "iface-role", "{label}" }
                             if !exact {
-                                span { class: "muted", "every word" }
+                                span { class: "muted", "matches every word" }
                             }
                             span { class: "iface-class", "{place}" }
                         }
@@ -616,7 +623,7 @@ fn selection(
                                     div { class: "row",
                                         {badge(&candidate.how, kind)}
                                         if !candidate.stable {
-                                            span { class: "muted", "in the user's language" }
+                                            span { class: "muted", "depends on the interface language" }
                                         }
                                     }
                                     pre { class: "code", "{candidate.xpath}" }
@@ -625,10 +632,7 @@ fn selection(
                                             onclick: move |_| draft.set(Some(tried.clone())),
                                             "Try in workbench"
                                         }
-                                        button { class: "dx-button", "data-style": "outline", "data-size": "sm",
-                                            onclick: move |_| copy(&copied),
-                                            "Copy"
-                                        }
+                                        CopyButton { text: copied.clone(), label: "Copy".to_string() }
                                     }
                                 }
                             }

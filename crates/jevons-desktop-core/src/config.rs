@@ -329,6 +329,20 @@ pub enum HotkeyMode {
     Toggle,
 }
 
+/// An optional setting whose default is on, written as `""` when off: TOML has no null, and a
+/// left-out key would read back as the default.
+mod empty_is_none {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(value: &Option<String>, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(value.as_deref().unwrap_or(""))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+        Ok(Some(String::deserialize(d)?).filter(|s| !s.trim().is_empty()))
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Dictation {
@@ -336,8 +350,8 @@ pub struct Dictation {
     pub hotkey: String,
     /// Whether the push-to-talk hotkeys are held while speaking or pressed to start and stop.
     pub hotkey_mode: HotkeyMode,
-    /// Live dictation (F9 by default).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Live dictation (F9 by default); `""` turns it off.
+    #[serde(with = "empty_is_none")]
     pub live_hotkey: Option<String>,
     pub live_hotkey_mode: HotkeyMode,
     /// A bubble by the tray icon shows what dictation hears and does: the words as they are
@@ -521,6 +535,19 @@ mod tests {
         assert_eq!(config.dictation.hotkey_mode, HotkeyMode::Hold);
         assert_eq!(config.dictation.live_hotkey_mode, HotkeyMode::Toggle);
         assert!(toml::from_str::<DesktopConfig>("[dictation]\nhotkey_mode = \"tap\"\n").is_err());
+    }
+
+    #[test]
+    fn a_live_hotkey_turned_off_stays_off_once_saved() {
+        let mut config = DesktopConfig::default();
+        config.dictation.live_hotkey = None;
+        let text = toml::to_string(&config).unwrap();
+        assert!(text.contains("live_hotkey = \"\""), "{text}");
+        let back: DesktopConfig = toml::from_str(&text).unwrap();
+        assert_eq!(back.dictation.live_hotkey, None);
+        // Left out, it is the default.
+        let default: DesktopConfig = toml::from_str("").unwrap();
+        assert_eq!(default.dictation.live_hotkey.as_deref(), Some("F9"));
     }
 
     #[test]

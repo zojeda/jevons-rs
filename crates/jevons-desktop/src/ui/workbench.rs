@@ -4,7 +4,7 @@
 //! typing and again when the window changes; Save writes the edit into its node file.
 
 use super::Ctx;
-use super::components::{Choice, Collapsible, Select, Switch, copy};
+use super::components::{Choice, Collapsible, CopyButton, Select, Switch};
 use crate::agent::{Command, TrialRequest};
 use dioxus::prelude::*;
 use jevons_desktop_core::flow::extract;
@@ -58,6 +58,7 @@ pub fn Workbench(
     let trial = view.trial.clone();
     let trying = view.trying;
     let saved = view.saved.clone();
+    let has_window = view.context.is_some();
     drop(view);
 
     let mut name = use_signal(String::new);
@@ -208,7 +209,7 @@ pub fn Workbench(
         div { class: "dx-card",
             div { class: "dx-card-header",
                 div {
-                    div { class: "dx-card-title", "Extracts" }
+                    div { class: "dx-card-title", "Extract workbench" }
                     div { class: "dx-card-description",
                         "Try any [extract] of the flow tree, or a new one, on this window as a take reads it; \
                          edit it and save it back"
@@ -271,10 +272,13 @@ pub fn Workbench(
                             }
                         })}
                     }
-                    button { class: "dx-button", "data-size": "sm",
-                        disabled: xpath().trim().is_empty(),
+                    button { class: "dx-button", "data-style": "accent", "data-size": "sm",
+                        disabled: xpath().trim().is_empty() || !has_window,
                         onclick: move |_| run.send(Command::TryExtract(request(false))),
                         "Try"
+                    }
+                    if !has_window {
+                        span { class: "muted", "Switch to an application first: Try reads its window." }
                     }
                     if can_save {
                         button { class: "dx-button", "data-style": "outline", "data-size": "sm",
@@ -282,15 +286,13 @@ pub fn Workbench(
                             "{save_label}"
                         }
                     }
-                    button { class: "dx-button", "data-style": "outline", "data-size": "sm",
+                    CopyButton {
+                        text: extract::as_toml(
+                            &if name().trim().is_empty() { "new".to_string() } else { name().trim().to_string() },
+                            &request(false).spec,
+                        ),
+                        label: "Copy as TOML".to_string(),
                         disabled: xpath().trim().is_empty(),
-                        title: "Copy [extract.<name>] as TOML, to paste into a node file",
-                        onclick: move |_| {
-                            let spec = request(false).spec;
-                            let label = if name().trim().is_empty() { "new".to_string() } else { name().trim().to_string() };
-                            copy(&extract::as_toml(&label, &spec));
-                        },
-                        "Copy as TOML"
                     }
                 }
                 if kind() == ExtractAs::Table {

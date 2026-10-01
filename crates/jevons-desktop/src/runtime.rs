@@ -30,6 +30,18 @@ pub enum Status {
 }
 
 impl Status {
+    /// A word or two for the window's top bar; `describe` has the whole story.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::NoModels => "No models",
+            Self::Loading => "Loading models",
+            Self::Ready { exposed: true, .. } => "Serving the API",
+            Self::Ready { .. } => "Ready",
+            Self::Remote { .. } => "Remote server",
+            Self::Failed(_) => "Failed",
+        }
+    }
+
     pub fn describe(&self) -> String {
         match self {
             Self::NoModels => "No models yet: download them in the Models tab".into(),

@@ -62,7 +62,7 @@ html, body, #main {
 }
 .bubble-text p { margin: 0; font-size: 15px; color: #fafafa; }
 .bubble-partial { color: #a1a1a1; }
-.bubble-hint { color: #5d5d5d; }
+.bubble-hint { color: #a1a1a1; }
 
 .bubble-output {
   font-size: 13px;
@@ -165,7 +165,7 @@ html, body, #main {
   color: #d4d4d4;
   white-space: pre-wrap;
 }
-.md-lang { font-size: 10px; color: #5d5d5d; text-transform: uppercase; margin-bottom: 2px; }
+.md-lang { font-size: 10px; color: #a1a1a1; text-transform: uppercase; margin-bottom: 2px; }
 .md-quote {
   display: flex;
   flex-direction: column;
@@ -188,7 +188,8 @@ html, body, #main {
   flex: 1;
   min-height: 0;
   margin: 0;
-  overflow: hidden;
+  /* All of a tool's arguments, before running it: they scroll with the wheel. */
+  overflow-y: auto;
   font-family: "Cascadia Mono", "Consolas", monospace;
   font-size: 12px;
   color: #d4d4d4;
