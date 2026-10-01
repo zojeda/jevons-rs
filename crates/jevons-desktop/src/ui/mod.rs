@@ -840,14 +840,30 @@ mod tests {
     /// Clicks the middle of the element `selector` finds, as the window would: the pointer moves
     /// there, then the button goes down and up.
     fn click(doc: &mut DioxusDocument, selector: &str) {
-        use blitz_traits::events::{
-            BlitzMouseButtonEvent, MouseEventButton, MouseEventButtons, UiEvent,
-        };
         doc.resolve(0.0);
         let node = doc
             .query_selector(selector)
             .unwrap()
             .unwrap_or_else(|| panic!("nothing matches {selector}"));
+        click_node(doc, node, selector);
+    }
+
+    /// Clicks the first element matching `selector` whose text holds `text`.
+    fn click_text(doc: &mut DioxusDocument, selector: &str, text: &str) {
+        doc.resolve(0.0);
+        let node = doc
+            .query_selector_all(selector)
+            .unwrap()
+            .into_iter()
+            .find(|n| doc.get_node(*n).unwrap().text_content().contains(text))
+            .unwrap_or_else(|| panic!("no {selector} says {text}"));
+        click_node(doc, node, selector);
+    }
+
+    fn click_node(doc: &mut DioxusDocument, node: usize, selector: &str) {
+        use blitz_traits::events::{
+            BlitzMouseButtonEvent, MouseEventButton, MouseEventButtons, UiEvent,
+        };
         let (x, y) = {
             let node = doc.get_node(node).unwrap();
             let at = node.absolute_position(0.0, 0.0);
@@ -1074,6 +1090,164 @@ mod tests {
             "{top} in {scroll}+{height}"
         );
         std::fs::remove_dir_all(&folder).ok();
+    }
+
+    fn app_root() -> Element {
+        rsx! { app::App {} }
+    }
+
+    #[test]
+    fn the_tabs_take_clicks_while_the_page_is_scrolled() {
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        let folder = std::env::temp_dir().join(format!("jevons-ui-tabs-{}", std::process::id()));
+        let view = Arc::new(Mutex::new(view(&folder)));
+        let (commands, _received) = tokio::sync::mpsc::unbounded_channel();
+        let mut vdom = VirtualDom::new(app_root);
+        vdom.insert_any_root_context(Box::new(Ctx {
+            view: view.clone(),
+            commands,
+        }));
+        let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("style.css"));
+        doc.set_viewport(Viewport::new(1000, 600, 1.0, ColorScheme::Dark));
+        doc.initial_build();
+        doc.poll(None);
+        doc.resolve(0.0);
+        // The page scrolled far down: its content now lies under the tab bar.
+        let page = doc.query_selector(".page").unwrap().unwrap();
+        doc.get_node_mut(page).unwrap().scroll_offset = blitz_dom::Point { x: 0.0, y: 400.0 };
+        click(&mut doc, ".dx-tabs-trigger:nth-child(2)");
+        let active = doc
+            .query_selector(".dx-tabs-trigger[data-state=\"active\"]")
+            .unwrap()
+            .unwrap();
+        assert_eq!(doc.get_node(active).unwrap().text_content(), "Takes");
+    }
+
+    #[test]
+    fn edited_settings_mark_the_page_and_save_from_a_bar_that_shows_only_then() {
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        let folder = std::env::temp_dir().join(format!("jevons-ui-dirty-{}", std::process::id()));
+        let view = Arc::new(Mutex::new(view(&folder)));
+        let (commands, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let mut vdom = VirtualDom::new(app_root);
+        vdom.insert_any_root_context(Box::new(Ctx {
+            view: view.clone(),
+            commands,
+        }));
+        let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("style.css"));
+        // Tall enough that the whole settings page is in view: what is scrolled out takes no clicks.
+        doc.set_viewport(Viewport::new(1000, 4000, 1.0, ColorScheme::Dark));
+        doc.initial_build();
+        doc.poll(None);
+        let shows =
+            |doc: &DioxusDocument, selector: &str| doc.query_selector(selector).unwrap().is_some();
+        click_text(&mut doc, ".dx-tabs-trigger", "Settings");
+        assert!(!shows(&doc, ".save-bar") && !shows(&doc, ".tab-dot"));
+        // A change marks the page and the tab, and the save bar appears.
+        click_text(&mut doc, ".switch-row", "Include the clipboard");
+        assert!(shows(&doc, ".save-bar") && shows(&doc, ".tab-dot"));
+        assert!(shows(&doc, ".page[data-dirty=\"true\"]"));
+        assert!(
+            doc.root_element()
+                .text_content()
+                .contains("Unsaved changes")
+        );
+        // Revert drops it.
+        click_text(&mut doc, ".save-bar .dx-button", "Revert");
+        assert!(!shows(&doc, ".save-bar") && !shows(&doc, ".tab-dot"));
+        // Changed again and applied: the agent gets the settings, and the bar goes.
+        click_text(&mut doc, ".switch-row", "Include the clipboard");
+        click_text(&mut doc, ".save-bar .dx-button", "Apply and save");
+        let mut applied = None;
+        while let Ok(command) = received.try_recv() {
+            if let crate::agent::Command::Apply(config) = command {
+                applied = Some(config);
+            }
+        }
+        let applied = applied.expect("Apply sent");
+        assert!(applied.privacy.read_clipboard);
+        assert_eq!(applied.models, view.lock().unwrap().config.models);
+        // The agent saves them; the window follows and nothing is pending.
+        view.lock().unwrap().config = *applied;
+        doc.vdom.mark_dirty(ScopeId::APP);
+        doc.poll(None);
+        assert!(!shows(&doc, ".save-bar") && !shows(&doc, ".tab-dot"));
+    }
+
+    fn flows_root() -> Element {
+        rsx! { flows::FlowsPage { rev: REV.fetch_add(1, Ordering::Relaxed) } }
+    }
+
+    #[test]
+    fn the_flow_tree_nests_branches_folds_them_and_shows_a_node_in_full() {
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        let folder = std::env::temp_dir().join(format!("jevons-ui-flows-{}", std::process::id()));
+        let mut state = view(&folder);
+        state.flows = flows();
+        let context = state.context.clone().unwrap();
+        state.route = walk::preview(&state.flows, &context, state.flows.root());
+        let view = Arc::new(Mutex::new(state));
+        let (commands, _received) = tokio::sync::mpsc::unbounded_channel();
+        let mut vdom = VirtualDom::new(flows_root);
+        vdom.insert_any_root_context(Box::new(Ctx { view, commands }));
+        let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("style.css"));
+        doc.set_viewport(Viewport::new(1200, 6000, 1.0, ColorScheme::Dark));
+        doc.initial_build();
+        doc.poll(None);
+        let names = |doc: &DioxusDocument, selector: &str| -> Vec<String> {
+            doc.query_selector_all(selector)
+                .unwrap()
+                .into_iter()
+                .map(|n| doc.get_node(n).unwrap().text_content())
+                .collect()
+        };
+        // dictate's branches sit two levels down, under the root and under dictate.
+        let nested = names(
+            &doc,
+            ".flow-children .flow-children > .flow-node > .flow-row .flow-name",
+        );
+        assert!(nested.contains(&"terminal".to_string()), "{nested:?}");
+        // Shared actions say where they come from.
+        assert!(
+            names(&doc, ".flow-shared")
+                .iter()
+                .any(|s| s == "shared from _actions")
+        );
+        // dictate's row: its toggle folds it, its label selects it.
+        doc.resolve(0.0);
+        let dictate = doc
+            .query_selector_all(".flow-row")
+            .unwrap()
+            .into_iter()
+            .find(|n| {
+                let row = doc.get_node(*n).unwrap();
+                doc.get_node(row.children[1])
+                    .unwrap()
+                    .text_content()
+                    .contains("decidedictate")
+            })
+            .unwrap();
+        let (toggle, label) = {
+            let row = doc.get_node(dictate).unwrap();
+            (row.children[0], row.children[1])
+        };
+        click_node(&mut doc, label, ".flow-label");
+        doc.resolve(0.0);
+        click_node(&mut doc, toggle, ".flow-toggle");
+        let nested = names(
+            &doc,
+            ".flow-children .flow-children > .flow-node > .flow-row .flow-name",
+        );
+        assert!(!nested.contains(&"terminal".to_string()), "{nested:?}");
+        // Selecting dictate showed it in full.
+        let text = doc.root_element().text_content();
+        assert!(
+            text.contains("Applies when") && text.contains("dictate/decide.toml"),
+            "{text}"
+        );
     }
 
     /// A text field, for the paint check below.
