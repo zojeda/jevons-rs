@@ -1,11 +1,12 @@
 //! Runtime, dictation and privacy settings, applied and saved together.
 
 use super::Ctx;
-use super::components::{Choice, HotkeyField, Select, Switch, badge, copy};
+use super::components::{Choice, CopyButton, HotkeyField, Select, Switch, badge};
 use crate::agent::Command;
 use crate::runtime::Status;
 use dioxus::prelude::*;
 use jevons_desktop_core::config::{DesktopConfig, HotkeyMode, Mode};
+use std::collections::BTreeMap;
 
 /// The hotkey mode a switch sets: on holds the hotkey while speaking.
 fn mode(hold: bool) -> HotkeyMode {
@@ -24,17 +25,28 @@ fn mode_label(mode: HotkeyMode) -> String {
     .into()
 }
 
+/// A setting typed as text, kept as typed and checked when saved: a number field rewritten on
+/// every keystroke could not be cleared or typed digit by digit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Field {
+    Bind,
+    Port,
+    Tokens,
+    Chars,
+}
+
 /// The settings being edited, kept by the window rather than the page: edits survive switching
-/// tabs, and the footer outside the scrolling page saves them. Until something is edited it
-/// shows the saved settings, so changes made elsewhere (the tray, the Models tab) show through.
+/// tabs, and the save bar outside the scrolling page saves them. Until something is edited it
+/// shows the saved settings, so changes made elsewhere (the tray, the Models tab, approvals)
+/// show through, and saving applies only what was edited onto the settings as they are then.
 #[derive(Clone, Copy, PartialEq)]
 pub struct SettingsDraft {
     /// The settings as saved, refreshed by the window on every render (not reactive).
     saved: CopyValue<DesktopConfig>,
-    /// The edits, from the first change until they are applied or reverted.
-    config: Signal<Option<DesktopConfig>>,
-    /// The bind address as typed, which may not parse yet.
-    bind: Signal<Option<String>>,
+    /// The saved settings the edits started from, and the edited ones.
+    config: Signal<Option<(DesktopConfig, DesktopConfig)>>,
+    /// Fields as typed.
+    typed: Signal<BTreeMap<Field, String>>,
 }
 
 impl SettingsDraft {
@@ -42,7 +54,7 @@ impl SettingsDraft {
         Self {
             saved: CopyValue::new(saved),
             config: Signal::new(None),
-            bind: Signal::new(None),
+            typed: Signal::new(BTreeMap::new()),
         }
     }
 
@@ -54,80 +66,153 @@ impl SettingsDraft {
         }
     }
 
-    /// The settings the page shows: the edits, or else the saved settings.
+    /// The settings the page shows: the edited ones, or else the saved ones.
     pub fn current(&self) -> DesktopConfig {
-        self.config
-            .read()
-            .clone()
-            .unwrap_or_else(|| self.saved.peek().clone())
+        match &*self.config.read() {
+            Some((_, edited)) => edited.clone(),
+            None => self.saved.peek().clone(),
+        }
     }
 
     /// Changes the edited settings, starting the edits from the saved ones.
     pub fn edit(&self, change: impl FnOnce(&mut DesktopConfig)) {
         let saved = self.saved;
         let mut config = self.config;
-        change(config.write().get_or_insert_with(|| saved.peek().clone()));
+        let mut edits = config.write();
+        let (_, edited) = edits.get_or_insert_with(|| (saved.peek().clone(), saved.peek().clone()));
+        change(edited);
     }
 
-    pub fn bind(&self) -> String {
-        self.bind
-            .read()
-            .clone()
-            .unwrap_or_else(|| self.saved.peek().server.bind.to_string())
+    /// A typed field: as typed, or else its current value.
+    pub fn typed(&self, field: Field) -> String {
+        if let Some(text) = self.typed.read().get(&field) {
+            return text.clone();
+        }
+        let c = self.current();
+        match field {
+            Field::Bind => c.server.bind.to_string(),
+            Field::Port => c.server.port.to_string(),
+            Field::Tokens => c.dictation.max_output_tokens.to_string(),
+            Field::Chars => c.privacy.max_context_chars.to_string(),
+        }
     }
 
-    pub fn set_bind(&self, text: String) {
-        let mut bind = self.bind;
-        bind.set(Some(text));
+    pub fn set_typed(&self, field: Field, text: String) {
+        let mut typed = self.typed;
+        typed.write().insert(field, text);
     }
 
-    /// The settings to save, or `None` while the bind address does not parse. The model choices
-    /// belong to the Models tab and approvals to their own gesture, so the saved ones are kept.
-    pub fn saving(&self) -> Option<DesktopConfig> {
-        let saved = self.saved.peek();
-        let mut config = self.current();
-        config.server.bind = self.bind().trim().parse().ok()?;
-        config.models = saved.models.clone();
-        config.automation.approved = saved.automation.approved.clone();
-        Some(config)
-    }
-
-    /// Whether anything differs from the saved settings.
-    pub fn dirty(&self) -> bool {
-        let edited = self.config.read().is_some() || self.bind.read().is_some();
-        edited
-            && match self.saving() {
-                Some(config) => config != *self.saved.peek(),
-                None => true,
+    /// The settings to save: what was edited applied onto the settings as saved now, the typed
+    /// fields checked. An error says which field is wrong.
+    pub fn saving(&self) -> Result<DesktopConfig, String> {
+        let saved = self.saved.peek().clone();
+        let mut config = match &*self.config.read() {
+            Some((base, edited)) => merge(base, edited, &saved),
+            None => saved,
+        };
+        for (field, text) in self.typed.read().iter() {
+            let text = text.trim();
+            match field {
+                Field::Bind => {
+                    config.server.bind = text.parse().map_err(|_| {
+                        "The address must be an IP address, such as 127.0.0.1 or 0.0.0.0"
+                            .to_string()
+                    })?
+                }
+                Field::Port => {
+                    config.server.port = text
+                        .parse()
+                        .ok()
+                        .filter(|p| *p > 0)
+                        .ok_or("The port must be a number from 1 to 65535")?
+                }
+                Field::Tokens => {
+                    config.dictation.max_output_tokens = text
+                        .parse()
+                        .ok()
+                        .filter(|n| (16..=8192).contains(n))
+                        .ok_or("Max output tokens must be from 16 to 8192")?
+                }
+                Field::Chars => {
+                    config.privacy.max_context_chars = text
+                        .parse()
+                        .ok()
+                        .filter(|n| (100..=20_000).contains(n))
+                        .ok_or("Characters per field must be from 100 to 20000")?
+                }
             }
+        }
+        Ok(config)
+    }
+
+    /// Whether anything differs from the saved settings (or a typed field is wrong).
+    pub fn dirty(&self) -> bool {
+        let edited = self.config.read().is_some() || !self.typed.read().is_empty();
+        edited && self.saving().ok().as_ref() != Some(&*self.saved.peek())
     }
 
     /// Drops the edits.
     pub fn revert(&self) {
-        let (mut config, mut bind) = (self.config, self.bind);
+        let (mut config, mut typed) = (self.config, self.typed);
         config.set(None);
-        bind.set(None);
+        typed.set(BTreeMap::new());
     }
+}
+
+/// `edited`'s changes from `base`, applied onto `latest`, field by field: what changed elsewhere
+/// meanwhile (a tray toggle, an approval, a model choice) is kept.
+fn merge(base: &DesktopConfig, edited: &DesktopConfig, latest: &DesktopConfig) -> DesktopConfig {
+    use serde_json::Value;
+    fn apply(base: &Value, edited: &Value, latest: &mut Value) {
+        match (base, edited, latest) {
+            (Value::Object(base), Value::Object(edited), Value::Object(latest)) => {
+                for (key, value) in edited {
+                    let before = base.get(key).unwrap_or(&Value::Null);
+                    if value == before {
+                        continue;
+                    }
+                    match latest.get_mut(key) {
+                        Some(now) if value.is_object() && before.is_object() => {
+                            apply(before, value, now)
+                        }
+                        _ => {
+                            latest.insert(key.clone(), value.clone());
+                        }
+                    }
+                }
+                // A setting the edits cleared (its key left out).
+                for key in base.keys().filter(|k| !edited.contains_key(*k)) {
+                    latest.remove(key);
+                }
+            }
+            (base, edited, latest) if base != edited => *latest = edited.clone(),
+            _ => {}
+        }
+    }
+    let to_value = |c: &DesktopConfig| serde_json::to_value(c).unwrap_or_default();
+    let mut merged = to_value(latest);
+    apply(&to_value(base), &to_value(edited), &mut merged);
+    serde_json::from_value(merged).unwrap_or_else(|_| edited.clone())
 }
 
 /// The bar under the page while settings are unsaved: what to do with them, always in view.
 pub fn footer(ctx: &Ctx, draft: SettingsDraft) -> Element {
     let apply = ctx.clone();
-    let valid = draft.saving().is_some();
+    let problem = draft.saving().err();
     rsx! {
         div { class: "save-bar",
             span { class: "save-bar-dot" }
             span { class: "grow", "Unsaved settings" }
-            if !valid {
-                span { class: "error-text", "The bind address is not an IP address" }
+            if let Some(problem) = &problem {
+                span { class: "error-text", "{problem}" }
             }
             button { class: "dx-button", "data-style": "outline", "data-size": "sm",
                 onclick: move |_| draft.revert(),
                 "Revert"
             }
-            button { class: "dx-button", "data-style": "accent", "data-size": "sm", disabled: !valid,
+            button { class: "dx-button", "data-style": "accent", "data-size": "sm", disabled: problem.is_some(),
                 onclick: move |_| {
-                    if let Some(config) = draft.saving() {
+                    if let Ok(config) = draft.saving() {
                         apply.send(Command::Apply(Box::new(config)));
                         draft.revert();
                     }
@@ -157,9 +242,9 @@ pub fn SettingsPage(rev: u64) -> Element {
     drop(view);
 
     let d = draft.current();
-    let bind = draft.bind();
-    let bind_ok = bind.trim().parse::<std::net::IpAddr>().is_ok();
     let dirty = draft.dirty();
+    let (bind, port) = (draft.typed(Field::Bind), draft.typed(Field::Port));
+    let (tokens, chars) = (draft.typed(Field::Tokens), draft.typed(Field::Chars));
     let open_api = d.server.expose && d.exposed_key().is_none();
     let mut microphones = vec![Choice {
         value: None,
@@ -190,8 +275,7 @@ pub fn SettingsPage(rev: u64) -> Element {
                     }
                 }
                 if let Some(Status::Ready { base_url, exposed: true }) = status.clone() {
-                    button { class: "dx-button", "data-style": "outline", "data-size": "sm",
-                        onclick: move |_| copy(&format!("{base_url}/v1")), "Copy base URL" }
+                    CopyButton { text: format!("{base_url}/v1"), label: "Copy base URL".to_string() }
                 }
             }
             div { class: "dx-card-content",
@@ -215,13 +299,10 @@ pub fn SettingsPage(rev: u64) -> Element {
                         div { class: "field",
                             span { class: "field-label", "Address and port" }
                             div { class: "row",
-                                input { class: "dx-input mono", value: "{bind}", oninput: move |e| draft.set_bind(e.value()) }
-                                input { class: "dx-input narrow mono", value: "{d.server.port}",
-                                    oninput: move |e| if let Ok(port) = e.value().trim().parse() { draft.edit(|c| c.server.port = port) } }
+                                input { class: "dx-input mono", value: "{bind}", oninput: move |e| draft.set_typed(Field::Bind, e.value()) }
+                                input { class: "dx-input narrow mono", value: "{port}",
+                                    oninput: move |e| draft.set_typed(Field::Port, e.value()) }
                             }
-                        }
-                        if !bind_ok {
-                            p { class: "error-text", "The address must be an IP address, such as 127.0.0.1 or 0.0.0.0." }
                         }
                         div { class: "field",
                             span { class: "field-label", "API key" }
@@ -313,8 +394,8 @@ pub fn SettingsPage(rev: u64) -> Element {
                 }
                 div { class: "field",
                     span { class: "field-label", "Max output tokens" }
-                    input { class: "dx-input narrow mono", value: "{d.dictation.max_output_tokens}",
-                        oninput: move |e| if let Ok(n) = e.value().trim().parse::<u32>() { draft.edit(|c| c.dictation.max_output_tokens = n.clamp(16, 8192)) } }
+                    input { class: "dx-input narrow mono", value: "{tokens}",
+                        oninput: move |e| draft.set_typed(Field::Tokens, e.value()) }
                 }
             }
         }
@@ -400,8 +481,8 @@ pub fn SettingsPage(rev: u64) -> Element {
             div { class: "dx-card-content",
                 div { class: "field",
                     span { class: "field-label", "Characters per field" }
-                    input { class: "dx-input narrow mono", value: "{d.privacy.max_context_chars}",
-                        oninput: move |e| if let Ok(n) = e.value().trim().parse::<usize>() { draft.edit(|c| c.privacy.max_context_chars = n.min(20_000)) } }
+                    input { class: "dx-input narrow mono", value: "{chars}",
+                        oninput: move |e| draft.set_typed(Field::Chars, e.value()) }
                 }
                 div { class: "field",
                     span { class: "field-label", "Clipboard" }
@@ -420,5 +501,39 @@ pub fn SettingsPage(rev: u64) -> Element {
             }
         }
 
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saving_applies_only_the_edits_onto_settings_changed_meanwhile() {
+        let base = DesktopConfig::default();
+        // Edited here: the hotkey, and the live hotkey cleared.
+        let mut edited = base.clone();
+        edited.dictation.hotkey = "F8".into();
+        edited.dictation.live_hotkey = None;
+        // Meanwhile, elsewhere: the tray's live feedback, an approval, a branch hotkey.
+        let mut latest = base.clone();
+        latest.dictation.live_feedback = !base.dictation.live_feedback;
+        latest
+            .automation
+            .approved
+            .insert("slack-post".into(), "abc".into());
+        latest
+            .dictation
+            .branch_hotkeys
+            .insert("ask".into(), "F7".into());
+        let merged = merge(&base, &edited, &latest);
+        assert_eq!(merged.dictation.hotkey, "F8");
+        assert_eq!(merged.dictation.live_hotkey, None);
+        assert_eq!(
+            merged.dictation.live_feedback,
+            latest.dictation.live_feedback
+        );
+        assert_eq!(merged.automation.approved["slack-post"], "abc");
+        assert_eq!(merged.dictation.branch_hotkeys["ask"], "F7");
     }
 }

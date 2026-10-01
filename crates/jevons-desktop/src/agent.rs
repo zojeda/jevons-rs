@@ -1890,7 +1890,11 @@ impl Agent {
             self.list_tools();
         }
         self.runtime.apply(&self.config, &self.config_file);
-        self.view().config = self.config.clone();
+        {
+            let mut view = self.view();
+            view.config = self.config.clone();
+            view.notice = Some(format!("Settings saved to {}", self.config_file.display()));
+        }
         self.repaint();
     }
 

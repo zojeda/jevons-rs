@@ -2,11 +2,11 @@
 //! current context.
 
 use super::Ctx;
-use super::components::{Icon, badge, icon};
+use super::components::{Choice, Icon, Select, badge, icon};
 use crate::agent::{Command, open_folder};
 use dioxus::prelude::*;
 use jevons_desktop_core::flow::guard::{When, draft_when};
-use jevons_desktop_core::flow::spec::Select;
+use jevons_desktop_core::flow::spec::Select as Selecting;
 use jevons_desktop_core::flow::tree::{Node, NodeId, NodeSpec};
 use jevons_desktop_core::flow::{FlowTree, Kind, defaults};
 use std::collections::BTreeSet;
@@ -82,8 +82,8 @@ fn what(node: &Node) -> String {
     match &node.spec {
         NodeSpec::Decide(d) => {
             let mut out = match d.select {
-                Select::Model => "the model chooses".to_string(),
-                Select::Rules => "rules choose".to_string(),
+                Selecting::Model => "the model chooses".to_string(),
+                Selecting::Rules => "rules choose".to_string(),
             };
             if let Some(fallback) = &d.fallback {
                 out.push_str(&format!(", else {fallback}"));
@@ -289,7 +289,8 @@ pub fn FlowsPage(rev: u64) -> Element {
     let ctx = use_context::<Ctx>();
     let mut parent = use_signal(|| "dictate".to_string());
     let mut name = use_signal(String::new);
-    let mut message = use_signal(|| None::<String>);
+    // What creating a branch did: Ok with what to do next, or the error.
+    let mut message = use_signal(|| None::<Result<String, String>>);
     let state = TreeState {
         folded: use_signal(BTreeSet::new),
         selected: use_signal(|| None::<String>),
@@ -319,6 +320,20 @@ pub fn FlowsPage(rev: u64) -> Element {
     let parent_ok = tree
         .find(&parent_path)
         .is_some_and(|p| tree.node(p).kind() == Kind::Decide);
+    // The decisions a new branch can go under (not shared folders, whose branches others take).
+    let decisions: Vec<Choice> = tree
+        .nodes()
+        .iter()
+        .filter(|n| n.kind() == Kind::Decide && !n.path.starts_with('_'))
+        .map(|n| Choice {
+            value: Some(n.path.clone()),
+            label: if n.path.is_empty() {
+                "/ (the root)".into()
+            } else {
+                n.path.clone()
+            },
+        })
+        .collect();
     let shared = tree.nodes().iter().any(|n| n.path.starts_with("_actions/"));
     let draft = context.as_ref().map(|c| {
         let title = if c.window.title.is_empty() { c.app.process_name.clone() } else { c.window.title.clone() };
@@ -390,8 +405,8 @@ pub fn FlowsPage(rev: u64) -> Element {
                         rsx! {
                             p { class: "muted", "Matches {context.app.process_name} · {context.window.title}" }
                             div { class: "row",
-                                input { class: "dx-input", placeholder: "under, such as dictate", value: "{parent_path}",
-                                    oninput: move |e| parent.set(e.value().trim().trim_matches('/').to_string()) }
+                                Select { value: Some(parent_path.clone()), choices: decisions.clone(),
+                                    onchange: move |v: Option<String>| parent.set(v.unwrap_or_default()) }
                                 input { class: "dx-input", placeholder: "branch name, such as slack", value: "{id}",
                                     oninput: move |e| name.set(e.value()) }
                                 button { class: "dx-button", "data-style": "accent", "data-size": "sm", disabled: !valid || !parent_ok,
@@ -399,31 +414,35 @@ pub fn FlowsPage(rev: u64) -> Element {
                                         let folder = dir.join(parent()).join(name());
                                         let file = folder.join(file_name);
                                         message.set(Some(if folder.exists() {
-                                            format!("{} already exists", folder.display())
+                                            Err(format!("{} already exists", folder.display()))
                                         } else {
                                             match std::fs::create_dir_all(&folder).and_then(|()| std::fs::write(&file, &text)) {
                                                 Ok(()) => {
                                                     create_ctx.send(Command::ReloadFlows);
                                                     open_folder(&folder);
-                                                    format!("Created {}; describe it and adjust its guard", file.display())
+                                                    Ok(format!("Created {}: describe it and adjust its guard", file.display()))
                                                 }
-                                                Err(e) => e.to_string(),
+                                                Err(e) => Err(format!("Cannot create {}: {e}", file.display())),
                                             }
                                         }));
                                     },
                                     "Create"
                                 }
                             }
-                            if !parent_ok {
-                                p { class: "muted", "The branch goes under a decision of the tree, such as dictate." }
+                            if !id.is_empty() && !valid {
+                                p { class: "error-text", "A branch name uses lowercase letters, digits, - and _ only." }
+                            } else {
+                                p { class: "muted", "Under the decision chosen on the left, as a folder named in lowercase letters, digits, - and _." }
                             }
                             pre { class: "code", "{draft}" }
                         }
                     }
                     _ => rsx! { p { class: "muted", "Capture an application in the Context tab first." } },
                 }
-                if let Some(message) = message() {
-                    p { class: "ok-text", "{message}" }
+                match message() {
+                    Some(Ok(done)) => rsx! { p { class: "ok-text", "{done}" } },
+                    Some(Err(failed)) => rsx! { p { class: "error-text", "{failed}" } },
+                    None => rsx! {},
                 }
             }
         }
