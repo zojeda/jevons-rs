@@ -1250,6 +1250,65 @@ mod tests {
         );
     }
 
+    /// The route of a Slack reply through the built-in dictate branch, three decisions deep.
+    fn route_root() -> Element {
+        let tree = FlowTree::load(&defaults::builtin(), &Catalog::default());
+        let context = ContextSnapshot {
+            app: AppInfo {
+                process_name: "slack.exe".into(),
+                ..AppInfo::default()
+            },
+            focused: Some(Focused {
+                role: "Edit".into(),
+                name: "Reply to thread".into(),
+                is_editable: true,
+                selection: Some("hi".into()),
+                ..Focused::default()
+            }),
+            ..ContextSnapshot::default()
+        };
+        let route = walk::preview(&tree, &context, tree.find("dictate").unwrap());
+        rsx! { {context::route_card(&route, "A take's route")} }
+    }
+
+    #[test]
+    fn a_route_nests_each_decision_under_the_branch_it_took() {
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        let mut doc = DioxusDocument::new(VirtualDom::new(route_root), DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("style.css"));
+        doc.set_viewport(Viewport::new(1200, 3000, 1.0, ColorScheme::Dark));
+        doc.initial_build();
+        doc.poll(None);
+        let names = |doc: &DioxusDocument, selector: &str| -> Vec<String> {
+            doc.query_selector_all(selector)
+                .unwrap()
+                .into_iter()
+                .map(|n| doc.get_node(n).unwrap().text_content())
+                .collect()
+        };
+        // dictate → chat → thread, each a level deeper, on the chosen rows.
+        let chosen = names(&doc, ".flow-row[data-route=\"true\"] .flow-name");
+        assert_eq!(chosen, ["dictate", "chat", "thread"], "{chosen:?}");
+        let deep = names(
+            &doc,
+            ".flow-children .flow-children > .flow-node > .flow-row .flow-name",
+        );
+        assert!(deep.contains(&"thread".to_string()), "{deep:?}");
+        // A branch not taken folds its rule checks until asked.
+        assert!(doc.query_selector(".route-checks").unwrap().is_none());
+        doc.resolve(0.0);
+        let code = doc
+            .query_selector_all(".flow-row[data-off=\"true\"]")
+            .unwrap()
+            .into_iter()
+            .find(|n| doc.get_node(*n).unwrap().text_content().contains("code"))
+            .map(|row| doc.get_node(row).unwrap().children[0])
+            .unwrap();
+        click_node(&mut doc, code, ".flow-toggle");
+        let checks = names(&doc, ".route-checks");
+        assert!(checks.iter().any(|c| c.contains("app")), "{checks:?}");
+    }
+
     /// A text field, for the paint check below.
     fn field_root() -> Element {
         rsx! { input { class: "dx-input", value: "//TreeItem" } }

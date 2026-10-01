@@ -494,3 +494,7 @@ p { margin: 0; }
 .flow-shared { flex-shrink: 0; font-size: 11px; color: var(--secondary-color-6); }
 .flow-what { flex-shrink: 0; color: var(--secondary-color-4); }
 .flow-notes { color: var(--secondary-color-5); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* A route's branches: one not taken is dimmed; its rule checks unfold under it. */
+.flow-row[data-off="true"] .flow-name { color: var(--secondary-color-6); }
+.route-checks { margin: 2px 0 6px 34px; padding: 6px 10px; border-radius: 6px; background: var(--primary-color-2); }
