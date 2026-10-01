@@ -1282,6 +1282,19 @@ mod tests {
             "a black caret is invisible on the dark theme"
         );
         assert!(caret.1[..3].iter().all(|c| *c > 128), "{:?}", caret.1);
+        // The caret (and the text it stands in) sits in the middle of the field, not at its top.
+        let node = doc.get_node(field).unwrap();
+        let (top, height) = (
+            f64::from(node.absolute_position(0.0, 0.0).y),
+            f64::from(node.final_layout.size.height),
+        );
+        let middle = (caret.0.y0 + caret.0.y1) / 2.0;
+        assert!(
+            (middle - (top + height / 2.0)).abs() <= 2.0,
+            "caret {:?} in a field from {top} to {}",
+            caret.0,
+            top + height
+        );
     }
 
     /// A scene that records what is filled where.
