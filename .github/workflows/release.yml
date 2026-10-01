@@ -18,7 +18,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # HIP binding layout compiled into the binaries: the ROCm version the service is tested on.
+  # HIP binding layout compiled into the binaries: the ROCm version the service is tested on,
+  # which the packages name.
   JEVONS_HIP_VERSION: "7.2.53211"
 
 jobs:
@@ -50,25 +51,35 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
+        # One row per platform and GPU backend; .github/package-name.sh names each package.
+        # A CUDA or WGPU build is one more row (backend: cuda or wgpu) with its setup step next
+        # to "Pin the HIP bindings", once a Cargo feature selects that backend for the build.
         include:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            exe: ""
+            backend: hip
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            exe: .exe
+            backend: hip
     runs-on: ${{ matrix.os }}
     env:
       VERSION: 0.1.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
+      - name: Name the build
+        shell: bash
+        env:
+          # Runs on main publish VERSION; pull requests and other branches build pre-releases.
+          RELEASE: ${{ github.ref == 'refs/heads/main' && env.VERSION || '' }}
+        run: bash .github/package-name.sh jevons-rs ${{ matrix.target }} ${{ matrix.backend }} "$RELEASE" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: ${{ matrix.target }}-${{ matrix.backend }}
       - name: Pin the HIP bindings
+        if: matrix.backend == 'hip'
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/bin"
@@ -89,24 +100,25 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          name="jevons-rs-$VERSION-${{ matrix.target }}"
-          mkdir -p "dist/$name"
-          cp "target/${{ matrix.target }}/release/jevons-rs${{ matrix.exe }}" \
-            "target/${{ matrix.target }}/release/jevons-desktop${{ matrix.exe }}" \
-            README.md jevons.example.toml jevons-desktop.example.toml "dist/$name/"
-          cp -r examples/desktop/flows "dist/$name/flows"
+          release="target/${{ matrix.target }}/release"
+          mkdir -p "dist/$PACKAGE"
+          # Both executables carry the package's name after their own (local builds keep the
+          # short names): jevons-rs-<build> and jevons-desktop-<build>.
+          cp "$release/jevons-rs$EXE_SUFFIX" "dist/$PACKAGE/$PACKAGE$EXE_SUFFIX"
+          cp "$release/jevons-desktop$EXE_SUFFIX" "dist/$PACKAGE/jevons-desktop${PACKAGE#jevons-rs}$EXE_SUFFIX"
+          cp README.md jevons.example.toml jevons-desktop.example.toml "dist/$PACKAGE/"
+          cp -r examples/desktop/flows "dist/$PACKAGE/flows"
+          echo "Needs $REQUIRES." > "dist/$PACKAGE/REQUIREMENTS.txt"
           cd dist
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            7z a -tzip "$name.zip" "$name" > /dev/null
-            sha256sum "$name.zip" > "$name.zip.sha256"
-          else
-            tar czf "$name.tar.gz" "$name"
-            sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
-          fi
-          rm -r "$name"
+          case "$ARCHIVE" in
+            *.zip) 7z a -tzip "$ARCHIVE" "$PACKAGE" > /dev/null ;;
+            *) tar czf "$ARCHIVE" "$PACKAGE" ;;
+          esac
+          sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          rm -r "$PACKAGE"
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}
+          name: ${{ env.PACKAGE }}
           path: dist/*
           if-no-files-found: error
 
@@ -125,17 +137,24 @@ jobs:
           merge-multiple: true
       - name: Publish
         run: |
+          packages=$(for f in dist/*.tar.gz dist/*.zip; do echo "- \`${f#dist/}\`"; done)
+          rocm=${JEVONS_HIP_VERSION%.*}
           cat > notes.md <<NOTES
           Build of ${GITHUB_SHA::7} on main.
 
-          - \`jevons-rs-$VERSION-x86_64-unknown-linux-gnu.tar.gz\`: Linux x86-64 (glibc 2.35 or newer).
-          - \`jevons-rs-$VERSION-x86_64-pc-windows-msvc.zip\`: Windows x86-64.
+          $packages
 
-          The service needs an AMD RDNA3-class GPU and loads ROCm/HIP at run time: \`amdhip64\`
-          and \`hiprtc\` from \`ROCM_PATH\`/\`HIP_PATH\` (or their \`lib\` folder) or the system
-          library path. The HIP bindings match ROCm 7.2. The Windows build is untested on a GPU:
-          it needs \`amdhip64.dll\` (installed with the AMD driver) and \`hiprtc.dll\` from the
-          AMD HIP SDK, which may have to be copied next to the executable under that name.
+          Packages are named product-version-os-arch-backend, and the executables in them,
+          \`jevons-rs\` (the service) and \`jevons-desktop\`, carry the same version, OS, CPU
+          and GPU backend after their own name. The backend names the driver release a build
+          needs, which REQUIREMENTS.txt spells out. Linux builds need glibc 2.35 or newer.
+
+          The \`hip-rocm$rocm\` builds need an AMD RDNA3-class GPU and load ROCm/HIP at run
+          time: \`amdhip64\` and \`hiprtc\` from \`ROCM_PATH\`/\`HIP_PATH\` (or their \`lib\`
+          folder) or the system library path. The HIP bindings match ROCm $rocm. The Windows
+          build is untested on a GPU: it needs \`amdhip64.dll\` (installed with the AMD driver)
+          and \`hiprtc.dll\` from the AMD HIP SDK, which may have to be copied next to the
+          executable under that name.
           Models are not included; copy \`jevons.example.toml\` to \`jevons.toml\` to configure
           the service. \`jevons-desktop\` is the tray dictation app (see docs/desktop.md): it can
           download the models itself, and \`flows/\` is its built-in flow tree.
