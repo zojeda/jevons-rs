@@ -137,7 +137,11 @@ pub enum Command {
 /// What the buttons under an answer in the bubble do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BubbleAction {
-    Copy,
+    /// Puts the answer on the clipboard: as plain text, or `raw`, its Markdown as written.
+    /// The answer stays in the bubble.
+    Copy {
+        raw: bool,
+    },
     /// Types the answer into the window the take started in.
     Insert,
     Close,
@@ -1719,23 +1723,29 @@ impl Agent {
 
     /// The bubble's answer buttons.
     fn bubble(&mut self, action: BubbleAction) {
+        if let BubbleAction::Copy { raw } = action {
+            let Some(output) = self.view().feedback.as_ref().map(|f| f.output.clone()) else {
+                return;
+            };
+            let text = if raw {
+                output
+            } else {
+                crate::ui::plain_text(&output)
+            };
+            let copied = self.sink.lock().expect("the sink lock").copy(&text);
+            self.notice(&match copied {
+                Ok(()) if raw => "The answer's Markdown is on the clipboard".to_string(),
+                Ok(()) => "The answer is on the clipboard".to_string(),
+                Err(e) => e.to_string(),
+            });
+            return;
+        }
         let Some(feedback) = self.view().feedback.take() else {
             return;
         };
         self.repaint();
         match action {
-            BubbleAction::Close => {}
-            BubbleAction::Copy => {
-                let copied = self
-                    .sink
-                    .lock()
-                    .expect("the sink lock")
-                    .copy(&feedback.output);
-                self.notice(&match copied {
-                    Ok(()) => "The answer is on the clipboard".to_string(),
-                    Err(e) => e.to_string(),
-                });
-            }
+            BubbleAction::Close | BubbleAction::Copy { .. } => {}
             BubbleAction::Insert => {
                 let sink = self.sink.clone();
                 let view = self.view.clone();

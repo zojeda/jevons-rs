@@ -13,6 +13,7 @@ mod context;
 mod flows;
 mod interface;
 mod markdown;
+pub(crate) use markdown::plain as plain_text;
 mod models;
 mod settings;
 mod takes;
@@ -1307,6 +1308,76 @@ mod tests {
         click_node(&mut doc, code, ".flow-toggle");
         let checks = names(&doc, ".route-checks");
         assert!(checks.iter().any(|c| c.contains("app")), "{checks:?}");
+    }
+
+    #[test]
+    fn an_answer_turns_into_selectable_text_and_copies_as_plain_text_or_markdown() {
+        use crate::agent::{BubbleAction, Command, Feedback};
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        let folder = std::env::temp_dir().join(format!("jevons-ui-select-{}", std::process::id()));
+        let view = Arc::new(Mutex::new(view(&folder)));
+        view.lock().unwrap().feedback = Some(Feedback {
+            take: 1,
+            answer: true,
+            done: true,
+            status: "Answered".into(),
+            output: "The launch is **on Friday**.".into(),
+            ..Feedback::default()
+        });
+        let (commands, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let mut vdom = VirtualDom::new(bubble::Bubble);
+        vdom.insert_any_root_context(Box::new(Ctx {
+            view: view.clone(),
+            commands,
+        }));
+        vdom.insert_any_root_context(Box::new(bubble::Anchor {
+            tail_x: 300.0,
+            icon_below: true,
+            width: bubble::ANSWER_SIZE.0,
+        }));
+        let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("bubble.css"));
+        doc.set_viewport(Viewport::new(
+            bubble::ANSWER_SIZE.0 as u32,
+            bubble::ANSWER_SIZE.1 as u32,
+            1.0,
+            ColorScheme::Dark,
+        ));
+        doc.initial_build();
+        doc.poll(None);
+        assert!(doc.query_selector("textarea").unwrap().is_none());
+        click_text(&mut doc, ".bubble-button", "Select text");
+        doc.resolve(0.0);
+        let field = doc
+            .query_selector("textarea")
+            .unwrap()
+            .expect("a text field");
+        let text = doc
+            .get_node(field)
+            .unwrap()
+            .element_data()
+            .unwrap()
+            .text_input_data()
+            .unwrap()
+            .editor
+            .text()
+            .to_string();
+        assert!(
+            text.contains("**on Friday**"),
+            "the Markdown as written: {text}"
+        );
+        click_text(&mut doc, ".bubble-button", "Copy raw");
+        click(&mut doc, ".bubble-button[data-primary=\"true\"]");
+        let mut copies = Vec::new();
+        while let Ok(command) = received.try_recv() {
+            if let Command::Bubble(BubbleAction::Copy { raw }) = command {
+                copies.push(raw);
+            }
+        }
+        assert_eq!(copies, [true, false]);
+        // Back to the formatted answer.
+        click_text(&mut doc, ".bubble-button", "Done selecting");
+        assert!(doc.query_selector("textarea").unwrap().is_none());
     }
 
     /// A text field, for the paint check below.
