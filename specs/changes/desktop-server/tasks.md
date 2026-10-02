@@ -114,11 +114,13 @@ Scope: the spike as it is, reviewed and running on Windows.
 - [x] Give the machine files their phase 2 names first, so a settings folder is upgraded once:
       the root is `root.toml` and `root.fsm`, a task `task.toml` and `task.fsm`, each only at its
       level.
-- [ ] Build and install it on Windows (`windows-build`: `just desktop-windows` mirrors the WSL
+- [x] Build and install it on Windows (`windows-build`: `just desktop-windows` mirrors the WSL
       working tree, so nothing needs pushing or merging first).
-- [ ] Check the upgrade on the real settings folder: an unedited flows folder loses `decide.toml`
+- [x] Check the upgrade on the real settings folder: an unedited flows folder loses `decide.toml`
       and gains `root.toml` and `root.fsm` in one commit of the settings repository; an edited
-      one is left alone.
+      one is left alone. The real folder was edited, so it was left alone; its edits were carried
+      onto the new tree by a three-way merge by hand, and a headless take on Windows went
+      `idle → dictate → idle` with one decision call.
 - [ ] Push the branch.
 - [ ] Dictate for a day: routing as before (Pregunta, terminals, Slack ask), one decision call per
       take in the API log.
@@ -399,6 +401,10 @@ Done when: a search waiting in `results` is still there after a restart.
 
 ## Deferred
 
+- **Upgrading an edited flows folder:** today only an unedited earlier tree is brought up to date.
+  A three-way merge against the recorded earlier tree (its files are in `flow/earlier.rs` by hash,
+  so the texts would need recording too) would carry the user's edits onto the new tree, and stop
+  on a conflict.
 - **Rules learned from decisions:** from the traces, propose the `[prefer]` rule that would decide
   a transition the model always takes when a rule-visible fact holds; you accept or reject it.
 - **Agent memory:** an agent's log of everything it handled, structured recall with no model,
