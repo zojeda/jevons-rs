@@ -553,14 +553,33 @@ mod tests {
         assert!(text.contains("Inserted"), "{text}");
         // A tool call waits, then the take answers in the bubble.
         view.lock().unwrap().feedback.as_mut().unwrap().confirm = Some(crate::agent::PendingCall {
-            tool: "notes:create_note".into(),
-            arguments: "{\"title\": \"Launch\"}".into(),
+            question: "Run notes:create_note?".into(),
+            details: "{\"title\": \"Launch\"}".into(),
+            action: "Run".into(),
         });
         doc.vdom.mark_dirty(ScopeId::APP);
         doc.poll(None);
         let text = doc.root_element().text_content();
         assert!(
-            text.contains("Run notes:create_note?") && text.contains("Cancel (Esc)"),
+            text.contains("Run notes:create_note?")
+                && text.contains("Cancel (Esc)")
+                && text.contains("Run (Enter)"),
+            "{text}"
+        );
+        // The app's own questions say what they do.
+        view.lock().unwrap().feedback.as_mut().unwrap().confirm = Some(crate::agent::PendingCall {
+            question: "Clear the take traces?".into(),
+            details: "Removes the take traces in C:\\Users\\me\\jevons\\traces".into(),
+            action: "Clear".into(),
+        });
+        doc.vdom.mark_dirty(ScopeId::APP);
+        doc.poll(None);
+        let text = doc.root_element().text_content();
+        assert!(
+            text.contains("Clear the take traces?")
+                && text.contains("Clear (Enter)")
+                && text.contains(r"C:\Users\me\jevons\traces")
+                && !text.contains("Run"),
             "{text}"
         );
         {

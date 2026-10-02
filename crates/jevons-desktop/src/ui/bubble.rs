@@ -83,11 +83,11 @@ pub fn Bubble() -> Element {
                 "data-tail": if anchor.icon_below { "down" } else { "up" },
                 {tail_top}
                 {head}
-                div { class: "bubble-question", "Run {call.tool}?" }
-                pre { class: "bubble-args", "{call.arguments}" }
+                div { class: "bubble-question", "{call.question}" }
+                pre { class: "bubble-args", "{call.details}" }
                 div { class: "bubble-actions",
                     button { class: "bubble-button", onclick: move |_| cancel.send(Command::Confirmed(false)), "Cancel (Esc)" }
-                    button { class: "bubble-button", "data-primary": "true", onclick: move |_| run.send(Command::Confirmed(true)), "Run (Enter)" }
+                    button { class: "bubble-button", "data-primary": "true", onclick: move |_| run.send(Command::Confirmed(true)), "{call.action} (Enter)" }
                 }
                 {tail_bottom}
             }

@@ -17,6 +17,8 @@ use jevons_desktop_core::flow::investigator::{Investigator, PathCache};
 use jevons_desktop_core::flow::tools::ToolHost;
 use jevons_desktop_core::flow::walk::{self, FlowStep};
 use jevons_desktop_core::flow::{Catalog, FlowError, FlowTree, defaults};
+use jevons_desktop_core::git::Repository;
+use jevons_desktop_core::history::{self, History};
 use jevons_desktop_core::icons::TrayState;
 use jevons_desktop_core::interface;
 use jevons_desktop_core::pipeline::{self, Env, StageKind, TakeStart, Trace, Update};
@@ -27,6 +29,7 @@ use jevons_desktop_core::platform::{
 };
 use jevons_desktop_core::recorded::RecordedTree;
 use jevons_desktop_core::recording::{Session, bundle};
+use jevons_desktop_core::settings;
 use jevons_desktop_core::xpath::selector::Candidate;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -70,6 +73,13 @@ pub enum Command {
     ApprovalAnswered {
         name: String,
         version: String,
+        yes: bool,
+    },
+    /// The user's answer to resetting the settings.
+    ResetAnswered(bool),
+    /// The user's answer to clearing these kinds of history.
+    ClearAnswered {
+        kinds: Vec<History>,
         yes: bool,
     },
     /// What a running automation does now.
@@ -147,12 +157,15 @@ pub enum BubbleAction {
     Close,
 }
 
-/// A tool call waiting for the user in the bubble.
+/// A question waiting for the user in the bubble: a tool call, or one of the app's own.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PendingCall {
-    pub tool: String,
-    /// The arguments, as readable JSON.
-    pub arguments: String,
+    /// Such as "Run notes:create_note?".
+    pub question: String,
+    /// What it is about: a tool call's arguments as readable JSON, or the app's own lines.
+    pub details: String,
+    /// The word on the button that goes ahead, such as "Run".
+    pub action: String,
 }
 
 /// A stage of the take as the bubble shows it: running, then done.
@@ -503,6 +516,8 @@ const MESSAGE: u64 = u64::MAX;
 pub struct Agent {
     config: DesktopConfig,
     config_file: PathBuf,
+    /// The settings folder's repository, when jevons commits its own writes there.
+    repository: Option<Repository>,
     runtime: Runtime,
     tray: Option<Tray>,
     context: Box<dyn ContextProvider>,
@@ -573,12 +588,25 @@ impl Agent {
         commands: mpsc::UnboundedSender<Command>,
     ) -> Self {
         config.privacy.apply_api_log();
+        // The defaults the folder lacks, versioned: the loads below then write nothing.
+        let prepared = settings::prepare(&config_file, &config);
+        for note in &prepared.notes {
+            tracing::warn!(%note, "Settings folder");
+        }
+        let repository = prepared.repository;
         let flows_dir = config.flows_dir(&config_file);
-        let automations = automation_host(&config, &config_file, &layers, &commands);
+        let automations = automation_host(
+            &config,
+            &config_file,
+            &layers,
+            &commands,
+            repository.as_ref(),
+        );
         let tools = Arc::new(
             ToolHost::new(&config.tools, &config.mcp).with_automations(automations.clone()),
         );
-        let (tree, notes) = defaults::open(&flows_dir, &tools.catalog());
+        let (tree, report) = defaults::open(&flows_dir, &tools.catalog());
+        let notes = report.notes;
         let errors = tree.errors.clone();
         let flows = if tree.is_valid() {
             tree
@@ -609,6 +637,7 @@ impl Agent {
             flows: Arc::new(flows),
             config,
             config_file,
+            repository,
             runtime,
             tray: layers.tray,
             context: layers.context,
@@ -637,6 +666,9 @@ impl Agent {
             view.devices = agent.audio.devices();
             view.config = agent.config.clone();
             view.config_file = agent.config_file.clone();
+            if !prepared.notes.is_empty() {
+                view.notice = Some(prepared.notes.join(" "));
+            }
         }
         if let Some(tray) = &agent.tray {
             tray.hotkeys(agent.bindings());
@@ -652,13 +684,20 @@ impl Agent {
         let tools = self.tools.clone();
         let commands = self.commands.clone();
         let dir = self.config.flows_dir(&self.config_file);
+        let repository = self.repository.clone();
         tokio::spawn(async move {
             let problems = tools.start().await;
             for problem in &problems {
                 tracing::warn!(problem = %problem, "An MCP server is unavailable");
             }
-            if let Err(e) = defaults::write_tools_md(&dir, &tools.tools_md()) {
-                tracing::warn!(error = %e, "Cannot write TOOLS.md");
+            match defaults::write_tools_md(&dir, &tools.tools_md()) {
+                Ok(true) => commit_in_background(
+                    repository,
+                    vec![dir.join("TOOLS.md")],
+                    "List the tools the settings register in TOOLS.md".into(),
+                ),
+                Ok(false) => {}
+                Err(e) => tracing::warn!(error = %e, "Cannot write TOOLS.md"),
             }
             let _ = commands.send(Command::ToolsListed(problems));
         });
@@ -940,6 +979,8 @@ impl Agent {
             Command::ApprovalAnswered { name, version, yes } => {
                 self.approval_answered(&name, &version, yes)
             }
+            Command::ResetAnswered(yes) => self.reset_answered(yes),
+            Command::ClearAnswered { kinds, yes } => self.clear_answered(&kinds, yes),
             Command::AutomationProgress(label) => {
                 if let Some(feedback) = self.view().feedback.as_mut().filter(|f| f.take == MESSAGE)
                 {
@@ -1033,6 +1074,14 @@ impl Agent {
                 if let Err(e) = config.save(&self.config_file) {
                     self.notice(&e.to_string());
                 } else {
+                    self.commit(
+                        vec![self.config_file.clone()],
+                        if config.dictation.live_feedback {
+                            "Turn live feedback on"
+                        } else {
+                            "Turn live feedback off"
+                        },
+                    );
                     self.config = config;
                     self.view().config = self.config.clone();
                     self.publish_menu();
@@ -1075,6 +1124,42 @@ impl Agent {
                     let _ = std::fs::create_dir_all(dir);
                     open_folder(dir);
                 }
+            }
+            MenuCommand::ResetSettings => {
+                let question = PendingCall {
+                    question: "Reset the settings to the defaults?".into(),
+                    details: format!(
+                        "In {}: the settings (models, hotkeys, tools, approvals), the flow tree \
+                         and the automations library.\nThe earlier settings stay in the folder's \
+                         git history.",
+                        settings::folder(&self.config_file).display()
+                    ),
+                    action: "Reset".into(),
+                };
+                self.ask(
+                    question,
+                    "Enter resets them, Esc keeps them",
+                    Command::ResetAnswered,
+                );
+            }
+            MenuCommand::ClearHistory(kinds) => {
+                let question = PendingCall {
+                    question: match kinds.as_slice() {
+                        [kind] => format!("Clear {}?", kind.label()),
+                        _ => "Clear all the history?".into(),
+                    },
+                    details: kinds
+                        .iter()
+                        .map(|k| {
+                            format!("Removes {} in {}", k.label(), k.dir(&self.config).display())
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    action: "Clear".into(),
+                };
+                self.ask(question, "Enter clears it, Esc keeps it", move |yes| {
+                    Command::ClearAnswered { kinds, yes }
+                });
             }
             MenuCommand::Quit => {
                 self.cancel_take();
@@ -1594,9 +1679,15 @@ impl Agent {
         let catalog = self.tools.catalog();
         let view = self.view.clone();
         let repaint = self.repaint.clone();
+        let repository = self.repository.clone();
         tokio::task::spawn_blocking(move || {
             let saved = extract::save(&dir, &file, &request.name, &request.spec, &catalog)
                 .map(|()| format!("Saved [extract.{}] into {file}", request.name));
+            if let (Ok(message), Some(repository)) = (&saved, repository)
+                && let Err(e) = repository.commit(&[dir.join(&file)], message)
+            {
+                tracing::warn!(error = %e, "Cannot commit to the settings folder");
+            }
             view.lock().expect("the view lock").saved = Some(saved);
             repaint();
         });
@@ -1669,12 +1760,26 @@ impl Agent {
 
     /// Shows a tool call in the bubble and waits for the user.
     fn confirm_requested(&mut self, confirmation: Confirmation) {
+        let arguments = serde_json::to_string_pretty(&confirmation.arguments).unwrap_or_default();
+        tracing::info!(tool = %confirmation.tool, "Waiting for confirmation");
+        let question = PendingCall {
+            question: format!("Run {}?", confirmation.tool),
+            details: arguments,
+            action: "Run".into(),
+        };
+        self.show_question(
+            confirmation.reply,
+            question,
+            "Run this? Enter runs it, Esc cancels",
+        );
+    }
+
+    /// Shows a question in the bubble, with `hint` above it, and waits for the user.
+    fn show_question(&mut self, reply: oneshot::Sender<bool>, question: PendingCall, hint: &str) {
         if let Some(previous) = self.confirming.take() {
             let _ = previous.send(false);
         }
-        let arguments = serde_json::to_string_pretty(&confirmation.arguments).unwrap_or_default();
-        tracing::info!(tool = %confirmation.tool, "Waiting for confirmation");
-        self.confirming = Some(confirmation.reply);
+        self.confirming = Some(reply);
         {
             let mut view = self.view();
             // Automations run and are approved outside takes: they get a bubble of their own.
@@ -1683,16 +1788,9 @@ impl Agent {
                 message: true,
                 ..Feedback::default()
             });
-            feedback.status = if confirmation.tool.starts_with("Approve ") {
-                "Enter approves this version, Esc keeps it as a draft".into()
-            } else {
-                "Run this? Enter runs it, Esc cancels".into()
-            };
+            feedback.status = hint.into();
             feedback.done = false;
-            feedback.confirm = Some(PendingCall {
-                tool: confirmation.tool,
-                arguments,
-            });
+            feedback.confirm = Some(question);
         }
         if let Some(tray) = &self.tray {
             tray.hotkeys(self.bindings());
@@ -1836,7 +1934,18 @@ impl Agent {
     /// Loads the flows folder again; a tree with errors is reported and the last good one kept.
     fn reload_flows(&mut self) {
         let dir = self.config.flows_dir(&self.config_file);
-        let (tree, notes) = defaults::open(&dir, &self.tools.catalog());
+        let (tree, report) = defaults::open(&dir, &self.tools.catalog());
+        let notes = report.notes;
+        if !report.written.is_empty() {
+            let message = format!(
+                "Write {} in the flows folder",
+                settings::list(&report.written)
+            );
+            self.commit(
+                report.written.iter().map(|f| dir.join(f)).collect(),
+                &message,
+            );
+        }
         let errors = tree.errors.clone();
         if tree.is_valid() {
             tracing::info!(nodes = tree.nodes().len(), "Flow tree loaded");
@@ -1862,15 +1971,30 @@ impl Agent {
             self.notice(&e.to_string());
             return;
         }
-        let hotkeys_changed = Binding::from_settings(&config.dictation)
-            != Binding::from_settings(&self.config.dictation)
+        self.commit(
+            vec![self.config_file.clone()],
+            "Save the settings from the Settings panel",
+        );
+        self.adopt(config, false);
+        self.view().notice = Some(format!("Settings saved to {}", self.config_file.display()));
+        self.repaint();
+    }
+
+    /// Runs with `config`: what changed in it is applied, or everything when `anew` (the
+    /// folders were replaced, so their watchers are too).
+    fn adopt(&mut self, config: DesktopConfig, anew: bool) {
+        let hotkeys_changed = anew
+            || Binding::from_settings(&config.dictation)
+                != Binding::from_settings(&self.config.dictation)
             || Binding::for_automations(&config.automation)
                 != Binding::for_automations(&self.config.automation);
         let flows_changed =
-            config.flows_dir(&self.config_file) != self.config.flows_dir(&self.config_file);
-        let tools_changed = config.tools != self.config.tools || config.mcp != self.config.mcp;
-        let library_changed = config.automations_dir(&self.config_file)
-            != self.config.automations_dir(&self.config_file);
+            anew || config.flows_dir(&self.config_file) != self.config.flows_dir(&self.config_file);
+        let tools_changed =
+            anew || config.tools != self.config.tools || config.mcp != self.config.mcp;
+        let library_changed = anew
+            || config.automations_dir(&self.config_file)
+                != self.config.automations_dir(&self.config_file);
         self.config = config;
         self.config.privacy.apply_api_log();
         self.automations
@@ -1886,8 +2010,13 @@ impl Agent {
         }
         if library_changed {
             let layers = (self.inspector.clone(), self.actor.clone());
-            self.automations =
-                automation_host_over(&self.config, &self.config_file, layers, &self.commands);
+            self.automations = automation_host_over(
+                &self.config,
+                &self.config_file,
+                layers,
+                &self.commands,
+                self.repository.as_ref(),
+            );
             self._library_watcher = watch(self.automations.dir(), self.commands.clone(), || {
                 Command::ReloadAutomations
             });
@@ -1900,12 +2029,87 @@ impl Agent {
             self.list_tools();
         }
         self.runtime.apply(&self.config, &self.config_file);
-        {
-            let mut view = self.view();
-            view.config = self.config.clone();
-            view.notice = Some(format!("Settings saved to {}", self.config_file.display()));
-        }
+        self.view().config = self.config.clone();
+        self.publish_menu();
         self.repaint();
+    }
+
+    /// Commits what jevons just wrote in the settings folder, when it is jevons' repository.
+    fn commit(&self, paths: Vec<PathBuf>, message: &str) {
+        commit_in_background(self.repository.clone(), paths, message.into());
+    }
+
+    /// Asks a question of the app's own in the bubble; the answer comes back as `answered`'s
+    /// command.
+    fn ask(
+        &mut self,
+        question: PendingCall,
+        hint: &str,
+        answered: impl FnOnce(bool) -> Command + Send + 'static,
+    ) {
+        if self.confirming.is_some() {
+            self.message("Answer the question in the bubble first", 5);
+            return;
+        }
+        tracing::info!(question = %question.question, "Waiting for an answer");
+        let (reply, answer) = oneshot::channel();
+        let commands = self.commands.clone();
+        tokio::spawn(async move {
+            let yes = answer.await.unwrap_or(false);
+            let _ = commands.send(answered(yes));
+        });
+        self.show_question(reply, question, hint);
+    }
+
+    /// Puts the default settings folder back and runs with it.
+    fn reset_answered(&mut self, yes: bool) {
+        if !yes {
+            self.message("The settings stay as they are", 4);
+            return;
+        }
+        self.cancel_take();
+        match settings::reset(&self.config_file) {
+            Ok(report) => {
+                for note in &report.notes {
+                    tracing::info!(%note, "Settings reset");
+                }
+                tracing::info!(removed = ?report.removed, "Settings reset to the defaults");
+                self.repository = report.repository;
+                let config = DesktopConfig::load(&self.config_file).unwrap_or_default();
+                self.adopt(config, true);
+                self.message(
+                    &match &report.before {
+                        Some(before) => format!(
+                            "The settings are the defaults again. The earlier ones are commit \
+                             {before} in the settings folder's history"
+                        ),
+                        None => "The settings are the defaults again".into(),
+                    },
+                    10,
+                );
+            }
+            Err(e) => self.message(&format!("The settings were not reset: {e}"), 12),
+        }
+    }
+
+    /// Clears what the user chose, and the Takes tab with the traces.
+    fn clear_answered(&mut self, kinds: &[History], yes: bool) {
+        if !yes {
+            self.message("Nothing was cleared", 4);
+            return;
+        }
+        let cleared: Vec<String> = kinds
+            .iter()
+            .map(|kind| {
+                let cleared = history::clear(*kind, &self.config);
+                tracing::info!(cleared = %cleared, "History cleared");
+                cleared.to_string()
+            })
+            .collect();
+        if kinds.contains(&History::Traces) {
+            self.view().traces.clear();
+        }
+        self.message(&format!("Cleared {}", cleared.join("; ")), 8);
     }
 
     /// Starts a take: push-to-talk, or live dictation when `live`. `source` is the hotkey that
@@ -2398,6 +2602,13 @@ impl Agent {
             ok = authored.report.ok(),
             "Automation written"
         );
+        self.commit(
+            vec![authored.automation.dir.clone()],
+            &format!(
+                "Write the automation {} from a recording",
+                authored.automation.name
+            ),
+        );
         self.automations.reload();
         self.list_tools();
         self.publish_menu();
@@ -2452,12 +2663,6 @@ impl Agent {
             .filter_map(|f| f.trace.as_ref().and_then(|t| t.replayed))
             .map(|(done, _)| done)
             .sum();
-        let arguments = serde_json::json!({
-            "applications": summary.apps,
-            "does": does,
-            "replays": format!("{replayed} recorded steps"),
-            "version": report.version,
-        });
         if self.confirming.is_some() {
             // A take waits on its own confirmation: leave it be, and approve later.
             self.notice(&format!(
@@ -2466,19 +2671,27 @@ impl Agent {
             ));
             return;
         }
-        let (reply, answer) = oneshot::channel();
-        let commands = self.commands.clone();
+        let question = PendingCall {
+            question: format!("Approve {}?", report.name),
+            details: format!(
+                "In: {}\nDoes: {}\nReplays {replayed} recorded steps\nVersion: {}",
+                summary.apps.join(", "),
+                if does.is_empty() {
+                    "reads only".to_string()
+                } else {
+                    does.join(", ")
+                },
+                report.version
+            ),
+            action: "Approve".into(),
+        };
         let name = report.name.clone();
         let version = report.version.clone();
-        tokio::spawn(async move {
-            let yes = answer.await.unwrap_or(false);
-            let _ = commands.send(Command::ApprovalAnswered { name, version, yes });
-        });
-        self.confirm_requested(Confirmation {
-            tool: format!("Approve {}?", report.name),
-            arguments,
-            reply,
-        });
+        self.ask(
+            question,
+            "Enter approves this version, Esc keeps it as a draft",
+            move |yes| Command::ApprovalAnswered { name, version, yes },
+        );
     }
 
     fn approval_answered(&mut self, name: &str, version: &str, yes: bool) {
@@ -2491,6 +2704,10 @@ impl Agent {
         }
         match DesktopConfig::approve(&self.config_file, name, version) {
             Ok(saved) => {
+                self.commit(
+                    vec![self.config_file.clone()],
+                    &format!("Approve the automation {name} ({version})"),
+                );
                 self.config.automation.approved = saved.automation.approved;
                 self.automations
                     .set_settings(self.config.automation.clone());
@@ -2835,6 +3052,19 @@ impl Agent {
     }
 }
 
+/// Commits what jevons wrote in the settings folder, off the agent thread, when it is jevons'
+/// repository.
+fn commit_in_background(repository: Option<Repository>, paths: Vec<PathBuf>, message: String) {
+    let Some(repository) = repository.filter(|_| !paths.is_empty()) else {
+        return;
+    };
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) = repository.commit(&paths, &message) {
+            tracing::warn!(error = %e, "Cannot commit to the settings folder");
+        }
+    });
+}
+
 /// Writes an automation run's trace next to the take traces.
 fn save_run(trace: &RunTrace) {
     let dir = jevons_desktop_core::config::user_dir().join("traces");
@@ -2888,12 +3118,21 @@ fn save_trace(trace: &Trace) {
 fn watch(
     dir: &std::path::Path,
     commands: mpsc::UnboundedSender<Command>,
-    command: impl Fn() -> Command + Send + 'static,
+    command: impl Fn() -> Command + Send + Sync + 'static,
 ) -> Option<notify::RecommendedWatcher> {
     use notify::Watcher;
+    // A burst of changes (a reset, a checkout, an editor saving) sends one command, a moment
+    // after the first change.
+    let pending = Arc::new(AtomicBool::new(false));
+    let command = Arc::new(command);
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        if event.is_ok_and(|e| !e.kind.is_access()) {
-            let _ = commands.send(command());
+        if event.is_ok_and(|e| !e.kind.is_access()) && !pending.swap(true, Ordering::AcqRel) {
+            let (pending, commands, command) = (pending.clone(), commands.clone(), command.clone());
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(250));
+                pending.store(false, Ordering::Release);
+                let _ = commands.send(command());
+            });
         }
     })
     .ok()?;
@@ -2908,12 +3147,14 @@ fn automation_host(
     config_file: &std::path::Path,
     layers: &Layers,
     commands: &mpsc::UnboundedSender<Command>,
+    repository: Option<&Repository>,
 ) -> Arc<AutomationHost> {
     automation_host_over(
         config,
         config_file,
         (layers.inspector.clone(), layers.actor.clone()),
         commands,
+        repository,
     )
 }
 
@@ -2922,12 +3163,21 @@ fn automation_host_over(
     config_file: &std::path::Path,
     (inspector, actor): (Arc<dyn ContextInspector>, Arc<dyn UiActor>),
     commands: &mpsc::UnboundedSender<Command>,
+    repository: Option<&Repository>,
 ) -> Arc<AutomationHost> {
     let dir = config.automations_dir(config_file);
     match jevons_desktop_core::automation::defaults::init(&dir) {
         Ok(report) => {
             for note in report.notes {
                 tracing::info!(%note, "Automations library");
+            }
+            if !report.written.is_empty() {
+                let message = format!(
+                    "Write {} in the automations library",
+                    settings::list(&report.written)
+                );
+                let written = report.written.iter().map(|f| dir.join(f)).collect();
+                commit_in_background(repository.cloned(), written, message);
             }
         }
         Err(e) => {

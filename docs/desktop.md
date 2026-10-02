@@ -10,6 +10,22 @@ cargo run --release --locked -p jevons-desktop
 
 The first run opens the window when no tray is available; otherwise use the tray icon's menu. Settings live in `jevons-desktop.toml` in the platform configuration folder (`%APPDATA%\jevons\config` on Windows, `~/.config/jevons` on Linux). See [jevons-desktop.example.toml](../jevons-desktop.example.toml) for every field.
 
+### The settings folder and its history
+
+On every start, jevons fills in whatever the settings folder lacks: the settings file, the built-in flow tree in `flows/`, and the automations library's guides in `automations/`. Delete the folder and the next start writes the defaults again. The folder is a git repository of its own, created on the first start with everything in it as the first commit.
+
+jevons commits the changes it makes there itself:
+
+- saving the Settings panel, and the tray's **Live feedback** toggle
+- approving an automation
+- writing an automation from a recording
+- saving an extract from the Context tab
+- `TOOLS.md`, and the guides and schemas it refreshes
+
+Each commit holds only the files jevons wrote, so your own edits to flows and automations stay uncommitted until you commit them. jevons commits only to a repository it created (marked `jevons.settings = true` in the repository's own `.git/config`). It does not commit its changes to a repository someone else made. The one exception is a reset, which commits the folder before and after so nothing is lost. It also does not make a repository of a folder that is already inside another one, such as a dotfiles repository. Without `git` on the `PATH`, the folder is not versioned and the window says so. The repository has no remote, and it holds whatever the settings file holds, keys included (`api_key`, `remote_key`). Use `TYPESAFE_API_KEY` instead if you push it somewhere.
+
+**Reset settings to the defaults…** in the tray menu asks in the bubble, then writes the defaults: the settings (models, hotkeys, tools, approvals), the built-in flow tree and an empty automations library. It first commits everything in the folder as "The settings before the reset". It then removes everything but `.git`, writes the defaults and commits them, so `git diff HEAD~1` shows what the reset changed and `git checkout HEAD~1 -- flows/ask` brings a branch back. The app then runs with the defaults, with no restart. `jevons-desktop --reset-settings` does the same from a terminal; quit the tray app first. A reset touches only the platform's settings folder, or a folder (given with `--config`) that holds nothing but the settings file, `flows/`, `automations/` and `.git`. A flows folder or library that the settings moved elsewhere is left as it is.
+
 ## Using it
 
 - **Push-to-talk:** hold the hotkey (default `Ctrl+Alt+Space`) while speaking. Listening starts on the press, and releasing it sends the take through the flow below. A press too short to hold speech (under 0.4 s) is dropped quietly.
@@ -294,11 +310,17 @@ The **Models** tab manages the models the app runs.
 
 The panel shows the approximate memory of the selected models. On an APU, GPU memory is system memory, so load one large model at a time.
 
+### Logs and traces
+
 The app has no console window on Windows. Everything to review is in the `jevons` folder in your home directory (`C:\Users\<you>\jevons`, `~/jevons`), which **Open logs and traces** in the tray menu opens:
 
 - `logs/jevons-desktop.log`: this run's log, with `jevons-desktop.previous.log` from the run before. Each take logs its steps and timings (transcribed, deciding, generating, delivered) but never your text (the API log below is the one place that holds it, when you turn it on). Set `RUST_LOG` for more detail.
 - `traces/<time>-take<n>.json`: the full trace of each take, the same one the Takes tab shows (context, route with the guards checked, decision requests and probabilities, investigations, prompt, output, delivery). The newest 200 are kept.
+- `trees/<time>-<app>.json`: the interfaces the inspector's **Record tree** saved.
+- `recordings/<time>-<name>/`: recorded demonstrations, for writing automations from (`[automation] recordings_dir` moves them).
 - `logs/api.log`, when **API log** is on (Settings → Privacy, or `log_api = true` under `[privacy]`): every call to the decision and generation APIs, the investigator's and agents' included. Each record holds the call's exact request body and its response: a decision's whole answer, and for a streamed generation the assembled text plus every event that is not a text delta (such as the final usage). Records are pretty-printed JSON, one after another, so `jq` reads the file as a stream (`jq 'select(.api == "POST /v1/systemone") | .response.answers' logs/api.log`). The log starts over at 32 MB, keeping `api.previous.log`. It holds your words and your screen's text in full, so it is off by default; keys are headers and never written.
+
+**Clear history** in the tray menu clears the logs, the take traces, the recorded interfaces or the recordings, or **All of it**. It asks in the bubble first, and clearing the traces also empties the Takes tab. From a terminal, use `jevons-desktop --clear logs,traces`, or `--clear all` (the kinds are `logs`, `traces`, `trees` and `recordings`). Only the files jevons writes there are removed: `.log` files, trace and tree `.json` files, and recording folders. Anything else in those folders stays. The open log is emptied, not removed, so a running app goes on writing to it. `models/` is never touched.
 
 The decision and generation have time limits (60 s and 120 s). When the decision model does not answer in time, decisions take their fallback and the words are used as heard; the trace says why. **Cancel the current take** in the tray menu abandons a take without typing anything.
 
@@ -323,6 +345,8 @@ For the automations library (the settings' one, or `--library <dir>`):
 - `--run <name> --args <json>` runs an approved automation on the live interface.
 
 `--check-flows [DIR]` checks a flows folder (the settings' one by default), printing every problem with its file and line, and fails when there is one. `--init-flows [DIR]` writes the built-in tree into a folder that has none and refreshes `AGENTS.md`, the schemas and `.taplo.toml`.
+
+`--reset-settings` puts the defaults back in the settings folder, and `--clear <what>` clears history (see [The settings folder and its history](#the-settings-folder-and-its-history) and [Logs and traces](#logs-and-traces)).
 
 ## Platform status
 

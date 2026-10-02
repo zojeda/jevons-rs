@@ -5,6 +5,7 @@
 use crate::agent::Command;
 use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+use jevons_desktop_core::history::History;
 use jevons_desktop_core::icons::{self, FRAME, TrayState};
 use jevons_desktop_core::platform::{
     Binding, HotkeyAction, HotkeyEvent, MenuCommand, MenuModel, TrayBackend,
@@ -354,6 +355,17 @@ fn build_menu(model: &MenuModel) -> Menu {
         true,
         None,
     ));
+    // Not while a take, an automation or a recording uses the folders.
+    let idle = !model.busy && !model.recording;
+    let clear = Submenu::with_id("clear", "Clear history", idle);
+    let _ = clear.append_items(&[
+        &MenuItem::with_id("clear:logs", "Logs…", true, None),
+        &MenuItem::with_id("clear:traces", "Take traces…", true, None),
+        &MenuItem::with_id("clear:trees", "Recorded interfaces…", true, None),
+        &MenuItem::with_id("clear:recordings", "Recordings…", true, None),
+        &PredefinedMenuItem::separator(),
+        &MenuItem::with_id("clear:all", "All of it…", true, None),
+    ]);
     let live = if model.live {
         "Stop live dictation"
     } else {
@@ -389,7 +401,14 @@ fn build_menu(model: &MenuModel) -> Menu {
         &PredefinedMenuItem::separator(),
         &MenuItem::with_id("reload", "Reload the flow tree", true, None),
         &MenuItem::with_id("config", "Open settings folder", true, None),
+        &MenuItem::with_id(
+            "reset-settings",
+            "Reset settings to the defaults…",
+            idle,
+            None,
+        ),
         &MenuItem::with_id("logs", "Open logs and traces", true, None),
+        &clear,
         &PredefinedMenuItem::separator(),
         &MenuItem::with_id("quit", "Quit", true, None),
     ]);
@@ -415,6 +434,12 @@ fn menu_command(id: &str) -> Option<MenuCommand> {
         "feedback" => MenuCommand::ToggleFeedback,
         "reload" => MenuCommand::ReloadFlows,
         "config" => MenuCommand::OpenConfigFolder,
+        "reset-settings" => MenuCommand::ResetSettings,
+        "clear:all" => MenuCommand::ClearHistory(History::ALL.to_vec()),
+        "clear:logs" => MenuCommand::ClearHistory(vec![History::Logs]),
+        "clear:traces" => MenuCommand::ClearHistory(vec![History::Traces]),
+        "clear:trees" => MenuCommand::ClearHistory(vec![History::Trees]),
+        "clear:recordings" => MenuCommand::ClearHistory(vec![History::Recordings]),
         "quit" => MenuCommand::Quit,
         other => {
             let branch = other.strip_prefix("start:")?;
@@ -453,6 +478,18 @@ mod tests {
         assert_eq!(
             menu_command("approve:slack-post"),
             Some(MenuCommand::ApproveAutomation("slack-post".into()))
+        );
+        assert_eq!(
+            menu_command("reset-settings"),
+            Some(MenuCommand::ResetSettings)
+        );
+        assert_eq!(
+            menu_command("clear:traces"),
+            Some(MenuCommand::ClearHistory(vec![History::Traces]))
+        );
+        assert_eq!(
+            menu_command("clear:all"),
+            Some(MenuCommand::ClearHistory(History::ALL.to_vec()))
         );
     }
 }

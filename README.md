@@ -65,7 +65,7 @@ The app starts in the tray, with no console window. The [Desktop workflow](.gith
 2. **Wait for the first load.** The icon is blue while the models load. On the first runs on a machine it turns amber while GPU kernels are tuned, which takes a few minutes and is cached for later runs.
 3. **Dictate.** When the icon glows cyan, hold `Ctrl+Alt+Space` in any text field and speak. Hold `F9` for live dictation. **Settings** changes the hotkeys, the hold-or-toggle mode, the microphone and the language. Set the language if you always speak one: the transcript then stays in that language's alphabet.
 
-Settings are in `%APPDATA%\jevons\config\jevons-desktop.toml` (see [jevons-desktop.example.toml](jevons-desktop.example.toml)). The flow tree is in the `flows` folder next to it. Logs and traces are in `~/jevons`, which the tray's **Open logs and traces** opens.
+Settings are in `%APPDATA%\jevons\config\jevons-desktop.toml` (see [jevons-desktop.example.toml](jevons-desktop.example.toml)). The flow tree is in the `flows` folder next to it. The folder is a git repository, and jevons commits each change it makes there. **Reset settings to the defaults…** in the tray menu (or `--reset-settings`) puts the defaults back, and the earlier settings stay in the git history. Logs and traces are in `~/jevons`, which the tray's **Open logs and traces** opens. **Clear history** clears them by kind, or all at once (`--clear logs,traces` or `--clear all`).
 
 ### The flow tree
 

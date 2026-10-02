@@ -32,7 +32,7 @@ The project was previously named `llama-cpp-system-one`, after its original llam
 | Crate | Modules |
 | --- | --- |
 | `jevons-desktop` | `agent`, `tray`, `audio`, `runtime`, `platform::{windows}`, `ui::{context, takes, flows, settings, models, bubble}` |
-| `jevons-desktop-core` | `platform`, `context`, `flow::{spec, guard, tree, walk, frame, shape, template, defaults, investigate}`, `pipeline`, `client::{realtime, responses, systemone, transcriptions}`, `config`, `gesture`, `delivery`, `levels`, `icons`, `catalog`, `download`, `fake` |
+| `jevons-desktop-core` | `platform`, `context`, `flow::{spec, guard, tree, walk, frame, shape, template, defaults, investigate}`, `pipeline`, `client::{realtime, responses, systemone, transcriptions}`, `config`, `settings`, `git`, `history`, `gesture`, `delivery`, `levels`, `icons`, `catalog`, `download`, `fake` |
 | `jevons-api` | `http`, `handlers`, `middleware`, `error`, `config`, `server`, `realtime`, `openai::{request, response, audio, realtime, error}`, `system_one::{request, compiler, response, error}`, `workers::{diffusion, speech}` |
 | `jevons-generative` | `generate`, `request` |
 | `jevons-decision` | `read`, `request`, `probability` |
