@@ -51,7 +51,7 @@ fn thought_budget(effort: &str, param: &str) -> Result<usize, OpenAiError> {
         "high" | "xhigh" => 4096,
         _ => {
             return Err(OpenAiError::invalid(
-                format!("{param} must be none, minimal, low, medium or high"),
+                format!("{param} must be none, minimal, low, medium, high or xhigh"),
                 Some(param),
             ));
         }
@@ -634,6 +634,25 @@ mod tests {
                 .generation
                 .think,
             256
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_takes_six_levels_and_names_them_when_wrong() {
+        let think = |effort: &str| {
+            chat(json!({"reasoning_effort": effort}))
+                .unwrap()
+                .generation
+                .think
+        };
+        assert_eq!(
+            ["none", "minimal", "low", "medium", "high", "xhigh"].map(think),
+            [0, 64, 256, 1024, 4096, 4096]
+        );
+        let error = chat(json!({"reasoning_effort": "max"})).unwrap_err();
+        assert_eq!(
+            error.message,
+            "reasoning_effort must be none, minimal, low, medium, high or xhigh"
         );
     }
 

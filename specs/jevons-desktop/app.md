@@ -1,0 +1,234 @@
+# jevons-desktop: app
+
+[Back to jevons-desktop](spec.md)
+
+The app lives in the tray. The agent thread turns hotkeys and menu items into takes, recordings
+and automation runs, asks the user in the bubble before anything risky, and keeps the settings
+folder, the flow tree and the automations library in step with the files on disk. What a take does
+once it starts is in jevons-desktop-core's [pipeline](../jevons-desktop-core/pipeline.md); this
+file covers what the app does around it. The window and the bubble are in [ui](ui.md).
+
+## Requirements
+
+### R1 The tray icon shows what the app is doing
+
+The icon starts as loading and then follows the runtime: ready (or using a server), loading, no
+models, or failed. While a take listens it shows the microphone's level, then transcribing, then
+deciding and writing, and red after a failed take. Between takes during a recording it is the
+recording icon. Tuning GPU kernels outranks every state but listening, from a tuning event until
+four seconds after the last one. The first tuning event after a quiet period wakes the tray once,
+so the icon turns amber without waiting for its next frame.
+
+Tests: `a_tuning_event_makes_tuning_active_and_notifies_once`
+
+### R2 The tray menu
+
+The menu holds: **Start dictation** or **Stop dictation**, **Start live dictation** or **Stop
+live dictation**, **Cancel the current take** (while one runs), **Start takes at** (the root or
+each top-level branch), **Show context inspector**, **Live feedback**, **Pause context capture**,
+**Record an automation…** or **Stop recording**, **Automations** (per automation: its
+description, **Run** and **Run step by step** when approved or **Review and approve…** when not,
+and **Record it again…**; **None yet: record one** when empty; **Open the automations folder**),
+**Reload the flow tree**, **Open settings folder**, **Reset settings to the defaults…**, **Open
+logs and traces**, **Clear history** (**Logs…**, **Take traces…**, **Recorded interfaces…**,
+**Recordings…**, **All of it…**) and **Quit**. Reset and Clear history are disabled while a take,
+an automation or a recording runs.
+
+Tests: `menu_ids_map_to_commands`
+
+### R3 A left click on the tray icon toggles dictation
+
+A left click starts a push-to-talk take, or stops the one the menu started.
+
+Tests: none yet
+
+### R4 Without a tray, the window opens
+
+When the tray icon cannot be created, the app runs without it and shows the inspector window at
+start.
+
+Tests: none yet
+
+### R5 Hotkeys register from the settings
+
+The app registers every hotkey the settings bind ([pipeline](../jevons-desktop-core/pipeline.md)
+R18), again whenever they change. A hotkey assigned twice, one that cannot be registered, and one
+that does not parse are reported in the window's status bar, and the others work.
+
+Tests: none yet
+
+### R6 Hold and toggle gestures
+
+In `hold` mode, pressing a dictation hotkey starts a take and releasing it ends the listening. In
+`toggle` mode, a press starts the take and the next press of the same hotkey ends it.
+Push-to-talk and the branch hotkeys follow `hotkey_mode`, live dictation `live_hotkey_mode`, and
+an automation's hotkey `hotkey_mode`. While a take runs, key repeats and other dictation hotkeys
+change nothing.
+
+Tests: none yet
+
+### R7 Takes from the menu
+
+**Start dictation** starts a push-to-talk take that the menu (or a left click) stops. **Start live
+dictation** starts live dictation that the menu stops. Each says so instead when the other kind
+runs, or when the last take is still being processed.
+
+Tests: none yet
+
+### R8 A take reads the context before anything else
+
+A take reads the context at the press, before the microphone opens, so the text goes to the field
+the user started in. It starts at its hotkey's branch, else at the branch **Start takes at**
+names, else at the root. With **Pause context capture** on, the context is empty and says capture
+is paused. Without a runtime to reach, the take does not start, the window says why and the icon
+turns red; a microphone that cannot open does the same.
+
+Tests: none yet
+
+### R9 The bubble follows each take
+
+The bubble's first line says how to finish (release the hotkey, press it again, or stop from the
+tray). It then shows the words as heard, each stage as it runs and how it ended, and the text
+written. At the end it says "Inserted", "On the clipboard: <reason>", "Answer", "Too short to hold
+speech", "Done", or the error. Text that only repeats the transcript is not shown twice, an answer
+always is, and stages still open close with the take's outcome. The bubble hides four seconds
+after a take ends, eight after an error, and an answer stays until it is closed or the next take
+starts.
+
+Tests: `feedback_shows_phrases_as_heard_and_the_outcome_at_the_end`, `an_answer_stays_in_the_bubble_even_when_it_repeats_the_words`, `push_to_talk_feedback_keeps_the_streamed_words_as_the_transcript`
+
+### R10 Questions wait in the bubble
+
+A tool call that asks shows "Run <tool>?" with its arguments, and the app's own questions (reset,
+clear, approve) say what they do. Enter answers yes and Esc no; the app registers both as global
+hotkeys only while a question waits. A new question answers the one before it no. While a
+question waits, the app asks no other question of its own and says to answer the first. Cancelling
+or finishing a take answers its question no.
+
+Tests: none yet
+
+### R11 Cancel the current take
+
+**Cancel the current take** stops the microphone, abandons the take, answers a waiting question
+no, stops a running automation, and delivers nothing.
+
+Tests: none yet
+
+### R12 Finished takes are kept
+
+Each finished take's trace is written to `~/jevons/traces/<start ms>-take<n>.json` (with
+`-turn<t>` for a live turn), and the folder keeps the newest 200. The Takes tab keeps the newest
+50. A take that leaves its text on the clipboard says why in the window.
+
+Tests: none yet
+
+### R13 Recording from the tray and the record hotkey
+
+**Record an automation…** or the record hotkey starts a recording, unless a take runs, and the
+icon turns to recording. While the record hotkey is held for half a second or more, the app
+listens: the first thing said is the task's description, and later ones are notes. A shorter tap
+during a recording stops it.
+Text a push-to-talk take types during the recording becomes a step. A recording with no steps is
+not saved. A saved one is written into an automation by the author, with `author_model` or the
+generative model when the runtime has one, and then goes to review.
+
+Tests: none yet
+
+### R14 Approval happens in the bubble
+
+Reviewing an automation runs its checks. One with problems cannot be approved, and the bubble
+names its first problems. Otherwise the bubble asks "Approve <name>?" with its applications, what
+it does, how many recorded steps it replays, and its version. Enter pins that version in the
+settings; Esc keeps it a draft, which the tray offers as **Review and approve…**. While a take
+waits on a question, the app says to approve later from the tray.
+
+Tests: none yet
+
+### R15 Running an automation from the tray or its hotkey
+
+An automation not approved goes to review instead. One that takes required arguments listens
+first: the user says them, and a one-node `run.toml` tree fills them. One without runs at once.
+A run asks "Run script:<name>?" first unless the settings list it as unconfirmed, and a no stops
+it as not confirmed. Its steps show in the bubble, and the bubble then says "<name> done." with
+its answer, or "<name> failed:" with the message and `script.rhai:<line>:<column>`. The run's
+trace goes to `~/jevons/traces/<ms>-automation-<name>.json`. **Run step by step** asks before
+every action. Nothing runs while a take or another automation does.
+
+Tests: none yet
+
+### R16 Record it again
+
+**Record it again…** records the task anew and replaces the automation with the new version,
+which needs approving again.
+
+Tests: none yet
+
+### R17 Saved settings apply without a restart
+
+Saving from the Settings tab writes the file and applies it: hotkeys are registered again when
+they changed, a moved flows folder is watched and loaded, the tools and MCP servers start again
+when the tools, the flows folder or the library changed, the runtime takes the new settings, and
+the API log starts or stops. **Live feedback** in the menu saves the setting as well.
+
+Tests: none yet
+
+### R18 jevons commits its own writes
+
+In a settings folder jevons versions, the app commits each write it makes there, and only the
+files written: saving the Settings tab, the **Live feedback** toggle, approving an automation,
+writing an automation from a recording, saving an extract from the Context tab, `TOOLS.md`, and
+the flows folder's and library's guides when they are refreshed.
+
+Tests: none yet
+
+### R19 Reset and clear ask first
+
+**Reset settings to the defaults…** asks in the bubble, naming the folder and what it holds. Yes
+cancels the take, resets the folder, runs with the defaults without a restart, and names the
+commit that keeps the earlier settings. **Clear history** asks, naming each folder; yes clears
+them and reports what was removed, and clearing the traces also empties the Takes tab. No changes
+nothing.
+
+Tests: none yet
+
+### R20 The flows folder and the library reload on change
+
+The app watches the flows folder and the automations library. A burst of changes reloads once,
+a quarter second after the first. A flow tree with problems is reported, and the last tree that
+loaded without problems keeps running, or the built-in tree when none has since the start. A
+library change reloads the automations, rewrites `TOOLS.md`, and checks the flow tree against the
+new tools.
+
+Tests: none yet
+
+### R21 MCP servers start in the background
+
+At start, and whenever the tools change, the app starts the MCP servers without holding up takes,
+writes `TOOLS.md` when it changed, reports each server that failed in the Flows tab, and checks
+the flow tree against the tools they listed.
+
+Tests: none yet
+
+### R22 Machine timers run as takes of their own
+
+When a task's timer runs out, its event moves the machines as a take of its own, whose work
+delivers into the window the task started in. With no take running, the bubble shows the timer.
+A timer whose state the machine has left does nothing. **Cancel task** in the Machines tab ends
+every task.
+
+Tests: `a_timer_ends_a_task_that_waits_and_stale_timers_do_nothing`
+
+### R23 The app logs to a file
+
+The tray app has no console on Windows. It logs to `~/jevons/logs/jevons-desktop.log`, appending,
+and keeps the run before as `jevons-desktop.previous.log`. A panic on any thread is logged with
+its backtrace. `RUST_LOG` sets the detail.
+
+Tests: none yet
+
+### R24 Quit ends everything
+
+**Quit** cancels the take, removes the tray icon, unloads the models and closes the window.
+Closing the window only hides it.
+
+Tests: none yet

@@ -29,7 +29,7 @@ cargo run --release --locked -p jevons-rs -- --config jevons.toml
 
 Complete the [ROCm setup](build.md#rocmhip) first. DiffusionGemma runs on the [CubeCL backend](cubecl.md), and Nemotron-Labs-Diffusion and Parakeet on Burn. Add a speech model and `[services.speech]` to also serve [speech to text](#speech-to-text); a server may enable any subset of the three services.
 
-If neither `server.api_key` nor `TYPESAFE_API_KEY` (or `--api-key`) is set, the server disables authentication. A configured key protects `/v1/*`; `/health` remains open. Logs include counts and timing, excluding request state and credentials. Ctrl-C and SIGTERM drain pending requests and release the models.
+If neither `server.api_key` nor `TYPESAFE_API_KEY` (or `--api-key`) is set, the server disables authentication. A configured key protects every path except `/health`. Logs include counts and timing, excluding request state and credentials. Ctrl-C and SIGTERM drain pending requests and release the models.
 
 ## Settings file
 
@@ -47,7 +47,7 @@ Every model must be used by a service. When `generative` and `decision` name the
 
 ## Routes
 
-The routes belong to the three services (see the [architecture](../README.md#architecture)); a route answers `404 model_not_found` when its service is not enabled.
+The routes belong to the three services (see the [architecture](../README.md#architecture)). When a service is off, its OpenAI routes answer `404` with code `model_not_found`, and `/v1/systemone` answers `404` `Unknown model` in the `detail` shape (see [errors](#errors)). Without Speech or with `realtime = false`, the server has no `/v1/realtime` route and answers `404` `Unknown path` in the `detail` shape.
 
 | Service | Route | Purpose |
 | --- | --- | --- |
@@ -58,7 +58,7 @@ The routes belong to the three services (see the [architecture](../README.md#arc
 | Speech | `GET /v1/realtime` | OpenAI Realtime transcription sessions over a WebSocket. |
 | Decision | `POST /v1/systemone` | Evaluate `state`, `model`, and one or more `questions` ([System One guide](system-one.md)). |
 | All | `GET /v1/models` | List models: System One `models` (`name`, `description`, `release_date`) and OpenAI `data` (`id`, `object`, `created`, `owned_by`). |
-| All | `GET /health` | Check model readiness and worker availability: `model` (the language model, or `null`) and `speech_model` when one is loaded. |
+| All | `GET /health` | Check model readiness and worker availability: `status` and `services`, the model IDs serving `generative`, `decision` and `speech` (`null` for a service that is off). |
 
 ```bash
 curl http://127.0.0.1:8080/v1/systemone \
@@ -120,7 +120,7 @@ curl http://127.0.0.1:8080/v1/systemone \
   --data-binary @examples/system-one-extensions.json
 ```
 
-For DiffusionGemma images, give the model a compatible projector (see [image setup](build.md#image-input)); Nemotron-Labs-Diffusion VLM checkpoints carry their own vision tower:
+For DiffusionGemma images, give the model a compatible projector (see [image setup](build.md#image-input)); Nemotron-Labs-Diffusion VLM checkpoints carry their own vision tower, and the server drops an `mmproj` set on a Nemotron model with a warning:
 
 ```toml
 [models.gemma]
@@ -202,7 +202,7 @@ print(reply.choices[0].message.content)
 ```
 
 - **Decoding.** Answers use the model's `decoding` setting (see [masked diffusion](inference.md#masked-diffusion-nemotron-labs-diffusion)). For Nemotron-Labs-Diffusion, `self-speculation` gives greedy autoregressive text at about twice the speed of `diffusion`. DiffusionGemma always uses its uniform-noise denoiser, whose longer answers are rougher. Decoding is greedy: `temperature`, `top_p` and `seed` are accepted, and only `seed` changes anything (DiffusionGemma's noise).
-- **Prompts.** Chat roles `system` and `developer` become system turns; `user` and `assistant` keep their turns. The answer follows an empty, closed thought unless `reasoning_effort` (Chat Completions) or `reasoning.effort` (Responses) asks for a thought first: `minimal`, `low`, `medium` and `high` allow 64, 256, 1,024 and 4,096 thought tokens. Thoughts are never returned; they count as `reasoning_tokens`. Completions continue the raw `prompt` text without chat markers. Leading newlines of chat answers are dropped.
+- **Prompts.** Chat roles `system` and `developer` become system turns; `user` and `assistant` keep their turns. The answer follows an empty, closed thought unless `reasoning_effort` (Chat Completions) or `reasoning.effort` (Responses) asks for a thought first: `minimal`, `low`, `medium` and `high` (or `xhigh`) allow 64, 256, 1,024 and 4,096 thought tokens, and `none` allows 0. Thoughts are never returned; they count as `reasoning_tokens`. Completions continue the raw `prompt` text without chat markers. Leading newlines of chat answers are dropped.
 - **Limits.** `max_completion_tokens` or `max_tokens` (chat), `max_tokens` (completions, default 16) and `max_output_tokens` (responses) cap the answer; without one, chat answers may use the rest of the context, up to 2,048 tokens. Up to four `stop` sequences end the answer and are not returned. The prompt, thought and answer must fit the model's `context_size`.
 - **Streaming.** `stream: true` sends server-sent events: completion chunks ending with `data: [DONE]`, with a final usage chunk when `stream_options.include_usage` is set, or the named Responses events from `response.created` to `response.completed` (`response.incomplete` when `max_output_tokens` ends the answer). Text arrives per decoding round or block. Closing the connection stops generation.
 - **Tools.** Function `tools` (both the Chat Completions and the Responses shapes, up to 127) and `tool_choice` (`auto`, `none`, `required` or a named function) work on both chat APIs; `parallel_tool_calls` is accepted, and a turn makes at most one call. The model never writes a call as free text:
@@ -214,7 +214,7 @@ print(reply.choices[0].message.content)
 - **Structured output.** `response_format` (Chat Completions) and `text.format` (Responses) take `json_schema`, whose schema is filled the same way as tool arguments, and `json_object`. The answer is the JSON text.
 - **Not supported.** Several choices (`n` > 1), built-in tools (web search, file search and the like), log probabilities, penalties, logit bias, image or audio content, stored responses (`previous_response_id`, `conversation`), background responses and reasoning summaries return `400` with the parameter named. Unknown parameters are rejected the same way. `store` and `metadata` are accepted; nothing is stored.
 
-OpenAI routes report errors as `{"error":{"message","type","param","code"}}`: `400` for invalid or unsupported input (including a prompt too long for the context), `404` with code `model_not_found`, and the service statuses below for authentication, full queues and failures.
+OpenAI routes report errors as `{"error":{"message","type","param","code"}}`: `400` for invalid or unsupported input (including a prompt too long for the context), `404` with code `model_not_found`, the status of a rejected JSON body (`415` without a JSON content type, `413` over 64 MiB), type `overloaded_error` for a full queue (`529`) or a stopped worker (`503`), and `500` with type `server_error` for failures.
 
 ## Speech to text
 
@@ -267,13 +267,15 @@ uv run examples/realtime.py examples/speech-es.flac --url ws://127.0.0.1:8080/v1
 
 ## Errors
 
-Responses include `x-typesafe-request-id`. System One validation errors use `{"detail":[{"loc":...,"msg":...,"type":...}]}`. Other errors use `{"detail":{"error_type":...,"message":...}}`; OpenAI routes use the OpenAI shape above.
+Responses include `x-typesafe-request-id`. System One validation errors use `{"detail":[{"loc":...,"msg":...,"type":...}]}`. Other errors use `{"detail":{"error_type":...,"message":...}}`; OpenAI routes use the OpenAI shape above, except for authentication errors, which keep the `detail` shape on every route.
 
 | Status | Meaning |
 | --- | --- |
 | 401 / 403 | Incorrect key / missing key with authentication enabled |
 | 404 | Unknown model or path |
-| 413 | Body exceeds 64 MiB (26 MiB for transcriptions) |
+| 405 | A known path with the wrong method |
+| 413 | Body exceeds 64 MiB (26 MiB for transcriptions); System One's message is `Request body exceeds 64 MiB` |
+| 415 | An OpenAI JSON route without a JSON content type |
 | 422 | Invalid input, unsupported extension, or token capacity exceeded |
 | 529 | Full queue; `retry-after: 1` accompanies the response |
 | 503 | Inference worker (language or speech) unavailable |

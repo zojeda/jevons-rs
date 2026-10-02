@@ -514,6 +514,18 @@ impl Tokenizer {
         }
     }
 
+    /// The token's text as an answer code: 1..=16 ASCII alphanumerics after one leading space,
+    /// as `TextTokenizer::code_piece` requires. `None` for control tokens and anything else.
+    pub fn code_piece(&self, token: i32) -> Option<String> {
+        if token < 0 || token as usize >= self.n_vocab() || self.is_control(token) {
+            return None;
+        }
+        let bytes = self.token_to_piece(token);
+        let piece = bytes.strip_prefix(b" ").unwrap_or(&bytes);
+        ((1..=16).contains(&piece.len()) && piece.iter().all(u8::is_ascii_alphanumeric))
+            .then(|| String::from_utf8_lossy(piece).into_owned())
+    }
+
     /// Same tokens as `llama_tokenize(vocab, text, .., add_special, parse_special)`.
     pub fn tokenize(&self, text: &str, add_special: bool, parse_special: bool) -> Vec<i32> {
         let mut output = Vec::new();
@@ -755,6 +767,25 @@ mod tests {
 
     fn pieces(tok: &Tokenizer, ids: &[i32]) -> Vec<String> {
         ids.iter().map(|&id| tok.text(id).to_owned()).collect()
+    }
+
+    #[test]
+    fn code_pieces_ignore_one_leading_space_and_skip_control_tokens() {
+        let tok = synthetic();
+        let id = |piece: &str| {
+            (0..tok.n_vocab() as i32)
+                .find(|&t| tok.text(t) == piece)
+                .unwrap()
+        };
+        assert_eq!(tok.code_piece(id("ab")).as_deref(), Some("ab"));
+        // "▁ab" decodes to " ab": the space is dropped, as for Hugging Face tokenizers.
+        assert_eq!(tok.code_piece(id("▁ab")).as_deref(), Some("ab"));
+        assert_eq!(tok.code_piece(id("<0x41>")).as_deref(), Some("A"));
+        assert_eq!(tok.code_piece(id("▁")), None);
+        assert_eq!(tok.code_piece(id("é")), None);
+        assert_eq!(tok.code_piece(id("<mask>")), None);
+        assert_eq!(tok.code_piece(-1), None);
+        assert_eq!(tok.code_piece(tok.n_vocab() as i32), None);
     }
 
     #[test]

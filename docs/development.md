@@ -49,7 +49,7 @@ The project was previously named `llama-cpp-system-one`, after its original llam
 
 Put each change in the layer it belongs to:
 - **Wire formats and HTTP policy** go in `jevons-api`: OpenAI and System One validation and rendering, status codes, auth, queues.
-- **Service policy** goes in its service crate: chat framing and streaming, read orchestration, windowing and segments. Services take typed requests and return typed results, with no HTTP, JSON or async code.
+- **Service policy** goes in its service crate: chat framing and streaming, read orchestration, windowing and segments. Services take typed requests and return typed results, with no HTTP or async code. They use JSON only as data (tool arguments, schemas and structured answers) and in their CLIs, never to parse request bodies.
 - **What Generative and Decision share** goes in `jevons-diffusion`: token generation, decoding modes, the prompt cache discipline.
 - **Architecture specifics** (chat markers, image encoding, weights) go in the model implementation.
 - **Desktop behaviour** shared by every OS (pipeline, flow tree, gestures, tray states) goes in `jevons-desktop-core`; only the implementations of its platform traits go in `jevons-desktop/src/platform`.
