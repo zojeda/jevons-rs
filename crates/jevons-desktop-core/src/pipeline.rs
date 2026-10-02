@@ -8,16 +8,18 @@ use crate::client::{
 };
 use crate::context::ContextSnapshot;
 use crate::delivery::{Decision, Pending};
-use crate::flow::FlowTree;
 use crate::flow::frame::Frame;
 use crate::flow::investigate::Investigate;
+use crate::flow::machine::runtime::{Runtime, Step};
 use crate::flow::spec::Output;
 use crate::flow::tools::ToolHost;
-use crate::flow::walk::{self, FlowStep, Leaf, ToolTrace};
+use crate::flow::walk::{self, FlowStep, Leaf, ToolTrace, Walked};
+use crate::flow::{FlowTree, Kind};
 use crate::platform::{
     Action, AudioEvent, DeliveryMethod, DeliveryOutcome, DeliveryRequest, SAMPLE_RATE, TextSink,
 };
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, oneshot};
@@ -167,6 +169,8 @@ pub struct Env {
     pub confirmer: Option<Arc<crate::flow::confirm::ChannelConfirmer>>,
     /// The tools the settings register; without them tool and agent nodes fail.
     pub tools: Option<Arc<ToolHost>>,
+    /// The machines that run across takes: the flows root's and the tasks nested in it.
+    pub machines: Arc<Runtime>,
 }
 
 /// A take as it starts.
@@ -205,6 +209,8 @@ pub enum Update {
     Output(String),
     /// The text being generated is an answer for the bubble, not text for the application.
     Answering,
+    /// The machines moved: where they are now, such as `search › answering`.
+    State(String),
 }
 
 /// What a stage does, for the bubble's icon and animation.
@@ -279,6 +285,9 @@ pub struct Trace {
     /// The tool calls of tool and agent nodes.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub calls: Vec<ToolTrace>,
+    /// The transitions the machines took.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub machine: Vec<Step>,
     pub generation: Option<GenerationTrace>,
     /// The text delivered (or that would be, in a dry run).
     pub output: String,
@@ -306,6 +315,7 @@ impl Trace {
             flow: Vec::new(),
             leaf: None,
             calls: Vec::new(),
+            machine: Vec::new(),
             generation: None,
             output: String::new(),
             delivery: None,
@@ -394,7 +404,8 @@ pub async fn transcribe_only(
     Ok(text.trim().to_string())
 }
 
-/// Walks the flow tree for a transcribed take and sends the leaf's text where it goes.
+/// Walks the flow tree for a transcribed take and sends the leaf's text where it goes. Under a
+/// machine root the take is `said` for the machines instead.
 async fn finish_take(
     env: &Env,
     start: &TakeStart,
@@ -403,27 +414,55 @@ async fn finish_take(
 ) -> Trace {
     let take = start.id;
     let tree = env.flows.clone();
-    let entry = match start.entry.as_deref() {
-        Some(path) => tree.find(path).unwrap_or_else(|| {
+    let entry = start.entry.as_deref().and_then(|path| {
+        let found = tree.find(path);
+        if found.is_none() {
             trace.notes.push(format!(
                 "The flow tree has no branch {path}: starting at the root"
             ));
-            tree.root()
-        }),
-        None => tree.root(),
-    };
-    trace.entry = tree.node(entry).label().to_string();
-    let frame = Frame::new(start.context.clone(), trace.transcript.clone());
-    let walked = Instant::now();
-    let leaf = walk::run(env, &tree, entry, frame, updates, &mut trace).await;
-    trace.time("walk", walked);
-    let leaf = match leaf {
-        Ok(leaf) => leaf,
-        Err(e) => {
-            trace.error = Some(e.to_string());
-            return trace;
         }
-    };
+        found
+    });
+    trace.entry = tree.node(entry.unwrap_or(tree.root())).label().to_string();
+    let walked = Instant::now();
+    if tree.node(tree.root()).kind() == Kind::Machine {
+        env.machines
+            .take(env, start, entry, updates, &mut trace)
+            .await;
+        trace.time("walk", walked);
+        tracing::info!(
+            take,
+            steps = trace.machine.len(),
+            error = trace.error.is_some(),
+            "Moved the machines"
+        );
+        return trace;
+    }
+    let frame = Frame::new(start.context.clone(), trace.transcript.clone());
+    let walk = walk::run(
+        env,
+        &tree,
+        entry.unwrap_or(tree.root()),
+        frame,
+        HashMap::new(),
+        updates,
+        &mut trace,
+    )
+    .await;
+    trace.time("walk", walked);
+    match walk {
+        Ok((Walked::Leaf(leaf), _)) => deliver_leaf(env, start, leaf, &mut trace).await,
+        Ok((Walked::Machine(_), _)) => {
+            trace.error = Some("A machine runs only below a machine at the flows root".into())
+        }
+        Err(e) => trace.error = Some(e.to_string()),
+    }
+    trace
+}
+
+/// Sends a leaf's text where it goes, and records it on the trace.
+pub(crate) async fn deliver_leaf(env: &Env, start: &TakeStart, leaf: Leaf, trace: &mut Trace) {
+    let take = start.id;
     tracing::info!(take, leaf = %leaf.node, output = ?leaf.output, "Walked the flow tree");
     trace.output = leaf.text.clone();
     let delivered = Instant::now();
@@ -472,7 +511,6 @@ async fn finish_take(
         error = trace.error.is_some(),
         "Delivered"
     );
-    trace
 }
 
 /// Streams the take to Realtime when possible and returns the transcript; falls back to an
@@ -1011,6 +1049,7 @@ mod tests {
             reader: None,
             confirmer: None,
             tools: None,
+            machines: Arc::new(Runtime::new()),
         }
     }
 
@@ -1740,6 +1779,422 @@ confirm = false
             trace.error
         );
         assert_eq!(trace.calls[0].confirmed, Some(false));
+    }
+
+    /// A root machine that dictates, or starts a search task that waits for what the user says
+    /// about its results.
+    const SEARCH_TASK: &[(&str, &str)] = &[
+        ("machine.toml", "tools = [\"search\"]"),
+        (
+            "machine.fsm",
+            "fsm App {\n[*] --> idle\nidle --> type : said [else]\nidle --> find : said\ntype --> idle\nfind --> idle\n}",
+        ),
+        ("type/transcript.toml", "description = \"Dictation\""),
+        (
+            "find/machine.toml",
+            "description = \"The user wants to search the web\"\ntools = [\"search\"]",
+        ),
+        (
+            "find/machine.fsm",
+            "fsm Find {\ntimer idle = 40 -> quiet\n[*] --> searching\nstate searching: \"Searching\"\nstate answering: \"The results are in the bubble\"\nsearching --> answering\nsearching --> [*] : failed\nanswering --> opening : said [the user wants a result opened]\nanswering --> [*] : said [the user is done with the results]\nanswering --> [*] : quiet\nopening --> [*]\n}",
+        ),
+        (
+            "find/searching/tool.toml",
+            "tool = \"search\"\noutput = \"none\"\n[args.query]\nvalue = \"{transcript}\"",
+        ),
+        (
+            "find/answering/generate.toml",
+            "output = \"bubble\"\nprompt = \"Results: {searching}. Question: {transcript}\"",
+        ),
+        (
+            "find/opening/tool.toml",
+            "tool = \"search\"\noutput = \"none\"\n[args.query]\nvalue = \"{transcript}\"",
+        ),
+    ];
+
+    fn task_env(client: Client, machines: Arc<Runtime>) -> Env {
+        Env {
+            flows: tree_of(SEARCH_TASK),
+            tools: Some(tool_host()),
+            machines,
+            ..env(client, None)
+        }
+    }
+
+    async fn say(env: &Env, id: u64, words: &str) -> Trace {
+        let (updates, _) = mpsc::unbounded_channel();
+        let start = TakeStart {
+            id,
+            context: context(None),
+            entry: None,
+        };
+        run_transcript(env, start, words, &updates).await
+    }
+
+    fn moves(trace: &Trace) -> Vec<String> {
+        trace
+            .machine
+            .iter()
+            .map(|s| format!("{} {} → {}", s.from, s.event, s.to))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_task_waits_across_takes_and_the_model_takes_its_transitions() {
+        let (client, seen) = server(prefer(&["find", "opening"]), "Two crates fit.").await;
+        let machines = Arc::new(Runtime::new());
+        let env = task_env(client, machines.clone());
+        let first = say(&env, 1, "search for state machine crates").await;
+        assert_eq!(first.error, None, "{:?}", first.notes);
+        assert_eq!(
+            moves(&first),
+            [
+                "idle said → find",
+                "[*] start → searching",
+                "searching done → answering"
+            ]
+        );
+        assert_eq!(first.machine[0].how, "model 0.90");
+        assert_eq!(
+            first.calls[0].arguments,
+            json!({"query": "search for state machine crates"})
+        );
+        // The answer read the search's result, and waits in the bubble.
+        assert_eq!(first.delivery, Some(DeliveryOutcome::Shown));
+        let prompt = seen.generations.lock().unwrap()[0]["input"].to_string();
+        assert!(
+            prompt.contains("Results: ") && prompt.contains("dry_run"),
+            "{prompt}"
+        );
+        assert_eq!(machines.view().path(), "find › answering");
+
+        // What the user says next is for the task, not the root.
+        let second = say(&env, 2, "open the second one").await;
+        assert_eq!(second.error, None, "{:?}", second.notes);
+        assert_eq!(
+            moves(&second),
+            [
+                "answering said → opening",
+                "opening done → [*]",
+                "find done → idle"
+            ]
+        );
+        let asked = &seen.decisions.lock().unwrap()[1]["questions"]["q00"];
+        assert!(
+            asked["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("in the middle of a task, Find"),
+            "{asked}"
+        );
+        let criteria = asked["criteria"].as_object().unwrap();
+        assert_eq!(criteria.keys().collect::<Vec<_>>(), ["end", "opening"]);
+        assert_eq!(
+            second.calls[0].arguments,
+            json!({"query": "open the second one"})
+        );
+        assert_eq!(machines.view().path(), "idle");
+        let history: Vec<String> = machines
+            .view()
+            .history
+            .iter()
+            .map(|s| format!("{}:{}", s.machine, s.to))
+            .collect();
+        assert_eq!(history.len(), 6, "{history:?}");
+    }
+
+    #[tokio::test]
+    async fn an_unsure_take_leaves_a_waiting_task_where_it_was() {
+        let machines = Arc::new(Runtime::new());
+        let (client, _) = server(prefer(&["find"]), "Results.").await;
+        let first = say(&task_env(client, machines.clone()), 1, "search for crates").await;
+        assert_eq!(first.error, None, "{:?}", first.notes);
+        let (client, seen) = server(prefer_with(&["opening"], 0.4), "unused").await;
+        let env = Env {
+            flows: machines.view().tree.unwrap(),
+            ..task_env(client, machines.clone())
+        };
+        let second = say(&env, 2, "hmm, maybe").await;
+        assert_eq!(moves(&second), ["answering said → answering"]);
+        assert!(
+            second.machine[0].how.contains("stayed"),
+            "{:?}",
+            second.machine
+        );
+        assert!(second.calls.is_empty(), "nothing ran");
+        assert!(seen.generations.lock().unwrap().is_empty());
+        assert_eq!(machines.view().path(), "find › answering");
+        // Cancelling ends the task and runs nothing.
+        assert_eq!(machines.cancel().await.as_deref(), Some("find › answering"));
+        assert_eq!(machines.view().path(), "idle");
+        assert_eq!(machines.cancel().await, None);
+    }
+
+    #[tokio::test]
+    async fn a_timer_ends_a_task_that_waits_and_stale_timers_do_nothing() {
+        let machines = Arc::new(Runtime::new());
+        let (due, mut timers) = mpsc::unbounded_channel();
+        machines.set_timers(due);
+        let (client, _) = server(prefer(&["find"]), "Results.").await;
+        let env = task_env(client, machines.clone());
+        say(&env, 1, "search for crates").await;
+        let fired = tokio::time::timeout(Duration::from_secs(5), timers.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(fired.event, "quiet");
+        let (updates, _) = mpsc::unbounded_channel();
+        let trace = machines
+            .timer(&env, fired.clone(), 9, &updates)
+            .await
+            .expect("the task still waited in answering");
+        assert_eq!(moves(&trace), ["answering quiet → [*]", "find done → idle"]);
+        assert_eq!(trace.take, 9);
+        assert_eq!(machines.view().path(), "idle");
+        // The state it was armed in is gone.
+        assert!(machines.timer(&env, fired, 10, &updates).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_task_keeps_the_extracts_read_on_the_way_to_it() {
+        let tree = FlowTree::load(
+            &Memory::new(
+                "test",
+                [
+                    ("machine.toml", ""),
+                    (
+                        "machine.fsm",
+                        "fsm App {\n[*] --> idle\nidle --> chat : said\nchat --> idle\n}",
+                    ),
+                    (
+                        "chat/decide.toml",
+                        "description = \"Chat\"\n\
+                         [extract.channels]\n\
+                         xpath = \"//TreeItem[.//Group[has-class(@class, 'p-channel_sidebar__channel')]]/@name\"\n\
+                         as = \"list\"\n\
+                         [extract.last]\n\
+                         xpath = \"string((//ListItem[.//Text])[last()]//Text)\"\n\
+                         lazy = true",
+                    ),
+                    ("chat/task/machine.toml", "description = \"A reply\""),
+                    (
+                        "chat/task/machine.fsm",
+                        "fsm Reply {\n[*] --> waiting\nwaiting --> reply : said\nreply --> [*]\n}",
+                    ),
+                    (
+                        "chat/task/reply/generate.toml",
+                        "output = \"bubble\"\nprompt = \"Last: {last}. Channels: {channels}. Said: {transcript}\"",
+                    ),
+                ],
+            ),
+            &Catalog::default(),
+        );
+        assert!(tree.is_valid(), "{:?}", tree.errors);
+        let (client, seen) = server(prefer(&[]), "Sure.").await;
+        let recorded: crate::recorded::RecordedTree =
+            serde_json::from_str(include_str!("../../../examples/desktop/trees/slack.json"))
+                .unwrap();
+        let machines = Arc::new(Runtime::new());
+        let env = Env {
+            flows: Arc::new(tree),
+            reader: Some(Arc::new(crate::flow::extract::Reader::new(
+                Arc::new(crate::recorded::RecordedInspector::new(recorded)),
+                crate::context::Privacy::default(),
+            ))),
+            machines: machines.clone(),
+            ..env(client, None)
+        };
+        let slack = |id| TakeStart {
+            id,
+            context: ContextSnapshot {
+                app: AppInfo {
+                    process_name: "slack.exe".into(),
+                    ..AppInfo::default()
+                },
+                window: WindowInfo {
+                    title: "general (Channel) - Acme - Slack".into(),
+                    handle: Some(7),
+                    ..WindowInfo::default()
+                },
+                ..ContextSnapshot::default()
+            },
+            entry: None,
+        };
+        let (updates, _) = mpsc::unbounded_channel();
+        let first = run_transcript(&env, slack(1), "draft a reply", &updates).await;
+        assert_eq!(first.error, None, "{:?}", first.notes);
+        assert_eq!(machines.view().path(), "chat › waiting");
+        // A later take in the task still has the extract read on the way, and reads the lazy one.
+        let second = run_transcript(&env, slack(2), "say yes", &updates).await;
+        assert_eq!(second.error, None, "{:?}", second.notes);
+        assert_eq!(machines.view().path(), "idle");
+        let generation = serde_json::to_string(&seen.generations.lock().unwrap()[0]).unwrap();
+        assert!(
+            generation.contains("Last: Can someone review the release notes?. Channels: [")
+                && generation.contains("Ana Silva")
+                && generation.contains("Said: say yes"),
+            "{generation}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_declined_tool_call_takes_the_denied_transition() {
+        let (client, _) = server(prefer(&[]), "unused").await;
+        let env = Env {
+            flows: tree_of(&[
+                ("machine.toml", "tools = [\"note\"]"),
+                (
+                    "machine.fsm",
+                    "fsm App {\n[*] --> idle\nidle --> saving : said\nsaving --> idle\nsaving --> told : denied\nstate told\ntold --> idle\n}",
+                ),
+                (
+                    "saving/tool.toml",
+                    "description = \"Saves a note\"\ntool = \"note\"\n[args.title]\nvalue = \"x\"\n[args.folder]\nvalue = \"y\"\n[args.body]\nvalue = \"{transcript}\"",
+                ),
+                ("told/transcript.toml", "output = \"clipboard\""),
+            ]),
+            tools: Some(tool_host()),
+            // No one to ask: the call is declined.
+            confirmer: None,
+            ..env(client, Some(&RecordingSink::new(Some(7))))
+        };
+        let trace = say(&env, 1, "note that the build is green").await;
+        assert_eq!(
+            moves(&trace),
+            [
+                "idle said → saving",
+                "saving denied → told",
+                "told done → idle"
+            ]
+        );
+        assert_eq!(trace.error, None, "the machine handled it");
+        assert!(
+            trace.notes.iter().any(|n| n.contains("not confirmed")),
+            "{:?}",
+            trace.notes
+        );
+        assert_eq!(trace.calls[0].confirmed, Some(false));
+    }
+
+    /// The built-in tree with `examples/desktop/machines/search` added as its README says.
+    fn with_search_example() -> (Arc<FlowTree>, Arc<ToolHost>) {
+        let example = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/desktop/machines/search");
+        let read = |file: &str| std::fs::read_to_string(example.join(file)).unwrap();
+        let search: Vec<(String, String)> = [
+            "machine.toml",
+            "machine.fsm",
+            "searching/tool.toml",
+            "answering/generate.toml",
+            "opening/tool.toml",
+        ]
+        .iter()
+        .map(|f| (format!("search/{f}"), read(f)))
+        .collect();
+        let mut files: Vec<(String, String)> = crate::flow::defaults::TREE
+            .iter()
+            .map(|(p, t)| (p.to_string(), t.to_string()))
+            .collect();
+        for (path, text) in &mut files {
+            if path == "machine.fsm" {
+                *text = text.replace(
+                    "    ask --> idle",
+                    "    idle --> search : said [search]\n    search --> idle\n    ask --> idle",
+                );
+            }
+            if path == "machine.toml" {
+                *text = text.replace(
+                    "tools = [\"script:*\"]",
+                    "tools = [\"script:*\", \"web_search\", \"open_url\"]\n\n[guards.search]\nwhen = { transcript = \"(?i)^\\\\W*(search|busca)\\\\b\" }\nprefer = { transcript = \"(?i)^\\\\W*(search|busca)\\\\b\" }",
+                );
+            }
+        }
+        files.extend(search);
+        let config: crate::config::DesktopConfig = toml::from_str(
+            r#"
+[tools.web_search]
+kind = "http"
+method = "GET"
+description = "Searches the web and returns the top results as JSON"
+url = "https://api.search.brave.com/res/v1/web/search?q={query}&count=5"
+headers = { Accept = "application/json", "X-Subscription-Token" = "${env:BRAVE_API_KEY}" }
+arguments = { query = "What to search for" }
+confirm = false
+allow = ["search/*"]
+
+[tools.open_url]
+kind = "open"
+description = "Opens an address in the default browser"
+url = "{url}"
+arguments = { url = "The address to open" }
+allow = ["search/*"]
+"#,
+        )
+        .unwrap();
+        let tools = Arc::new(ToolHost::new(&config.tools, &config.mcp).dry_run());
+        let tree = FlowTree::load(
+            &Memory::new("test", files.iter().map(|(p, t)| (p.as_str(), t.as_str()))),
+            &tools.catalog(),
+        );
+        assert!(tree.is_valid(), "{:?}", tree.errors);
+        (Arc::new(tree), tools)
+    }
+
+    #[tokio::test]
+    async fn the_search_example_searches_answers_and_opens_a_result_once_approved() {
+        let (flows, tools) = with_search_example();
+        let (client, seen) = server(prefer(&["opening", "end"]), "1. jevons-fsm").await;
+        let (confirm, mut asked) = mpsc::unbounded_channel::<crate::flow::confirm::Confirmation>();
+        let approver = tokio::spawn(async move {
+            let call = asked.recv().await.unwrap();
+            call.reply.send(true).unwrap();
+            call.tool
+        });
+        let machines = Arc::new(Runtime::new());
+        let env = Env {
+            flows,
+            tools: Some(tools),
+            confirmer: Some(Arc::new(crate::flow::confirm::ChannelConfirmer::new(
+                confirm,
+            ))),
+            machines: machines.clone(),
+            ..env(client, None)
+        };
+        // "Search" starts the task with no root decision.
+        let first = say(&env, 1, "Search state machine crates for Rust").await;
+        assert_eq!(first.error, None, "{:?}", first.notes);
+        assert_eq!(
+            first.flow[0].how.as_deref(),
+            Some("preferred: its transcript rule passed")
+        );
+        assert_eq!(
+            moves(&first),
+            [
+                "idle said → search",
+                "[*] start → searching",
+                "searching done → answering",
+                "answering done → results"
+            ]
+        );
+        assert_eq!(first.calls[0].tool, "web_search");
+        assert_eq!(first.delivery, Some(DeliveryOutcome::Shown));
+        assert_eq!(machines.view().path(), "search › results");
+        assert!(seen.decisions.lock().unwrap().is_empty());
+        // A follow-up opens a result, once the user approves it in the bubble.
+        let second = say(&env, 2, "open the first one").await;
+        assert_eq!(second.error, None, "{:?}", second.notes);
+        assert_eq!(
+            moves(&second),
+            ["results said → opening", "opening done → results"]
+        );
+        assert_eq!(approver.await.unwrap(), "open_url");
+        assert_eq!(second.calls[0].confirmed, Some(true));
+        // Done: the task ends and the root waits again.
+        let (client, _) = server(prefer(&["end"]), "unused").await;
+        let env = Env { client, ..env };
+        let third = say(&env, 3, "thanks, that's all").await;
+        assert_eq!(moves(&third), ["results said → [*]", "search done → idle"]);
+        assert_eq!(machines.view().path(), "idle");
     }
 
     #[tokio::test]

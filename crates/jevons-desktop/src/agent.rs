@@ -14,6 +14,7 @@ use jevons_desktop_core::flow::confirm::{ChannelConfirmer, Confirmation};
 use jevons_desktop_core::flow::extract::{self, Reader};
 use jevons_desktop_core::flow::investigate::Investigate;
 use jevons_desktop_core::flow::investigator::{Investigator, PathCache};
+use jevons_desktop_core::flow::machine::runtime::{Due, Runtime as Machines};
 use jevons_desktop_core::flow::tools::ToolHost;
 use jevons_desktop_core::flow::walk::{self, FlowStep};
 use jevons_desktop_core::flow::{Catalog, FlowError, FlowTree, defaults};
@@ -138,6 +139,10 @@ pub enum Command {
     HideMessage(u64),
     /// A take asks before calling a tool.
     ConfirmRequested(Confirmation),
+    /// A machine's timer ran out.
+    MachineTimer(Due),
+    /// Ends every task, putting the flows root's machine back in its first state.
+    CancelTask,
     /// The user's answer: run the tool or not.
     Confirmed(bool),
     /// A button of the bubble's answer.
@@ -215,6 +220,8 @@ pub struct Feedback {
     pub message: bool,
     /// Which message this is, so an older message's timer never hides a newer one.
     pub shown: u64,
+    /// Where the machines are, such as `search › answering`.
+    pub state: String,
 }
 
 impl Feedback {
@@ -274,6 +281,7 @@ impl Feedback {
                 self.answer = true;
                 self.output.clear();
             }
+            Update::State(path) => self.state = path.clone(),
         }
         true
     }
@@ -360,6 +368,8 @@ pub struct View {
     pub watch_context: bool,
     /// The feedback bubble's contents while a take runs and shortly after.
     pub feedback: Option<Feedback>,
+    /// The machines that run across takes, for the Machines tab.
+    pub machines: Arc<Machines>,
     /// The Context tab's workbench: the last extract it tried and what it found.
     pub trial: Option<TrialView>,
     /// Whether a trial is under way.
@@ -551,6 +561,7 @@ pub struct Agent {
     searching: bool,
     search_next: Option<String>,
     flows: Arc<FlowTree>,
+    machines: Arc<Machines>,
     hotkeys: std::collections::HashMap<u32, HotkeyAction>,
     /// The reply to the tool call the bubble asks about.
     confirming: Option<oneshot::Sender<bool>>,
@@ -614,6 +625,15 @@ impl Agent {
             // Nothing good to keep yet: the built-in tree runs until the folder is fixed.
             FlowTree::load(&defaults::builtin(), &Catalog::default())
         };
+        let machines = Arc::new(Machines::new());
+        let (due, mut timers) = mpsc::unbounded_channel();
+        machines.set_timers(due);
+        let forward = commands.clone();
+        tokio::spawn(async move {
+            while let Some(due) = timers.recv().await {
+                let _ = forward.send(Command::MachineTimer(due));
+            }
+        });
         let watcher = watch(&flows_dir, commands.clone(), || Command::ReloadFlows);
         let library_watcher = watch(automations.dir(), commands.clone(), || {
             Command::ReloadAutomations
@@ -635,6 +655,7 @@ impl Agent {
             searching: false,
             search_next: None,
             flows: Arc::new(flows),
+            machines,
             config,
             config_file,
             repository,
@@ -659,6 +680,7 @@ impl Agent {
         {
             let mut view = agent.view.lock().expect("the view lock");
             view.flows = agent.flows.clone();
+            view.machines = agent.machines.clone();
             view.flow_errors = errors;
             view.flow_notes = notes;
             view.context_backend = agent.context.name();
@@ -989,6 +1011,17 @@ impl Agent {
                 self.repaint();
             }
             Command::AutomationFinished(trace) => self.automation_finished(*trace),
+            Command::MachineTimer(due) => self.machine_timer(due),
+            Command::CancelTask => {
+                let machines = self.machines.clone();
+                let repaint = self.repaint.clone();
+                tokio::spawn(async move {
+                    if let Some(ended) = machines.cancel().await {
+                        tracing::info!(%ended, "Cancelled the task");
+                    }
+                    repaint();
+                });
+            }
             Command::ReloadRuntime => self.runtime.apply(&self.config, &self.config_file),
             Command::RuntimeChanged => {
                 let status = self.runtime.status();
@@ -1935,16 +1968,16 @@ impl Agent {
     fn reload_flows(&mut self) {
         let dir = self.config.flows_dir(&self.config_file);
         let (tree, report) = defaults::open(&dir, &self.tools.catalog());
-        let notes = report.notes;
-        if !report.written.is_empty() {
-            let message = format!(
+        let notes = report.notes.clone();
+        if report.changed().next().is_some() {
+            let mut message = format!(
                 "Write {} in the flows folder",
                 settings::list(&report.written)
             );
-            self.commit(
-                report.written.iter().map(|f| dir.join(f)).collect(),
-                &message,
-            );
+            if !report.removed.is_empty() {
+                message.push_str(&format!(", removing {}", settings::list(&report.removed)));
+            }
+            self.commit(report.changed().map(|f| dir.join(f)).collect(), &message);
         }
         let errors = tree.errors.clone();
         if tree.is_valid() {
@@ -2145,43 +2178,7 @@ impl Agent {
             }
         };
         let (finish, finished) = oneshot::channel();
-        let dictation = &self.config.dictation;
-        let (confirm, mut asked) = mpsc::unbounded_channel::<Confirmation>();
-        let forward = self.commands.clone();
-        tokio::spawn(async move {
-            while let Some(confirmation) = asked.recv().await {
-                let _ = forward.send(Command::ConfirmRequested(confirmation));
-            }
-        });
-        let investigator = connection.models.generative.clone().map(|model| {
-            Arc::new(Investigator::new(
-                connection.client.clone(),
-                model,
-                self.inspector.clone(),
-                self.config.privacy.clone(),
-                self.paths.clone(),
-            )) as Arc<dyn Investigate>
-        });
-        let env = Env {
-            client: connection.client,
-            flows: flows.unwrap_or_else(|| self.flows.clone()),
-            settings: pipeline::Settings {
-                models: connection.models,
-                realtime: connection.realtime,
-                language: dictation.language.clone(),
-                decide: dictation.decide,
-                max_output_tokens: dictation.max_output_tokens,
-                ..pipeline::Settings::default()
-            },
-            sink: Some(self.sink.clone()),
-            investigator,
-            reader: Some(Arc::new(Reader::new(
-                self.inspector.clone(),
-                self.config.privacy.clone(),
-            ))),
-            confirmer: Some(Arc::new(ChannelConfirmer::new(confirm))),
-            tools: Some(self.tools.clone()),
-        };
+        let env = self.take_env(connection, flows);
         let start = TakeStart {
             id,
             context: context.clone(),
@@ -2229,6 +2226,24 @@ impl Agent {
         self.set_tray(TrayState::Listening { level: 0 });
         self.publish_menu();
 
+        let updates = self.watch_updates(id);
+        let commands = self.commands.clone();
+        let task = tokio::spawn(async move {
+            let trace = if live {
+                pipeline::run_live(&env, start, audio_events, finished, &updates).await
+            } else {
+                pipeline::run_take(&env, start, audio_events, finished, &updates).await
+            };
+            let _ = commands.send(Command::TakeFinished(Box::new(trace)));
+        });
+        if let Some(active) = &mut self.active {
+            active.task = Some(task);
+        }
+        self.repaint();
+    }
+
+    /// Shows a take's progress (or a timer's) in the tray and the bubble.
+    fn watch_updates(&self, id: u64) -> mpsc::UnboundedSender<Update> {
         let (updates, mut received) = mpsc::unbounded_channel();
         let view = self.view.clone();
         let mut tray = self.tray.clone();
@@ -2282,7 +2297,8 @@ impl Agent {
                         Update::Stage(_)
                         | Update::Progress(_)
                         | Update::StageDone { .. }
-                        | Update::Answering => None,
+                        | Update::Answering
+                        | Update::State(_) => None,
                         Update::Output(text) => {
                             view.live_output.push_str(&text);
                             None
@@ -2299,19 +2315,86 @@ impl Agent {
                 repaint();
             }
         });
-        let commands = self.commands.clone();
-        let task = tokio::spawn(async move {
-            let trace = if live {
-                pipeline::run_live(&env, start, audio_events, finished, &updates).await
-            } else {
-                pipeline::run_take(&env, start, audio_events, finished, &updates).await
-            };
-            let _ = commands.send(Command::TakeFinished(Box::new(trace)));
-        });
-        if let Some(active) = &mut self.active {
-            active.task = Some(task);
+        updates
+    }
+
+    /// A machine's timer ran out: its event moves the machines, as a take of its own whose
+    /// work delivers to the window the task started in.
+    fn machine_timer(&mut self, due: Due) {
+        let Some(connection) = self.runtime.connection() else {
+            return;
+        };
+        let id = self.next_take;
+        self.next_take += 1;
+        let env = self.take_env(connection, None);
+        let updates = self.watch_updates(id);
+        if self.active.is_none() {
+            self.view().feedback = Some(Feedback {
+                take: id,
+                status: format!("Timer: {}", due.event),
+                working: true,
+                ..Feedback::default()
+            });
         }
-        self.repaint();
+        let machines = self.machines.clone();
+        let commands = self.commands.clone();
+        tokio::spawn(async move {
+            match machines.timer(&env, due, id, &updates).await {
+                Some(trace) => {
+                    let _ = commands.send(Command::TakeFinished(Box::new(trace)));
+                }
+                // The machine left that state: the timer is stale.
+                None => {
+                    let _ = commands.send(Command::HideFeedback(id));
+                }
+            }
+        });
+    }
+
+    /// What a take (or a machine's timer) runs with.
+    fn take_env(
+        &self,
+        connection: crate::runtime::Connection,
+        flows: Option<Arc<FlowTree>>,
+    ) -> Env {
+        let dictation = &self.config.dictation;
+        let (confirm, mut asked) = mpsc::unbounded_channel::<Confirmation>();
+        let forward = self.commands.clone();
+        tokio::spawn(async move {
+            while let Some(confirmation) = asked.recv().await {
+                let _ = forward.send(Command::ConfirmRequested(confirmation));
+            }
+        });
+        let investigator = connection.models.generative.clone().map(|model| {
+            Arc::new(Investigator::new(
+                connection.client.clone(),
+                model,
+                self.inspector.clone(),
+                self.config.privacy.clone(),
+                self.paths.clone(),
+            )) as Arc<dyn Investigate>
+        });
+        Env {
+            client: connection.client,
+            flows: flows.unwrap_or_else(|| self.flows.clone()),
+            settings: pipeline::Settings {
+                models: connection.models,
+                realtime: connection.realtime,
+                language: dictation.language.clone(),
+                decide: dictation.decide,
+                max_output_tokens: dictation.max_output_tokens,
+                ..pipeline::Settings::default()
+            },
+            sink: Some(self.sink.clone()),
+            investigator,
+            reader: Some(Arc::new(Reader::new(
+                self.inspector.clone(),
+                self.config.privacy.clone(),
+            ))),
+            confirmer: Some(Arc::new(ChannelConfirmer::new(confirm))),
+            tools: Some(self.tools.clone()),
+            machines: self.machines.clone(),
+        }
     }
 
     fn stop_take(&mut self) {
@@ -2961,6 +3044,7 @@ impl Agent {
             reader: None,
             confirmer: None,
             tools: None,
+            machines: Arc::default(),
         };
         let describing = self
             .recording

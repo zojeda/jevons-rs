@@ -339,6 +339,7 @@ fn RouteTree(route: RouteProp, about: String) -> Element {
 fn kind_word(kind: jevons_desktop_core::flow::Kind) -> &'static str {
     use jevons_desktop_core::flow::Kind;
     match kind {
+        Kind::Machine => "machine",
         Kind::Decide => "decide",
         Kind::Generate => "generate",
         Kind::Transcript => "transcript",

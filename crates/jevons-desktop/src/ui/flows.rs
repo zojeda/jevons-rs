@@ -25,6 +25,7 @@ struct TreeState {
 
 fn kind_name(kind: Kind) -> &'static str {
     match kind {
+        Kind::Machine => "machine",
         Kind::Decide => "decide",
         Kind::Generate => "generate",
         Kind::Transcript => "transcript",

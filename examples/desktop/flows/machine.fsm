@@ -1,0 +1,15 @@
+// The app's machine. Every take is `said` in `idle`; the decision model weighs the transitions by
+// their target states' descriptions, unless a [prefer] rule in a state's folder chooses first.
+fsm Jevons {
+    [*] --> idle
+
+    state idle: "Waiting for the user to speak"
+
+    idle --> ask : said
+    idle --> dictate : said [else]
+    idle --> run : said
+
+    ask --> idle
+    dictate --> idle
+    run --> idle
+}

@@ -1,4 +1,4 @@
-# Slack: the answer reads the open conversation (the root's Slack extracts, by XPath: no model).
+# Slack: the answer reads the open conversation (ask's Slack extracts, by XPath: no model).
 # Rows are the messages Slack has rendered; a follow-up from the same author has no author name.
 description = "In Slack"
 output = "bubble"

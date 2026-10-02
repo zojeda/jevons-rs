@@ -6,7 +6,9 @@
 //! generated files. `AGENTS.md` carries a hash of what jevons wrote, so it is updated only until
 //! someone edits it.
 
-use super::spec::{AgentSpec, DecideSpec, GenerateSpec, RunSpec, ToolSpec, TranscriptSpec};
+use super::spec::{
+    AgentSpec, DecideSpec, GenerateSpec, MachineSpec, RunSpec, ToolSpec, TranscriptSpec,
+};
 use super::tree::{Catalog, Disk, FlowTree, Memory, NODE_FILES};
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -19,7 +21,8 @@ macro_rules! tree_files {
 
 /// Every file of the built-in tree, by path under the flows root.
 pub const TREE: &[(&str, &str)] = tree_files![
-    "decide.toml",
+    "machine.toml",
+    "machine.fsm",
     "instructions.md",
     "dictate/decide.toml",
     "dictate/instructions.md",
@@ -66,6 +69,7 @@ pub fn builtin() -> Memory {
 pub fn open(dir: &Path, catalog: &Catalog) -> (FlowTree, InitReport) {
     let report = init(dir).unwrap_or_else(|e| InitReport {
         written: Vec::new(),
+        removed: Vec::new(),
         notes: vec![format!(
             "Cannot write the flows folder {}: {e}",
             dir.display()
@@ -92,8 +96,18 @@ pub fn write_tools_md(dir: &Path, text: &str) -> std::io::Result<bool> {
 pub struct InitReport {
     /// Files written, by path under the folder.
     pub written: Vec<String>,
+    /// Files removed, by path under the folder: an earlier built-in tree's that the current one
+    /// no longer has.
+    pub removed: Vec<String>,
     /// Things the user may want to know, such as an `AGENTS.md` left alone.
     pub notes: Vec<String>,
+}
+
+impl InitReport {
+    /// Every file written or removed, for committing them.
+    pub fn changed(&self) -> impl Iterator<Item = &String> {
+        self.written.iter().chain(&self.removed)
+    }
 }
 
 /// The flow files in `dir` and the SHA-256 of each one's text (line endings made the same),
@@ -128,12 +142,10 @@ fn flow_files(dir: &Path) -> std::io::Result<Vec<(String, String)>> {
     Ok(out)
 }
 
-/// Whether the flow files in `dir` are exactly an earlier built-in tree, left as jevons wrote it.
-fn earlier_built_in(dir: &Path) -> bool {
-    let Ok(files) = flow_files(dir) else {
-        return false;
-    };
-    super::earlier::EARLIER.iter().any(|tree| {
+/// The earlier built-in tree the flow files in `dir` are exactly, left as jevons wrote it.
+fn earlier_built_in(dir: &Path) -> Option<&'static [(&'static str, &'static str)]> {
+    let files = flow_files(dir).ok()?;
+    super::earlier::EARLIER.iter().copied().find(|tree| {
         let mut earlier: Vec<(String, String)> = tree
             .iter()
             .map(|(path, hash)| (path.to_string(), hash.to_string()))
@@ -150,7 +162,14 @@ pub fn init(dir: &Path) -> std::io::Result<InitReport> {
     let mut report = InitReport::default();
     std::fs::create_dir_all(dir)?;
     let has_tree = NODE_FILES.iter().any(|(file, _)| dir.join(file).exists());
-    if has_tree && earlier_built_in(dir) {
+    if has_tree && let Some(earlier) = earlier_built_in(dir) {
+        // Files the current tree no longer has go: an earlier root's node file would clash.
+        for (path, _) in earlier {
+            if !TREE.iter().any(|(p, _)| p == path) {
+                std::fs::remove_file(dir.join(path))?;
+                report.removed.push((*path).into());
+            }
+        }
         for (path, text) in TREE {
             let file = dir.join(path);
             let current = std::fs::read_to_string(&file)
@@ -277,6 +296,10 @@ pub fn schemas_json() -> Vec<(String, String)> {
         (
             "decide.schema.json".into(),
             pretty(schemars::schema_for!(DecideSpec)),
+        ),
+        (
+            "machine.schema.json".into(),
+            pretty(schemars::schema_for!(MachineSpec)),
         ),
         (
             "generate.schema.json".into(),
@@ -411,7 +434,10 @@ mod tests {
         let report = init(&dir).unwrap();
         assert!(report.notes[0].contains("earlier version"), "{report:?}");
         assert!(report.written.contains(&"run/run.toml".to_string()));
-        assert!(report.written.contains(&"decide.toml".to_string()));
+        // The decision root became the root machine: its node file is gone.
+        assert!(report.written.contains(&"machine.toml".to_string()));
+        assert_eq!(report.removed, ["decide.toml"]);
+        assert!(!dir.join("decide.toml").exists());
         let tree = FlowTree::load(&Disk::new(&dir), &Catalog::default());
         assert!(tree.is_valid(), "{:?}", tree.errors);
         assert!(tree.find("ask/slack").is_some());

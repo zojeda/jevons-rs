@@ -1,0 +1,7 @@
+# A web search the user can follow up on: "Search state machine crates for Rust", then "open the
+# second one" or "search for the async ones instead", until they are done or stop talking to it.
+description = "The user asks to search the web for something."
+# A follow-up the model is unsure about leaves the task where it is.
+min_probability = 0.7
+# Everything this task may call: the search reads, opening a result asks first.
+tools = ["web_search", "open_url"]

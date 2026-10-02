@@ -224,7 +224,16 @@ impl Tool for Reported {
     }
 }
 
-/// Where a walk ends: the text and where it goes.
+/// Where a walk ends.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Walked {
+    /// A leaf: the text and where it goes.
+    Leaf(Leaf),
+    /// A machine: the task it lays out starts, with the walk's frame.
+    Machine(NodeId),
+}
+
+/// Where a walk ends at a leaf: the text and where it goes.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Leaf {
     /// The leaf's path.
@@ -236,26 +245,71 @@ pub struct Leaf {
 }
 
 /// Walks `tree` from `start` for a transcribed take, filling the trace's route, notes and
-/// generation. Tool and agent nodes need the tools phase; until then they are errors.
+/// generation, until a leaf or a machine. `ahead` holds answers a machine's request already
+/// read, by the decision that asks them. The frame comes back with what the walk added.
 pub async fn run(
     env: &Env,
     tree: &FlowTree,
     start: NodeId,
     frame: Frame,
+    ahead: HashMap<NodeId, Answer>,
     updates: &UnboundedSender<Update>,
     trace: &mut Trace,
-) -> Result<Leaf, ClientError> {
+) -> Result<(Walked, Frame), ClientError> {
     let mut walker = Walker {
         env,
         tree,
         frame,
         updates,
         trace,
+        ahead,
+        stalled: false,
+        memo: HashMap::new(),
+    };
+    let walked = walker.walk(start).await?;
+    Ok((walked, walker.frame))
+}
+
+/// Runs `f` on a walker over `frame` that sends and records nothing, for the parts of a walk a
+/// machine reuses before it walks: branch checks and the first question.
+fn looking<R>(env: &Env, tree: &FlowTree, frame: &Frame, f: impl FnOnce(&Walker) -> R) -> R {
+    let (updates, _) = tokio::sync::mpsc::unbounded_channel();
+    let mut trace = Trace::new(&crate::pipeline::TakeStart {
+        id: 0,
+        context: frame.snapshot.clone(),
+        entry: None,
+    });
+    let walker = Walker {
+        env,
+        tree,
+        frame: frame.clone(),
+        updates: &updates,
+        trace: &mut trace,
         ahead: HashMap::new(),
         stalled: false,
         memo: HashMap::new(),
     };
-    walker.walk(start).await
+    f(&walker)
+}
+
+/// How `node`, a branch or a state's work, fares against its `[when]` and `[prefer]` (and, for
+/// a run node, whether it has an approved automation), as a decision above it checks it.
+pub fn check_branch(env: &Env, tree: &FlowTree, frame: &Frame, node: &Node) -> BranchCheck {
+    looking(env, tree, frame, |w| w.branch(node))
+}
+
+/// The first model decision a walk from `start` makes when it needs no model call and no new
+/// context before it: its node and question, for a machine to ask in its own request.
+pub fn lookahead(
+    env: &Env,
+    tree: &FlowTree,
+    start: NodeId,
+    frame: &Frame,
+) -> Option<(NodeId, Question)> {
+    looking(env, tree, frame, |w| {
+        let (id, candidates) = w.settle(start)?;
+        Some((id, w.question(id, &candidates)))
+    })
 }
 
 struct Walker<'a> {
@@ -295,7 +349,7 @@ impl Walker<'_> {
         });
     }
 
-    async fn walk(&mut self, start: NodeId) -> Result<Leaf, ClientError> {
+    async fn walk(&mut self, start: NodeId) -> Result<Walked, ClientError> {
         let mut id = start;
         loop {
             let began = Instant::now();
@@ -303,20 +357,24 @@ impl Walker<'_> {
             self.trace.flow.push(FlowStep::new(node));
             self.enter(node).await;
             let next = match &node.spec {
+                NodeSpec::Machine(_) => {
+                    self.step().ms = began.elapsed().as_millis() as u64;
+                    return Ok(Walked::Machine(id));
+                }
                 NodeSpec::Decide(d) => Some(self.decide(node, d).await?),
                 NodeSpec::Generate(g) => {
                     let leaf = self.generate(node, g).await;
                     self.step().ms = began.elapsed().as_millis() as u64;
-                    return leaf;
+                    return leaf.map(Walked::Leaf);
                 }
                 NodeSpec::Transcript(t) => {
                     self.step().ms = began.elapsed().as_millis() as u64;
-                    return Ok(self.transcript(node, t));
+                    return Ok(Walked::Leaf(self.transcript(node, t)));
                 }
                 NodeSpec::Tool(t) => match self.tool(node, t).await? {
                     Ahead::Leaf(leaf) => {
                         self.step().ms = began.elapsed().as_millis() as u64;
-                        return Ok(leaf);
+                        return Ok(Walked::Leaf(leaf));
                     }
                     Ahead::Next(result) => {
                         self.frame.values.insert("result".into(), result);
@@ -326,7 +384,7 @@ impl Walker<'_> {
                 NodeSpec::Agent(a) => match self.agent(node, a).await? {
                     Ahead::Leaf(leaf) => {
                         self.step().ms = began.elapsed().as_millis() as u64;
-                        return Ok(leaf);
+                        return Ok(Walked::Leaf(leaf));
                     }
                     Ahead::Next(result) => {
                         self.frame.values.insert("result".into(), result);
@@ -336,7 +394,7 @@ impl Walker<'_> {
                 NodeSpec::Run(r) => match self.run_automation(node, r).await? {
                     Ahead::Leaf(leaf) => {
                         self.step().ms = began.elapsed().as_millis() as u64;
-                        return Ok(leaf);
+                        return Ok(Walked::Leaf(leaf));
                     }
                     Ahead::Next(result) => {
                         self.frame.values.insert("result".into(), result);
@@ -564,39 +622,45 @@ impl Walker<'_> {
         let mut branches = Vec::new();
         let mut candidates = Vec::new();
         for child in self.tree.children(node.id) {
-            let mut checks = child
-                .guard
-                .check(&self.frame.snapshot, &self.frame.transcript);
-            // A run branch applies only when it has an approved automation to run.
-            if let NodeSpec::Run(r) = &child.spec {
-                let runnable = self.runnable(r);
-                checks.push(Check {
-                    rule: "automations",
-                    pattern: "an approved automation".into(),
-                    value: Some(format!("{runnable} approved")),
-                    passed: runnable > 0,
-                });
-            }
-            let passed = checks.iter().all(|c| c.passed);
-            if passed {
+            let branch = self.branch(child);
+            if branch.passed {
                 candidates.push(child.id);
             }
-            let (prefer, preferred) = if passed {
-                prefer_checks(child, &self.frame.snapshot, &self.frame.transcript)
-            } else {
-                (Vec::new(), false)
-            };
-            branches.push(BranchCheck {
-                name: child.name.clone(),
-                priority: child.spec.common().priority,
-                specificity: child.guard.specificity(),
-                passed,
-                checks,
-                preferred,
-                prefer,
-            });
+            branches.push(branch);
         }
         (branches, candidates)
+    }
+
+    /// How one branch fares against its guard and its `[prefer]`.
+    fn branch(&self, child: &Node) -> BranchCheck {
+        let mut checks = child
+            .guard
+            .check(&self.frame.snapshot, &self.frame.transcript);
+        // A run branch applies only when it has an approved automation to run.
+        if let NodeSpec::Run(r) = &child.spec {
+            let runnable = self.runnable(r);
+            checks.push(Check {
+                rule: "automations",
+                pattern: "an approved automation".into(),
+                value: Some(format!("{runnable} approved")),
+                passed: runnable > 0,
+            });
+        }
+        let passed = checks.iter().all(|c| c.passed);
+        let (prefer, preferred) = if passed {
+            prefer_checks(child, &self.frame.snapshot, &self.frame.transcript)
+        } else {
+            (Vec::new(), false)
+        };
+        BranchCheck {
+            name: child.name.clone(),
+            priority: child.spec.common().priority,
+            specificity: child.guard.specificity(),
+            passed,
+            checks,
+            preferred,
+            prefer,
+        }
     }
 
     /// How many approved automations a run node may run.
@@ -1633,6 +1697,17 @@ pub fn preview(
     let mut id = start;
     for _ in 0..super::tree::MAX_DEPTH * 2 {
         let node = tree.node(id);
+        if let NodeSpec::Machine(_) = &node.spec {
+            let (step, next) = super::machine::runtime::preview(tree, node, snapshot);
+            steps.push(step);
+            match next {
+                Some(next) => {
+                    id = next;
+                    continue;
+                }
+                None => break,
+            }
+        }
         let mut step = FlowStep::new(node);
         let NodeSpec::Decide(d) = &node.spec else {
             steps.push(step);

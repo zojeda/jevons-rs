@@ -53,7 +53,7 @@ The context is read **when the hotkey is pressed**, so the text goes to the fiel
 
 1. **Context.** The platform accessibility layer reads the focused application, window, field role and name, the selection and the text around the caret. For browsers it also reads the page address. Password fields are never read, text is truncated to `privacy.max_context_chars`, and the clipboard is read only when `privacy.read_clipboard` is on.
 2. **Transcription.** Audio streams to `/v1/realtime` as 24 kHz PCM16, and the live text appears in the window. The app commits the turn itself when you finish. When Realtime is off or fails, the recording is uploaded to `/v1/audio/transcriptions` instead.
-3. **Flow tree.** The walk starts at the root (or at the branch the hotkey names). At each decision, branches whose guards fail drop out; `select = "rules"` takes the highest priority, and otherwise `/v1/systemone` chooses by the branches' descriptions. When one decision leads straight into another, both are asked in one request, so dictation usually costs a single decision call. Investigations along the way read more of the screen (see below).
+3. **Machines and the flow tree.** The flows root is a state machine waiting in `idle`, and the take is `said` there (or for the task that waits for it, see [Machines](#machines-tasks-that-wait-for-you)). Its transitions lead to `dictate`, `ask` and `run`, and are chosen like a decision's branches. That state's folder is then walked: at each decision, branches whose guards fail drop out; `select = "rules"` takes the highest priority, and otherwise `/v1/systemone` chooses by the branches' descriptions. When one decision leads straight into another, both are asked in one request, so dictation usually costs a single decision call. Investigations along the way read more of the screen (see below).
 4. **Leaf.** A `generate.toml` leaf streams text from `/v1/responses` with the instructions gathered from the root down; a `transcript.toml` leaf uses the words as heard.
 5. **Delivery.** Text for the application is pasted (the previous clipboard text is restored afterwards), typed, set through the accessibility API, or copied, as the path's `delivery` says. Answers show in the bubble; clipboard leaves copy.
 
@@ -67,6 +67,7 @@ Each folder is a node, and the file in it names its kind:
 
 | File | Does |
 | --- | --- |
+| `machine.toml` | a state machine laid out in `machine.fsm` beside it; each subfolder is a state's work |
 | `decide.toml` | chooses one of its subfolders (or the folders of a shared `_` folder named by `branches`) |
 | `generate.toml` | writes text with the language model, for the application, the bubble or the clipboard |
 | `transcript.toml` | uses the words as recognized, with no model |
@@ -94,10 +95,37 @@ The decision model reads each branch's `description` as that choice, along with 
 
 The built-in tree:
 
-- `decide.toml` at the root asks who the words are for: the application (**dictate**, the fallback), jevons (**ask**), or a saved task (**run**, an automation). It takes the model's choice from 70% and dictates below that. Words that start with "Pregunta" or "Question" always go to **ask**, and in a terminal the words are always dictated, both with no model call (`[prefer]`). In Slack it also reads, with XPath, the open conversation, its latest messages and the channels (`slack_conversation`, `slack_messages`, `slack_channels`), lazily, for any branch below that uses them.
+- The root machine (`machine.toml`, `machine.fsm`) waits in `idle` and asks who the words are for: the application (**dictate**, the `[else]` transition), jevons (**ask**), or a saved task (**run**, an automation). It takes the model's choice from 70% and dictates below that. Words that start with "Pregunta" or "Question" always go to **ask**, and in a terminal the words are always dictated, both with no model call (`[prefer]` in those folders). Each state's work done, it is back in `idle`.
 - `dictate/` chooses by rules, per application: `code/` and `terminal/` (only insert or type as heard; a terminal's buffer is never rewritten), `chat/` (with `thread/` for replies), `web-mail/`, `notes/` and `any/`. Each takes its branches from the shared `_actions/` folder: `insert`, `replace` (with a selection), `rewrite` (with text in the field) and `verbatim` (the words as heard, no generation).
-- `ask/` answers in the bubble. In Slack (`slack/`) it answers from the root's Slack extracts; in other chat apps (`chat/`, `web-chat/`) it first reads the open conversation with an investigation.
+- `ask/` answers in the bubble. In Slack it reads, with XPath, the open conversation, its latest messages and the channels (`slack_conversation`, `slack_messages`, `slack_channels`), lazily, and `slack/` answers from them; in other chat apps (`chat/`, `web-chat/`) it first reads the open conversation with an investigation.
 - `run/` runs one of your approved automations; it is not a choice until one is approved.
+
+### Machines: tasks that wait for you
+
+A task that takes more than one turn is a machine in a state's folder: a search you follow up on ("open the second one"), a draft you revise, a command you confirm. Its `machine.fsm` is a state diagram in [Oxidate](https://crates.io/crates/oxidate-fsm)'s Mermaid-like language, and each state's work is the subfolder of its name: a tool call, a generation, an agent, a decision tree.
+
+```text
+# flows/search/machine.fsm (examples/desktop/machines/search)
+fsm Search {
+    timer quiet = 120000 -> quiet
+    [*] --> searching
+    searching --> answering
+    answering --> results
+    results --> opening : said [the user wants one of the results opened]
+    results --> searching : said [the user asks to search for something else]
+    results --> [*] : said [the user is done with these results, or talks about something else]
+    results --> [*] : quiet
+    opening --> results
+    opening --> results : denied
+}
+```
+
+- **Between takes** the task waits in its state, and what you say next is `said` for it, not for the root. The decision model takes a transition by its guard's sentence (or by the target state's description), with rules first; when it is unsure, a `said` stays where it was, so an unsure take never moves a task on. Two quiet minutes (`timer`) end this one.
+- **Each state does one thing,** and only what its node file says. A machine lists every tool its states call in `machine.toml`'s `tools`, so a task cannot reach further than that list. Risky work (opening an address, running a command) is a state of its own, reached only by the transitions drawn; its tool asks in the bubble first, and declining it is `denied`, a transition back to where you were.
+- **States remember** what earlier states wrote (`{searching}` is the search's result) until the task ends. A timer's work delivers into the window the task started in, or onto the clipboard when that window is no longer in front.
+- **The Machines tab** draws each machine's diagram with the state it is in, the transitions taken (by rules, by the model and its probability, or a stay) and **Cancel task**. The bubble shows where a running task is.
+
+[examples/desktop/machines](../examples/desktop/machines) has the search task, with the tools to register and the two lines that let the root enter it.
 
 `AGENTS.md` in the folder is the full reference: every field, placeholders such as `{selection}` and `{chat.messages}`, investigations, tools, agents and the rules the loader enforces. [examples/desktop/flows](../examples/desktop/flows) is the built-in tree.
 
@@ -278,7 +306,7 @@ The **Settings** tab edits the runtime, dictation and privacy settings. A change
   - Turning exposure on or off, or changing the port, rebinds the listener without reloading the models.
   - *Use a jevons server* skips local models and uses a server URL and key instead.
 - **Dictation.** The hotkeys (push-to-talk, live dictation, inspector, and one per top-level branch), live feedback, the microphone, language (detected when empty), whether to ask the decision model (when off, decisions take their fallback), and the most tokens a generation may write unless a node sets its own.
-- **Privacy.** How many characters of each field to keep, whether to include the clipboard, and whether investigations may read windows other than the take's own (`read_other_windows`, with `readable_apps`).
+- **Privacy.** How many characters of each field to keep, whether to include the clipboard, and the API log. Reading windows other than the take's own has no control in the tab: set `read_other_windows` and `readable_apps` under `[privacy]` in the settings file.
 
 ## Models
 
@@ -365,6 +393,8 @@ Every platform layer is a trait in `jevons-desktop-core::platform`. The pipeline
 Platform code uses safe wrapper crates only; the desktop crates forbid `unsafe`.
 
 ## Architecture
+
+This is the app as it is. Where it is heading, a desktop server with agents, tasks and an inference router, is the [desktop-server change](../specs/changes/desktop-server/proposal.md) in `specs/`.
 
 ```mermaid
 flowchart LR

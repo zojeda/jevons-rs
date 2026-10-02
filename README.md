@@ -14,7 +14,7 @@ Everything runs locally. The speech, decision and language models run inside the
 ## The desktop app
 
 - **Context-aware.** On Windows, UI Automation gives the focused field's role and name, the selection, the text around the caret and the browser's address. Password fields are never read, text is truncated, and the clipboard is read only if you allow it.
-- **A flow tree you can edit.** Each folder holds one node file: `decide.toml` picks a subfolder, `generate.toml` writes with the language model, `transcript.toml` uses the words as heard, and `tool.toml` and `agent.toml` call tools. Guards (`[when]` rules on the application, window, page, field, selection or the words themselves) prune branches with no model call. Instructions add up from the root down. The files reload as soon as you save them, and an `AGENTS.md` in the folder teaches coding agents the format.
+- **A flow tree you can edit, with machines for tasks.** The root is a state machine (`machine.fsm`, in [Oxidate](https://crates.io/crates/oxidate-fsm)'s language) whose states are folders; a task that waits for your next words, such as a web search you follow up on, is a machine of its own, and the inspector shows where it is. Each folder holds one node file: `decide.toml` picks a subfolder, `generate.toml` writes with the language model, `transcript.toml` uses the words as heard, and `tool.toml` and `agent.toml` call tools. Guards (`[when]` rules on the application, window, page, field, selection or the words themselves) prune branches with no model call. Instructions add up from the root down. The files reload as soon as you save them, and an `AGENTS.md` in the folder teaches coding agents the format.
 - **Reads more of the screen when a branch asks.** An `[extract]` pulls elements out of the application's interface with an XPath expression (a chat's channels, its last messages), with no model and in tens of milliseconds. An `[investigate]` question sends an agent through the interface when the answer's place is not known in advance.
 - **Automations you show once.**
   - **Recording:** record a task (click, type, press keys) and say what it is.
@@ -71,7 +71,8 @@ Settings are in `%APPDATA%\jevons\config\jevons-desktop.toml` (see [jevons-deskt
 
 ```
 flows/
-  decide.toml              # the root: dictate, ask or run? In Slack, reads its messages by XPath
+  machine.toml             # the root machine: dictate, ask or run? unsure: dictate
+  machine.fsm              # its states: idle --said--> dictate | ask | run --> idle
   dictate/
     decide.toml            # select = "rules": the application picks the branch; [prefer] terminals
     chat/decide.toml       # [when] app = ["slack.exe", …]; casual instructions
@@ -79,7 +80,8 @@ flows/
     terminal/decide.toml   # prompts and commands: never rewrite the terminal's buffer
     any/decide.toml        # everything else
   ask/                     # [prefer] transcript: words starting with "Pregunta" or "Question"
-    slack/generate.toml    # output = "bubble"; answers from the root's Slack extracts
+    decide.toml            # in Slack, reads its messages by XPath
+    slack/generate.toml    # output = "bubble"; answers from ask's Slack extracts
     chat/generate.toml     # other chat apps: reads the open conversation first
     any/generate.toml
   run/run.toml             # runs an approved automation
@@ -185,6 +187,7 @@ The desktop app reads through one set of platform traits, decides in the platfor
 - **XPath** (`xpath/`) is an XPath 1.0 subset over those trees. Element names are roles and attributes are properties (`@name`, `@class`, `@automation_id`). It evaluates lazily through `ContextInspector`, and a descendant step with conditions runs as one native search. `$variables` take their values from outside, so a value never changes what an expression means. `selector` writes the expressions that find a recorded element again, most robust first.
 - **Flow tree** (`flow/`):
   - **Loading.** `tree` loads one node file per folder and reports every problem with its file and line. The files reload on save, and the last tree that loaded cleanly keeps running.
+  - **Machines.** `machine` reads `machine.fsm` with Oxidate's parser and checks it (states are folders, events are `said`, `done`, `failed`, `denied` and timers, no actions in the diagram). `machine::runtime` keeps the root machine and the tasks nested in it across takes: a take is `said` for the innermost one waiting, its transitions are weighed like a decision's branches (in one request with the candidates' first decisions), entering a state walks its folder, and an unsure `said` stays. `machine::layout` lays a diagram out for the Machines tab.
   - **Walking.** `walk` carries a `Frame` down from the root: the snapshot and transcript, the route, the instructions gathered from the root down, the named values (extract and investigation answers, a tool's `{result}`), the lazy reads not made yet, and the nearest delivery settings.
   - **Deciding.** At a `decide.toml`, `[when]` guards drop branches and a passing `[prefer]` takes one, both with no model call. `select = "rules"` takes the highest priority; otherwise System One reads the branches' descriptions. Consecutive decisions go in one request, and an answer below `min_probability` takes the `fallback`.
   - **Reading more.** An `[extract]` reads an XPath expression with no model. An `[investigate]` question runs the investigator, an agent with `outline`, `find`, `xpath`, `read` and `list_windows` tools, whose element arguments are enums of the ids seen so far. A successful investigation remembers its XPath per application and question (`investigations.json` in the cache folder), so the next one is read and answered in one call.
@@ -263,7 +266,7 @@ flowchart TB
 
 - **Desktop** (`jevons-desktop`, over the platform-free `jevons-desktop-core`): the desktop agent. Each platform layer (accessibility context, microphone, text input, hotkey, tray) is a trait with a per-OS implementation; the pipeline, the flow tree and tray states are shared. It loads the API layer in-process, optionally exposing it on a port.
 - **API layer** (`jevons-api`): routes, authentication, settings and the wire formats. OpenAI requests become Generative or Speech calls, and System One questions compile into Decision reads. Each loaded model gets one worker thread: the diffusion worker serves both Generative and Decision jobs on one engine, and the speech worker runs live Realtime passes ahead of queued uploads. The `jevons-rs` binary is a thin wrapper around it.
-- **Services** take typed Rust requests and return typed results, with no HTTP, JSON or async code:
+- **Services** take typed Rust requests and return typed results, with no HTTP or async code, and JSON only as data (tool arguments, schemas, structured answers):
   - **Generative** (`jevons-generative`) frames conversations, reserves an optional thought, and streams the answer while holding back text that could still become a stop sequence.
   - **Decision** (`jevons-decision`) reads every answer slot's distribution over its candidates from one canvas forward, averages samples and chunks slots that exceed one canvas. It also has the `jevons-scm` CLI.
   - **Speech** (`jevons-speech`) windows recordings longer than one model pass into words and segments, and runs single passes for live utterances.
@@ -309,7 +312,7 @@ cargo run --release --locked -p jevons-rs -- --config jevons.toml
 
 Without `--config`, the server reads `./jevons.toml` or `~/.config/jevons/config.toml`. [jevons.example.toml](jevons.example.toml) lists every key: per model the served `id`, context and batch sizes, decoding, seed, prompt cache and queue capacity; per service its model, and for speech the audio limit and Realtime switch. `--bind` overrides the address; set `TYPESAFE_API_KEY` to require a bearer key on `/v1/*`.
 
-The first start on a new GPU compiles and tunes kernels for a few minutes; later starts reuse the caches in `~/.cache/diffusion-cubecl` (DiffusionGemma) and `~/.cache/jevons-burn` (Burn models). Every loaded model is listed by `GET /v1/models`, under its ID and aliases: the language model also answers to `jev-latest`, and Parakeet to `parakeet-latest`, which the examples below use.
+The first start on a new GPU compiles and tunes kernels for a few minutes; later starts reuse the caches in `~/.cache/diffusion-cubecl` (DiffusionGemma) and `~/.cache/jevons-burn` (Burn models). Every loaded model is listed by `GET /v1/models`, under its ID and aliases: the model that serves Decision (or the only diffusion model) answers to `jev-latest`, and Parakeet to `parakeet-latest`, which the examples below use.
 
 ### API examples
 

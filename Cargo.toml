@@ -68,6 +68,9 @@ enigo = "0.6"
 global-hotkey = "0.8"
 globset = "0.4"
 notify = "8"
+# Task state machines in jevons-desktop: the Mermaid-like `.fsm` parser and model only (no egui
+# editor, no Node.js layout).
+oxidate-fsm = { version = "0.1.0", default-features = false }
 # Markdown answers in the feedback bubble: the parser only (no HTML writer, no CLI).
 pulldown-cmark = { version = "0.13", default-features = false }
 regex = "1.11"

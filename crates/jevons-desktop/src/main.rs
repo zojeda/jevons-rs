@@ -45,9 +45,10 @@ struct Args {
     /// Run one take from an audio file instead of the microphone, print its trace and exit.
     #[arg(long, value_name = "AUDIO", conflicts_with = "transcript")]
     replay: Option<PathBuf>,
-    /// Run one take from this text as if it had been said, print its trace and exit.
+    /// Run one take from this text as if it had been said, print its trace and exit. Repeat it
+    /// for several takes in a row: they share the machines, so a task waits between them.
     #[arg(long, value_name = "TEXT")]
-    transcript: Option<String>,
+    transcript: Vec<String>,
     /// The context for --replay or --transcript, as a snapshot JSON file.
     #[arg(long, value_name = "JSON")]
     context: Option<PathBuf>,
@@ -144,7 +145,7 @@ impl Clear {
 impl Args {
     fn headless(&self) -> bool {
         self.replay.is_some()
-            || self.transcript.is_some()
+            || !self.transcript.is_empty()
             || self.check_flows.is_some()
             || self.init_flows.is_some()
             || self.xpath.is_some()
@@ -211,9 +212,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for file in &report.written {
             println!("wrote {}", dir.join(file).display());
         }
+        for file in &report.removed {
+            println!("removed {}", dir.join(file).display());
+        }
         commit_written(
             &config_file,
-            report.written.iter().map(|f| dir.join(f)).collect(),
+            report.changed().map(|f| dir.join(f)).collect(),
             "Write the built-in flow tree (--init-flows)",
         );
         for note in &report.notes {
@@ -236,7 +240,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(recording) = &args.author {
         return author_automation(&args, recording, &config, &config_file);
     }
-    if args.replay.is_some() || args.transcript.is_some() {
+    if args.replay.is_some() || !args.transcript.is_empty() {
         return replay(&args, config, config_file);
     }
     desktop(config, config_file)
@@ -689,8 +693,9 @@ fn replay(
         // Headless runs never run a tool that asks first, and run no tool at all.
         confirmer: None,
         tools: Some(tools),
+        machines: Arc::default(),
     };
-    let trace = tokio.block_on(async {
+    let traces = tokio.block_on(async {
         let (updates, mut live) = mpsc::unbounded_channel();
         let printer = tokio::spawn(async move {
             while let Some(update) = live.recv().await {
@@ -710,6 +715,7 @@ fn replay(
                         let chosen = chosen.map_or(String::new(), |c| format!("{c} "));
                         eprintln!("  {} {chosen}{detail}", if ok { "✓" } else { "✗" });
                     }
+                    pipeline::Update::State(path) => eprintln!("\n▸ {path}"),
                     _ => {}
                 }
             }
@@ -720,8 +726,9 @@ fn replay(
             context,
             entry: args.flow.clone(),
         };
-        let trace = match (&args.replay, &args.transcript) {
-            (Some(audio), _) => {
+        let mut traces = Vec::new();
+        match &args.replay {
+            Some(audio) => {
                 let (events, received) = mpsc::unbounded_channel();
                 let mut source = FileAudioSource {
                     file: audio.to_path_buf(),
@@ -729,20 +736,29 @@ fn replay(
                 };
                 let capture = source.start(None, events)?;
                 let (_finish, finished) = oneshot::channel();
-                let trace = pipeline::run_take(&env, start, received, finished, &updates).await;
+                traces.push(pipeline::run_take(&env, start, received, finished, &updates).await);
                 capture.stop();
-                trace
             }
-            (None, Some(text)) => pipeline::run_transcript(&env, start, text, &updates).await,
-            (None, None) => unreachable!("replay runs with audio or a transcript"),
-        };
+            None => {
+                for (id, text) in (1..).zip(&args.transcript) {
+                    let start = TakeStart {
+                        id,
+                        ..start.clone()
+                    };
+                    traces.push(pipeline::run_transcript(&env, start, text, &updates).await);
+                }
+            }
+        }
         drop(updates);
         let _ = printer.await;
-        Ok::<_, Box<dyn std::error::Error>>(trace)
+        Ok::<_, Box<dyn std::error::Error>>(traces)
     })?;
-    println!("{}", serde_json::to_string_pretty(&trace)?);
+    match traces.as_slice() {
+        [trace] => println!("{}", serde_json::to_string_pretty(trace)?),
+        all => println!("{}", serde_json::to_string_pretty(all)?),
+    }
     runtime.shutdown();
-    match trace.error {
+    match traces.into_iter().find_map(|t| t.error) {
         Some(e) => Err(e.into()),
         None => Ok(()),
     }

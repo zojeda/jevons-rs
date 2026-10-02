@@ -1,0 +1,10 @@
+output = "bubble"
+max_output_tokens = 400
+prompt = """
+The user asked: {transcript}
+
+Web search results (JSON):
+{searching}
+
+Answer from the results in a few sentences. Then list the results that matter, numbered, each with \
+its title and address, so the user can ask for one by its number."""

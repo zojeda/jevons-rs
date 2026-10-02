@@ -2,23 +2,26 @@
 //!
 //! Every folder under the flows root is a node, except folders whose name starts with `_` or
 //! `.`: those are shared branches (see `branches`) or private files. A node folder holds exactly
-//! one node file, and optionally `instructions.md`. The whole tree is checked when it loads:
+//! one node file, and optionally `instructions.md`; a machine's folder also holds `machine.fsm`,
+//! and its subfolders are its states' work. The whole tree is checked when it loads:
 //! file formats, branch names, guards, fallbacks, placeholders, investigations in scope, tools in
 //! the catalog, and how many model decisions a path may take. A tree with errors is reported,
 //! and the app keeps using the last good one.
 
 use super::extract::Extract;
 use super::guard::Guard;
+use super::machine::{self, Loaded, Machine, NamedGuard};
 use super::shape::{Shape, is_identifier};
 use super::spec::{
-    AgentSpec, Common, DecideSpec, GenerateSpec, InvestigateSpec, Output, RunSpec, Select,
-    ToolSpec, TranscriptSpec,
+    AgentSpec, Common, DecideSpec, GenerateSpec, InvestigateSpec, MachineSpec, Output, RunSpec,
+    Select, ToolSpec, TranscriptSpec,
 };
 use super::template::{Template, is_builtin};
 use crate::platform::Action;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// The deepest folder nesting, shared branch folders included.
 pub const MAX_DEPTH: usize = 8;
@@ -28,7 +31,8 @@ pub const MAX_MODEL_DECISIONS: usize = 4;
 pub const MAX_BRANCHES: usize = 128;
 
 /// The node file names, one per kind.
-pub const NODE_FILES: [(&str, Kind); 6] = [
+pub const NODE_FILES: [(&str, Kind); 7] = [
+    ("machine.toml", Kind::Machine),
     ("decide.toml", Kind::Decide),
     ("generate.toml", Kind::Generate),
     ("transcript.toml", Kind::Transcript),
@@ -40,6 +44,7 @@ pub const NODE_FILES: [(&str, Kind); 6] = [
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
+    Machine,
     Decide,
     Generate,
     Transcript,
@@ -63,6 +68,7 @@ pub struct NodeId(pub usize);
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum NodeSpec {
+    Machine(MachineSpec),
     Decide(DecideSpec),
     Generate(GenerateSpec),
     Transcript(TranscriptSpec),
@@ -74,6 +80,7 @@ pub enum NodeSpec {
 impl NodeSpec {
     pub fn common(&self) -> Common<'_> {
         match self {
+            Self::Machine(s) => s.common(),
             Self::Decide(s) => s.common(),
             Self::Generate(s) => s.common(),
             Self::Transcript(s) => s.common(),
@@ -85,6 +92,7 @@ impl NodeSpec {
 
     pub fn kind(&self) -> Kind {
         match self {
+            Self::Machine(_) => Kind::Machine,
             Self::Decide(_) => Kind::Decide,
             Self::Generate(_) => Kind::Generate,
             Self::Transcript(_) => Kind::Transcript,
@@ -97,7 +105,7 @@ impl NodeSpec {
     /// Where a leaf, tool or agent sends its text.
     pub fn output(&self) -> Option<Output> {
         match self {
-            Self::Decide(_) => None,
+            Self::Machine(_) | Self::Decide(_) => None,
             Self::Generate(s) => Some(s.output.unwrap_or(Output::Target)),
             Self::Transcript(s) => Some(s.output.unwrap_or(Output::Target)),
             Self::Tool(s) => Some(s.output.unwrap_or(Output::Bubble)),
@@ -108,6 +116,7 @@ impl NodeSpec {
 
     fn parse(kind: Kind, text: &str) -> Result<Self, toml::de::Error> {
         Ok(match kind {
+            Kind::Machine => Self::Machine(toml::from_str(text)?),
             Kind::Decide => Self::Decide(toml::from_str(text)?),
             Kind::Generate => Self::Generate(toml::from_str(text)?),
             Kind::Transcript => Self::Transcript(toml::from_str(text)?),
@@ -146,6 +155,8 @@ pub struct Node {
     pub templates: BTreeMap<String, Template>,
     pub investigations: BTreeMap<String, Investigation>,
     pub extracts: BTreeMap<String, Extract>,
+    /// A machine's diagram and guards (`None` when `machine.fsm` has errors).
+    pub machine: Option<Arc<Loaded>>,
     pub children: Vec<NodeId>,
 }
 
@@ -570,8 +581,9 @@ impl Loader<'_> {
                     } else if file.ends_with(".toml") && !file.starts_with('.') {
                         self.error(
                             &join(dir, &file),
-                            "unknown node file; a folder holds one of decide.toml, \
-                             generate.toml, transcript.toml, tool.toml, agent.toml or run.toml",
+                            "unknown node file; a folder holds one of machine.toml, \
+                             decide.toml, generate.toml, transcript.toml, tool.toml, agent.toml \
+                             or run.toml",
                         );
                     }
                 }
@@ -588,9 +600,9 @@ impl Loader<'_> {
             [] => {
                 self.error(
                     dir,
-                    "no node file: add decide.toml, generate.toml, transcript.toml, tool.toml, \
-                     agent.toml or run.toml (or start the folder name with _ to keep it out of \
-                     routing)",
+                    "no node file: add machine.toml, decide.toml, generate.toml, \
+                     transcript.toml, tool.toml, agent.toml or run.toml (or start the folder \
+                     name with _ to keep it out of routing)",
                 );
                 return None;
             }
@@ -629,6 +641,10 @@ impl Loader<'_> {
         let templates = self.templates(&file, &spec);
         let investigations = self.investigations(&file, spec.common().investigate);
         let extracts = self.extracts(&file, spec.common().extract, &investigations);
+        let machine = match &spec {
+            NodeSpec::Machine(m) => self.machine(dir, &file, m),
+            _ => None,
+        };
         let id = NodeId(self.nodes.len());
         self.nodes.push(Node {
             id,
@@ -642,6 +658,7 @@ impl Loader<'_> {
             templates,
             investigations,
             extracts,
+            machine: machine.clone(),
             children: Vec::new(),
         });
 
@@ -681,6 +698,26 @@ impl Loader<'_> {
                 }
                 for folder in subfolders {
                     let path = join(dir, &folder);
+                    if let Some(loaded) = &machine
+                        && loaded.diagram.state(&folder).is_none()
+                    {
+                        let states: Vec<&str> = loaded
+                            .diagram
+                            .states
+                            .iter()
+                            .map(|s| s.name.as_str())
+                            .collect();
+                        self.error(
+                            &path,
+                            format!(
+                                "a machine's subfolders are its states' work, but {} has no \
+                                 state {folder} (its states: {})",
+                                machine::FILE,
+                                states.join(", ")
+                            ),
+                        );
+                        continue;
+                    }
                     if !is_label(&folder) {
                         self.error(
                             &path,
@@ -761,6 +798,115 @@ impl Loader<'_> {
         children
     }
 
+    /// Reads a machine's `machine.fsm` and compiles the guards of its `machine.toml`.
+    fn machine(&mut self, dir: &str, file: &str, spec: &MachineSpec) -> Option<Arc<Loaded>> {
+        let fsm = join(dir, machine::FILE);
+        let diagram = match self.files.read(&fsm) {
+            Ok(text) => match Machine::parse(&text) {
+                Ok(diagram) => Some(diagram),
+                Err(errors) => {
+                    for e in errors {
+                        self.error(&fsm, e);
+                    }
+                    None
+                }
+            },
+            Err(e) => {
+                self.error(&fsm, format!("a machine's diagram: cannot read: {e}"));
+                None
+            }
+        };
+        let mut guards = BTreeMap::new();
+        for (name, g) in &spec.guards {
+            let when = Guard::new(&g.when).unwrap_or_else(|e| {
+                self.error(file, format!("guards.{name}.{e}"));
+                Guard::default()
+            });
+            let prefer = Guard::new(&g.prefer).unwrap_or_else(|e| {
+                self.error(
+                    file,
+                    format!("guards.{name}.prefer: {}", e.trim_start_matches("when.")),
+                );
+                Guard::default()
+            });
+            let criterion = g.criterion.clone().filter(|c| !c.trim().is_empty());
+            if when.is_empty() && prefer.is_empty() && criterion.is_none() {
+                self.error(
+                    file,
+                    format!("guards.{name}: set `when`, `prefer` or `criterion`"),
+                );
+            }
+            guards.insert(
+                name.clone(),
+                NamedGuard {
+                    when,
+                    prefer,
+                    criterion,
+                },
+            );
+        }
+        let diagram = diagram?;
+        let used = diagram.guards();
+        for (name, at) in &used {
+            if !spec.guards.contains_key(name) {
+                self.error(
+                    &fsm,
+                    format!(
+                        "{at}: [{name}] names no [guards.{name}] in machine.toml; a one-word \
+                         guard names one there, a sentence is a criterion for the decision model"
+                    ),
+                );
+            }
+        }
+        for name in spec.guards.keys() {
+            if !used.contains_key(name) {
+                self.error(
+                    file,
+                    format!("guards.{name}: no transition of {} uses it", machine::FILE),
+                );
+            }
+        }
+        if !dir.is_empty() && !diagram.ends() {
+            self.error(
+                &fsm,
+                "the task never ends: add a transition to [*] (only the flows root's machine \
+                 runs for as long as the app)",
+            );
+        }
+        Some(Arc::new(Loaded { diagram, guards }))
+    }
+
+    /// The tools the nodes below `id` call, with the node file that calls each.
+    fn tools_below(&self, id: NodeId) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        let mut stack: Vec<NodeId> = self.nodes[id.0].children.clone();
+        while let Some(at) = stack.pop() {
+            if !seen.insert(at) {
+                continue;
+            }
+            let node = &self.nodes[at.0];
+            let file = node.file.clone();
+            match &node.spec {
+                NodeSpec::Tool(t) => out.push((file, t.tool.clone())),
+                NodeSpec::Agent(a) => out.extend(a.tools.iter().map(|t| (file.clone(), t.clone()))),
+                NodeSpec::Run(r)
+                    if r.automations.is_empty() || r.automations.iter().any(|n| n == "*") =>
+                {
+                    out.push((file, "script:*".into()))
+                }
+                NodeSpec::Run(r) => out.extend(
+                    r.automations
+                        .iter()
+                        .map(|n| (file.clone(), format!("script:{n}"))),
+                ),
+                _ => {}
+            }
+            stack.extend(node.children.iter().copied());
+        }
+        out
+    }
+
     fn templates(&mut self, file: &str, spec: &NodeSpec) -> BTreeMap<String, Template> {
         let mut fields: Vec<(String, &str)> = Vec::new();
         let common = spec.common();
@@ -774,6 +920,9 @@ impl Loader<'_> {
             ));
         }
         match spec {
+            NodeSpec::Machine(m) => {
+                fields.extend(m.question.as_deref().map(|q| ("question".into(), q)))
+            }
             NodeSpec::Decide(d) => {
                 fields.extend(d.question.as_deref().map(|q| ("question".into(), q)))
             }
@@ -919,6 +1068,46 @@ impl Loader<'_> {
             }
         };
         match &node.spec {
+            NodeSpec::Machine(m) => {
+                if !common.extract.is_empty() || !common.investigate.is_empty() {
+                    self.error(
+                        file,
+                        "a machine reads nothing itself: declare [extract] and [investigate] \
+                         in its states' node files",
+                    );
+                }
+                if let Some(p) = m.min_probability
+                    && !(0.0..=1.0).contains(&p)
+                {
+                    self.error(file, "min_probability is a probability from 0 to 1");
+                }
+                if m.steps.is_some_and(|s| !(1..=8).contains(&s)) {
+                    self.error(file, "steps must be 1 to 8");
+                }
+                if m.samples.is_some_and(|s| !(1..=32).contains(&s)) {
+                    self.error(file, "samples must be 1 to 32");
+                }
+                for child in &children {
+                    if child.spec.common().priority != 0 {
+                        self.error(
+                            &child.file,
+                            "priority has no effect on a state's work: the transitions of \
+                             machine.fsm lead into it",
+                        );
+                    }
+                }
+                for (at, tool) in self.tools_below(id) {
+                    if !allowed(&m.tools, &tool) {
+                        self.error(
+                            &at,
+                            format!(
+                                "calls {tool}, which the machine above ({file}) does not list \
+                                 in `tools`: a machine lists everything its states may call"
+                            ),
+                        );
+                    }
+                }
+            }
             NodeSpec::Decide(d) => {
                 if children.is_empty() {
                     self.error(
@@ -1228,14 +1417,34 @@ impl Loader<'_> {
             node.spec,
             NodeSpec::Tool(_) | NodeSpec::Agent(_) | NodeSpec::Run(_)
         ) && node.spec.output() == Some(Output::Next);
-        for child in node.children {
+        for child in node.children.clone() {
             let mut next = scope.clone();
             if passes_result {
                 next.result = true;
             }
+            // Each state's work is a walk of its own, and reads what the earlier states wrote.
+            if let Some(loaded) = &node.machine {
+                next.model_decisions = 0;
+                next.result = false;
+                for state in &loaded.diagram.states {
+                    next.values
+                        .entry(state.name.clone())
+                        .or_insert((Shape::String, node.label().to_string()));
+                }
+            }
             self.check_paths(child, &next, checked);
         }
     }
+}
+
+/// Whether a machine's `tools` let its states call `tool`: by name, or `server:*` for a server's.
+fn allowed(listed: &[String], tool: &str) -> bool {
+    listed.iter().any(|entry| {
+        entry == tool
+            || entry
+                .strip_suffix('*')
+                .is_some_and(|prefix| prefix.ends_with(':') && tool.starts_with(prefix))
+    })
 }
 
 /// Why a placeholder path does not resolve in `scope`, if it does not.
@@ -1676,6 +1885,126 @@ mod tests {
             e.iter().any(|m| m.contains("a transcript cannot rewrite")),
             "{e:?}"
         );
+    }
+
+    #[test]
+    fn the_built_in_root_is_a_machine_whose_states_are_the_old_branches() {
+        let tree = FlowTree::load(&super::super::defaults::builtin(), &Catalog::default());
+        assert!(tree.is_valid(), "{:?}", tree.errors);
+        let root = tree.node(tree.root());
+        assert_eq!(root.kind(), Kind::Machine);
+        let diagram = &root.machine.as_ref().unwrap().diagram;
+        assert_eq!(diagram.initial, "idle");
+        let states: Vec<&str> = tree.children(root.id).map(|c| c.name.as_str()).collect();
+        assert_eq!(states, ["ask", "dictate", "run"]);
+        assert_eq!(tree.entries().len(), 3);
+    }
+
+    #[test]
+    fn machine_folders_are_checked_against_their_diagram() {
+        let fsm = "fsm A {\n[*] --> idle\nidle --> work : said [ready]\nwork --> idle\n}";
+        let tree = tree(&[
+            (
+                "machine.toml",
+                "[guards.unused]\ncriterion = \"Never used\"",
+            ),
+            ("machine.fsm", fsm),
+            ("work/transcript.toml", "priority = 3"),
+            ("stray/transcript.toml", ""),
+            ("task/machine.toml", ""),
+        ]);
+        let e = errors(&tree);
+        let has = |text: &str| e.iter().any(|m| m.contains(text));
+        assert!(
+            has("machine.fsm: idle --> work: [ready] names no [guards.ready]"),
+            "{e:?}"
+        );
+        assert!(
+            has("machine.toml: guards.unused: no transition of machine.fsm uses it"),
+            "{e:?}"
+        );
+        assert!(has("work/transcript.toml: priority has no effect"), "{e:?}");
+        assert!(
+            has("stray: a machine's subfolders are its states' work"),
+            "{e:?}"
+        );
+        assert!(has("task: a machine's subfolders"), "{e:?}");
+        // A diagram's own problems carry its file.
+        let broken = tree_of_errors(&[
+            ("machine.toml", ""),
+            ("machine.fsm", "fsm A {\n[*] --> a\n}"),
+        ]);
+        assert!(
+            broken
+                .iter()
+                .any(|m| m.starts_with("machine.fsm: a has no way out")),
+            "{broken:?}"
+        );
+        let missing = tree_of_errors(&[("machine.toml", "")]);
+        assert!(
+            missing
+                .iter()
+                .any(|m| m.contains("machine.fsm: a machine's diagram: cannot read"))
+        );
+    }
+
+    fn tree_of_errors(files: &[(&str, &str)]) -> Vec<String> {
+        errors(&tree(files))
+    }
+
+    #[test]
+    fn a_nested_machine_must_end_and_list_every_tool_its_states_call() {
+        let catalog = Catalog {
+            tools: BTreeMap::from([("search".to_string(), CatalogTool::default())]),
+            servers: BTreeMap::new(),
+        };
+        let files = [
+            ("machine.toml", "tools = [\"search\"]"),
+            (
+                "machine.fsm",
+                "fsm A {\n[*] --> idle\nidle --> find : said\nfind --> idle\n}",
+            ),
+            ("find/machine.toml", "description = \"Searches\""),
+            (
+                "find/machine.fsm",
+                "fsm F {\n[*] --> look\nlook --> look : said\n}",
+            ),
+            ("find/look/tool.toml", "tool = \"search\""),
+        ];
+        let tree = FlowTree::load(&Memory::new("test", files), &catalog);
+        let e = errors(&tree);
+        assert!(
+            e.iter()
+                .any(|m| m.starts_with("find/machine.fsm: the task never ends")),
+            "{e:?}"
+        );
+        assert!(
+            e.iter().any(|m| m.starts_with(
+                "find/look/tool.toml: calls search, which the machine above (find/machine.toml)"
+            )),
+            "{e:?}"
+        );
+        // The root's list covers it: only the nested machine's own is missing.
+        assert!(!e.iter().any(|m| m.contains("(machine.toml)")), "{e:?}");
+    }
+
+    #[test]
+    fn states_read_what_earlier_states_wrote() {
+        let tree = tree(&[
+            ("machine.toml", ""),
+            (
+                "machine.fsm",
+                "fsm A {\n[*] --> idle\nidle --> draft : said\ndraft --> show\nshow --> idle\n}",
+            ),
+            ("draft/generate.toml", "output = \"none\""),
+            (
+                "show/generate.toml",
+                "output = \"bubble\"\nprompt = \"{draft} {nothing}\"",
+            ),
+        ]);
+        let e = errors(&tree);
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert!(e[0].contains("{nothing}"), "{e:?}");
     }
 
     #[test]

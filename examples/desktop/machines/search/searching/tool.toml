@@ -1,0 +1,6 @@
+# Reads only: the settings let web_search run without asking.
+tool = "web_search"
+output = "none"
+
+[args.query]
+generate = "A web search query for what the user wants found, in their language, a few words long."

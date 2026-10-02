@@ -71,6 +71,10 @@ pub fn Bubble() -> Element {
         div { class: "bubble-head",
             span { class: "bubble-dot", style: "opacity: {glow:.2}" }
             span { class: "bubble-status", "{f.status}" }
+            // Where a task is, while one runs (the root alone is no task).
+            if f.state.contains(" › ") {
+                span { class: "bubble-state", "{f.state}" }
+            }
         }
     };
     let tail_top = (!anchor.icon_below).then(|| tail.clone());

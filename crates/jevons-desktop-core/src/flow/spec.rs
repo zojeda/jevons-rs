@@ -1,4 +1,4 @@
-//! The node files as written. A folder's node file names its kind: `decide.toml`,
+//! The node files as written. A folder's node file names its kind: `machine.toml`, `decide.toml`,
 //! `generate.toml`, `transcript.toml`, `tool.toml`, `agent.toml` or `run.toml`. Every kind shares the fields
 //! in [`node_spec!`] (among them `[investigate.<name>]` and `[extract.<name>]`); unknown fields
 //! are errors with their line.
@@ -273,6 +273,56 @@ node_spec! {
         /// `none`, or `next` to continue into the single branch with it as `{result}`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub output: Option<Output>,
+    }
+}
+
+/// `[guards.<name>]`: what `[name]` on a transition of `machine.fsm` checks, on top of the target
+/// state folder's own `[when]` and `[prefer]`: rules that make it a candidate, rules that choose
+/// it with no model, and the criterion the decision model reads instead of the target's
+/// description.
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuardSpec {
+    /// The transition is a candidate only when these rules pass, as in `[when]`.
+    #[serde(default, skip_serializing_if = "is_default_when")]
+    pub when: When,
+    /// When these rules pass (and `when` does), the transition is chosen among the preferred
+    /// ones, with no model, as in `[prefer]`.
+    #[serde(default, skip_serializing_if = "is_default_when")]
+    pub prefer: When,
+    /// What must be true for the transition, for the decision model, such as "The user asks you
+    /// a question".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub criterion: Option<String>,
+}
+
+node_spec! {
+    /// `machine.toml`: a task laid out as states in `machine.fsm`, beside it. Each subfolder is
+    /// the work of the state of its name, run when the task enters that state; a state without a
+    /// folder only waits. The flows root is a machine: the app's, which never ends.
+    pub struct MachineSpec {
+        /// What the decision model answers when it chooses a transition; by default it asks which
+        /// of them fits, given the state the task is in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub question: Option<String>,
+        /// Below this probability of the transition the model chose (0 to 1; 0.7 by default),
+        /// the unguarded transition is taken instead, or, on `said` without one, the task stays.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub min_probability: Option<f64>,
+        /// The guards `[name]` in `machine.fsm` refer to.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        pub guards: BTreeMap<String, GuardSpec>,
+        /// Every tool the states' work may call: tool nodes' `tool`, agents' `tools` and
+        /// `script:<name>` for automations. A state that calls another is an error, so this list
+        /// is all a task can do.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub tools: Vec<String>,
+        /// System One refinement steps (1 to 8).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub steps: Option<u32>,
+        /// System One samples averaged (1 to 32).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub samples: Option<u32>,
     }
 }
 

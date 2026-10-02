@@ -12,6 +12,7 @@ mod components;
 mod context;
 mod flows;
 mod interface;
+mod machines;
 mod markdown;
 pub(crate) use markdown::plain as plain_text;
 mod models;
@@ -382,6 +383,7 @@ mod tests {
             2 => rsx! { settings::SettingsPage { rev: 2 } },
             3 => rsx! { takes::TakesPage { rev: 3 } },
             4 => rsx! { flows::FlowsPage { rev: 4 } },
+            5 => rsx! { machines::MachinesPage { rev: 5 } },
             _ => rsx! { app::App {} },
         }
     }
@@ -426,6 +428,7 @@ mod tests {
                 delivery: DeliveryMethod::Paste,
             }),
             calls: Vec::new(),
+            machine: Vec::new(),
             generation: None,
             output: "Hello world.".into(),
             delivery: Some(DeliveryOutcome::Delivered {
@@ -698,8 +701,8 @@ mod tests {
         doc.initial_build();
         // Every page after every other, and back: pages are removed and rebuilt as with tabs.
         let mut sequence = Vec::new();
-        for a in 0..=5 {
-            for b in 0..=5 {
+        for a in 0..=6 {
+            for b in 0..=6 {
                 sequence.extend([a, b, a]);
             }
         }
@@ -710,10 +713,10 @@ mod tests {
         }
         std::fs::remove_dir_all(folder).unwrap();
     }
-    /// The workbench with the root's `slack_messages` chosen, as the "Edit" of a reading picks it.
+    /// The workbench with ask's `slack_messages` chosen, as the "Edit" of a reading picks it.
     fn workbench_root() -> Element {
         let rev = REV.fetch_add(1, Ordering::Relaxed);
-        let chosen = use_signal(|| Some(workbench::key("", "slack_messages")));
+        let chosen = use_signal(|| Some(workbench::key("ask", "slack_messages")));
         rsx! { workbench::Workbench { rev, chosen } }
     }
 
@@ -737,7 +740,7 @@ mod tests {
             html.contains("message-list_"),
             "the expression loads: {html}"
         );
-        assert!(html.contains("Save to decide.toml"), "{html}");
+        assert!(html.contains("Save to ask/decide.toml"), "{html}");
         view.lock().unwrap().trial = Some(crate::agent::TrialView {
             name: "slack_messages".into(),
             xpath: "//ListItem".into(),
@@ -1267,6 +1270,159 @@ mod tests {
         assert!(
             text.contains("Applies when") && text.contains("dictate/decide.toml"),
             "{text}"
+        );
+    }
+
+    fn machines_root() -> Element {
+        rsx! { machines::MachinesPage { rev: REV.fetch_add(1, Ordering::Relaxed) } }
+    }
+
+    /// The Machines page over `view`, laid out on a wide dark viewport.
+    fn machines_doc(view: View) -> DioxusDocument {
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        let (commands, _received) = tokio::sync::mpsc::unbounded_channel();
+        let mut vdom = VirtualDom::new(machines_root);
+        vdom.insert_any_root_context(Box::new(Ctx {
+            view: Arc::new(Mutex::new(view)),
+            commands,
+        }));
+        let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("style.css"));
+        doc.set_viewport(Viewport::new(1200, 3000, 1.0, ColorScheme::Dark));
+        doc.initial_build();
+        doc.poll(None);
+        doc.resolve(0.0);
+        doc
+    }
+
+    fn texts(doc: &DioxusDocument, selector: &str) -> Vec<String> {
+        doc.query_selector_all(selector)
+            .unwrap()
+            .into_iter()
+            .map(|n| doc.get_node(n).unwrap().text_content())
+            .collect()
+    }
+
+    #[test]
+    fn the_machines_page_draws_the_built_in_root_machine() {
+        let folder = std::env::temp_dir().join(format!("jevons-ui-fsm-{}", std::process::id()));
+        let doc = machines_doc(view(&folder));
+        let mut names = texts(&doc, ".fsm-state .fsm-name");
+        names.sort();
+        assert_eq!(names, ["ask", "dictate", "idle", "run"]);
+        // idle has no folder: it waits; the others' work is their node file.
+        let works = texts(&doc, ".fsm-state .fsm-work");
+        assert!(works.contains(&"waits".to_string()), "{works:?}");
+        assert!(works.contains(&"run".to_string()), "{works:?}");
+        // The start dot, an arrowhead per edge, and the [else] label.
+        assert!(doc.query_selector(".fsm-lines circle").unwrap().is_some());
+        assert!(doc.query_selector_all(".fsm-lines polygon").unwrap().len() >= 7);
+        assert!(texts(&doc, ".fsm-label").iter().any(|l| l == "said [else]"));
+        // States are boxes where the layout put them, not collapsed.
+        let state = doc.query_selector(".fsm-state").unwrap().unwrap();
+        let size = doc.get_node(state).unwrap().final_layout.size;
+        assert!(size.width > 150.0 && size.height > 40.0, "{size:?}");
+        // Nothing runs yet: no state is current and there is no task to cancel.
+        assert!(
+            doc.query_selector(".fsm-state[data-current=\"true\"]")
+                .unwrap()
+                .is_none()
+        );
+        let text = doc.root_element().text_content();
+        assert!(text.contains("not started"), "{text}");
+    }
+
+    #[test]
+    fn a_nested_task_shows_its_current_state_and_a_state_in_full() {
+        use jevons_desktop_core::flow::Memory;
+        use jevons_desktop_core::flow::machine::runtime::Runtime as Machines;
+        use jevons_desktop_core::pipeline::{Env, Settings, TakeStart};
+        let tree = Arc::new(FlowTree::load(
+            &Memory::new(
+                "test",
+                [
+                    ("machine.toml", ""),
+                    (
+                        "machine.fsm",
+                        "fsm App {\n[*] --> idle\nidle --> task : said\ntask --> idle\n}",
+                    ),
+                    ("task/machine.toml", "description = \"A task\""),
+                    (
+                        "task/machine.fsm",
+                        "fsm Task {\n[*] --> waiting\nstate waiting: \"Waiting for the go\"\nwaiting --> [*] : said [the user says go]\n}",
+                    ),
+                ],
+            ),
+            &Catalog::default(),
+        ));
+        assert!(tree.is_valid(), "{:?}", tree.errors);
+        // One take moves the root into the task, which waits: no model is asked.
+        let machines = Arc::new(Machines::new());
+        let env = Env {
+            client: jevons_desktop_core::client::Client::new("http://127.0.0.1:9", None),
+            flows: tree.clone(),
+            settings: Settings::default(),
+            sink: None,
+            investigator: None,
+            reader: None,
+            confirmer: None,
+            tools: None,
+            machines: machines.clone(),
+        };
+        let start = TakeStart {
+            id: 7,
+            context: ContextSnapshot::default(),
+            entry: None,
+        };
+        let mut trace = Trace::new(&start);
+        trace.transcript = "start the task".into();
+        let (updates, _) = tokio::sync::mpsc::unbounded_channel();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(machines.take(&env, &start, None, &updates, &mut trace));
+        assert_eq!(
+            machines.view().path(),
+            "task › waiting",
+            "{:?}",
+            trace.notes
+        );
+
+        let folder = std::env::temp_dir().join(format!("jevons-ui-task-{}", std::process::id()));
+        let mut state = view(&folder);
+        state.flows = tree;
+        state.machines = machines;
+        let mut doc = machines_doc(state);
+        // The innermost machine shows first, at its current state.
+        assert_eq!(
+            texts(&doc, ".fsm-state[data-current=\"true\"] .fsm-name"),
+            ["waiting"]
+        );
+        let text = doc.root_element().text_content();
+        assert!(
+            text.contains("task › waiting") && text.contains("waiting for said"),
+            "{text}"
+        );
+        // The history: the root's move into the task, then the task's start.
+        let steps = texts(&doc, ".fsm-step-move");
+        assert!(steps.contains(&"idle → task".to_string()), "{steps:?}");
+        assert!(steps.contains(&"[*] → waiting".to_string()), "{steps:?}");
+        // Its latest transition has no edge (a start), so no label is lit.
+        assert!(
+            doc.query_selector(".fsm-label[data-hot=\"true\"]")
+                .unwrap()
+                .is_none()
+        );
+        // Selecting the state shows it in full.
+        click_text(&mut doc, ".fsm-state", "waiting");
+        let card = texts(&doc, ".fsm-detail").join(" ");
+        assert!(
+            card.contains("Waiting for the go")
+                && card.contains("No folder")
+                && card.contains("[the user says go]")
+                && card.contains("Here now"),
+            "{card}"
         );
     }
 

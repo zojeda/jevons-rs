@@ -230,3 +230,6 @@ html, body, #main {
 }
 .bubble-select:focus { border-color: #22e6f2; outline: none; }
 .bubble-button[data-on="true"] { border-color: #22e6f2; color: #22e6f2; }
+
+/* Where a task is, while one runs: `search › answering`. */
+.bubble-state { margin-left: auto; color: #22e6f2; font-size: 11px; white-space: nowrap; }

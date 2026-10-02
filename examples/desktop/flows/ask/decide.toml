@@ -10,3 +10,25 @@ fallback = "any"
 # "Pregunta: ¿qué dice Paul?" or "Question: …" at the start: ask, with no model call.
 [prefer]
 transcript = "(?i)^\\W*(pregunta|question)\\b"
+
+# In Slack: the open conversation, its latest messages and the channels, read from the window
+# with XPath (no model). Lazy: read only where a branch uses them, such as slack. The inspector's
+# Context tab shows them whenever Slack is in front.
+# The open conversation's sidebar item has no name, so its name comes from the window title,
+# "<conversation> (Channel) - <workspace> - Slack" in any language, without an unread mark.
+[extract.slack_conversation]
+xpath = "normalize-space(translate(substring-before(concat(substring-before(concat(@title, ' - '), ' - '), ' ('), ' ('), '*!', ''))"
+app = ["slack.exe"]
+lazy = true
+
+[extract.slack_messages]
+xpath = "(//ListItem[starts-with(@automation_id, 'message-list_')][.//Text])[position() > last() - 15]/@name"
+as = "list"
+app = ["slack.exe"]
+lazy = true
+
+[extract.slack_channels]
+xpath = "//TreeItem[.//*[has-class(@class, 'p-channel_sidebar__channel')]]"
+as = "list"
+app = ["slack.exe"]
+lazy = true

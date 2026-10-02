@@ -1,10 +1,14 @@
-# Flow tree: how jevons routes a take
+# Flows: how jevons handles a take
 
 This folder tells jevons what to do each time the user presses a dictation hotkey and speaks.
-Every folder is a node. A take starts at the root node (or where its hotkey says), and each
-decision picks one branch folder until a leaf writes the text somewhere. Edit the files and save:
-jevons reloads the tree at once and, when a file has a problem, keeps the last good tree and shows
-the errors in its inspector.
+Every folder is a node. The root is a machine (`machine.toml` and the state diagram
+`machine.fsm`): it waits in `idle`, and each take is `said` there, which leads to one of its
+states. A state's folder is its work: decisions pick one branch folder after another until a leaf
+writes the text somewhere, and the machine is back in `idle`. A task that takes several turns (a
+search the user follows up on) is a machine of its own in a state's folder: it waits between
+takes, and the inspector's Machines tab shows where it is. Edit the files and save: jevons reloads
+them at once and, when a file has a problem, keeps the last good tree and shows the errors in its
+inspector.
 
 Check your changes before you rely on them:
 
@@ -25,6 +29,7 @@ A node folder holds exactly one node file, whose name is its kind:
 
 | File | What it does |
 |---|---|
+| `machine.toml` | A machine: states and transitions in `machine.fsm` beside it, each subfolder a state's work (below). |
 | `decide.toml` | Chooses one of its branches: the subfolders, or the folders named by `branches`. |
 | `generate.toml` | A leaf: the language model writes text, which goes to `output`. |
 | `transcript.toml` | A leaf: the words as recognized go to `output`, with no model. |
@@ -97,6 +102,69 @@ changes (a terminal is always a place to dictate). Leave softer signals, such as
 not accept typing, to the model: the decision's state says whether the focused element accepts
 typing, and the descriptions can say what that suggests.
 
+## Machines: `machine.toml` and `machine.fsm`
+
+`machine.fsm` is a state diagram in [Oxidate](https://crates.io/crates/oxidate-fsm)'s language:
+
+```text
+// examples/desktop/machines/search in the jevons repository
+fsm Search {
+    timer quiet = 120000 -> quiet
+    [*] --> searching
+    state searching: "Searching the web for what the user asked"
+    state results: "The answer is in the bubble; waiting for what the user says about it"
+    searching --> answering
+    answering --> results
+    results --> opening : said [the user wants one of the results opened]
+    results --> [*] : said [the user is done with these results]
+    results --> [*] : quiet
+    opening --> results
+    opening --> results : denied
+}
+```
+
+- **States** are lowercase, since each one's work is the subfolder of its name (`searching/tool.toml`).
+  Entering a state runs that folder like a take would, from its node file down, and delivers its
+  leaf; a state with no folder only waits. `[*] --> name` is the first state; `--> [*]` ends the
+  machine (the root never needs to: it runs for as long as the app).
+- **Events:** `said` (the user spoke while the machine waited there), `done` (the state's work
+  finished; also a transition with no event), `failed`, `denied` (the user declined a tool call
+  the work asked about; without a `denied` transition it counts as `failed`), and each `timer`'s
+  event, which runs only while the machine is in a state with a transition on it. A failure
+  nothing handles ends a task, or puts the root back in its first state.
+- **Choosing a transition:** the transitions on the event are weighed as a decision weighs its
+  branches. The target state folder's `[when]` must pass, and its `[prefer]` chooses with no
+  model, as do a named guard's (below). Otherwise the decision model chooses by each one's
+  criterion: the guard's sentence (`[the user wants one of the results opened]`), else the target
+  folder's `description` (the diagram's state description when it has no folder). Below
+  `min_probability` it takes the transition marked `[else]`, or, on `said`, stays where it was:
+  an unsure take never moves a task on. The first decision of each candidate's work rides in the
+  same request, so the root costs one decision call per take, as a decision root did.
+- **Named guards:** a one-word guard, `[search]`, is `[guards.search]` in `machine.toml`, with
+  `when` (rules for it to be a candidate), `prefer` (rules that choose it) and `criterion` (what
+  the model reads), all optional.
+- **Choice points:** `choice next { [it worked] -> a  [else] -> b }`, entered as `<<next>>`,
+  choose at once, the same way; `[else]` is required.
+- **Memory:** a task's states read what earlier states wrote as `{state}` (`{searching}` is the
+  search's result) until the task ends. The root remembers nothing between takes.
+- **Not in the diagram:** actions. Oxidate's `entry /`, `exit /` and `/ action()` are errors: the
+  work is in the folders, so what a machine can do is exactly what its states' node files say.
+
+| `machine.toml` field | Meaning |
+|---|---|
+| `description` | For the machine above, which enters this one by it (as it would a state's work). |
+| `question` | What the model answers when it chooses a transition; by default, which one fits, given the task and its state. |
+| `min_probability` | Below this probability (0 to 1; 0.7 by default) the model's choice is not taken. |
+| `tools` | Every tool its states call (tool nodes, agents' tools, `script:<name>` or `script:*` for automations, `server:*`). A state that calls another is an error, so the list is all a task can do. |
+| `[guards.<name>]` | The named guards: `when`, `prefer`, `criterion`. |
+| `steps`, `samples` | System One refinement steps (1 to 8) and samples (1 to 32). |
+
+A state's node file keeps `description`, `[when]` and `[prefer]` (how transitions into it are
+weighed); `priority` has no effect there. A machine declares no `[extract]` or `[investigate]`:
+its states' node files do. Risky work (a command, an address to open) belongs in a state of its
+own, reached only by the transitions drawn, with its tool asking first; give it a `denied`
+transition back to where the user was.
+
 ## `decide.toml`
 
 | Field | Meaning |
@@ -104,7 +172,7 @@ typing, and the descriptions can say what that suggests.
 | `question` | What the decision model answers; the branches' descriptions are the choices. |
 | `select` | `model` (default): the model chooses. `rules`: the highest `priority`, then the most specific guard; the model only breaks exact ties. |
 | `fallback` | The branch taken when no guard passes, or the model is below `min_probability` or unavailable. It is taken even if its own guard fails. |
-| `min_probability` | Below this probability (0 to 1) for the branch the model chose, run `enrich`, ask again, then take the fallback. The built-in root uses 0.7. |
+| `min_probability` | Below this probability (0 to 1) for the branch the model chose, run `enrich`, ask again, then take the fallback. |
 | `enrich` | Extract and investigation names to read only when the first answer is unsure. |
 | `branches` | Take the branches from a shared folder such as `"_actions"` instead of subfolders. |
 | `only` | With `branches`: keep only these of them. |
@@ -200,8 +268,10 @@ lazy = true               # read only when a node at or below uses {messages} or
 
   Names are in the user's language. Prefer classes and automation ids, which are the same in
   every language.
-- **Paths:** `//` searches below, `/` goes to children, `..` to the parent. The axes are `ancestor::`,
-  `following-sibling::`, `preceding-sibling::` and the other XPath 1.0 axes.
+- **Paths:** `//` searches below, `/` goes to children, `..` to the parent. The axes are `child::`,
+  `descendant::`, `descendant-or-self::`, `parent::`, `ancestor::`, `ancestor-or-self::`, `self::`,
+  `following-sibling::`, `preceding-sibling::` and `attribute::`. `following::` and `preceding::`
+  are errors.
 - **Positions:** `[1]` and `[last()]` count among siblings. `(//ListItem)[last()]` counts over the
   whole result, and is much faster than `//ListItem[last()]`.
 - **Functions:** XPath 1.0's functions, plus `ends-with`, `lower-case`, `upper-case`,
@@ -214,8 +284,8 @@ lazy = true               # read only when a node at or below uses {messages} or
 - **What `//` covers:** an expression that starts with `//` searches every window the extract may read (the take's own and each `scope` window). One that starts with `.//` stays in the take's window.
 - **Only in some applications:** `app = ["slack.exe"]` (process-name globs, any case) reads the
   extract only in takes from those applications; elsewhere nothing is read and its answer is
-  empty. That lets the root declare an application's extracts once for every branch below: the
-  built-in root reads Slack's `{slack_conversation}`, `{slack_messages}` and `{slack_channels}`.
+  empty. That lets a decision declare an application's extracts once for every branch below: the
+  built-in `ask` reads Slack's `{slack_conversation}`, `{slack_messages}` and `{slack_channels}`.
 - **Variables:** `$name` takes a placeholder's value, such as `//TreeItem[@name = $transcript]` or
   `$chat.name`. Values are never pasted into the expression, so they cannot change what it means.
 - **Answers:** available at this node and below as `{channels}` and `{messages}` (JSON), and
@@ -288,6 +358,7 @@ Reading windows other than the one in front also needs the user's permission in 
 | `{route}` | the branches taken so far, such as `dictate/chat` |
 | `{name}`, `{name.field}` | an extract or investigation declared here or above |
 | `{result}`, `{result.field}` | below a tool or agent with `output = "next"` |
+| `{state}` | in a machine's states: what that state's work wrote last |
 
 Write `{{` and `}}` for literal braces. `instructions.md` is plain prose: no placeholders.
 
@@ -305,11 +376,21 @@ Write `{{` and `}}` for literal braces. `instructions.md` is plain prose: no pla
 - Folders nest at most 8 deep, and a path takes at most 4 model decisions: each costs a model
   call while the user waits.
 - Tool and agent nodes name registered tools, and tool arguments match the tool's schema.
+- A machine's diagram parses and checks: states lowercase, events known, every state reached and
+  with a way out, at most one `[else]` per state and event, `[else]` on every event but `said`
+  that may otherwise stay, choice points with `[else]`, timers waited for, and a way to `[*]`
+  below the root. Its subfolders are states, its named guards are used and declared, and its
+  `tools` list everything its states call.
 
 ## Example: a branch for translating
 
-Put it at the root, next to `dictate` and `ask`, where the model chooses by what the user wants
-(`dictate` chooses by application, with rules):
+Make it a state of the root machine, next to `dictate` and `ask`, where the model chooses by what
+the user wants (`dictate` chooses by application, with rules). In `machine.fsm`:
+
+```text
+idle --> translate : said
+translate --> idle
+```
 
 ```toml
 # translate/generate.toml
@@ -322,5 +403,5 @@ selection = true
 transcript = "(?i)(translate|traduc)"
 ```
 
-The guard keeps it out of the root decision unless text is selected and the user said
+The guard keeps it out of the root's decision unless text is selected and the user said
 "translate", so ordinary dictation never pays for it.
