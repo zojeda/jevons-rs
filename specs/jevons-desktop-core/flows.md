@@ -17,7 +17,7 @@ writes into a flows folder, and the upgrade of an unedited one.
 
 Elsewhere:
 
-- `machine.toml`, `machine.fsm` and the machine runtime: [machines.md](machines.md).
+- `root.toml`, `task.toml`, their diagrams and the machine runtime: [machines.md](machines.md).
 - `[extract]` and XPath: [extract.md](extract.md). `[investigate]` fields and the investigator:
   [investigator.md](investigator.md).
 - How a tool node fills its arguments and sends its result, how a tool runs, asks and is
@@ -31,7 +31,7 @@ Elsewhere:
 ### R1 One node file per folder names its kind
 
 Every folder under the flows root is a node, except folders whose name starts with `_` or `.`. A
-node folder holds one of `machine.toml`, `decide.toml`, `generate.toml`,
+node folder holds one of `root.toml`, `task.toml`, `decide.toml`, `generate.toml`,
 `transcript.toml`, `tool.toml`, `agent.toml` and `run.toml`. A folder with none or with two is an
 error that names the folder, and so is a root with none. Any other `.toml` file whose name does
 not start with `.` is an error as an unknown node file.

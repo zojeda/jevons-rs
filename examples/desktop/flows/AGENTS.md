@@ -1,12 +1,12 @@
 # Flows: how jevons handles a take
 
 This folder tells jevons what to do each time the user presses a dictation hotkey and speaks.
-Every folder is a node. The root is a machine (`machine.toml` and the state diagram
-`machine.fsm`): it waits in `idle`, and each take is `said` there, which leads to one of its
-states. A state's folder is its work: decisions pick one branch folder after another until a leaf
-writes the text somewhere, and the machine is back in `idle`. A task that takes several turns (a
-search the user follows up on) is a machine of its own in a state's folder: it waits between
-takes, and the inspector's Machines tab shows where it is. Edit the files and save: jevons reloads
+Every folder is a node. The root is a machine (`root.toml` and the state diagram `root.fsm`): it
+waits in `idle`, and each take is `said` there, which leads to one of its states. A state's folder
+is its work: decisions pick one branch folder after another until a leaf writes the text
+somewhere, and the machine is back in `idle`. A task that takes several turns (a search the user
+follows up on) is a machine of its own in a state's folder (`task.toml` and `task.fsm`): it waits
+between takes, and the inspector's Machines tab shows where it is. Edit the files and save: jevons reloads
 them at once and, when a file has a problem, keeps the last good tree and shows the errors in its
 inspector.
 
@@ -29,7 +29,8 @@ A node folder holds exactly one node file, whose name is its kind:
 
 | File | What it does |
 |---|---|
-| `machine.toml` | A machine: states and transitions in `machine.fsm` beside it, each subfolder a state's work (below). |
+| `root.toml` | The flows root's machine: states and transitions in `root.fsm` beside it, each subfolder a state's work (below). Only at the root. |
+| `task.toml` | A task, a machine below the root: states and transitions in `task.fsm` beside it, each subfolder a state's work. |
 | `decide.toml` | Chooses one of its branches: the subfolders, or the folders named by `branches`. |
 | `generate.toml` | A leaf: the language model writes text, which goes to `output`. |
 | `transcript.toml` | A leaf: the words as recognized go to `output`, with no model. |
@@ -102,9 +103,10 @@ changes (a terminal is always a place to dictate). Leave softer signals, such as
 not accept typing, to the model: the decision's state says whether the focused element accepts
 typing, and the descriptions can say what that suggests.
 
-## Machines: `machine.toml` and `machine.fsm`
+## Machines: `root.toml`, `task.toml` and their diagrams
 
-`machine.fsm` is a state diagram in [Oxidate](https://crates.io/crates/oxidate-fsm)'s language:
+The root's machine is `root.toml` with `root.fsm`; a machine in a state's folder is a task,
+`task.toml` with `task.fsm`. A diagram is a state diagram in [Oxidate](https://crates.io/crates/oxidate-fsm)'s language:
 
 ```text
 // examples/desktop/machines/search in the jevons repository
@@ -140,7 +142,7 @@ fsm Search {
   `min_probability` it takes the transition marked `[else]`, or, on `said`, stays where it was:
   an unsure take never moves a task on. The first decision of each candidate's work rides in the
   same request, so the root costs one decision call per take, as a decision root did.
-- **Named guards:** a one-word guard, `[search]`, is `[guards.search]` in `machine.toml`, with
+- **Named guards:** a one-word guard, `[search]`, is `[guards.search]` in the machine's node file, with
   `when` (rules for it to be a candidate), `prefer` (rules that choose it) and `criterion` (what
   the model reads), all optional.
 - **Choice points:** `choice next { [it worked] -> a  [else] -> b }`, entered as `<<next>>`,
@@ -150,7 +152,7 @@ fsm Search {
 - **Not in the diagram:** actions. Oxidate's `entry /`, `exit /` and `/ action()` are errors: the
   work is in the folders, so what a machine can do is exactly what its states' node files say.
 
-| `machine.toml` field | Meaning |
+| `root.toml` and `task.toml` field | Meaning |
 |---|---|
 | `description` | For the machine above, which enters this one by it (as it would a state's work). |
 | `question` | What the model answers when it chooses a transition; by default, which one fits, given the task and its state. |
@@ -385,7 +387,7 @@ Write `{{` and `}}` for literal braces. `instructions.md` is plain prose: no pla
 ## Example: a branch for translating
 
 Make it a state of the root machine, next to `dictate` and `ask`, where the model chooses by what
-the user wants (`dictate` chooses by application, with rules). In `machine.fsm`:
+the user wants (`dictate` chooses by application, with rules). In `root.fsm`:
 
 ```text
 idle --> translate : said

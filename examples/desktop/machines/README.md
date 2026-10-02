@@ -33,16 +33,16 @@ takes; an unsure follow-up stays there, and two quiet minutes end it. Opening a 
    Any search API that answers a GET with text works the same way, such as a SearXNG instance
    (`https://<host>/search?q={query}&format=json`).
 
-2. Copy `search/` into the flows folder, beside `machine.fsm`.
+2. Copy `search/` into the flows folder, beside `root.fsm`.
 
-3. Let the root machine enter it. In the flows folder's `machine.fsm`, add:
+3. Let the root machine enter it. In the flows folder's `root.fsm`, add:
 
    ```text
    idle --> search : said [search]
    search --> idle
    ```
 
-   and in its `machine.toml`, list the tools and say when a take starts a search: only when the
+   and in `root.toml`, list the tools and say when a take starts a search: only when the
    words start with "Search" or "Busca", chosen with no model:
 
    ```toml

@@ -1,4 +1,4 @@
-# The flows root: the app's machine (machine.fsm). It waits in `idle` for the user to speak; each
+# The flows root: the app's machine (root.fsm). It waits in `idle` for the user to speak; each
 # take is `said` there, and leads to the state whose description fits (each state's description
 # is in its folder's node file, which also holds its [prefer] rules). The state's work is its
 # folder's flow; once it is done the machine is back in `idle`.
@@ -7,7 +7,7 @@ What does the user want done with what they said? Decide who the words are for: 
 (text to type there, including questions meant for the people they write to) or you, the \
 assistant listening (a question to answer for them)."""
 # When the decision model is unsure (the state it chose below 70%) or unavailable, the words are
-# dictated: `[else]` in machine.fsm.
+# dictated: `[else]` in root.fsm.
 min_probability = 0.7
 # Everything the states may call: `run` runs any approved automation.
 tools = ["script:*"]

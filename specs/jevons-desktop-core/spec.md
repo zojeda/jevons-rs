@@ -37,7 +37,7 @@ It leaves:
 | Capability | Covers |
 | --- | --- |
 | [flows](flows.md) | Node files, the loader, guards and `[prefer]`, placeholders, shapes, the walker, the built-in tree and its upgrades |
-| [machines](machines.md) | `machine.fsm` and its checks, machine folders, the runtime across takes and timers, the diagram's layout |
+| [machines](machines.md) | `root.fsm` and `task.fsm` and their checks, machine folders, the runtime across takes and timers, the diagram's layout |
 | [extract](extract.md) | The XPath subset and its evaluation, `[extract]` reads, the workbench, selectors and the interface browser |
 | [investigator](investigator.md) | The context investigator, its navigation tools, its path cache and its limits |
 | [tools](tools.md) | The tool host: built-in tools, MCP servers, confirmations and agents |

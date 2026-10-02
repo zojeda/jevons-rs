@@ -9,7 +9,7 @@ use crate::agent::Command;
 use dioxus::prelude::*;
 use jevons_desktop_core::flow::machine::layout::{self, Edge, Layout, NodeKind, Placed};
 use jevons_desktop_core::flow::machine::runtime::{Step, View as Machines};
-use jevons_desktop_core::flow::machine::{Condition, Loaded, Target};
+use jevons_desktop_core::flow::machine::{self, Condition, Loaded, Target};
 use jevons_desktop_core::flow::tree::{FlowTree, Node, NodeSpec};
 use jevons_desktop_core::flow::{Kind, defaults};
 use std::sync::Arc;
@@ -405,7 +405,10 @@ pub fn MachinesPage(rev: u64) -> Element {
         .find(|s| s.machine == node.label())
         .and_then(|s| s.transition);
     let content = match &node.machine {
-        None => rsx! { p { class: "error-text", "{node.label()}: machine.fsm did not load" } },
+        None => {
+            let diagram = machine::diagram_file(&node.file);
+            rsx! { p { class: "error-text", "{diagram} did not load" } }
+        }
         Some(loaded) => {
             let drawn = layout::layout(&loaded.diagram);
             let state = selected().filter(|s| loaded.diagram.state(s).is_some());

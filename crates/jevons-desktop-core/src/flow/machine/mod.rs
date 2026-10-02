@@ -1,4 +1,4 @@
-//! Machines: a task laid out as states. A flow folder with `machine.toml` holds `machine.fsm`, a
+//! Machines: a task laid out as states. A flow folder with `task.toml` holds `task.fsm`, a
 //! state diagram in [Oxidate](https://crates.io/crates/oxidate-fsm)'s Mermaid-like language, and a
 //! subfolder per state that does work: its node file (a tool call, a generation, an agent …)
 //! runs when the task enters that state.
@@ -41,8 +41,10 @@ use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-/// The diagram file in a machine folder.
-pub const FILE: &str = "machine.fsm";
+/// The flows root's machine, with its diagram in `root.fsm` beside it.
+pub const ROOT: &str = "root.toml";
+/// A machine below the flows root (a task), with its diagram in `task.fsm` beside it.
+pub const TASK: &str = "task.toml";
 /// The longest a timer may run.
 pub const MAX_TIMER: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -101,7 +103,7 @@ pub enum Condition {
     /// `[else]`: the fallback, taken when no other transition applies or the model is unsure.
     /// The model may also choose it, by its target's description.
     Else,
-    /// `[name]`: `[guards.name]` in `machine.toml`: rules checked with no model, a criterion for
+    /// `[name]`: `[guards.name]` in the machine's node file: rules checked with no model, a criterion for
     /// the decision model, or both.
     Named(String),
     /// `[a sentence]`: a criterion the decision model reads.
@@ -197,7 +199,15 @@ pub struct Timer {
     pub after: Duration,
 }
 
-/// A checked `machine.fsm`.
+/// The diagram beside a machine's node file: `find/task.toml` → `find/task.fsm`.
+pub fn diagram_file(node_file: &str) -> String {
+    format!(
+        "{}.fsm",
+        node_file.strip_suffix(".toml").unwrap_or(node_file)
+    )
+}
+
+/// A checked diagram (`root.fsm` or `task.fsm`).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Machine {
     /// The name after `fsm`.
@@ -210,7 +220,7 @@ pub struct Machine {
     pub timers: Vec<Timer>,
 }
 
-/// A `[guards.<name>]` of `machine.toml`, compiled.
+/// A `[guards.<name>]` of a machine's node file, compiled.
 #[derive(Clone, Debug, Default)]
 pub struct NamedGuard {
     /// The transition is a candidate only when these pass.
@@ -220,7 +230,7 @@ pub struct NamedGuard {
     pub criterion: Option<String>,
 }
 
-/// A machine as the flow tree loads it: the diagram and the guards of `machine.toml`.
+/// A machine as the flow tree loads it: the diagram and the guards of its node file.
 #[derive(Clone, Debug)]
 pub struct Loaded {
     pub diagram: Machine,

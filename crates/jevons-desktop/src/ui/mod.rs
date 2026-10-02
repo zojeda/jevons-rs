@@ -1341,14 +1341,14 @@ mod tests {
             &Memory::new(
                 "test",
                 [
-                    ("machine.toml", ""),
+                    ("root.toml", ""),
                     (
-                        "machine.fsm",
+                        "root.fsm",
                         "fsm App {\n[*] --> idle\nidle --> task : said\ntask --> idle\n}",
                     ),
-                    ("task/machine.toml", "description = \"A task\""),
+                    ("task/task.toml", "description = \"A task\""),
                     (
-                        "task/machine.fsm",
+                        "task/task.fsm",
                         "fsm Task {\n[*] --> waiting\nstate waiting: \"Waiting for the go\"\nwaiting --> [*] : said [the user says go]\n}",
                     ),
                 ],

@@ -21,8 +21,8 @@ macro_rules! tree_files {
 
 /// Every file of the built-in tree, by path under the flows root.
 pub const TREE: &[(&str, &str)] = tree_files![
-    "machine.toml",
-    "machine.fsm",
+    "root.toml",
+    "root.fsm",
     "instructions.md",
     "dictate/decide.toml",
     "dictate/instructions.md",
@@ -298,7 +298,11 @@ pub fn schemas_json() -> Vec<(String, String)> {
             pretty(schemars::schema_for!(DecideSpec)),
         ),
         (
-            "machine.schema.json".into(),
+            "root.schema.json".into(),
+            pretty(schemars::schema_for!(MachineSpec)),
+        ),
+        (
+            "task.schema.json".into(),
             pretty(schemars::schema_for!(MachineSpec)),
         ),
         (
@@ -435,7 +439,7 @@ mod tests {
         assert!(report.notes[0].contains("earlier version"), "{report:?}");
         assert!(report.written.contains(&"run/run.toml".to_string()));
         // The decision root became the root machine: its node file is gone.
-        assert!(report.written.contains(&"machine.toml".to_string()));
+        assert!(report.written.contains(&"root.toml".to_string()));
         assert_eq!(report.removed, ["decide.toml"]);
         assert!(!dir.join("decide.toml").exists());
         let tree = FlowTree::load(&Disk::new(&dir), &Catalog::default());

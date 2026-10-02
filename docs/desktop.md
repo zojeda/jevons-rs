@@ -67,7 +67,8 @@ Each folder is a node, and the file in it names its kind:
 
 | File | Does |
 | --- | --- |
-| `machine.toml` | a state machine laid out in `machine.fsm` beside it; each subfolder is a state's work |
+| `root.toml` | the flows root's state machine, laid out in `root.fsm` beside it; each subfolder is a state's work |
+| `task.toml` | a task: a state machine below the root, laid out in `task.fsm` beside it |
 | `decide.toml` | chooses one of its subfolders (or the folders of a shared `_` folder named by `branches`) |
 | `generate.toml` | writes text with the language model, for the application, the bubble or the clipboard |
 | `transcript.toml` | uses the words as recognized, with no model |
@@ -95,17 +96,17 @@ The decision model reads each branch's `description` as that choice, along with 
 
 The built-in tree:
 
-- The root machine (`machine.toml`, `machine.fsm`) waits in `idle` and asks who the words are for: the application (**dictate**, the `[else]` transition), jevons (**ask**), or a saved task (**run**, an automation). It takes the model's choice from 70% and dictates below that. Words that start with "Pregunta" or "Question" always go to **ask**, and in a terminal the words are always dictated, both with no model call (`[prefer]` in those folders). Each state's work done, it is back in `idle`.
+- The root machine (`root.toml`, `root.fsm`) waits in `idle` and asks who the words are for: the application (**dictate**, the `[else]` transition), jevons (**ask**), or a saved task (**run**, an automation). It takes the model's choice from 70% and dictates below that. Words that start with "Pregunta" or "Question" always go to **ask**, and in a terminal the words are always dictated, both with no model call (`[prefer]` in those folders). Each state's work done, it is back in `idle`.
 - `dictate/` chooses by rules, per application: `code/` and `terminal/` (only insert or type as heard; a terminal's buffer is never rewritten), `chat/` (with `thread/` for replies), `web-mail/`, `notes/` and `any/`. Each takes its branches from the shared `_actions/` folder: `insert`, `replace` (with a selection), `rewrite` (with text in the field) and `verbatim` (the words as heard, no generation).
 - `ask/` answers in the bubble. In Slack it reads, with XPath, the open conversation, its latest messages and the channels (`slack_conversation`, `slack_messages`, `slack_channels`), lazily, and `slack/` answers from them; in other chat apps (`chat/`, `web-chat/`) it first reads the open conversation with an investigation.
 - `run/` runs one of your approved automations; it is not a choice until one is approved.
 
 ### Machines: tasks that wait for you
 
-A task that takes more than one turn is a machine in a state's folder: a search you follow up on ("open the second one"), a draft you revise, a command you confirm. Its `machine.fsm` is a state diagram in [Oxidate](https://crates.io/crates/oxidate-fsm)'s Mermaid-like language, and each state's work is the subfolder of its name: a tool call, a generation, an agent, a decision tree.
+A task that takes more than one turn is a machine in a state's folder: a search you follow up on ("open the second one"), a draft you revise, a command you confirm. It is `task.toml` with `task.fsm`, a state diagram in [Oxidate](https://crates.io/crates/oxidate-fsm)'s Mermaid-like language, and each state's work is the subfolder of its name: a tool call, a generation, an agent, a decision tree.
 
 ```text
-# flows/search/machine.fsm (examples/desktop/machines/search)
+# flows/search/task.fsm (examples/desktop/machines/search)
 fsm Search {
     timer quiet = 120000 -> quiet
     [*] --> searching
@@ -121,7 +122,7 @@ fsm Search {
 ```
 
 - **Between takes** the task waits in its state, and what you say next is `said` for it, not for the root. The decision model takes a transition by its guard's sentence (or by the target state's description), with rules first; when it is unsure, a `said` stays where it was, so an unsure take never moves a task on. Two quiet minutes (`timer`) end this one.
-- **Each state does one thing,** and only what its node file says. A machine lists every tool its states call in `machine.toml`'s `tools`, so a task cannot reach further than that list. Risky work (opening an address, running a command) is a state of its own, reached only by the transitions drawn; its tool asks in the bubble first, and declining it is `denied`, a transition back to where you were.
+- **Each state does one thing,** and only what its node file says. A machine lists every tool its states call in its node file's `tools`, so a task cannot reach further than that list. Risky work (opening an address, running a command) is a state of its own, reached only by the transitions drawn; its tool asks in the bubble first, and declining it is `denied`, a transition back to where you were.
 - **States remember** what earlier states wrote (`{searching}` is the search's result) until the task ends. A timer's work delivers into the window the task started in, or onto the clipboard when that window is no longer in front.
 - **The Machines tab** draws each machine's diagram with the state it is in, the transitions taken (by rules, by the model and its probability, or a stay) and **Cancel task**. The bubble shows where a running task is.
 

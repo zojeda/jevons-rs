@@ -303,7 +303,7 @@ mod tests {
             DesktopConfig::load(&file).unwrap(),
             DesktopConfig::default()
         );
-        assert!(dir.join("flows/machine.toml").exists());
+        assert!(dir.join("flows/root.toml").exists());
         assert!(dir.join("automations/API.md").exists());
         let log = test_run(&dir, &["log", "--format=%s"]);
         assert_eq!(log.trim(), format!("The defaults of jevons {VERSION}"));
@@ -412,7 +412,7 @@ mod tests {
         assert!(prepared.repository.is_none());
         assert!(prepared.notes[0].contains("inside the git repository"));
         assert!(!outer.join("config/.git").exists());
-        assert!(outer.join("config/flows/machine.toml").exists());
+        assert!(outer.join("config/flows/root.toml").exists());
         std::fs::remove_dir_all(outer).unwrap();
     }
 }

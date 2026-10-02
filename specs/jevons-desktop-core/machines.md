@@ -4,15 +4,15 @@
 
 ## Purpose
 
-A machine lays a task out as states. A folder with `machine.toml` holds `machine.fsm`, a state
-diagram, and a subfolder per state whose node file is that state's work. The flows root is a
-machine, the app's, and runs for as long as the app does. A machine in a state's folder is a task:
-it waits between takes, so what the user says next moves it on. Nothing a machine does is off its
-diagram.
+A machine lays a task out as states. Its folder holds a node file, a state diagram beside it, and
+a subfolder per state whose node file is that state's work. The flows root's machine, the app's,
+is `root.toml` with `root.fsm` and runs for as long as the app does. A machine in a state's folder
+is a task, `task.toml` with `task.fsm`: it waits between takes, so what the user says next moves
+it on. Nothing a machine does is off its diagram.
 
 ## Scope
 
-This file covers reading and checking `machine.fsm`, the loader's checks on machine folders, the
+This file covers reading and checking the diagrams, the loader's checks on machine folders, the
 runtime that moves the machines on takes, work and timers, and the layout the inspector draws.
 
 Elsewhere:
@@ -26,7 +26,7 @@ Elsewhere:
 
 ### R1 A diagram is one `fsm` block
 
-`machine.fsm` holds one `fsm Name { … }` block in Oxidate's language. A syntax error keeps
+A diagram holds one `fsm Name { … }` block in Oxidate's language. A syntax error keeps
 its line. No block, or more than one, is an error. Every other problem in the diagram is reported
 at once, each as one message.
 
@@ -57,7 +57,7 @@ Tests: `unknown_events_missing_fallbacks_and_dead_ends_are_errors`, `a_diagram_r
 ### R5 A guard is a fallback, a name or a criterion
 
 On a transition, `[else]` is the fallback; a one-word lowercase guard such as `[search]` names a
-`[guards.search]` of `machine.toml`; any other text is a criterion the decision model reads. A
+`[guards.search]` of the machine's node file; any other text is a criterion the decision model reads. A
 transition with no guard is weighed by its target's description.
 
 Tests: `a_diagram_reads_into_states_transitions_choices_and_timers`, `a_said_transition_may_wait_but_two_fallbacks_may_not`
@@ -104,10 +104,19 @@ Tests: `timers_fire_their_own_events_and_must_be_waited_for`
 
 ### R11 A machine folder holds its diagram
 
-A `machine.toml` folder holds `machine.fsm`. A missing diagram is an error, and the diagram's own
-problems are reported against `machine.fsm`.
+A machine's folder holds its diagram beside its node file: `root.fsm` beside `root.toml`,
+`task.fsm` beside `task.toml`. A missing diagram is an error, and the diagram's own problems are
+reported against the diagram's file.
 
 Tests: `machine_folders_are_checked_against_their_diagram`
+
+### R45 The root's machine is `root.toml`, a task's is `task.toml`
+
+`root.toml` is a node file only in the flows folder itself, and `task.toml` only below it; either
+one elsewhere is an error that names the file to use instead. `machine.toml` is an unknown node
+file.
+
+Tests: `the_root_machine_is_root_toml_and_a_machine_below_it_is_task_toml`
 
 ### R12 Subfolders are states
 
@@ -118,7 +127,7 @@ Tests: `machine_folders_are_checked_against_their_diagram`, `the_built_in_root_i
 
 ### R13 Named guards are declared and used
 
-Each `[name]` guard in the diagram needs `[guards.name]` in `machine.toml`, and each
+Each `[name]` guard in the diagram needs `[guards.name]` in the machine's node file, and each
 `[guards.name]` is used by some transition or choice branch. A named guard sets at least one of
 `when`, `prefer` and `criterion`, and its rules compile as `[when]` rules do.
 
@@ -126,7 +135,7 @@ Tests: `machine_folders_are_checked_against_their_diagram`
 
 ### R14 A machine reads nothing itself
 
-A `machine.toml` declares no `[extract]` and no `[investigate]`: its states' node files do.
+A machine's node file declares no `[extract]` and no `[investigate]`: its states' node files do.
 `priority` in a state's node file is an error, since transitions lead into it. `min_probability`
 is from 0 to 1, `steps` from 1 to 8 and `samples` from 1 to 32.
 
@@ -201,7 +210,7 @@ Otherwise the decision model chooses. Each candidate is labelled by its target's
 (`end` for `[*]`, then `name-2`). The model reads the guard's sentence or the named guard's
 `criterion`, else the target folder's `description`, else the diagram's state description; `[*]`
 reads "The task is over: end it." With one such candidate the model answers yes or no. The
-question is `machine.toml`'s `question`; by default the root's `said` asks which fits what the
+question is the machine's node file's `question`; by default the root's `said` asks which fits what the
 user wants, and a task names itself, its state and the event.
 
 Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`

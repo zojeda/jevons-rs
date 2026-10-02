@@ -26,19 +26,19 @@ or weakening a safety guarantee.
 
 ## Where the spike stands
 
-Branch `spike/desktop-machines`, cut from `dev`; uncommitted as of 2026-10-02.
+Branch `spike/desktop-machines`, cut from `dev`; committed (a903986, 2dd7e37) and not yet pushed.
 
 - **The root is a machine.**
-  - `examples/desktop/flows/machine.toml` and `machine.fsm` replace the root `decide.toml`.
+  - `examples/desktop/flows/root.toml` and `root.fsm` replace the root `decide.toml`.
   - The root waits in `idle`; `said` leads to `ask`, `dictate` or `run`, whose folders are now
     the states' work.
-  - `machine.toml` holds the old question, `min_probability = 0.7` and `tools = ["script:*"]`.
+  - `root.toml` holds the old question, `min_probability = 0.7` and `tools = ["script:*"]`.
   - The Slack extracts moved to `ask/decide.toml`.
   - `flow/earlier.rs` records the previous tree, and `defaults::init` removes the files an
     unedited folder's earlier tree had and the current one lacks. They are reported in
     `InitReport::removed` and committed through `InitReport::changed`.
 - **The diagram:** `crates/jevons-desktop-core/src/flow/machine/mod.rs`.
-  - `machine.fsm` is read with `oxidate-fsm` 0.1.0 (default features off: parser and model only)
+  - The diagrams (`root.fsm`, `task.fsm`) are read with `oxidate-fsm` 0.1.0 (default features off: parser and model only)
     and converted into our own `Machine`.
   - Our checks:
     - states are lowercase, since they name folders;
@@ -110,12 +110,16 @@ Branch `spike/desktop-machines`, cut from `dev`; uncommitted as of 2026-10-02.
 
 Scope: the spike as it is, reviewed and running on Windows.
 
-- [ ] Commit the spike on `spike/desktop-machines` and push it.
-- [ ] Build and install it on Windows (`windows-build`; the script pulls `dev`, so point it at
-      the branch or merge into `dev` first).
+- [x] Commit the spike on `spike/desktop-machines`.
+- [x] Give the machine files their phase 2 names first, so a settings folder is upgraded once:
+      the root is `root.toml` and `root.fsm`, a task `task.toml` and `task.fsm`, each only at its
+      level.
+- [ ] Build and install it on Windows (`windows-build`: `just desktop-windows` mirrors the WSL
+      working tree, so nothing needs pushing or merging first).
 - [ ] Check the upgrade on the real settings folder: an unedited flows folder loses `decide.toml`
-      and gains `machine.toml` and `machine.fsm` in one commit of the settings repository; an
-      edited one is left alone.
+      and gains `root.toml` and `root.fsm` in one commit of the settings repository; an edited
+      one is left alone.
+- [ ] Push the branch.
 - [ ] Dictate for a day: routing as before (Pregunta, terminals, Slack ask), one decision call per
       take in the API log.
 - [ ] Register `web_search` and `open_url`, copy `search/` in, and run the task live: follow-ups,
@@ -176,9 +180,8 @@ to one of its running tasks.
 - [ ] Rename the tool-loop node `agent.toml` to `loop.toml` (`Kind::Loop`), so "agent" names only
       the new level. Update the schemas, `AGENTS.md`, the docs and the tests; an unedited built-in
       folder is brought up to date through `flow/earlier.rs`.
-- [ ] Node files per level: the root is `root.toml` and `root.fsm` (the spike's `machine.toml` and
-      `machine.fsm`, renamed); an agent is `agent.toml` and `agent.fsm`; a task machine is
-      `task.toml` and `task.fsm`. The loader checks
+- [ ] Node files per level: an agent is `agent.toml` and `agent.fsm` (the root's `root.toml` and
+      `root.fsm` and a task's `task.toml` and `task.fsm` landed in phase 0). The loader checks
       that agents sit under the root and tasks under agents, and that each agent's scope covers its
       tasks' `tools`.
 - [ ] The instance forest in the host: the root, one instance per agent (created when the tree

@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::UnboundedSender;
 
-/// The probability below which the model's choice is not taken, unless `machine.toml` says.
+/// The probability below which the model's choice is not taken, unless the machine's node file says.
 pub const DEFAULT_MIN_PROBABILITY: f64 = 0.7;
 /// The most transitions one take or timer may cause: a loop of states that never waits stops.
 const MAX_STEPS: usize = 32;

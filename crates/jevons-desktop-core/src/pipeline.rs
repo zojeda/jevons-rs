@@ -1784,18 +1784,18 @@ confirm = false
     /// A root machine that dictates, or starts a search task that waits for what the user says
     /// about its results.
     const SEARCH_TASK: &[(&str, &str)] = &[
-        ("machine.toml", "tools = [\"search\"]"),
+        ("root.toml", "tools = [\"search\"]"),
         (
-            "machine.fsm",
+            "root.fsm",
             "fsm App {\n[*] --> idle\nidle --> type : said [else]\nidle --> find : said\ntype --> idle\nfind --> idle\n}",
         ),
         ("type/transcript.toml", "description = \"Dictation\""),
         (
-            "find/machine.toml",
+            "find/task.toml",
             "description = \"The user wants to search the web\"\ntools = [\"search\"]",
         ),
         (
-            "find/machine.fsm",
+            "find/task.fsm",
             "fsm Find {\ntimer idle = 40 -> quiet\n[*] --> searching\nstate searching: \"Searching\"\nstate answering: \"The results are in the bubble\"\nsearching --> answering\nsearching --> [*] : failed\nanswering --> opening : said [the user wants a result opened]\nanswering --> [*] : said [the user is done with the results]\nanswering --> [*] : quiet\nopening --> [*]\n}",
         ),
         (
@@ -1961,9 +1961,9 @@ confirm = false
             &Memory::new(
                 "test",
                 [
-                    ("machine.toml", ""),
+                    ("root.toml", ""),
                     (
-                        "machine.fsm",
+                        "root.fsm",
                         "fsm App {\n[*] --> idle\nidle --> chat : said\nchat --> idle\n}",
                     ),
                     (
@@ -1976,9 +1976,9 @@ confirm = false
                          xpath = \"string((//ListItem[.//Text])[last()]//Text)\"\n\
                          lazy = true",
                     ),
-                    ("chat/task/machine.toml", "description = \"A reply\""),
+                    ("chat/task/task.toml", "description = \"A reply\""),
                     (
-                        "chat/task/machine.fsm",
+                        "chat/task/task.fsm",
                         "fsm Reply {\n[*] --> waiting\nwaiting --> reply : said\nreply --> [*]\n}",
                     ),
                     (
@@ -2042,9 +2042,9 @@ confirm = false
         let (client, _) = server(prefer(&[]), "unused").await;
         let env = Env {
             flows: tree_of(&[
-                ("machine.toml", "tools = [\"note\"]"),
+                ("root.toml", "tools = [\"note\"]"),
                 (
-                    "machine.fsm",
+                    "root.fsm",
                     "fsm App {\n[*] --> idle\nidle --> saving : said\nsaving --> idle\nsaving --> told : denied\nstate told\ntold --> idle\n}",
                 ),
                 (
@@ -2082,8 +2082,8 @@ confirm = false
             .join("../../examples/desktop/machines/search");
         let read = |file: &str| std::fs::read_to_string(example.join(file)).unwrap();
         let search: Vec<(String, String)> = [
-            "machine.toml",
-            "machine.fsm",
+            "task.toml",
+            "task.fsm",
             "searching/tool.toml",
             "answering/generate.toml",
             "opening/tool.toml",
@@ -2096,13 +2096,13 @@ confirm = false
             .map(|(p, t)| (p.to_string(), t.to_string()))
             .collect();
         for (path, text) in &mut files {
-            if path == "machine.fsm" {
+            if path == "root.fsm" {
                 *text = text.replace(
                     "    ask --> idle",
                     "    idle --> search : said [search]\n    search --> idle\n    ask --> idle",
                 );
             }
-            if path == "machine.toml" {
+            if path == "root.toml" {
                 *text = text.replace(
                     "tools = [\"script:*\"]",
                     "tools = [\"script:*\", \"web_search\", \"open_url\"]\n\n[guards.search]\nwhen = { transcript = \"(?i)^\\\\W*(search|busca)\\\\b\" }\nprefer = { transcript = \"(?i)^\\\\W*(search|busca)\\\\b\" }",

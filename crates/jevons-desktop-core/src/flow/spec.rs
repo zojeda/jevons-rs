@@ -1,7 +1,7 @@
-//! The node files as written. A folder's node file names its kind: `machine.toml`, `decide.toml`,
-//! `generate.toml`, `transcript.toml`, `tool.toml`, `agent.toml` or `run.toml`. Every kind shares the fields
-//! in [`node_spec!`] (among them `[investigate.<name>]` and `[extract.<name>]`); unknown fields
-//! are errors with their line.
+//! The node files as written. A folder's node file names its kind: `root.toml` or `task.toml` (a
+//! machine), `decide.toml`, `generate.toml`, `transcript.toml`, `tool.toml`, `agent.toml` or
+//! `run.toml`. Every kind shares the fields in [`node_spec!`] (among them `[investigate.<name>]`
+//! and `[extract.<name>]`); unknown fields are errors with their line.
 
 use super::guard::When;
 use crate::platform::{Action, DeliveryMethod};
@@ -276,7 +276,7 @@ node_spec! {
     }
 }
 
-/// `[guards.<name>]`: what `[name]` on a transition of `machine.fsm` checks, on top of the target
+/// `[guards.<name>]`: what `[name]` on a transition of the machine's diagram checks, on top of the target
 /// state folder's own `[when]` and `[prefer]`: rules that make it a candidate, rules that choose
 /// it with no model, and the criterion the decision model reads instead of the target's
 /// description.
@@ -297,9 +297,10 @@ pub struct GuardSpec {
 }
 
 node_spec! {
-    /// `machine.toml`: a task laid out as states in `machine.fsm`, beside it. Each subfolder is
-    /// the work of the state of its name, run when the task enters that state; a state without a
-    /// folder only waits. The flows root is a machine: the app's, which never ends.
+    /// `task.toml`: a task laid out as states in `task.fsm`, beside it. Each subfolder is the
+    /// work of the state of its name, run when the task enters that state; a state without a
+    /// folder only waits. The flows root's machine is `root.toml` and `root.fsm`: the app's,
+    /// which never ends.
     pub struct MachineSpec {
         /// What the decision model answers when it chooses a transition; by default it asks which
         /// of them fits, given the state the task is in.
@@ -309,7 +310,7 @@ node_spec! {
         /// the unguarded transition is taken instead, or, on `said` without one, the task stays.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub min_probability: Option<f64>,
-        /// The guards `[name]` in `machine.fsm` refer to.
+        /// The guards `[name]` in the diagram refer to.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         pub guards: BTreeMap<String, GuardSpec>,
         /// Every tool the states' work may call: tool nodes' `tool`, agents' `tools` and

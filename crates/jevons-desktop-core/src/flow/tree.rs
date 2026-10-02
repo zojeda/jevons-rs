@@ -2,10 +2,11 @@
 //!
 //! Every folder under the flows root is a node, except folders whose name starts with `_` or
 //! `.`: those are shared branches (see `branches`) or private files. A node folder holds exactly
-//! one node file, and optionally `instructions.md`; a machine's folder also holds `machine.fsm`,
-//! and its subfolders are its states' work. The whole tree is checked when it loads:
-//! file formats, branch names, guards, fallbacks, placeholders, investigations in scope, tools in
-//! the catalog, and how many model decisions a path may take. A tree with errors is reported,
+//! one node file, and optionally `instructions.md`; a machine's folder also holds its diagram
+//! (`root.fsm` at the flows root, `task.fsm` below it), and its subfolders are its states' work.
+//! The whole tree is checked when it loads: file formats, branch names, guards, fallbacks,
+//! placeholders, investigations in scope, tools in the catalog, and how many model decisions a
+//! path may take. A tree with errors is reported,
 //! and the app keeps using the last good one.
 
 use super::extract::Extract;
@@ -30,9 +31,11 @@ pub const MAX_MODEL_DECISIONS: usize = 4;
 /// A decision's most branches (System One's most choices).
 pub const MAX_BRANCHES: usize = 128;
 
-/// The node file names, one per kind.
-pub const NODE_FILES: [(&str, Kind); 7] = [
-    ("machine.toml", Kind::Machine),
+/// The node file names and their kinds. A machine is `root.toml` at the flows root and
+/// `task.toml` below it.
+pub const NODE_FILES: [(&str, Kind); 8] = [
+    (machine::ROOT, Kind::Machine),
+    (machine::TASK, Kind::Machine),
     ("decide.toml", Kind::Decide),
     ("generate.toml", Kind::Generate),
     ("transcript.toml", Kind::Transcript),
@@ -51,16 +54,6 @@ pub enum Kind {
     Tool,
     Agent,
     Run,
-}
-
-impl Kind {
-    pub fn file(self) -> &'static str {
-        NODE_FILES
-            .iter()
-            .find(|(_, k)| *k == self)
-            .map(|(f, _)| *f)
-            .expect("every kind has a file")
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -155,7 +148,7 @@ pub struct Node {
     pub templates: BTreeMap<String, Template>,
     pub investigations: BTreeMap<String, Investigation>,
     pub extracts: BTreeMap<String, Extract>,
-    /// A machine's diagram and guards (`None` when `machine.fsm` has errors).
+    /// A machine's diagram and guards (`None` when the diagram has errors).
     pub machine: Option<Arc<Loaded>>,
     pub children: Vec<NodeId>,
 }
@@ -581,9 +574,9 @@ impl Loader<'_> {
                     } else if file.ends_with(".toml") && !file.starts_with('.') {
                         self.error(
                             &join(dir, &file),
-                            "unknown node file; a folder holds one of machine.toml, \
-                             decide.toml, generate.toml, transcript.toml, tool.toml, agent.toml \
-                             or run.toml",
+                            "unknown node file; a folder holds one of root.toml (the flows \
+                             root's machine), task.toml (a machine below it), decide.toml, \
+                             generate.toml, transcript.toml, tool.toml, agent.toml or run.toml",
                         );
                     }
                 }
@@ -600,9 +593,9 @@ impl Loader<'_> {
             [] => {
                 self.error(
                     dir,
-                    "no node file: add machine.toml, decide.toml, generate.toml, \
-                     transcript.toml, tool.toml, agent.toml or run.toml (or start the folder \
-                     name with _ to keep it out of routing)",
+                    "no node file: add root.toml (at the flows root) or task.toml (a \
+                     machine), decide.toml, generate.toml, transcript.toml, tool.toml, agent.toml \
+                     or run.toml (or start the folder name with _ to keep it out of routing)",
                 );
                 return None;
             }
@@ -615,6 +608,19 @@ impl Loader<'_> {
                 return None;
             }
         };
+        let misplaced = match node_files[0].0.as_str() {
+            machine::ROOT if !dir.is_empty() => {
+                Some("root.toml is the flows root's machine; a machine below the root is task.toml")
+            }
+            machine::TASK if dir.is_empty() => {
+                Some("task.toml is a machine below the flows root; the root's machine is root.toml")
+            }
+            _ => None,
+        };
+        if let Some(message) = misplaced {
+            self.error(&file, message);
+            return None;
+        }
         let text = match self.files.read(&file) {
             Ok(text) => text,
             Err(e) => {
@@ -642,7 +648,7 @@ impl Loader<'_> {
         let investigations = self.investigations(&file, spec.common().investigate);
         let extracts = self.extracts(&file, spec.common().extract, &investigations);
         let machine = match &spec {
-            NodeSpec::Machine(m) => self.machine(dir, &file, m),
+            NodeSpec::Machine(m) => self.machine(&file, m),
             _ => None,
         };
         let id = NodeId(self.nodes.len());
@@ -712,7 +718,7 @@ impl Loader<'_> {
                             format!(
                                 "a machine's subfolders are its states' work, but {} has no \
                                  state {folder} (its states: {})",
-                                machine::FILE,
+                                machine::diagram_file(&node_files[0].0),
                                 states.join(", ")
                             ),
                         );
@@ -798,9 +804,10 @@ impl Loader<'_> {
         children
     }
 
-    /// Reads a machine's `machine.fsm` and compiles the guards of its `machine.toml`.
-    fn machine(&mut self, dir: &str, file: &str, spec: &MachineSpec) -> Option<Arc<Loaded>> {
-        let fsm = join(dir, machine::FILE);
+    /// Reads a machine's diagram (`root.fsm` or `task.fsm`) and compiles the guards of its node
+    /// file.
+    fn machine(&mut self, file: &str, spec: &MachineSpec) -> Option<Arc<Loaded>> {
+        let fsm = machine::diagram_file(file);
         let diagram = match self.files.read(&fsm) {
             Ok(text) => match Machine::parse(&text) {
                 Ok(diagram) => Some(diagram),
@@ -852,8 +859,8 @@ impl Loader<'_> {
                 self.error(
                     &fsm,
                     format!(
-                        "{at}: [{name}] names no [guards.{name}] in machine.toml; a one-word \
-                         guard names one there, a sentence is a criterion for the decision model"
+                        "{at}: [{name}] names no [guards.{name}] in {file}; a one-word guard \
+                         names one there, a sentence is a criterion for the decision model"
                     ),
                 );
             }
@@ -862,11 +869,11 @@ impl Loader<'_> {
             if !used.contains_key(name) {
                 self.error(
                     file,
-                    format!("guards.{name}: no transition of {} uses it", machine::FILE),
+                    format!("guards.{name}: no transition of {fsm} uses it"),
                 );
             }
         }
-        if !dir.is_empty() && !diagram.ends() {
+        if file != machine::ROOT && !diagram.ends() {
             self.error(
                 &fsm,
                 "the task never ends: add a transition to [*] (only the flows root's machine \
@@ -1092,7 +1099,7 @@ impl Loader<'_> {
                         self.error(
                             &child.file,
                             "priority has no effect on a state's work: the transitions of \
-                             machine.fsm lead into it",
+                             the machine's diagram lead into it",
                         );
                     }
                 }
@@ -1904,23 +1911,20 @@ mod tests {
     fn machine_folders_are_checked_against_their_diagram() {
         let fsm = "fsm A {\n[*] --> idle\nidle --> work : said [ready]\nwork --> idle\n}";
         let tree = tree(&[
-            (
-                "machine.toml",
-                "[guards.unused]\ncriterion = \"Never used\"",
-            ),
-            ("machine.fsm", fsm),
+            ("root.toml", "[guards.unused]\ncriterion = \"Never used\""),
+            ("root.fsm", fsm),
             ("work/transcript.toml", "priority = 3"),
             ("stray/transcript.toml", ""),
-            ("task/machine.toml", ""),
+            ("task/task.toml", ""),
         ]);
         let e = errors(&tree);
         let has = |text: &str| e.iter().any(|m| m.contains(text));
         assert!(
-            has("machine.fsm: idle --> work: [ready] names no [guards.ready]"),
+            has("root.fsm: idle --> work: [ready] names no [guards.ready]"),
             "{e:?}"
         );
         assert!(
-            has("machine.toml: guards.unused: no transition of machine.fsm uses it"),
+            has("root.toml: guards.unused: no transition of root.fsm uses it"),
             "{e:?}"
         );
         assert!(has("work/transcript.toml: priority has no effect"), "{e:?}");
@@ -1930,26 +1934,64 @@ mod tests {
         );
         assert!(has("task: a machine's subfolders"), "{e:?}");
         // A diagram's own problems carry its file.
-        let broken = tree_of_errors(&[
-            ("machine.toml", ""),
-            ("machine.fsm", "fsm A {\n[*] --> a\n}"),
-        ]);
+        let broken = tree_of_errors(&[("root.toml", ""), ("root.fsm", "fsm A {\n[*] --> a\n}")]);
         assert!(
             broken
                 .iter()
-                .any(|m| m.starts_with("machine.fsm: a has no way out")),
+                .any(|m| m.starts_with("root.fsm: a has no way out")),
             "{broken:?}"
         );
-        let missing = tree_of_errors(&[("machine.toml", "")]);
+        let missing = tree_of_errors(&[("root.toml", "")]);
         assert!(
             missing
                 .iter()
-                .any(|m| m.contains("machine.fsm: a machine's diagram: cannot read"))
+                .any(|m| m.contains("root.fsm: a machine's diagram: cannot read"))
         );
     }
 
     fn tree_of_errors(files: &[(&str, &str)]) -> Vec<String> {
         errors(&tree(files))
+    }
+
+    #[test]
+    fn the_root_machine_is_root_toml_and_a_machine_below_it_is_task_toml() {
+        let root = "fsm App {\n[*] --> idle\nidle --> work : said\nwork --> idle\n}";
+        let task = "fsm Work {\n[*] --> waiting\nwaiting --> [*] : said\n}";
+        let fine = tree_of_errors(&[
+            ("root.toml", ""),
+            ("root.fsm", root),
+            ("work/task.toml", ""),
+            ("work/task.fsm", task),
+        ]);
+        assert!(fine.is_empty(), "{fine:?}");
+        let nested_root = tree_of_errors(&[
+            ("root.toml", ""),
+            ("root.fsm", root),
+            ("work/root.toml", ""),
+            ("work/root.fsm", task),
+        ]);
+        assert!(
+            nested_root.iter().any(|m| m.starts_with(
+                "work/root.toml: root.toml is the flows root's machine; a machine below the \
+                 root is task.toml"
+            )),
+            "{nested_root:?}"
+        );
+        let task_at_root = tree_of_errors(&[("task.toml", ""), ("task.fsm", root)]);
+        assert!(
+            task_at_root
+                .iter()
+                .any(|m| m.starts_with("task.toml: task.toml is a machine below the flows root")),
+            "{task_at_root:?}"
+        );
+        let unknown = tree_of_errors(&[("machine.toml", ""), ("machine.fsm", root)]);
+        assert!(
+            unknown.iter().any(|m| m.starts_with(
+                "machine.toml: unknown node file; a folder holds one of \
+                                       root.toml"
+            )),
+            "{unknown:?}"
+        );
     }
 
     #[test]
@@ -1959,14 +2001,14 @@ mod tests {
             servers: BTreeMap::new(),
         };
         let files = [
-            ("machine.toml", "tools = [\"search\"]"),
+            ("root.toml", "tools = [\"search\"]"),
             (
-                "machine.fsm",
+                "root.fsm",
                 "fsm A {\n[*] --> idle\nidle --> find : said\nfind --> idle\n}",
             ),
-            ("find/machine.toml", "description = \"Searches\""),
+            ("find/task.toml", "description = \"Searches\""),
             (
-                "find/machine.fsm",
+                "find/task.fsm",
                 "fsm F {\n[*] --> look\nlook --> look : said\n}",
             ),
             ("find/look/tool.toml", "tool = \"search\""),
@@ -1975,25 +2017,25 @@ mod tests {
         let e = errors(&tree);
         assert!(
             e.iter()
-                .any(|m| m.starts_with("find/machine.fsm: the task never ends")),
+                .any(|m| m.starts_with("find/task.fsm: the task never ends")),
             "{e:?}"
         );
         assert!(
             e.iter().any(|m| m.starts_with(
-                "find/look/tool.toml: calls search, which the machine above (find/machine.toml)"
+                "find/look/tool.toml: calls search, which the machine above (find/task.toml)"
             )),
             "{e:?}"
         );
         // The root's list covers it: only the nested machine's own is missing.
-        assert!(!e.iter().any(|m| m.contains("(machine.toml)")), "{e:?}");
+        assert!(!e.iter().any(|m| m.contains("(root.toml)")), "{e:?}");
     }
 
     #[test]
     fn states_read_what_earlier_states_wrote() {
         let tree = tree(&[
-            ("machine.toml", ""),
+            ("root.toml", ""),
             (
-                "machine.fsm",
+                "root.fsm",
                 "fsm A {\n[*] --> idle\nidle --> draft : said\ndraft --> show\nshow --> idle\n}",
             ),
             ("draft/generate.toml", "output = \"none\""),
