@@ -112,11 +112,88 @@ From left to right: ready (cyan), models loading (blue), kernels tuning (amber),
 | Layer | Windows | Linux | macOS |
 | --- | --- | --- | --- |
 | Context | UI Automation: role, name, selection, caret text, browser address | active window only | active window only |
+| Interface trees (extracts, investigations) | UI Automation: windows and their element trees | not yet | not yet |
 | Text input | paste, type (SendInput) or set value (UI Automation) | clipboard | clipboard |
+| Automation actions | UI Automation patterns, SendInput clicks and keys | not yet | not yet |
+| Recording demonstrations | a low-level hook and UI Automation | not yet | not yet |
 | Microphone | CPAL (WASAPI) | CPAL (ALSA/PulseAudio) | CPAL (CoreAudio) |
 | Hotkey, tray | global-hotkey, tray-icon | global-hotkey (X11), tray-icon (AppIndicator) | not yet |
 
-Every platform layer is a trait in `jevons-desktop-core`, with the pipeline, the flow tree and tray states shared across platforms. The [desktop guide](docs/desktop.md) covers the flow tree, the inspector, settings, models, headless runs and the app's threads.
+The [desktop guide](docs/desktop.md) covers the flow tree, the inspector, settings, models, headless runs and the app's threads.
+
+### App architecture
+
+```mermaid
+flowchart TB
+    triggers["Hotkeys · tray menu · inspector window<br/>global-hotkey · tray-icon on tao · dioxus-native"]
+
+    subgraph capture["Context capture · platform traits, read only"]
+        direction LR
+        snapshot["ContextProvider<br/>one snapshot at the press<br/>app · window · URL · field<br/>selection · text around the caret"]
+        mic["AudioSource<br/>CPAL microphone"]
+        inspector["ContextInspector<br/>accessibility trees on demand<br/>windows · children · native find"]
+        recorder["Recorder<br/>clicks · chords · typing<br/>while a demonstration records"]
+    end
+
+    subgraph core["jevons-desktop-core · platform-free"]
+        direction LR
+        pipeline["pipeline<br/>one take: speech · walk · delivery<br/>a trace of every step"]
+        xpath["xpath/<br/>XPath 1.0 subset · roles as names<br/>descendant steps as native searches"]
+        reads["Screen reads<br/>extract: XPath, no model<br/>investigate: the investigator agent"]
+        walk["Flow tree · flow/<br/>a Frame carried down from the root<br/>guards · prefer · rules · decision model<br/>generate · transcript · tool · agent · run"]
+        client["API client · client/<br/>realtime · transcriptions<br/>systemone · responses · chat"]
+        tools["Tool host<br/>command · http · open · MCP<br/>confirmations"]
+        automation["Automations · automation/<br/>Rhai sandbox · approved by sha256<br/>hands: checks before each action"]
+    end
+
+    subgraph actions["Action layers · platform traits"]
+        direction LR
+        sink["TextSink<br/>insert · replace · rewrite<br/>paste · type · set value · clipboard"]
+        bubble["Bubble<br/>answers · confirmations"]
+        external["Programs · HTTP · MCP servers"]
+        actor["UiActor<br/>invoke · click · set value · toggle · select<br/>keys · bring a window forward"]
+    end
+
+    runtime["jevons-api · embedded or remote<br/>Speech · Decision · Generative"]
+
+    triggers --> pipeline
+    snapshot --> pipeline
+    mic --> pipeline
+    inspector --> xpath
+    inspector --> reads
+    xpath --> reads
+    pipeline --> walk
+    reads -- "named values" --> walk
+    walk <--> client
+    client <-- "HTTP · SSE · WebSocket" --> runtime
+    walk --> sink
+    walk --> bubble
+    walk --> tools
+    walk --> automation
+    xpath --> automation
+    recorder -- "demonstrations" --> automation
+    tools --> external
+    automation --> actor
+```
+
+The desktop app reads through one set of platform traits, decides in the platform-free core, and acts through another. On Windows, the context, text, action and recording layers are in `jevons-desktop/src/platform/windows.rs`; elsewhere `active-win-pos-rs` gives the active window and `arboard` the clipboard, and the trees, actions and recording are `Unsupported` for now. The microphone is CPAL everywhere (`audio.rs`).
+
+- **Context capture** reads and never acts. Password fields are never read, text is capped at `privacy.max_context_chars`, and the clipboard is read only when `privacy.read_clipboard` is on.
+  - **`ContextProvider`** takes one snapshot when the hotkey is pressed: the application and window, the browser's address, and the focused element's role, name, automation id and editability, its selection and the text around the caret. On Windows it is UI Automation (the `uiautomation` crate).
+  - **`ContextInspector`** reads whole accessibility trees on demand: the windows, an element's children and parent, and native searches by property. Everything that reads past the snapshot goes through it: extracts, investigations, the Interface card and automations. A take reads its own window; it reads other applications' windows only when `privacy.read_other_windows` is on and `privacy.readable_apps` names them.
+  - **`AudioSource`** (CPAL) streams the microphone. **`Recorder`** reports clicks, chords and typed characters while a demonstration records: a low-level keyboard and mouse hook, with UI Automation for the element under each click.
+- **XPath** (`xpath/`) is an XPath 1.0 subset over those trees. Element names are roles and attributes are properties (`@name`, `@class`, `@automation_id`). It evaluates lazily through `ContextInspector`, and a descendant step with conditions runs as one native search. `$variables` take their values from outside, so a value never changes what an expression means. `selector` writes the expressions that find a recorded element again, most robust first.
+- **Flow tree** (`flow/`):
+  - **Loading.** `tree` loads one node file per folder and reports every problem with its file and line. The files reload on save, and the last tree that loaded cleanly keeps running.
+  - **Walking.** `walk` carries a `Frame` down from the root: the snapshot and transcript, the route, the instructions gathered from the root down, the named values (extract and investigation answers, a tool's `{result}`), the lazy reads not made yet, and the nearest delivery settings.
+  - **Deciding.** At a `decide.toml`, `[when]` guards drop branches and a passing `[prefer]` takes one, both with no model call. `select = "rules"` takes the highest priority; otherwise System One reads the branches' descriptions. Consecutive decisions go in one request, and an answer below `min_probability` takes the `fallback`.
+  - **Reading more.** An `[extract]` reads an XPath expression with no model. An `[investigate]` question runs the investigator, an agent with `outline`, `find`, `xpath`, `read` and `list_windows` tools, whose element arguments are enums of the ids seen so far. A successful investigation remembers its XPath per application and question (`investigations.json` in the cache folder), so the next one is read and answered in one call.
+  - **Leaves.** `generate` streams from Responses with the gathered instructions; `transcript` uses the words as heard; `tool`, `agent` and `run` call a tool, an agent loop or an automation. A leaf's output goes to the application (`target`), the `bubble`, the `clipboard`, nowhere (`none`), or on to the next node (`next`, as `{result}`).
+- **Actions** write:
+  - **Text.** `TextSink` inserts at the caret, replaces the selection or rewrites the field, by pasting (the clipboard is restored after), typing (SendInput through `enigo`), setting the value (UI Automation's value pattern) or copying. It delivers only into the window the take started in, once no key is held; otherwise the text waits on the clipboard.
+  - **Tools.** The tool host runs `command` (no shell, a filtered environment, a time limit), `http` and `open`, and MCP servers over stdio, whose tools flows name `server:tool`. Tools come only from the settings file, never from the flows folder, and each call asks in the bubble first unless the settings say otherwise. Agents (`agent.toml` nodes and the investigator) run on adk-rust through `JevonsLlm`, over the API's Chat Completions tools.
+  - **Automations** (`automation/`) are Rhai scripts with a manifest (`automation.toml`), and the engine gives them no file, network or process access. Every action passes `hands` first: only in the manifest's applications, never typing into a password field or acting on a disabled element, and keys only to a window of those applications. Then `UiActor` carries it out, with UI Automation patterns or SendInput clicks and keys. A script runs only once the `sha256` of its two files is pinned in the settings (`[automation.approved]`). `author` writes one from a recording, and `check` dry-runs it against the recording, step by step.
+- **Runtime.** `client/` speaks the jevons API: `/v1/realtime` (or `/v1/audio/transcriptions`), `/v1/systemone`, `/v1/responses` and `/v1/chat/completions`. `runtime.rs` loads `jevons-api` in the app, on a loopback port with a random key, or the app uses a jevons server on another machine.
 
 ## The runtime
 
