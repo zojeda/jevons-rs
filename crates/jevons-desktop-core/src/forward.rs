@@ -28,10 +28,12 @@ const MAX_BODY: usize = 64 * 1024 * 1024;
 /// The most of an answer the API log keeps.
 const MAX_LOGGED: usize = 1024 * 1024;
 
-/// Headers that belong to one connection, or that the forwarder sets itself.
-const NOT_FORWARDED: [HeaderName; 8] = [
+/// Headers that belong to one connection, or that the forwarder sets itself. The answer is
+/// asked for uncompressed, so the API log reads it.
+const NOT_FORWARDED: [HeaderName; 9] = [
     header::HOST,
     header::AUTHORIZATION,
+    header::ACCEPT_ENCODING,
     header::CONTENT_LENGTH,
     header::CONNECTION,
     header::TRANSFER_ENCODING,
@@ -530,7 +532,8 @@ mod tests {
     type Got = Arc<Mutex<Vec<(String, String, Vec<u8>)>>>;
 
     /// A provider that answers every `/v1/*` POST with its name, an event stream on
-    /// `/v1/responses`, a 422 on `/v1/refused`, and echoes a Realtime session when `streams`.
+    /// `/v1/responses`, a 422 on `/v1/refused`, the headers it got on `/v1/headers`, and
+    /// echoes a Realtime session when `streams`.
     async fn provider(name: &'static str, streams: bool) -> (String, Got) {
         let got = Got::default();
         let seen = got.clone();
@@ -557,6 +560,12 @@ mod tests {
                         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\n",
                     )
                         .into_response(),
+                    // Which of the client's headers arrived.
+                    "/v1/headers" => Json(json!({
+                        "tag": parts.headers.get("x-tag").and_then(|v| v.to_str().ok()),
+                        "accept_encoding": parts.headers.contains_key(header::ACCEPT_ENCODING),
+                    }))
+                    .into_response(),
                     "/v1/refused" => (
                         StatusCode::UNPROCESSABLE_ENTITY,
                         Json(json!({"detail": [{"msg": "Unknown field"}]})),
@@ -722,6 +731,21 @@ mod tests {
         assert_eq!(
             answer.json::<Value>().await.unwrap()["detail"][0]["msg"],
             "Unknown field"
+        );
+        // The client's own headers go on, but for the encoding it accepts: the answer is
+        // asked for uncompressed.
+        let answer = reqwest::Client::new()
+            .post(format!("{base}/v1/headers"))
+            .bearer_auth("app-key")
+            .header("x-tag", "7")
+            .header(header::ACCEPT_ENCODING, "gzip, deflate")
+            .json(&json!({"model": "gemma"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            answer.json::<Value>().await.unwrap(),
+            json!({"tag": "7", "accept_encoding": false})
         );
         // A provider that does not answer is a 502 that names it.
         let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

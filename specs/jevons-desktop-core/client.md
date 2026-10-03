@@ -256,7 +256,8 @@ Tests: `the_app_s_key_is_asked_for_and_the_providers_keys_stay_with_the_app`
 
 The method, path, query, body and headers go to the provider as they came, but for the headers of
 one connection (`Host`, `Content-Length`, `Connection`, `Transfer-Encoding`, `Upgrade`, `TE`,
-`Trailer`) and `Authorization`. The answer's status, headers and body come back the same way, the
+`Trailer`), `Accept-Encoding` (the answer is asked for uncompressed, so the API log reads it) and
+`Authorization`. The answer's status, headers and body come back the same way, the
 body as it arrives, so a stream of events streams. A request body over 64 MiB is refused with
 413, and a provider that cannot be reached is a 502 "Cannot reach <provider>: …".
 
