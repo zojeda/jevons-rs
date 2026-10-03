@@ -126,9 +126,14 @@ Scope: the spike as it is, reviewed and running on Windows.
 - [ ] Dictate for a day: routing as before (Pregunta, terminals, Slack ask), one decision call per
       take in the API log.
 - [ ] Register `web_search` and `open_url`, copy `search/` in, and run the task live: follow-ups,
-      the confirmation, `denied`, the quiet timer, Cancel task. Done so far, with Spanish
-      Wikipedia as `web_search`: "Buscar …" starts it with no model call, it answers and waits in
-      `results`, and the quiet timer ends it.
+      the confirmation, `denied`, the quiet timer, Cancel task. Done so far, with English
+      Wikipedia's article search as `web_search`: "Buscar …" starts it with no model call, it
+      answers and waits in `results`, "abre el primero" asks and opens the result, and the quiet
+      timer ends it. What the live run changed:
+      - "Buscar …" said in `results` stayed (end 0.58, searching 0.33): the example now searches
+        again by rule (`[guards.again]`).
+      - The answer went when a follow-up's bubble hid: a waiting task's bubble is now its
+        conversation, and the tray brings it back.
 - [ ] Squash-merge into `dev` and then `main` (`gh`, as for the earlier desktop PRs).
 
 Crates: none new. Tested by the existing suites, plus the manual checks above.
@@ -364,8 +369,9 @@ Done when: a search waiting in `results` is still there after a restart.
       parents are offered.
 - [ ] **Edge routing:** fewer crossings (more ordering sweeps, transposition), and orthogonal or
       spline edges instead of straight segments.
-- [ ] **Hand unsure takes back up.** Phase 2 already lets an agent choose between its running
-      tasks and its own transitions. What remains: a take the chosen task is then unsure about,
+- [ ] **Hand unsure takes back up.** The live case: "Buscar …" said while a search waited matched
+      the root's `[search]` rule, but the task had it first, was unsure and stayed. Phase 2
+      already lets an agent choose between its running tasks and its own transitions. What remains: a take the chosen task is then unsure about,
       and a take its agent is unsure about, may go up a level (an opt-in per machine,
       `unsure = "parent"`; the default stays `"stay"`), so dictation keeps working while a task
       waits.

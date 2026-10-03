@@ -111,6 +111,7 @@ pub fn run(
         bubble: None,
         bubble_size: bubble::SIZE,
         bubble_clicks: false,
+        bubble_turn: None,
     };
     event_loop.run_app(&mut shell)?;
     Ok(())
@@ -128,6 +129,9 @@ struct Shell {
     bubble_size: (f64, f64),
     /// Whether the bubble takes clicks and the wheel (an answer or a confirmation).
     bubble_clicks: bool,
+    /// The conversation turn the bubble last scrolled to: its window and take, so the wheel
+    /// keeps its place until the next turn.
+    bubble_turn: Option<(WindowId, u64)>,
 }
 
 /// Where a bubble of `size` goes: just above the tray icon (or below it, for a taskbar at the
@@ -237,20 +241,27 @@ impl Shell {
     }
 
     fn refresh(&mut self, event_loop: &ActiveEventLoop) {
-        let (quit, show, bubble, clicks) = {
+        let (quit, show, bubble, clicks, turn) = {
             let mut view = self.view.lock().expect("the view lock");
             // A call waiting for confirmation shows even with live feedback off.
             let asking = view.feedback.as_ref().is_some_and(|f| f.confirm.is_some());
             let message = view.feedback.as_ref().is_some_and(|f| f.message);
-            // An answer is for reading: it shows even with live feedback off.
-            let answer = view.feedback.as_ref().is_some_and(|f| f.answer);
+            // An answer and a task's conversation are for reading: they show even with live
+            // feedback off.
+            let answer = view.feedback.as_ref().is_some_and(|f| f.reading());
             let bubble = view.feedback.is_some()
                 && (view.config.dictation.live_feedback || asking || message || answer);
             // An answer takes the wheel as soon as it streams in, and clicks once it is done.
             let clicks = view
                 .feedback
                 .as_ref()
-                .is_some_and(|f| f.confirm.is_some() || f.answer);
+                .is_some_and(|f| f.confirm.is_some() || f.reading());
+            // The turn of a conversation to scroll to.
+            let turn = view
+                .feedback
+                .as_ref()
+                .filter(|f| f.task && !asking)
+                .map(|f| f.take);
             let size = if answer && !asking {
                 bubble::ANSWER_SIZE
             } else {
@@ -261,6 +272,7 @@ impl Shell {
                 std::mem::take(&mut view.show_window),
                 bubble.then_some(size),
                 clicks,
+                turn,
             )
         };
         if quit {
@@ -312,6 +324,14 @@ impl Shell {
                 && let Some(row) = &reveal
             {
                 interface::scroll_into_view(window.downcast_doc_mut::<DioxusDocument>(), row);
+            }
+            // A conversation's new turn scrolls into view once; then the wheel has it.
+            if Some(*id) == self.bubble
+                && let Some(take) = turn
+                && self.bubble_turn != Some((*id, take))
+                && bubble::scroll_to_latest(window.downcast_doc_mut::<DioxusDocument>())
+            {
+                self.bubble_turn = Some((*id, take));
             }
             window.request_redraw();
         }
@@ -1553,6 +1573,77 @@ mod tests {
         // Back to the formatted answer.
         click_text(&mut doc, ".bubble-button", "Done selecting");
         assert!(doc.query_selector("textarea").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_waiting_task_s_bubble_shows_its_turns_and_scrolls_to_the_latest() {
+        use crate::agent::{Feedback, Turn};
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        let folder = std::env::temp_dir().join(format!("jevons-ui-turns-{}", std::process::id()));
+        let view = Arc::new(Mutex::new(view(&folder)));
+        // A long first answer, so the latest turn starts below what the bubble shows.
+        let answer = (1..=40)
+            .map(|i| format!("{i}. Result number {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        view.lock().unwrap().feedback = Some(Feedback {
+            take: 2,
+            task: true,
+            done: true,
+            state: "search › results".into(),
+            heard: "Y eso otro".into(),
+            status: "Search stayed at results: unsure".into(),
+            turns: vec![Turn {
+                heard: "Buscar máquinas de estados".into(),
+                output: answer,
+                answer: true,
+                status: "Answer".into(),
+                failed: false,
+            }],
+            ..Feedback::default()
+        });
+        let (commands, _received) = tokio::sync::mpsc::unbounded_channel();
+        let mut vdom = VirtualDom::new(bubble::Bubble);
+        vdom.insert_any_root_context(Box::new(Ctx {
+            view: view.clone(),
+            commands,
+        }));
+        vdom.insert_any_root_context(Box::new(bubble::Anchor {
+            tail_x: 300.0,
+            icon_below: true,
+            width: bubble::ANSWER_SIZE.0,
+        }));
+        let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("bubble.css"));
+        doc.set_viewport(Viewport::new(
+            bubble::ANSWER_SIZE.0 as u32,
+            bubble::ANSWER_SIZE.1 as u32,
+            1.0,
+            ColorScheme::Dark,
+        ));
+        doc.initial_build();
+        doc.poll(None);
+        doc.resolve(0.0);
+        let shown = texts(&doc, ".bubble").join(" ");
+        for expected in [
+            "search › results",
+            "Buscar máquinas de estados",
+            "Result number 40",
+            "Y eso otro",
+            "Search stayed at results: unsure",
+        ] {
+            assert!(shown.contains(expected), "{expected:?} in {shown}");
+        }
+        // The earlier answer is still what Copy takes, so the answer's buttons show.
+        for label in ["Close", "Select text", "Copy raw", "Copy"] {
+            assert!(shown.contains(label), "{label:?} in {shown}");
+        }
+        assert!(bubble::scroll_to_latest(&mut doc));
+        let thread = doc.query_selector(".bubble-thread").unwrap().unwrap();
+        assert!(
+            doc.get_node(thread).unwrap().scroll_offset.y > 100.0,
+            "the latest turn is scrolled to"
+        );
     }
 
     fn answer_root() -> Element {

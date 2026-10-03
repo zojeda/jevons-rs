@@ -135,6 +135,9 @@ pub enum Command {
     TakeFinished(Box<Trace>),
     /// Hides the feedback bubble of a finished take, unless a newer take shows it.
     HideFeedback(u64),
+    /// A machine's timer turned out stale after its bubble showed: the bubble goes back to
+    /// what it replaced.
+    TimerStale(u64),
     /// Hides a message, unless a newer one replaced it.
     HideMessage(u64),
     /// A take asks before calling a tool.
@@ -188,6 +191,20 @@ pub struct StageView {
     pub ok: Option<bool>,
 }
 
+/// An earlier turn of a task's conversation: what the user said and what came of it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Turn {
+    /// What the user said; empty for a timer's turn.
+    pub heard: String,
+    /// What the task wrote: an answer's Markdown, or the text it typed.
+    pub output: String,
+    /// The output is an answer to read.
+    pub answer: bool,
+    /// How the turn ended, such as "Done" or why the task stayed where it was.
+    pub status: String,
+    pub failed: bool,
+}
+
 /// What the feedback bubble by the tray icon shows about a take.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Feedback {
@@ -222,9 +239,45 @@ pub struct Feedback {
     pub shown: u64,
     /// Where the machines are, such as `search › answering`.
     pub state: String,
+    /// The take belongs to a task that waits for the user: the bubble is its conversation, and
+    /// stays between turns.
+    pub task: bool,
+    /// The conversation's earlier turns, oldest first.
+    pub turns: Vec<Turn>,
 }
 
 impl Feedback {
+    /// Whether the bubble is for reading: an answer, or a task's conversation.
+    pub fn reading(&self) -> bool {
+        self.answer || self.task
+    }
+
+    /// The conversation with this take as its latest turn, for the take after it.
+    pub fn conversation(&self) -> Vec<Turn> {
+        let mut turns = self.turns.clone();
+        turns.push(Turn {
+            heard: self.heard.clone(),
+            output: self.output.clone(),
+            answer: self.answer,
+            status: self.status.clone(),
+            failed: self.failed,
+        });
+        turns
+    }
+
+    /// What Copy and Insert take: this take's text, or the latest earlier turn's.
+    pub fn latest_output(&self) -> &str {
+        if !self.output.is_empty() {
+            return &self.output;
+        }
+        self.turns
+            .iter()
+            .rev()
+            .map(|t| t.output.as_str())
+            .find(|o| !o.is_empty())
+            .unwrap_or_default()
+    }
+
     /// Applies a progress update; returns whether it changed what the bubble shows.
     fn apply(&mut self, update: &Update) -> bool {
         match update {
@@ -322,7 +375,13 @@ impl Feedback {
             (None, None) if trace.notes.iter().any(|n| n.starts_with("Too short")) => {
                 "Too short to hold speech".into()
             }
-            (None, None) => "Done".into(),
+            // A task that was unsure what the words meant and stayed where it was says so.
+            (None, None) => trace
+                .notes
+                .iter()
+                .find(|n| n.contains(" stayed at "))
+                .cloned()
+                .unwrap_or_else(|| "Done".into()),
         };
     }
 }
@@ -551,6 +610,9 @@ pub struct Agent {
     replacing: Option<String>,
     /// How many messages the bubble has shown.
     messages: u64,
+    /// The bubble of the waiting task's latest turn, with the turns before it: what the next
+    /// take joins, and what the tray's Show the task's conversation brings back.
+    thread: Option<Feedback>,
     /// The window (and tree) the Context tab's extracts were last read in.
     extracts_read: Option<String>,
     workbench: Workbench,
@@ -648,6 +710,7 @@ impl Agent {
             running: None,
             replacing: None,
             messages: 0,
+            thread: None,
             extracts_read: None,
             workbench: Workbench::default(),
             finding: false,
@@ -786,6 +849,7 @@ impl Agent {
                 .into_iter()
                 .map(|a| (a.name, a.description, a.approved))
                 .collect(),
+            conversation: self.thread.is_some(),
         };
         self.view().automations = menu.automations.clone();
         if let Some(tray) = &mut self.tray {
@@ -1013,6 +1077,7 @@ impl Agent {
             Command::AutomationFinished(trace) => self.automation_finished(*trace),
             Command::MachineTimer(due) => self.machine_timer(due),
             Command::CancelTask => {
+                self.end_conversation();
                 let machines = self.machines.clone();
                 let repaint = self.repaint.clone();
                 tokio::spawn(async move {
@@ -1065,8 +1130,49 @@ impl Agent {
                     self.repaint();
                 }
             }
+            Command::TimerStale(take) => {
+                let conversation = self.thread.clone();
+                let mut view = self.view();
+                if view.feedback.as_ref().is_some_and(|f| f.take == take) {
+                    view.feedback = conversation;
+                    drop(view);
+                    self.repaint();
+                }
+            }
         }
         true
+    }
+
+    /// Shows the waiting task's conversation in the bubble again, unless a take has it.
+    fn show_conversation(&mut self) {
+        if self.active.is_some() {
+            return;
+        }
+        let Some(conversation) = self.thread.clone() else {
+            return;
+        };
+        self.view().feedback = Some(conversation);
+        self.repaint();
+    }
+
+    /// The task is over: its conversation goes, and the bubble with it when it only rested
+    /// there.
+    fn end_conversation(&mut self) {
+        let Some(conversation) = self.thread.take() else {
+            return;
+        };
+        {
+            let mut view = self.view();
+            if view
+                .feedback
+                .as_ref()
+                .is_some_and(|f| f.take == conversation.take && f.done)
+            {
+                view.feedback = None;
+            }
+        }
+        self.publish_menu();
+        self.repaint();
     }
 
     fn menu(&mut self, command: MenuCommand) -> bool {
@@ -1087,6 +1193,7 @@ impl Agent {
                 self.set_tray(TrayState::Idle);
                 self.publish_menu();
             }
+            MenuCommand::ShowConversation => self.show_conversation(),
             MenuCommand::OpenLogsFolder => {
                 let dir = jevons_desktop_core::config::user_dir();
                 let _ = std::fs::create_dir_all(dir.join("traces"));
@@ -1855,7 +1962,12 @@ impl Agent {
     /// The bubble's answer buttons.
     fn bubble(&mut self, action: BubbleAction) {
         if let BubbleAction::Copy { raw } = action {
-            let Some(output) = self.view().feedback.as_ref().map(|f| f.output.clone()) else {
+            let Some(output) = self
+                .view()
+                .feedback
+                .as_ref()
+                .map(|f| f.latest_output().to_string())
+            else {
                 return;
             };
             let text = if raw {
@@ -1886,7 +1998,7 @@ impl Agent {
                     tokio::time::sleep(Duration::from_millis(300)).await;
                     let request = jevons_desktop_core::platform::DeliveryRequest {
                         action: jevons_desktop_core::platform::Action::Insert,
-                        text: feedback.output.clone(),
+                        text: feedback.latest_output().to_string(),
                         method: jevons_desktop_core::platform::DeliveryMethod::Paste,
                         select_all: false,
                         erase: 0,
@@ -2185,6 +2297,13 @@ impl Agent {
             entry: entry.or_else(|| self.view().start.clone()),
         };
         let route = self.preview(&context, start.entry.as_deref());
+        // While a task waits, the take joins its conversation.
+        let turns = self.thread.as_ref().map(Feedback::conversation);
+        let state = self
+            .thread
+            .as_ref()
+            .map(|t| t.state.clone())
+            .unwrap_or_default();
         {
             let mut view = self.view();
             view.dictating = true;
@@ -2194,6 +2313,9 @@ impl Agent {
             view.feedback = Some(Feedback {
                 take: id,
                 live,
+                task: turns.is_some(),
+                turns: turns.unwrap_or_default(),
+                state,
                 window: context.window.handle,
                 status: format!(
                     "{}: {}",
@@ -2321,6 +2443,10 @@ impl Agent {
     /// A machine's timer ran out: its event moves the machines, as a take of its own whose
     /// work delivers to the window the task started in.
     fn machine_timer(&mut self, due: Due) {
+        // A timer armed in a state the machine has left shows nothing.
+        if !self.machines.view().waits_for(&due) {
+            return;
+        }
         let Some(connection) = self.runtime.connection() else {
             return;
         };
@@ -2329,10 +2455,19 @@ impl Agent {
         let env = self.take_env(connection, None);
         let updates = self.watch_updates(id);
         if self.active.is_none() {
+            let turns = self.thread.as_ref().map(Feedback::conversation);
+            let state = self
+                .thread
+                .as_ref()
+                .map(|t| t.state.clone())
+                .unwrap_or_default();
             self.view().feedback = Some(Feedback {
                 take: id,
                 status: format!("Timer: {}", due.event),
                 working: true,
+                task: turns.is_some(),
+                turns: turns.unwrap_or_default(),
+                state,
                 ..Feedback::default()
             });
         }
@@ -2343,9 +2478,9 @@ impl Agent {
                 Some(trace) => {
                     let _ = commands.send(Command::TakeFinished(Box::new(trace)));
                 }
-                // The machine left that state: the timer is stale.
+                // The machine left that state meanwhile: the timer is stale.
                 None => {
-                    let _ = commands.send(Command::HideFeedback(id));
+                    let _ = commands.send(Command::TimerStale(id));
                 }
             }
         });
@@ -2452,7 +2587,11 @@ impl Agent {
             }
         }
         let failed = trace.error.is_some();
-        {
+        // A task that still waits keeps its conversation in the bubble, for the next turn.
+        let machines = self.machines.view();
+        let waits = machines.in_task();
+        let earlier = self.thread.as_ref().map(Feedback::conversation);
+        let conversation = {
             let mut view = self.view();
             view.dictating = false;
             view.notice = trace.error.clone().or_else(|| match &trace.delivery {
@@ -2461,14 +2600,21 @@ impl Agent {
                 }
                 _ => None,
             });
+            let mut conversation = None;
             if let Some(feedback) = view.feedback.as_mut().filter(|f| f.take == trace.take) {
                 feedback.finish(&trace);
+                if waits {
+                    feedback.task = true;
+                    feedback.state = machines.path();
+                    conversation = Some(feedback.clone());
+                }
                 // Long enough to read the outcome, errors longer; an answer stays until Close
-                // (or the next take), since reading it may take a while.
-                let shown = match (failed, feedback.answer) {
-                    (true, _) => Some(8),
-                    (false, true) => None,
-                    (false, false) => Some(4),
+                // (or the next take), since reading it may take a while, and so does the
+                // conversation of a task that waits.
+                let shown = match (waits, failed, feedback.answer) {
+                    (true, _, _) | (false, false, true) => None,
+                    (false, true, _) => Some(8),
+                    (false, false, false) => Some(4),
                 };
                 if let Some(seconds) = shown {
                     let commands = self.commands.clone();
@@ -2478,10 +2624,24 @@ impl Agent {
                         let _ = commands.send(Command::HideFeedback(take));
                     });
                 }
+            } else if waits {
+                // The turn had no bubble of its own (a timer during another take): it joins
+                // the conversation all the same.
+                let mut turn = Feedback {
+                    take: trace.take,
+                    task: true,
+                    turns: earlier.unwrap_or_default(),
+                    state: machines.path(),
+                    ..Feedback::default()
+                };
+                turn.finish(&trace);
+                conversation = Some(turn);
             }
             view.traces.push_front(trace);
             view.traces.truncate(HISTORY);
-        }
+            conversation
+        };
+        self.thread = conversation;
         self.set_tray(if failed {
             TrayState::Error
         } else {
@@ -3382,6 +3542,64 @@ mod tests {
         assert!(feedback.answer);
         assert_eq!(feedback.status, "Answer");
         assert_eq!(feedback.output, "What time is it");
+    }
+
+    #[test]
+    fn a_waiting_task_s_turns_stay_in_the_bubble_for_the_next_take() {
+        let take = |id| {
+            Trace::new(&TakeStart {
+                id,
+                context: ContextSnapshot::default(),
+                entry: None,
+            })
+        };
+        // The task answers and waits: its bubble is the conversation's first turn.
+        let mut first = Feedback {
+            take: 1,
+            task: true,
+            ..Feedback::default()
+        };
+        let mut trace = take(1);
+        trace.transcript = "Buscar máquinas de estados".into();
+        trace.output = "1. **Máquina de estados**".into();
+        trace.delivery = Some(DeliveryOutcome::Shown);
+        first.finish(&trace);
+        assert!(first.reading());
+        // The next take joins it. Unsure of the words, the task stays, and the bubble says so
+        // under the answer, which Copy and Insert still take.
+        let mut second = Feedback {
+            take: 2,
+            task: true,
+            turns: first.conversation(),
+            ..Feedback::default()
+        };
+        let mut trace = take(2);
+        trace.transcript = "Y eso otro".into();
+        trace
+            .notes
+            .push("Search stayed at results: unsure (end 0.58): stayed".into());
+        second.finish(&trace);
+        assert!(second.reading() && !second.answer);
+        assert_eq!(
+            second.status,
+            "Search stayed at results: unsure (end 0.58): stayed"
+        );
+        assert_eq!(second.turns.len(), 1);
+        assert_eq!(second.turns[0].heard, "Buscar máquinas de estados");
+        assert!(second.turns[0].answer);
+        assert_eq!(second.latest_output(), "1. **Máquina de estados**");
+        // A third take sees both turns, in order.
+        let turns = second.conversation();
+        assert_eq!(
+            turns.iter().map(|t| t.heard.as_str()).collect::<Vec<_>>(),
+            ["Buscar máquinas de estados", "Y eso otro"]
+        );
+        assert_eq!(turns[1].status, second.status);
+        // Outside a task a take that writes nothing is not for reading, and ends with Done.
+        let mut plain = Feedback::default();
+        plain.finish(&take(3));
+        assert!(!plain.reading());
+        assert_eq!(plain.status, "Done");
     }
 
     #[test]

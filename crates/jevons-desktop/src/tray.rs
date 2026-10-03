@@ -375,6 +375,12 @@ fn build_menu(model: &MenuModel) -> Menu {
         &MenuItem::with_id("toggle", dictation, !model.live, None),
         &MenuItem::with_id("live", live, !model.dictating, None),
         &MenuItem::with_id("cancel", "Cancel the current take", model.busy, None),
+        &MenuItem::with_id(
+            "conversation",
+            "Show the task's conversation",
+            model.conversation,
+            None,
+        ),
         &start,
         &PredefinedMenuItem::separator(),
         &MenuItem::with_id("inspector", "Show context inspector", true, None),
@@ -428,6 +434,7 @@ fn menu_command(id: &str) -> Option<MenuCommand> {
         }
         "live" => MenuCommand::ToggleLiveDictation,
         "cancel" => MenuCommand::CancelTake,
+        "conversation" => MenuCommand::ShowConversation,
         "logs" => MenuCommand::OpenLogsFolder,
         "inspector" => MenuCommand::ShowInspector,
         "pause" => MenuCommand::ToggleContextPause,
@@ -461,6 +468,10 @@ mod tests {
             Some(MenuCommand::StartAt(Some("ask".into())))
         );
         assert_eq!(menu_command("start"), None);
+        assert_eq!(
+            menu_command("conversation"),
+            Some(MenuCommand::ShowConversation)
+        );
         assert_eq!(menu_command("feedback"), Some(MenuCommand::ToggleFeedback));
         assert_eq!(menu_command("record"), Some(MenuCommand::ToggleRecording));
         assert_eq!(

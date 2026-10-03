@@ -1943,6 +1943,8 @@ confirm = false
             .unwrap()
             .unwrap();
         assert_eq!(fired.event, "quiet");
+        assert!(machines.view().in_task());
+        assert!(machines.view().waits_for(&fired));
         let (updates, _) = mpsc::unbounded_channel();
         let trace = machines
             .timer(&env, fired.clone(), 9, &updates)
@@ -1951,7 +1953,9 @@ confirm = false
         assert_eq!(moves(&trace), ["answering quiet → [*]", "find done → idle"]);
         assert_eq!(trace.take, 9);
         assert_eq!(machines.view().path(), "idle");
-        // The state it was armed in is gone.
+        // The state it was armed in is gone: the view says so before anything runs.
+        assert!(!machines.view().in_task());
+        assert!(!machines.view().waits_for(&fired));
         assert!(machines.timer(&env, fired, 10, &updates).await.is_none());
     }
 

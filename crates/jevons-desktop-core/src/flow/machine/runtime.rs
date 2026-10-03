@@ -80,6 +80,8 @@ pub struct Running {
     pub since_ms: u64,
     /// The events it waits for in that state.
     pub waiting: Vec<String>,
+    /// Which entry of the state this is: a timer armed in an earlier one is stale.
+    pub generation: u64,
 }
 
 /// What the inspector draws: the machines running, innermost last, and the latest transitions.
@@ -100,6 +102,19 @@ impl View {
             .map(|r| r.state.as_str())
             .collect::<Vec<_>>()
             .join(" › ")
+    }
+
+    /// Whether a task runs: a machine below the root's.
+    pub fn in_task(&self) -> bool {
+        self.stack.len() > 1
+    }
+
+    /// Whether a machine still waits for this timer: it is in the state entry the timer was
+    /// armed in.
+    pub fn waits_for(&self, due: &Due) -> bool {
+        self.stack
+            .iter()
+            .any(|r| r.generation == due.generation && r.waiting.contains(&due.event))
     }
 }
 
@@ -370,6 +385,7 @@ impl Runtime {
                         name: loaded.map(|m| m.diagram.name.clone()).unwrap_or_default(),
                         state: i.state.clone(),
                         since_ms: i.since_ms,
+                        generation: i.generation,
                         waiting: loaded
                             .map(|m| {
                                 m.diagram

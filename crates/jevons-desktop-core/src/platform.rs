@@ -404,6 +404,8 @@ pub struct MenuModel {
     pub recording: bool,
     /// The automations library: name, description, and whether this version is approved.
     pub automations: Vec<(String, String, bool)>,
+    /// Whether a task waits with a conversation the bubble can show again.
+    pub conversation: bool,
 }
 
 /// What a tray menu item asks for.
@@ -413,6 +415,8 @@ pub enum MenuCommand {
     ToggleLiveDictation,
     /// Abandons the running take without delivering anything.
     CancelTake,
+    /// Shows the waiting task's conversation in the bubble again.
+    ShowConversation,
     /// Opens the folder with the logs and take traces.
     OpenLogsFolder,
     /// Starts every take at this top-level branch, or at the root.

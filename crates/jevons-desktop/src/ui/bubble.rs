@@ -3,10 +3,12 @@
 //! through, so dictation keeps going to the application underneath, except while it shows an
 //! answer (with Copy, Insert and Close) or asks before a tool runs (Run or Cancel, also Enter
 //! and Esc). An answer opens a larger bubble, renders its Markdown, scrolls with the wheel and
-//! stays until Close (or the next take).
+//! stays until Close (or the next take). While a task waits for what the user says next, that
+//! larger bubble is its conversation: the earlier turns stay above the one being said.
 
 use super::{Ctx, markdown};
-use crate::agent::{BubbleAction, Command, Feedback, StageView};
+use crate::agent::{BubbleAction, Command, Feedback, StageView, Turn};
+use blitz_dom::BaseDocument;
 use dioxus::prelude::*;
 use jevons_desktop_core::pipeline::StageKind;
 
@@ -96,6 +98,9 @@ pub fn Bubble() -> Element {
                 {tail_bottom}
             }
         };
+    }
+    if f.task {
+        return conversation(&ctx, &f, selecting, head, tail_top, tail_bottom);
     }
     if f.answer {
         return answer(&ctx, &f, selecting, head, tail_top, tail_bottom);
@@ -226,10 +231,7 @@ fn answer(
     tail_top: Option<Element>,
     tail_bottom: Option<Element>,
 ) -> Element {
-    let (copy, raw, insert, close) = (ctx.clone(), ctx.clone(), ctx.clone(), ctx.clone());
-    let can_insert = f.window.is_some();
     let tail = if tail_bottom.is_some() { "down" } else { "up" };
-    let mut toggle = selecting;
     let select = selecting();
     rsx! {
         div { class: "bubble", "data-state": "answer",
@@ -247,20 +249,138 @@ fn answer(
                 }
             }
             if f.done {
-                div { class: "bubble-actions",
-                    button { class: "bubble-button", onclick: move |_| close.send(Command::Bubble(BubbleAction::Close)), "Close" }
-                    if can_insert {
-                        button { class: "bubble-button", onclick: move |_| insert.send(Command::Bubble(BubbleAction::Insert)), "Insert" }
-                    }
-                    button { class: "bubble-button", "data-on": if select { "true" } else { "false" },
-                        onclick: move |_| toggle.set(!select),
-                        if select { "Done selecting" } else { "Select text" }
-                    }
-                    button { class: "bubble-button", onclick: move |_| raw.send(Command::Bubble(BubbleAction::Copy { raw: true })), "Copy raw" }
-                    button { class: "bubble-button", "data-primary": "true", onclick: move |_| copy.send(Command::Bubble(BubbleAction::Copy { raw: false })), "Copy" }
-                }
+                {actions(ctx, selecting, f.window.is_some(), true)}
             }
             {tail_bottom}
         }
     }
+}
+
+/// What to do with the text a finished bubble holds: Close always, the rest when there is
+/// `text` to copy or insert.
+fn actions(ctx: &Ctx, selecting: Signal<bool>, can_insert: bool, text: bool) -> Element {
+    let (copy, raw, insert, close) = (ctx.clone(), ctx.clone(), ctx.clone(), ctx.clone());
+    let mut toggle = selecting;
+    let select = selecting();
+    rsx! {
+        div { class: "bubble-actions",
+            button { class: "bubble-button", onclick: move |_| close.send(Command::Bubble(BubbleAction::Close)), "Close" }
+            if text && can_insert {
+                button { class: "bubble-button", onclick: move |_| insert.send(Command::Bubble(BubbleAction::Insert)), "Insert" }
+            }
+            if text {
+                button { class: "bubble-button", "data-on": if select { "true" } else { "false" },
+                    onclick: move |_| toggle.set(!select),
+                    if select { "Done selecting" } else { "Select text" }
+                }
+                button { class: "bubble-button", onclick: move |_| raw.send(Command::Bubble(BubbleAction::Copy { raw: true })), "Copy raw" }
+                button { class: "bubble-button", "data-primary": "true", onclick: move |_| copy.send(Command::Bubble(BubbleAction::Copy { raw: false })), "Copy" }
+            }
+        }
+    }
+}
+
+/// An earlier turn: what the user said, then the answer, or how the turn ended.
+fn past_turn(index: usize, turn: &Turn) -> Element {
+    rsx! {
+        div { key: "turn-{index}", class: "bubble-turn", "data-turn": "past",
+            if !turn.heard.is_empty() {
+                div { class: "bubble-said", "{turn.heard}" }
+            }
+            if turn.answer && !turn.output.is_empty() {
+                {markdown::render(&turn.output)}
+            } else {
+                div { class: "bubble-outcome", "data-failed": if turn.failed { "true" } else { "false" },
+                    if turn.output.is_empty() { "{turn.status}" } else { "→ {turn.output}" }
+                }
+            }
+        }
+    }
+}
+
+/// A task's conversation: the earlier turns, then the take being said or its outcome. The
+/// window scrolls it to the latest turn (see [`scroll_to_latest`]).
+fn conversation(
+    ctx: &Ctx,
+    f: &Feedback,
+    selecting: Signal<bool>,
+    head: Element,
+    tail_top: Option<Element>,
+    tail_bottom: Option<Element>,
+) -> Element {
+    let tail = if tail_bottom.is_some() { "down" } else { "up" };
+    let select = selecting();
+    let text = f.latest_output();
+    let quiet = f.heard.is_empty() && f.partial.is_empty();
+    rsx! {
+        div { class: "bubble", "data-state": "answer",
+            "data-tail": tail,
+            {tail_top}
+            {head}
+            div { class: "bubble-answer bubble-thread",
+                if select {
+                    textarea { class: "bubble-select", value: "{text}" }
+                } else {
+                    {f.turns.iter().enumerate().map(|(i, turn)| past_turn(i, turn))}
+                    div { class: "bubble-turn", "data-turn": "latest",
+                        if !quiet {
+                            div { class: "bubble-said",
+                                span { "{f.heard}" }
+                                if !f.partial.is_empty() {
+                                    span { class: "bubble-partial",
+                                        if f.heard.is_empty() { "{f.partial.trim_start()}" } else { " {f.partial.trim_start()}" }
+                                    }
+                                }
+                            }
+                        } else if !f.done {
+                            div { class: "bubble-hint", "Speak: the task is listening." }
+                        }
+                        if f.answer {
+                            {markdown::render(&f.output)}
+                        } else if !f.output.is_empty() {
+                            div { class: "bubble-outcome", "→ {f.output}" }
+                        }
+                        if !f.done && !f.stages.is_empty() {
+                            div { class: "bubble-stages",
+                                {f.stages.iter().rev().take(3).collect::<Vec<_>>().into_iter().rev().enumerate().map(|(i, stage)| stage_row(i, stage, f.frame))}
+                            }
+                        }
+                        if f.done && !f.answer && f.output.is_empty() {
+                            div { class: "bubble-outcome", "data-failed": if f.failed { "true" } else { "false" }, "{f.status}" }
+                        }
+                    }
+                }
+            }
+            if f.done {
+                {actions(ctx, selecting, f.window.is_some(), !text.is_empty())}
+            }
+            {tail_bottom}
+        }
+    }
+}
+
+/// Scrolls a conversation so its latest turn starts at the top of what shows, once the
+/// document is laid out (Blitz has no `scrollIntoView`). Returns whether there was one.
+pub fn scroll_to_latest(doc: &mut BaseDocument) -> bool {
+    doc.resolve(0.0);
+    let (Ok(Some(turn)), Ok(Some(thread))) = (
+        doc.query_selector("[data-turn=\"latest\"]"),
+        doc.query_selector(".bubble-thread"),
+    ) else {
+        return false;
+    };
+    let turn_top = doc
+        .get_node(turn)
+        .expect("a queried node")
+        .absolute_position(0.0, 0.0)
+        .y;
+    let Some(node) = doc.get_node_mut(thread) else {
+        return false;
+    };
+    // Both positions shift by the box's own scroll, so their difference is the turn's place in
+    // the box's content.
+    let top = f64::from(turn_top - node.absolute_position(0.0, 0.0).y);
+    let max = f64::from(node.final_layout.scroll_height());
+    node.scroll_offset.y = top.clamp(0.0, max.max(0.0));
+    true
 }

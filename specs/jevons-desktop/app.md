@@ -24,7 +24,8 @@ Tests: `a_tuning_event_makes_tuning_active_and_notifies_once`
 ### R2 The tray menu
 
 The menu holds: **Start dictation** or **Stop dictation**, **Start live dictation** or **Stop
-live dictation**, **Cancel the current take** (while one runs), **Start takes at** (the root or
+live dictation**, **Cancel the current take** (while one runs), **Show the task's conversation**
+(while a task waits with one), **Start takes at** (the root or
 each top-level branch), **Show context inspector**, **Live feedback**, **Pause context capture**,
 **Record an automation…** or **Stop recording**, **Automations** (per automation: its
 description, **Run** and **Run step by step** when approved or **Review and approve…** when not,
@@ -90,12 +91,13 @@ Tests: none yet
 The bubble's first line says how to finish (release the hotkey, press it again, or stop from the
 tray). It then shows the words as heard, each stage as it runs and how it ended, and the text
 written. At the end it says "Inserted", "On the clipboard: <reason>", "Answer", "Too short to hold
-speech", "Done", or the error. Text that only repeats the transcript is not shown twice, an answer
-always is, and stages still open close with the take's outcome. The bubble hides four seconds
-after a take ends, eight after an error, and an answer stays until it is closed or the next take
-starts.
+speech", "Done", or the error; a take that left a task where it was, unsure of the words, says so
+("<Task> stayed at <state>: …"). Text that only repeats the transcript is not shown twice, an
+answer always is, and stages still open close with the take's outcome. The bubble hides four
+seconds after a take ends, eight after an error, and an answer stays until it is closed or the
+next take starts.
 
-Tests: `feedback_shows_phrases_as_heard_and_the_outcome_at_the_end`, `an_answer_stays_in_the_bubble_even_when_it_repeats_the_words`, `push_to_talk_feedback_keeps_the_streamed_words_as_the_transcript`
+Tests: `feedback_shows_phrases_as_heard_and_the_outcome_at_the_end`, `an_answer_stays_in_the_bubble_even_when_it_repeats_the_words`, `push_to_talk_feedback_keeps_the_streamed_words_as_the_transcript`, `a_waiting_task_s_turns_stay_in_the_bubble_for_the_next_take`
 
 ### R10 Questions wait in the bubble
 
@@ -213,8 +215,8 @@ Tests: none yet
 
 When a task's timer runs out, its event moves the machines as a take of its own, whose work
 delivers into the window the task started in. With no take running, the bubble shows the timer.
-A timer whose state the machine has left does nothing. **Cancel task** in the Machines tab ends
-every task.
+A timer whose state the machine has left does nothing and shows nothing. **Cancel task** in the
+Machines tab ends every task.
 
 Tests: `a_timer_ends_a_task_that_waits_and_stale_timers_do_nothing`
 
@@ -232,3 +234,15 @@ Tests: none yet
 Closing the window only hides it.
 
 Tests: none yet
+
+### R25 A waiting task's bubble is its conversation
+
+While a task waits for what the user says next, its bubble stays after each take and timer, with
+no time limit, and the next take joins it: the earlier turns stay above the one being said, each
+with what was said and what the task answered or how the turn ended. **Copy** and **Insert** take
+the latest text the conversation holds. **Close** hides it, and **Show the task's conversation**
+in the tray menu brings it back while the task waits and no take runs. When the task ends, the
+conversation ends with it: the bubble follows R9 again, a conversation left resting in it goes,
+and the next take starts a bubble of its own.
+
+Tests: `a_waiting_task_s_turns_stay_in_the_bubble_for_the_next_take`, `menu_ids_map_to_commands`

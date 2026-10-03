@@ -131,6 +131,15 @@ html, body, #main {
   color: #e6e6e6;
 }
 
+/* A task's conversation: the turns one under another, each with what the user said (wrapped, not
+   cut as an answer's question is) and what came of it. */
+.bubble-thread { display: flex; flex-direction: column; gap: 10px; }
+.bubble-turn { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
+.bubble-turn[data-turn="past"] { padding-bottom: 10px; border-bottom: 1px solid #2a2a2a; }
+.bubble-said { font-size: 12px; color: #a1a1a1; }
+.bubble-outcome { font-size: 12px; color: #8a8a8a; font-style: italic; }
+.bubble-outcome[data-failed="true"] { color: #ffb4b4; }
+
 /* pre-wrap: Blitz drops the spaces where a text meets a bold or code span under normal white
    space ("incluye**mensajes**"); the renderer only puts single spaces in text, so nothing else
    changes. */

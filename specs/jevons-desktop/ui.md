@@ -240,8 +240,9 @@ Tests: none yet
 The bubble opens above the tray icon (below it for a taskbar at the top, at the bottom right of
 the screen when the icon's place is unknown), stays on screen, and stays on top. It never takes
 the focus and has no taskbar entry. It lets clicks through to the application underneath, except
-while it asks a question or shows an answer. It shows while a take runs when live feedback is on,
-and always for a question, an answer or a message of the app's own.
+while it asks a question or shows an answer or a task's conversation. It shows while a take runs
+when live feedback is on, and always for a question, an answer, a task's conversation or a message
+of the app's own.
 
 Tests: none yet
 
@@ -279,3 +280,14 @@ Tests: `an_answer_turns_into_selectable_text_and_copies_as_plain_text_or_markdow
 A focused text field paints its caret in the field's text colour, in the middle of the field.
 
 Tests: `the_text_caret_is_painted_in_the_field_s_text_colour_on_the_dark_theme`
+
+### R30 A task's conversation shows its turns
+
+A task's conversation opens the larger bubble. Each earlier turn shows what was said and, under
+it, the answer as Markdown, or else the text written or how the turn ended. The latest turn
+follows: the words as heard, its stages while it runs, then its answer or outcome. Each new turn
+is scrolled to once, and the wheel moves through the rest. Once the turn is done the bubble offers
+**Close**, and an answer's other buttons (R28) when the conversation holds text; **Select text**
+shows the latest text.
+
+Tests: `a_waiting_task_s_bubble_shows_its_turns_and_scrolls_to_the_latest`

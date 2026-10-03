@@ -346,9 +346,11 @@ Tests: none yet
 
 The view gives the path of running states (`search › answering`), each machine's folder, name,
 state, entry time and the events it waits for, whether a take or timer is moving them, and the
-last 200 transitions. Each state entry sends the new path to the app.
+last 200 transitions. It says whether a task runs, and whether a timer that ran out is still
+waited for (its machine is in the state entry it was armed in). Each state entry updates the view
+and then sends the new path to the app.
 
-Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`, `an_unsure_take_leaves_a_waiting_task_where_it_was`
+Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`, `an_unsure_take_leaves_a_waiting_task_where_it_was`, `a_timer_ends_a_task_that_waits_and_stale_timers_do_nothing`
 
 ### R40 Every transition and stay is traced
 
