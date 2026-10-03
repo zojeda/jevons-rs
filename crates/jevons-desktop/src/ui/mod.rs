@@ -112,6 +112,8 @@ pub fn run(
         bubble_size: bubble::SIZE,
         bubble_clicks: false,
         bubble_turn: None,
+        bubble_follow: true,
+        bubble_end: 0.0,
     };
     event_loop.run_app(&mut shell)?;
     Ok(())
@@ -129,9 +131,14 @@ struct Shell {
     bubble_size: (f64, f64),
     /// Whether the bubble takes clicks and the wheel (an answer or a confirmation).
     bubble_clicks: bool,
-    /// The conversation turn the bubble last scrolled to: its window and take, so the wheel
-    /// keeps its place until the next turn.
+    /// The window and take whose text the bubble shows: a new one follows its newest text
+    /// again.
     bubble_turn: Option<(WindowId, u64)>,
+    /// Whether the bubble follows its newest text: until the user scrolls up, and again once
+    /// they are back at the end.
+    bubble_follow: bool,
+    /// How far the bubble's text could scroll when last rendered, to notice more arriving.
+    bubble_end: f64,
 }
 
 /// Where a bubble of `size` goes: just above the tray icon (or below it, for a taskbar at the
@@ -241,7 +248,7 @@ impl Shell {
     }
 
     fn refresh(&mut self, event_loop: &ActiveEventLoop) {
-        let (quit, show, bubble, clicks, turn) = {
+        let (quit, show, bubble, clicks, turn, jump) = {
             let mut view = self.view.lock().expect("the view lock");
             // A call waiting for confirmation shows even with live feedback off.
             let asking = view.feedback.as_ref().is_some_and(|f| f.confirm.is_some());
@@ -256,12 +263,14 @@ impl Shell {
                 .feedback
                 .as_ref()
                 .is_some_and(|f| f.confirm.is_some() || f.reading());
-            // The turn of a conversation to scroll to.
+            // The take whose text the bubble shows, and whether its button asked for the
+            // newest text.
             let turn = view
                 .feedback
                 .as_ref()
-                .filter(|f| f.task && !asking)
+                .filter(|f| f.reading() && !asking)
                 .map(|f| f.take);
+            let jump = std::mem::take(&mut view.bubble.jump);
             let size = if answer && !asking {
                 bubble::ANSWER_SIZE
             } else {
@@ -273,6 +282,7 @@ impl Shell {
                 bubble.then_some(size),
                 clicks,
                 turn,
+                jump,
             )
         };
         if quit {
@@ -325,13 +335,38 @@ impl Shell {
             {
                 interface::scroll_into_view(window.downcast_doc_mut::<DioxusDocument>(), row);
             }
-            // A conversation's new turn scrolls into view once; then the wheel has it.
+            // The bubble's text follows its newest part, as a chat does, until the user scrolls
+            // up; then a button goes back to it, and says when more has arrived.
             if Some(*id) == self.bubble
                 && let Some(take) = turn
-                && self.bubble_turn != Some((*id, take))
-                && bubble::scroll_to_latest(window.downcast_doc_mut::<DioxusDocument>())
+                && let Some((_, end)) = bubble::scroll(window.downcast_doc_mut::<DioxusDocument>())
             {
-                self.bubble_turn = Some((*id, take));
+                if jump || self.bubble_turn != Some((*id, take)) {
+                    self.bubble_turn = Some((*id, take));
+                    self.bubble_follow = true;
+                }
+                let more = end > self.bubble_end + 0.5;
+                self.bubble_end = end;
+                let changed = {
+                    let mut view = self.view.lock().expect("the view lock");
+                    let scroll = crate::agent::BubbleScroll {
+                        away: !self.bubble_follow,
+                        fresh: !self.bubble_follow && (view.bubble.fresh || more),
+                        jump: false,
+                    };
+                    let changed = view.bubble != scroll;
+                    view.bubble = scroll;
+                    changed
+                };
+                if changed {
+                    // The button shows, hides or lights up.
+                    let doc = window.downcast_doc_mut::<DioxusDocument>();
+                    doc.vdom.mark_dirty(ScopeId::APP);
+                    window.poll();
+                }
+                if self.bubble_follow {
+                    bubble::scroll_to_newest(window.downcast_doc_mut::<DioxusDocument>());
+                }
             }
             window.request_redraw();
         }
@@ -363,7 +398,19 @@ impl ApplicationHandler<BlitzShellEvent> for Shell {
             self.view.lock().expect("the view lock").window_visible = false;
             return;
         }
+        let wheel = Some(id) == self.bubble && matches!(event, WindowEvent::MouseWheel { .. });
         self.inner.window_event(event_loop, id, event);
+        // The wheel moved the bubble's text: it follows the newest part only from its end.
+        if wheel
+            && let Some(window) = self.inner.windows.get_mut(&id)
+            && let Some((at, end)) = bubble::scroll(window.downcast_doc_mut::<DioxusDocument>())
+        {
+            let follow = at >= end - 2.0;
+            if follow != self.bubble_follow {
+                self.bubble_follow = follow;
+                self.refresh(event_loop);
+            }
+        }
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: BlitzShellEvent) {
@@ -1576,7 +1623,7 @@ mod tests {
     }
 
     #[test]
-    fn a_waiting_task_s_bubble_shows_its_turns_and_scrolls_to_the_latest() {
+    fn a_waiting_task_s_bubble_shows_its_turns_and_goes_back_to_the_newest() {
         use crate::agent::{Feedback, Turn};
         use blitz_traits::shell::{ColorScheme, Viewport};
         let folder = std::env::temp_dir().join(format!("jevons-ui-turns-{}", std::process::id()));
@@ -1638,12 +1685,25 @@ mod tests {
         for label in ["Close", "Select text", "Copy raw", "Copy"] {
             assert!(shown.contains(label), "{label:?} in {shown}");
         }
-        assert!(bubble::scroll_to_latest(&mut doc));
-        let thread = doc.query_selector(".bubble-thread").unwrap().unwrap();
-        assert!(
-            doc.get_node(thread).unwrap().scroll_offset.y > 100.0,
-            "the latest turn is scrolled to"
-        );
+        // The text starts at its top and can scroll; following the newest part puts it at the
+        // end.
+        let (at, end) = bubble::scroll(&mut doc).expect("text to scroll");
+        assert!(at == 0.0 && end > 100.0, "{at} of {end}");
+        bubble::scroll_to_newest(&mut doc);
+        assert_eq!(bubble::scroll(&mut doc), Some((end, end)));
+        // At the end there is no button. Scrolled up, it shows, and says when more arrived.
+        assert!(doc.query_selector(".bubble-newest").unwrap().is_none());
+        view.lock().unwrap().bubble = crate::agent::BubbleScroll {
+            away: true,
+            fresh: true,
+            jump: false,
+        };
+        doc.vdom.mark_dirty(ScopeId::APP);
+        doc.poll(None);
+        assert_eq!(texts(&doc, ".bubble-newest[data-fresh=\"true\"]"), ["New"]);
+        // Pressing it asks the window for the newest text.
+        click(&mut doc, ".bubble-newest");
+        assert!(view.lock().unwrap().bubble.jump);
     }
 
     fn answer_root() -> Element {

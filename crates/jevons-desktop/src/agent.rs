@@ -386,6 +386,18 @@ impl Feedback {
     }
 }
 
+/// Where the bubble's text is scrolled. The window keeps it: the bubble follows its newest
+/// text until the user scrolls up.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BubbleScroll {
+    /// The user scrolled up: newer text is below, and a button goes back to it.
+    pub away: bool,
+    /// Text arrived below since.
+    pub fresh: bool,
+    /// The button was pressed: follow the newest text again.
+    pub jump: bool,
+}
+
 /// What the inspector shows; the agent writes it, the window reads it.
 #[derive(Default)]
 pub struct View {
@@ -427,6 +439,8 @@ pub struct View {
     pub watch_context: bool,
     /// The feedback bubble's contents while a take runs and shortly after.
     pub feedback: Option<Feedback>,
+    /// Where its text is scrolled.
+    pub bubble: BubbleScroll,
     /// The machines that run across takes, for the Machines tab.
     pub machines: Arc<Machines>,
     /// The Context tab's workbench: the last extract it tried and what it found.

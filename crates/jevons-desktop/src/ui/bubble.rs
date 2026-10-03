@@ -4,10 +4,12 @@
 //! answer (with Copy, Insert and Close) or asks before a tool runs (Run or Cancel, also Enter
 //! and Esc). An answer opens a larger bubble, renders its Markdown, scrolls with the wheel and
 //! stays until Close (or the next take). While a task waits for what the user says next, that
-//! larger bubble is its conversation: the earlier turns stay above the one being said.
+//! larger bubble is its conversation: the earlier turns stay above the one being said. The larger
+//! bubble follows its newest text, as a chat does, until the user scrolls up; a button then goes
+//! back to it, blinking while more arrives.
 
 use super::{Ctx, markdown};
-use crate::agent::{BubbleAction, Command, Feedback, StageView, Turn};
+use crate::agent::{BubbleAction, BubbleScroll, Command, Feedback, StageView, Turn};
 use blitz_dom::BaseDocument;
 use dioxus::prelude::*;
 use jevons_desktop_core::pipeline::StageKind;
@@ -35,7 +37,10 @@ pub fn Bubble() -> Element {
     let anchor = use_context::<Anchor>();
     // An answer shown as plain, selectable text instead of its formatting.
     let selecting = use_signal(|| false);
-    let feedback = ctx.view.lock().expect("the view lock").feedback.clone();
+    let (feedback, scroll) = {
+        let view = ctx.view.lock().expect("the view lock");
+        (view.feedback.clone(), view.bubble)
+    };
     let Some(f) = feedback else {
         return rsx! { div { class: "bubble" } };
     };
@@ -99,11 +104,12 @@ pub fn Bubble() -> Element {
             }
         };
     }
+    let newest = to_newest(&ctx, &f, scroll);
     if f.task {
-        return conversation(&ctx, &f, selecting, head, tail_top, tail_bottom);
+        return conversation(&ctx, &f, selecting, head, newest, tail_top, tail_bottom);
     }
     if f.answer {
-        return answer(&ctx, &f, selecting, head, tail_top, tail_bottom);
+        return answer(&ctx, &f, selecting, head, newest, tail_top, tail_bottom);
     }
     let quiet = f.heard.is_empty() && f.partial.is_empty();
     rsx! {
@@ -228,6 +234,7 @@ fn answer(
     f: &Feedback,
     selecting: Signal<bool>,
     head: Element,
+    newest: Option<Element>,
     tail_top: Option<Element>,
     tail_bottom: Option<Element>,
 ) -> Element {
@@ -248,12 +255,39 @@ fn answer(
                     {markdown::render(&f.output)}
                 }
             }
+            {newest}
             if f.done {
                 {actions(ctx, selecting, f.window.is_some(), true)}
             }
             {tail_bottom}
         }
     }
+}
+
+/// The way back to the newest text, while the user has scrolled up from it. It blinks while
+/// text arrives below, and stays lit once some has.
+fn to_newest(ctx: &Ctx, f: &Feedback, scroll: BubbleScroll) -> Option<Element> {
+    if !scroll.away {
+        return None;
+    }
+    let lit = scroll.fresh && (!f.animating() || (f.frame / 3).is_multiple_of(2));
+    let ctx = ctx.clone();
+    Some(rsx! {
+        button { class: "bubble-newest", title: "Go to the newest text",
+            "data-fresh": if scroll.fresh { "true" } else { "false" },
+            "data-lit": if lit { "true" } else { "false" },
+            onclick: move |_| {
+                ctx.view.lock().expect("the view lock").bubble.jump = true;
+                super::wake();
+            },
+            svg { width: "14", height: "14", view_box: "0 0 14 14",
+                path { d: "M3 5L7 9.5L11 5", stroke: if lit { "#0e0e0e" } else { "#22e6f2" }, stroke_width: "2", fill: "none" }
+            }
+            if scroll.fresh {
+                span { "New" }
+            }
+        }
+    })
 }
 
 /// What to do with the text a finished bubble holds: Close always, the rest when there is
@@ -298,13 +332,13 @@ fn past_turn(index: usize, turn: &Turn) -> Element {
     }
 }
 
-/// A task's conversation: the earlier turns, then the take being said or its outcome. The
-/// window scrolls it to the latest turn (see [`scroll_to_latest`]).
+/// A task's conversation: the earlier turns, then the take being said or its outcome.
 fn conversation(
     ctx: &Ctx,
     f: &Feedback,
     selecting: Signal<bool>,
     head: Element,
+    newest: Option<Element>,
     tail_top: Option<Element>,
     tail_bottom: Option<Element>,
 ) -> Element {
@@ -351,6 +385,7 @@ fn conversation(
                     }
                 }
             }
+            {newest}
             if f.done {
                 {actions(ctx, selecting, f.window.is_some(), !text.is_empty())}
             }
@@ -359,28 +394,26 @@ fn conversation(
     }
 }
 
-/// Scrolls a conversation so its latest turn starts at the top of what shows, once the
-/// document is laid out (Blitz has no `scrollIntoView`). Returns whether there was one.
-pub fn scroll_to_latest(doc: &mut BaseDocument) -> bool {
+/// How far the bubble's text is scrolled and how far it can be, once the document is laid out;
+/// `None` when the bubble shows no text to scroll.
+pub fn scroll(doc: &mut BaseDocument) -> Option<(f64, f64)> {
     doc.resolve(0.0);
-    let (Ok(Some(turn)), Ok(Some(thread))) = (
-        doc.query_selector("[data-turn=\"latest\"]"),
-        doc.query_selector(".bubble-thread"),
-    ) else {
-        return false;
+    let text = doc.query_selector(".bubble-answer").ok()??;
+    let node = doc.get_node(text)?;
+    Some((
+        node.scroll_offset.y,
+        f64::from(node.final_layout.scroll_height()).max(0.0),
+    ))
+}
+
+/// Scrolls the bubble's text to its end (Blitz has no `scrollIntoView`).
+pub fn scroll_to_newest(doc: &mut BaseDocument) {
+    let Some((_, end)) = scroll(doc) else {
+        return;
     };
-    let turn_top = doc
-        .get_node(turn)
-        .expect("a queried node")
-        .absolute_position(0.0, 0.0)
-        .y;
-    let Some(node) = doc.get_node_mut(thread) else {
-        return false;
-    };
-    // Both positions shift by the box's own scroll, so their difference is the turn's place in
-    // the box's content.
-    let top = f64::from(turn_top - node.absolute_position(0.0, 0.0).y);
-    let max = f64::from(node.final_layout.scroll_height());
-    node.scroll_offset.y = top.clamp(0.0, max.max(0.0));
-    true
+    if let Ok(Some(text)) = doc.query_selector(".bubble-answer")
+        && let Some(node) = doc.get_node_mut(text)
+    {
+        node.scroll_offset.y = end;
+    }
 }

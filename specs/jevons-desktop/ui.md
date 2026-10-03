@@ -261,7 +261,8 @@ Tests: `the_feedback_bubble_follows_a_live_take_to_its_end_in_blitz`
 An answer opens a larger bubble that renders its Markdown: headings, bold and italics, lists and
 task lists, quotes, inline code, code blocks, rules and tables. Raw HTML shows as text, and links
 as styled text that goes nowhere. A half-streamed answer renders too, with an unclosed `**` left
-as written until its end arrives. The answer scrolls with the wheel while it streams and after.
+as written until its end arrives. The answer scrolls with the wheel while it streams and after
+(R31).
 
 Tests: `answers_parse_into_headings_emphasis_lists_code_and_tables`, `a_half_streamed_answer_and_raw_html_stay_text`, `answers_keep_the_spaces_around_bold_text_and_list_items_flow_as_one_line`
 
@@ -285,9 +286,18 @@ Tests: `the_text_caret_is_painted_in_the_field_s_text_colour_on_the_dark_theme`
 
 A task's conversation opens the larger bubble. Each earlier turn shows what was said and, under
 it, the answer as Markdown, or else the text written or how the turn ended. The latest turn
-follows: the words as heard, its stages while it runs, then its answer or outcome. Each new turn
-is scrolled to once, and the wheel moves through the rest. Once the turn is done the bubble offers
-**Close**, and an answer's other buttons (R28) when the conversation holds text; **Select text**
-shows the latest text.
+follows: the words as heard, its stages while it runs, then its answer or outcome. Once the turn
+is done the bubble offers **Close**, and an answer's other buttons (R28) when the conversation
+holds text; **Select text** shows the latest text.
 
-Tests: `a_waiting_task_s_bubble_shows_its_turns_and_scrolls_to_the_latest`
+Tests: `a_waiting_task_s_bubble_shows_its_turns_and_goes_back_to_the_newest`
+
+### R31 The larger bubble follows its newest text
+
+An answer or a conversation stays scrolled to its end as text arrives, and each new take, each
+new bubble and the button below start there. Scrolling up with the wheel stops that, and a button
+over the text's corner then goes back to the end at once. When more text has arrived below, the
+button says "New": it blinks while the take still runs and stays lit after. Scrolling back to the
+end hides the button and follows the newest text again.
+
+Tests: `a_waiting_task_s_bubble_shows_its_turns_and_goes_back_to_the_newest`
