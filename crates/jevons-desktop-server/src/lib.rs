@@ -9,6 +9,7 @@
 //!   decisions to a leaf that writes, answers or calls a tool; the machines that keep tasks
 //!   across takes; the context investigator's model loop; the tool host.
 //! - [`pipeline`]: one take, from its audio and transcript through the flow tree to delivery.
+//! - [`session`]: one client's session: everything its takes run with, and its machines.
 //! - [`client`]: typed requests to the jevons API and other providers (Realtime,
 //!   transcriptions, System One, Responses), and each capability's route to its provider.
 //! - [`forward`]: the API the app serves to other clients, forwarded to those providers.
@@ -20,5 +21,6 @@ pub mod config;
 pub mod flow;
 pub mod forward;
 pub mod pipeline;
+pub mod session;
 
 pub use jevons_desktop_protocol::context;

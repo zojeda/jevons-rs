@@ -2244,6 +2244,54 @@ confirm = false
     }
 
     #[tokio::test]
+    async fn a_session_runs_a_timer_s_take_by_itself_and_tells_the_client() {
+        use crate::session::{Event, Session, TIMER_TAKES};
+        let (client, _) = server(prefer(&["research"]), "Results.").await;
+        let sink = RecordingSink::new(Some(7));
+        let (session, mut events) =
+            Session::open(desk(Some(&sink)), tree_of(SEARCH_TASK), Settings::default());
+        // With no provider answering yet, nothing can run.
+        assert!(!session.ready());
+        session.set_routes(Some(routes(client)));
+        session.set_tools(Some(tool_host()));
+        assert!(session.ready());
+        let (updates, _) = mpsc::unbounded_channel();
+        let start = TakeStart {
+            id: 1,
+            context: context(None),
+            entry: None,
+        };
+        let first = session
+            .transcript(start, "search for crates", &updates)
+            .await;
+        assert_eq!(first.error, None, "{:?}", first.notes);
+        assert!(session.view().in_task());
+        // The search waits, and its timer runs out: the session runs that take itself, numbered
+        // apart from the client's, and says so.
+        async fn next(events: &mut mpsc::UnboundedReceiver<Event>) -> Event {
+            tokio::time::timeout(Duration::from_secs(5), events.recv())
+                .await
+                .expect("the session reports it")
+                .unwrap()
+        }
+        let Event::Timer { take, due } = next(&mut events).await else {
+            panic!("the timer's take starts first");
+        };
+        assert!(take >= TIMER_TAKES);
+        assert_eq!(due.event, "quiet");
+        let trace = loop {
+            match next(&mut events).await {
+                Event::Update { take: of, .. } => assert_eq!(of, take),
+                Event::Finished(trace) => break trace,
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(trace.take, take);
+        assert_eq!(moves(&trace), ["answering quiet → [*]"]);
+        assert!(session.view().at_rest());
+    }
+
+    #[tokio::test]
     async fn a_guard_on_a_state_s_result_takes_a_transition_with_no_model() {
         let files = [
             ("root.toml", "tools = [\"search\"]"),

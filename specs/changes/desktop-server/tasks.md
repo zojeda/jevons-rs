@@ -411,6 +411,23 @@ Done when: the server crate does not depend on the client core, and the app beha
 Scope: put a wire under the phase 4 boundary, so the desktop server can move from the app's
 process to a local background process (the expected main setup) as a deployment change.
 
+How phase 5 is cut (decided 2026-10-03):
+
+- **A `Session` in the server first, with no transport:** one desk, the server's parts, the
+  machines and their timers. The app and the headless runs go through it. It is the one surface
+  a wire goes in front of. (Done.)
+- **Then the messages, the two ends and the transports,** in the protocol crate: what the client
+  says to the server and back, the server's desk over a stream, the client attending to it, an
+  in-process transport and a WebSocket one.
+- **Only takes, effects, updates, the machines' view and traces travel.** The inspector's Flows
+  tab, the extract workbench, the Machines tab's diagrams and `--check-flows` keep reading the
+  flows folder through the server crate: on loopback it is the same settings folder, and the app
+  links the server for its fallback anyway. The workbench needs the reader and the tree at once,
+  so it cannot be put on the wire in this phase.
+- **Window handles are this machine's.** A delivery names the window a take started in by its
+  handle, which means something only on the client's machine: fine over loopback, and for a
+  client elsewhere as long as the client is the one that reads it.
+
 Left by phase 4 for this one:
 
 - **One desk per session.** Today the tool host holds a desk of its own, built once at startup

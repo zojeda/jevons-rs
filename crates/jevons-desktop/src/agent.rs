@@ -27,16 +27,15 @@ use jevons_desktop_core::reader::Reader;
 use jevons_desktop_core::recorded::RecordedTree;
 use jevons_desktop_core::recording::{Session, bundle};
 use jevons_desktop_core::xpath::selector::Candidate;
-use jevons_desktop_protocol::desk::{Desk, Nobody};
+use jevons_desktop_protocol::desk::Desk;
 use jevons_desktop_server::client::Routes;
 use jevons_desktop_server::flow::extract;
-use jevons_desktop_server::flow::investigate::Investigate;
-use jevons_desktop_server::flow::investigator::Investigator;
-use jevons_desktop_server::flow::machine::runtime::{Due, Runtime as Machines};
+use jevons_desktop_server::flow::machine::runtime::Runtime as Machines;
 use jevons_desktop_server::flow::tools::ToolHost;
 use jevons_desktop_server::flow::walk::{self, FlowStep};
 use jevons_desktop_server::flow::{Catalog, FlowError, FlowTree, defaults};
-use jevons_desktop_server::pipeline::{self, Env, StageKind, TakeStart, Trace, Update};
+use jevons_desktop_server::pipeline::{self, StageKind, TakeStart, Trace, Update};
+use jevons_desktop_server::session::{Event as SessionEvent, Session as ServerSession};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -148,7 +147,8 @@ pub enum Command {
     /// A take asks before calling a tool.
     ConfirmRequested(Confirmation),
     /// A machine's timer ran out.
-    MachineTimer(Due),
+    /// What the session did by itself: a timer's take.
+    Session(SessionEvent),
     /// Ends every task, putting the flows root's machine back in its first state.
     CancelTask,
     /// Ends one running task, by the id the Machines tab shows it under.
@@ -650,7 +650,12 @@ pub struct Agent {
     searching: bool,
     search_next: Option<String>,
     flows: Arc<FlowTree>,
-    machines: Arc<Machines>,
+    /// The server's side of the app: it runs the takes and keeps the machines.
+    session: Arc<ServerSession>,
+    /// Where the desk sends the tool calls to confirm.
+    confirm: mpsc::UnboundedSender<Confirmation>,
+    /// Where each timer's take shows what it is doing.
+    timer_updates: HashMap<u64, mpsc::UnboundedSender<Update>>,
     hotkeys: std::collections::HashMap<u32, HotkeyAction>,
     /// The reply to the tool call the bubble asks about.
     confirming: Option<oneshot::Sender<bool>>,
@@ -702,8 +707,26 @@ impl Agent {
             &commands,
             repository.as_ref(),
         );
-        let tools =
-            Arc::new(ToolHost::new(&config.tools, &config.mcp).with_desk(tool_desk(&automations)));
+        // Tool calls that need a yes are asked in the bubble.
+        let (confirm, mut asked) = mpsc::unbounded_channel::<Confirmation>();
+        let forward = commands.clone();
+        tokio::spawn(async move {
+            while let Some(confirmation) = asked.recv().await {
+                let _ = forward.send(Command::ConfirmRequested(confirmation));
+            }
+        });
+        let sink = Arc::new(Mutex::new(layers.sink));
+        let paths = Arc::new(Mutex::new(PathCache::open(PathCache::default_file())));
+        // The client's side of the app: one desk, which the server's parts reach it through.
+        let desk = local_desk(
+            &config,
+            &sink,
+            &layers.inspector,
+            &paths,
+            &confirm,
+            &automations,
+        );
+        let tools = Arc::new(ToolHost::new(&config.tools, &config.mcp).with_desk(desk.clone()));
         let (tree, report) = defaults::open(&flows_dir, &tools.catalog());
         let notes = report.notes;
         let errors = tree.errors.clone();
@@ -713,13 +736,15 @@ impl Agent {
             // Nothing good to keep yet: the built-in tree runs until the folder is fixed.
             FlowTree::load(&defaults::builtin(), &Catalog::default())
         };
-        let machines = Arc::new(Machines::new());
-        let (due, mut timers) = mpsc::unbounded_channel();
-        machines.set_timers(due);
+        let flows = Arc::new(flows);
+        // The server's side of the app, in this process: it runs the takes, and its timers.
+        let (session, mut events) =
+            ServerSession::open(desk, flows.clone(), take_settings(&config));
+        session.set_tools(Some(tools.clone()));
         let forward = commands.clone();
         tokio::spawn(async move {
-            while let Some(due) = timers.recv().await {
-                let _ = forward.send(Command::MachineTimer(due));
+            while let Some(event) = events.recv().await {
+                let _ = forward.send(Command::Session(event));
             }
         });
         let watcher = watch(&flows_dir, commands.clone(), || Command::ReloadFlows);
@@ -744,8 +769,10 @@ impl Agent {
             selection: None,
             searching: false,
             search_next: None,
-            flows: Arc::new(flows),
-            machines,
+            flows,
+            session,
+            confirm,
+            timer_updates: HashMap::new(),
             config,
             config_file,
             repository,
@@ -753,8 +780,8 @@ impl Agent {
             tray: layers.tray,
             context: layers.context,
             inspector: layers.inspector,
-            paths: Arc::new(Mutex::new(PathCache::open(PathCache::default_file()))),
-            sink: Arc::new(Mutex::new(layers.sink)),
+            paths,
+            sink,
             audio: layers.audio,
             hotkeys: std::collections::HashMap::new(),
             confirming: None,
@@ -770,7 +797,7 @@ impl Agent {
         {
             let mut view = agent.view.lock().expect("the view lock");
             view.flows = agent.flows.clone();
-            view.machines = agent.machines.clone();
+            view.machines = agent.session.machines();
             view.flow_errors = errors;
             view.flow_notes = notes;
             view.context_backend = agent.context.name();
@@ -1102,15 +1129,15 @@ impl Agent {
                 self.repaint();
             }
             Command::AutomationFinished(trace) => self.automation_finished(*trace),
-            Command::MachineTimer(due) => self.machine_timer(due),
+            Command::Session(event) => self.session_event(event),
             Command::CancelOneTask(id) => {
                 if self.thread_task == Some(id) {
                     self.end_conversation();
                 }
-                let machines = self.machines.clone();
+                let session = self.session.clone();
                 let repaint = self.repaint.clone();
                 tokio::spawn(async move {
-                    if let Some(ended) = machines.cancel_task(id).await {
+                    if let Some(ended) = session.cancel_task(id).await {
                         tracing::info!(%ended, "Cancelled a task");
                     }
                     repaint();
@@ -1118,10 +1145,10 @@ impl Agent {
             }
             Command::CancelTask => {
                 self.end_conversation();
-                let machines = self.machines.clone();
+                let session = self.session.clone();
                 let repaint = self.repaint.clone();
                 tokio::spawn(async move {
-                    if let Some(ended) = machines.cancel().await {
+                    if let Some(ended) = session.cancel().await {
                         tracing::info!(%ended, "Cancelled the task");
                     }
                     repaint();
@@ -1130,6 +1157,7 @@ impl Agent {
             Command::ReloadRuntime => self.runtime.apply(&self.config, &self.config_file),
             Command::RuntimeChanged => {
                 let status = self.runtime.status();
+                self.session.set_routes(self.runtime.routes());
                 if self.active.is_none() {
                     let state = match status {
                         Status::Ready { .. } | Status::Remote { .. } => TrayState::Idle,
@@ -2144,6 +2172,7 @@ impl Agent {
         if tree.is_valid() {
             tracing::info!(nodes = tree.nodes().len(), "Flow tree loaded");
             self.flows = Arc::new(tree);
+            self.session.set_flows(self.flows.clone());
         } else {
             tracing::warn!(
                 errors = errors.len(),
@@ -2189,6 +2218,7 @@ impl Agent {
         let library_changed = anew
             || config.automations_dir(&self.config_file)
                 != self.config.automations_dir(&self.config_file);
+        let privacy_changed = config.privacy != self.config.privacy;
         self.config = config;
         crate::config::log_api(self.config.log_api);
         self.automations
@@ -2215,11 +2245,22 @@ impl Agent {
                 Command::ReloadAutomations
             });
         }
-        if tools_changed || flows_changed || library_changed {
-            self.tools = Arc::new(
-                ToolHost::new(&self.config.tools, &self.config.mcp)
-                    .with_desk(tool_desk(&self.automations)),
-            );
+        // The desk reads within the privacy settings as they are now, and the takes run with
+        // the dictation settings as they are now.
+        let desk = local_desk(
+            &self.config,
+            &self.sink,
+            &self.inspector,
+            &self.paths,
+            &self.confirm,
+            &self.automations,
+        );
+        self.session.set_desk(desk.clone());
+        self.session.set_settings(take_settings(&self.config));
+        if tools_changed || flows_changed || library_changed || privacy_changed {
+            self.tools =
+                Arc::new(ToolHost::new(&self.config.tools, &self.config.mcp).with_desk(desk));
+            self.session.set_tools(Some(self.tools.clone()));
             self.list_tools();
         }
         self.runtime.apply(&self.config, &self.config_file);
@@ -2324,12 +2365,12 @@ impl Agent {
         held: bool,
         flows: Option<Arc<FlowTree>>,
     ) {
-        let Some(routes) = self.runtime.routes() else {
+        if !self.session.ready() {
             let status = self.runtime.status().describe();
             self.notice(&format!("Dictation is unavailable: {status}"));
             self.set_tray(TrayState::Error);
             return;
-        };
+        }
         let id = self.next_take;
         self.next_take += 1;
         // Read the context first, before the user's focus can move.
@@ -2347,7 +2388,6 @@ impl Agent {
             }
         };
         let (finish, finished) = oneshot::channel();
-        let env = self.take_env(routes, flows);
         let start = TakeStart {
             id,
             context: context.clone(),
@@ -2407,11 +2447,16 @@ impl Agent {
 
         let updates = self.watch_updates(id);
         let commands = self.commands.clone();
+        let session = self.session.clone();
         let task = tokio::spawn(async move {
             let trace = if live {
-                pipeline::run_live(&env, start, audio_events, finished, &updates).await
+                session
+                    .live(start, audio_events, finished, &updates, flows)
+                    .await
             } else {
-                pipeline::run_take(&env, start, audio_events, finished, &updates).await
+                session
+                    .take(start, audio_events, finished, &updates, flows)
+                    .await
             };
             let _ = commands.send(Command::TakeFinished(Box::new(trace)));
         });
@@ -2497,95 +2542,47 @@ impl Agent {
         updates
     }
 
-    /// A machine's timer ran out: its event moves the machines, as a take of its own whose
-    /// work delivers to the window the task started in.
-    fn machine_timer(&mut self, due: Due) {
-        // A timer armed in a state the machine has left shows nothing.
-        if !self.machines.view().waits_for(&due) {
-            return;
-        }
-        let Some(routes) = self.runtime.routes() else {
-            return;
-        };
-        let id = self.next_take;
-        self.next_take += 1;
-        let env = self.take_env(routes, None);
-        let updates = self.watch_updates(id);
-        if self.active.is_none() {
-            // The timer of the task the conversation is of joins it.
-            let thread = self
-                .thread
-                .as_ref()
-                .filter(|_| self.thread_task == Some(due.instance));
-            let turns = thread.map(Feedback::conversation);
-            let state = thread.map(|t| t.state.clone()).unwrap_or_default();
-            self.view().feedback = Some(Feedback {
-                take: id,
-                status: format!("Timer: {}", due.event),
-                working: true,
-                task: turns.is_some(),
-                turns: turns.unwrap_or_default(),
-                state,
-                ..Feedback::default()
-            });
-        }
-        let machines = self.machines.clone();
-        let commands = self.commands.clone();
-        tokio::spawn(async move {
-            match machines.timer(&env, due, id, &updates).await {
-                Some(trace) => {
-                    let _ = commands.send(Command::TakeFinished(Box::new(trace)));
-                }
-                // The machine left that state meanwhile: the timer is stale.
-                None => {
-                    let _ = commands.send(Command::TimerStale(id));
+    /// What the session did by itself: a machine's timer ran out, and its take runs, as a
+    /// take of its own whose work is delivered to the window the task started in.
+    fn session_event(&mut self, event: SessionEvent) {
+        match event {
+            SessionEvent::Timer { take, due } => {
+                let updates = self.watch_updates(take);
+                self.timer_updates.insert(take, updates);
+                if self.active.is_none() {
+                    // The timer of the task the conversation is of joins it.
+                    let thread = self
+                        .thread
+                        .as_ref()
+                        .filter(|_| self.thread_task == Some(due.instance));
+                    let turns = thread.map(Feedback::conversation);
+                    let state = thread.map(|t| t.state.clone()).unwrap_or_default();
+                    self.view().feedback = Some(Feedback {
+                        take,
+                        status: format!("Timer: {}", due.event),
+                        working: true,
+                        task: turns.is_some(),
+                        turns: turns.unwrap_or_default(),
+                        state,
+                        ..Feedback::default()
+                    });
+                    self.repaint();
                 }
             }
-        });
-    }
-
-    /// What a take (or a machine's timer) runs with.
-    fn take_env(&self, routes: Routes, flows: Option<Arc<FlowTree>>) -> Env {
-        let dictation = &self.config.dictation;
-        let (confirm, mut asked) = mpsc::unbounded_channel::<Confirmation>();
-        let forward = self.commands.clone();
-        tokio::spawn(async move {
-            while let Some(confirmation) = asked.recv().await {
-                let _ = forward.send(Command::ConfirmRequested(confirmation));
+            SessionEvent::Update { take, update } => {
+                if let Some(updates) = self.timer_updates.get(&take) {
+                    let _ = updates.send(update);
+                }
             }
-        });
-        // The client's side of the take: this machine's layers, within the privacy settings.
-        let privacy = &self.config.privacy;
-        let reader = Reader::new(self.inspector.clone(), privacy.clone());
-        let looks = Looks::new(self.inspector.clone(), privacy.clone(), self.paths.clone());
-        let desk: Arc<dyn Desk> = Arc::new(
-            LocalDesk::default()
-                .with_sink(self.sink.clone())
-                .with_reader(Arc::new(reader))
-                .with_looks(Arc::new(looks))
-                .with_confirmer(Arc::new(ChannelConfirmer::new(confirm)))
-                .with_automations(self.automations.clone()),
-        );
-        let investigator = routes.generation.as_ref().map(|route| {
-            Arc::new(Investigator::new(
-                route.client.clone(),
-                route.model.clone(),
-                desk.clone(),
-            )) as Arc<dyn Investigate>
-        });
-        Env {
-            routes,
-            flows: flows.unwrap_or_else(|| self.flows.clone()),
-            settings: pipeline::Settings {
-                language: dictation.language.clone(),
-                decide: dictation.decide,
-                max_output_tokens: dictation.max_output_tokens,
-                ..pipeline::Settings::default()
-            },
-            desk,
-            investigator,
-            tools: Some(self.tools.clone()),
-            machines: self.machines.clone(),
+            SessionEvent::Finished(trace) => {
+                self.timer_updates.remove(&trace.take);
+                self.finished(*trace);
+            }
+            // The machine left that state meanwhile: the timer shows nothing.
+            SessionEvent::Stale { take } => {
+                self.timer_updates.remove(&take);
+                let _ = self.commands.send(Command::TimerStale(take));
+            }
         }
     }
 
@@ -2647,7 +2644,7 @@ impl Agent {
         // A task that still waits keeps its conversation in the bubble, for the next turn. The
         // take is part of it when it reached that task; a take that went elsewhere (dictation
         // while a search waits) is not, and leaves the conversation as it was.
-        let machines = self.machines.view();
+        let machines = self.session.view();
         let waits = machines.in_task();
         let same = machines.focus == self.thread_task;
         let reached = waits
@@ -3261,9 +3258,9 @@ impl Agent {
     /// Listens while the record hotkey is held, and transcribes what the user said for the
     /// recording.
     fn begin_note(&mut self, source: u32) {
-        let Some(routes) = self.runtime.routes() else {
+        if !self.session.ready() {
             return;
-        };
+        }
         let (audio, audio_events) = mpsc::unbounded_channel();
         let capture = match self
             .audio
@@ -3278,19 +3275,6 @@ impl Agent {
         let id = self.next_take;
         self.next_take += 1;
         let (finish, finished) = oneshot::channel();
-        let dictation = &self.config.dictation;
-        let env = Env {
-            routes,
-            flows: self.flows.clone(),
-            settings: pipeline::Settings {
-                language: dictation.language.clone(),
-                ..pipeline::Settings::default()
-            },
-            desk: Arc::new(Nobody),
-            investigator: None,
-            tools: None,
-            machines: Arc::default(),
-        };
         let describing = self
             .recording
             .as_ref()
@@ -3327,6 +3311,7 @@ impl Agent {
         }
         self.set_tray(TrayState::Listening { level: 0 });
         let commands = self.commands.clone();
+        let session = self.session.clone();
         let task = tokio::spawn(async move {
             let (updates, _) = mpsc::unbounded_channel();
             let start = TakeStart {
@@ -3334,8 +3319,9 @@ impl Agent {
                 context: ContextSnapshot::default(),
                 entry: None,
             };
-            let said =
-                pipeline::transcribe_only(&env, start, audio_events, finished, &updates).await;
+            let said = session
+                .transcribe(start, audio_events, finished, &updates)
+                .await;
             let _ = commands.send(Command::RecordingNote(said));
         });
         if let Some(active) = &mut self.active {
@@ -3432,9 +3418,38 @@ impl Planner for RoutePlanner {
     }
 }
 
-/// The desk the tool host reaches the client's tools through: the automations library.
-fn tool_desk(automations: &Arc<AutomationHost>) -> Arc<dyn Desk> {
-    Arc::new(LocalDesk::default().with_automations(automations.clone()))
+/// The client's desk over this machine's layers: it types through the sink, reads the
+/// interface within the privacy settings, asks in the bubble and runs the library's
+/// automations.
+fn local_desk(
+    config: &DesktopConfig,
+    sink: &Arc<Mutex<Box<dyn TextSink>>>,
+    inspector: &Arc<dyn ContextInspector>,
+    paths: &Arc<Mutex<PathCache>>,
+    confirm: &mpsc::UnboundedSender<Confirmation>,
+    automations: &Arc<AutomationHost>,
+) -> Arc<dyn Desk> {
+    let privacy = &config.privacy;
+    let reader = Reader::new(inspector.clone(), privacy.clone());
+    let looks = Looks::new(inspector.clone(), privacy.clone(), paths.clone());
+    Arc::new(
+        LocalDesk::default()
+            .with_sink(sink.clone())
+            .with_reader(Arc::new(reader))
+            .with_looks(Arc::new(looks))
+            .with_confirmer(Arc::new(ChannelConfirmer::new(confirm.clone())))
+            .with_automations(automations.clone()),
+    )
+}
+
+/// What a take runs with, of the client's settings.
+fn take_settings(config: &DesktopConfig) -> pipeline::Settings {
+    pipeline::Settings {
+        language: config.dictation.language.clone(),
+        decide: config.dictation.decide,
+        max_output_tokens: config.dictation.max_output_tokens,
+        ..pipeline::Settings::default()
+    }
 }
 
 fn commit_in_background(repository: Option<Repository>, paths: Vec<PathBuf>, message: String) {

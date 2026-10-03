@@ -33,7 +33,7 @@ use jevons_desktop_core::fake::FileAudioSource;
 use jevons_desktop_core::history::{self, History};
 use jevons_desktop_core::platform::AudioSource;
 use jevons_desktop_server::flow::{FlowTree, defaults};
-use jevons_desktop_server::pipeline::{self, Env, TakeStart};
+use jevons_desktop_server::pipeline::{self, TakeStart};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
@@ -690,32 +690,21 @@ fn replay(
         desk = desk.with_sink(Arc::new(Mutex::new(platform::text_sink())));
     }
     let desk: Arc<dyn jevons_desktop_protocol::desk::Desk> = Arc::new(desk);
-    let investigator = routes.generation.as_ref().map(|route| {
-        Arc::new(
-            jevons_desktop_server::flow::investigator::Investigator::new(
-                route.client.clone(),
-                route.model.clone(),
-                desk.clone(),
-            ),
-        ) as Arc<dyn jevons_desktop_server::flow::investigate::Investigate>
-    });
     let dictation = &config.dictation;
-    let env = Env {
-        routes,
-        flows: Arc::new(flows),
-        settings: pipeline::Settings {
-            language: dictation.language.clone(),
-            decide: dictation.decide,
-            max_output_tokens: dictation.max_output_tokens,
-            ..pipeline::Settings::default()
-        },
-        desk,
-        investigator,
-        // Headless runs never run a tool that asks first, and run no tool at all.
-        tools: Some(tools),
-        machines: Arc::default(),
+    let settings = pipeline::Settings {
+        language: dictation.language.clone(),
+        decide: dictation.decide,
+        max_output_tokens: dictation.max_output_tokens,
+        ..pipeline::Settings::default()
     };
+    let flows = Arc::new(flows);
     let traces = tokio.block_on(async {
+        // The server's side, in this process. Headless runs never run a tool that asks
+        // first, and run no tool at all.
+        let (session, _events) =
+            jevons_desktop_server::session::Session::open(desk, flows, settings);
+        session.set_routes(Some(routes));
+        session.set_tools(Some(tools));
         let (updates, mut live) = mpsc::unbounded_channel();
         let printer = tokio::spawn(async move {
             while let Some(update) = live.recv().await {
@@ -756,7 +745,11 @@ fn replay(
                 };
                 let capture = source.start(None, events)?;
                 let (_finish, finished) = oneshot::channel();
-                traces.push(pipeline::run_take(&env, start, received, finished, &updates).await);
+                traces.push(
+                    session
+                        .take(start, received, finished, &updates, None)
+                        .await,
+                );
                 capture.stop();
             }
             None => {
@@ -765,7 +758,7 @@ fn replay(
                         id,
                         ..start.clone()
                     };
-                    traces.push(pipeline::run_transcript(&env, start, text, &updates).await);
+                    traces.push(session.transcript(start, text, &updates).await);
                 }
             }
         }

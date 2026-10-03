@@ -64,3 +64,24 @@ a tool that asks first is declined, an extract is empty with its note, and an in
 answers empty with "No context investigator is available here" without asking the model.
 
 Tests: `a_desk_that_cannot_look_answers_empty_with_its_note`, `a_declined_tool_call_takes_the_denied_transition`
+
+### R3 A session holds what a client's takes run with
+
+A session is opened with the client's desk, the flow tree and the client's settings for its takes
+(the language, whether to ask the decision model, the most tokens a generation writes). The
+server's own parts change under it: the routes as providers answer, the flow tree as the folder
+changes, the tools as the settings do. A take, live dictation, a take from text and a
+transcription alone are each one call on it, and so are cancelling every task or one. The
+machines are the session's and live across its takes. Without a route it is not ready, and the
+client does not start a take.
+
+Tests: `a_session_runs_a_timer_s_take_by_itself_and_tells_the_client`
+
+### R4 A machine's timer is the session's to run
+
+When a timer runs out in the state it was armed in, the session runs its take by itself and
+tells the client through its events: that the take started (with a number from 2^32 on, apart
+from the client's own), what it is doing, and its trace. A timer whose state the machine has left
+does nothing and reports nothing; one that goes stale while it runs reports that.
+
+Tests: `a_session_runs_a_timer_s_take_by_itself_and_tells_the_client`, `a_timer_ends_a_task_that_waits_and_stale_timers_do_nothing`
