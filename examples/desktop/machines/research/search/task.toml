@@ -1,8 +1,10 @@
 # A web search the user can follow up on: "Search state machine crates for Rust", then "open the
 # second one" or "search for the async ones instead", until they are done or stop talking to it.
 description = "The user asks to search the web for something."
-# A follow-up the model is unsure about leaves the task where it is. How sure it must be is its
-# provider's to say; `min_probability` here would say otherwise.
+# A follow-up the model is unsure about leaves the task where it is, and goes back to the agent,
+# which takes it as if this search were not there. How sure the model must be is its provider's
+# to say; `min_probability` here would say otherwise.
+unsure = "parent"
 # Everything this task may call: the search reads, opening a result asks first.
 tools = ["web_search", "open_url"]
 

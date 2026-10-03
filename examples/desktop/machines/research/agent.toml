@@ -5,6 +5,9 @@ The user asks to search the web for something, or says something about a search 
 are shown: to open one of them, to search for something else, or that they are done with it."""
 # Everything its tasks may call.
 tools = ["web_search", "open_url"]
+# Words that are for none of its searches, and start none, go back to the root, which takes them
+# as if this agent were not there: dictation keeps working while a search waits.
+unsure = "parent"
 
 # A search starts only when the words start with "Search", "Busca", "Buscar" or "Búscame",
 # chosen with no model. Any other take is for this agent only while one of its searches waits.

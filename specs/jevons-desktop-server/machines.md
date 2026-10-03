@@ -216,11 +216,12 @@ Removed: now [jevons-machine](../jevons-machine/spec.md) R20.
 
 When a machine asks the model, the same System One request carries the questions of where its
 candidates lead, as far as rules alone reach: an agent's own question, a waiting task's, and the
-first model decision of a state's work, as long as it needs no new reads. A request asks at most
-12 questions. The machines and the walk then take those answers with no call of their own, so the
+first model decision of a state's work, as long as it needs no new reads; and, for each of
+those machines that hands unsure takes up (R59), what the machine above would ask without it. A
+request asks at most 12 questions; one the limit leaves out is asked when its turn comes. The machines and the walk then take those answers with no call of their own, so the
 root, the agent, the task and the work cost one decision call per take.
 
-Tests: `words_needing_no_edits_are_typed_after_one_merged_decision`, `every_decision_and_the_generation_report_their_stages_in_order`, `a_task_waits_across_takes_and_the_model_takes_its_transitions`, `two_tasks_of_one_agent_run_side_by_side_and_each_gets_its_own_follow_ups`
+Tests: `words_needing_no_edits_are_typed_after_one_merged_decision`, `every_decision_and_the_generation_report_their_stages_in_order`, `a_task_waits_across_takes_and_the_model_takes_its_transitions`, `two_tasks_of_one_agent_run_side_by_side_and_each_gets_its_own_follow_ups`, `an_unsure_take_goes_up_a_level_where_the_machine_says_so`
 
 ### R27 Entering a state runs its work
 
@@ -468,6 +469,26 @@ probabilities, why none was taken, and the one chosen. Without a file to keep th
 none is kept.
 
 Tests: `the_user_answers_an_unsure_decision_and_the_take_goes_on`
+
+### R59 A machine may hand an unsure take to the one above
+
+`unsure` in a machine's node file says what happens to what the user said when the machine
+would stay where it is (the model was unsure, chose nothing that applies or was not there, or
+no transition applies): `"stay"`, the default, ends the take there; `"parent"` also hands the
+words to the machine above, a task's agent or an agent's root, when that one listens. In
+`root.toml` it is an error: the root has none above.
+
+The machine above takes the words as its own `said`, as if the machine that handed them were
+not there: an agent does not offer that task again, and the root counts that agent as having
+nothing to do with the take. It decides the usual way among what is left, and may hand up in
+its turn. A machine hands a take up once, and the trace's notes say who did not take the words,
+why, and who took them next. The machine that handed up stays where it was, with its decision
+still the user's to answer (R58), and the bubble no longer follows it.
+
+The search example sets it on its task and its agent: what is dictated while a search waits is
+typed, and the search goes on waiting.
+
+Tests: `an_unsure_take_goes_up_a_level_where_the_machine_says_so`, `only_a_machine_with_one_above_it_hands_up`, `the_search_example_searches_answers_and_opens_a_result_once_approved`
 
 ## Layout
 

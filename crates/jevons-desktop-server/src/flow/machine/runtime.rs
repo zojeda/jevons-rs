@@ -25,6 +25,11 @@
 //! states wrote (as `{state}`) until it ends. Timers fire through the channel the app gives, and
 //! their work delivers to the window the task started in, or to the clipboard when it changed.
 //!
+//! A machine whose node file says `unsure = "parent"` hands what was said to the machine above
+//! it when it would stay: the agent, or the root, takes it as if that machine were not there.
+//! What the one above would then ask rides in the request that asks the machine itself, so the
+//! take still costs one decision call.
+//!
 //! When the model is unsure and a machine stays, the host keeps what it was asked
 //! ([`Unsure`]) until the machine next gets an event: the user may say which candidate it was
 //! ([`Runtime::answer`]), and the take goes on from there, with the answer kept as a labelled
@@ -41,6 +46,7 @@ use crate::client::{
 };
 use crate::flow::frame::Frame;
 use crate::flow::guard::Check;
+use crate::flow::spec::WhenUnsure;
 use crate::flow::tree::{FlowTree, Kind, Node, NodeId, NodeSpec};
 use crate::flow::walk::{self, BranchCheck, FlowStep, Walked};
 use crate::pipeline::{DecisionTrace, Env, Stage, StageKind, TakeStart, Trace, Update};
@@ -1257,6 +1263,9 @@ enum Ahead {
     Node(NodeId),
     /// A machine's: the agent the root may choose, or the task its agent may.
     Machine(u64),
+    /// The machine above's, should the second hand what was said back to it: its candidates
+    /// without that one.
+    Above(u64, u64),
 }
 
 /// A decision the model is being asked for.
@@ -1292,6 +1301,11 @@ struct Turn<'a> {
     offered: HashMap<u64, Vec<u64>>,
     /// The user's answer to the next decision of a machine, in the model's place.
     told: Option<(u64, String)>,
+    /// The machines that handed what was said back up, by the machine above them: no longer
+    /// candidates there for this take.
+    handed: RefCell<HashMap<u64, Vec<u64>>>,
+    /// Answers the request read for a machine above, by the machine that would hand back.
+    above: HashMap<(u64, u64), Option<Answer>>,
 }
 
 impl<'a> Turn<'a> {
@@ -1321,7 +1335,45 @@ impl<'a> Turn<'a> {
             steps: 0,
             offered: HashMap::new(),
             told: None,
+            handed: RefCell::new(HashMap::new()),
+            above: HashMap::new(),
         }
+    }
+
+    /// What a machine is called in a sentence: `search-1` for a task, its folder for an
+    /// agent, and the root.
+    fn label(&self, id: u64) -> String {
+        let node = self.machine_node(id);
+        match self.instance(id).parent {
+            Some(_) => format!("{}-{}", node.name, self.instance(id).number),
+            None if node.path.is_empty() => "the root".into(),
+            None => node.path.clone(),
+        }
+    }
+
+    /// The machine above `id`: a task's agent, an agent's root.
+    fn above(&self, id: u64) -> Option<u64> {
+        match self.level(id) {
+            Level::Task => self.instance(id).parent,
+            Level::Agent => self.forest.root(),
+            Level::Root => None,
+        }
+    }
+
+    /// The machine `id` hands above when it would stay, its node file saying so: that machine.
+    fn hands_to(&self, id: u64) -> Option<u64> {
+        match &self.machine_node(id).spec {
+            NodeSpec::Machine(m) if m.unsure == Some(WhenUnsure::Parent) => self.above(id),
+            _ => None,
+        }
+    }
+
+    /// Whether `child` handed what was said back to `parent` in this take.
+    fn handed_back(&self, parent: u64, child: u64) -> bool {
+        self.handed
+            .borrow()
+            .get(&parent)
+            .is_some_and(|children| children.contains(&child))
     }
 
     /// The root and the agents remember nothing between takes.
@@ -1409,6 +1461,8 @@ impl<'a> Turn<'a> {
             .tasks(agent)
             .into_iter()
             .filter(|task| !self.instance(*task).engine.busy() && self.listens(*task))
+            // One that handed the take back is not offered it again.
+            .filter(|task| !self.handed_back(agent, *task))
             .map(|task| {
                 let node = self.machine_node(task);
                 let loaded = self.loaded(task);
@@ -1468,7 +1522,13 @@ impl<'a> Turn<'a> {
                 .children(self.instance(id).machine)
                 .filter_map(|agent| {
                     let at = self.forest.of(agent.id)?;
-                    Some((agent.name.clone(), self.outlook(at)))
+                    // One that handed the take back has nothing to do with it.
+                    let outlook = if self.handed_back(id, at) {
+                        Outlook::default()
+                    } else {
+                        self.outlook(at)
+                    };
+                    Some((agent.name.clone(), outlook))
                 })
                 .collect()
         } else {
@@ -1553,7 +1613,7 @@ impl<'a> Turn<'a> {
                         // The decision goes on before anything else moves.
                         queue.push_front(Next::Input(id, Input::Decided(decision)));
                     }
-                    Effect::Chose(chosen) => self.chose(id, chosen),
+                    Effect::Chose(chosen) => queue.extend(self.chose(id, chosen)),
                     Effect::Step(step) => self.took(id, step),
                     Effect::Passed {
                         label,
@@ -1957,7 +2017,25 @@ impl<'a> Turn<'a> {
     }
 
     /// The engine decided, by rules or by the model's answer: the bubble's stage and the trace.
-    fn chose(&mut self, id: u64, chosen: Chosen) {
+    fn chose(&mut self, id: u64, chosen: Chosen) -> Option<Next> {
+        // What the user said moved nothing here: the machine above takes it, when this one
+        // hands up, as if it were not there.
+        let stayed = chosen.by == By::Stayed && chosen.event == Event::Said;
+        let up = stayed
+            .then(|| self.hands_to(id))
+            .flatten()
+            .filter(|above| !self.handed_back(*above, id) && self.listens(*above));
+        if let Some(above) = up {
+            self.handed.borrow_mut().entry(above).or_default().push(id);
+            // The bubble follows what takes it from here.
+            self.forest.focus = None;
+            self.trace.notes.push(format!(
+                "{} did not take what you said ({}): {} takes it",
+                self.label(id),
+                chosen.how,
+                self.label(above)
+            ));
+        }
         // What the user said moved nothing, with candidates to choose among: theirs to answer.
         if chosen.by == By::Stayed && chosen.event == Event::Said && !chosen.pool.is_empty() {
             let unsure = Unsure {
@@ -2020,6 +2098,7 @@ impl<'a> Turn<'a> {
                 ms,
             });
         }
+        up.map(|above| Next::Input(above, Input::Event(Event::Said)))
     }
 
     fn can_decide(&self) -> bool {
@@ -2102,6 +2181,13 @@ impl<'a> Turn<'a> {
         if let Some(answer) = self.answered.remove(&id) {
             return Self::decision(question, answer);
         }
+        // So did the one that asked the machine which handed this back.
+        let back = self.handed.borrow().get(&id).cloned().unwrap_or_default();
+        if let [below] = back[..]
+            && let Some(answer) = self.above.remove(&(id, below))
+        {
+            return Self::decision(question, answer);
+        }
         if !self.can_decide() {
             return Decision::Unanswered("no decision model".into());
         }
@@ -2113,6 +2199,10 @@ impl<'a> Turn<'a> {
         let mut questions = vec![(None, self.worded(id, question))];
         let tasks = self.offered.get(&id).cloned().unwrap_or_default();
         self.look_ahead(id, &question.candidates, &tasks, &mut questions);
+        // It may stay, and hand what was said above: what is asked there then.
+        if let Some(above) = self.hands_to(id) {
+            self.look_above(above, id, &mut questions);
+        }
         let Some(mut answers) = self.request(&frame, &spec, &questions).await else {
             return Decision::Unanswered("the decision failed".into());
         };
@@ -2126,6 +2216,9 @@ impl<'a> Turn<'a> {
                 }
                 Some(Ahead::Machine(machine)) => {
                     self.answered.insert(*machine, answer);
+                }
+                Some(Ahead::Above(above, below)) => {
+                    self.above.insert((*above, *below), answer);
                 }
                 None => {}
             }
@@ -2186,6 +2279,40 @@ impl<'a> Turn<'a> {
         {
             return;
         }
+        self.look_at(id, Ahead::Machine(id), questions);
+    }
+
+    /// Adds to `questions` what the machine `above` would ask about what the user said should
+    /// `below` hand it back: its candidates without that one.
+    fn look_above(&self, above: u64, below: u64, questions: &mut Vec<(Option<Ahead>, Question)>) {
+        let key = Ahead::Above(above, below);
+        // Not while another is already counted out of it: the question would leave out both,
+        // and answer no hand-back that happens.
+        if questions.len() >= MAX_MERGED_QUESTIONS
+            || questions.iter().any(|(a, _)| *a == Some(key))
+            || !self.listens(above)
+            || self.handed.borrow().contains_key(&above)
+        {
+            return;
+        }
+        self.handed
+            .borrow_mut()
+            .entry(above)
+            .or_default()
+            .push(below);
+        self.look_at(above, key, questions);
+        let mut handed = self.handed.borrow_mut();
+        if let Some(children) = handed.get_mut(&above) {
+            children.pop();
+            if children.is_empty() {
+                handed.remove(&above);
+            }
+        }
+    }
+
+    /// The question of the machine `id` about what the user said, under `key`, and those of
+    /// where its candidates lead.
+    fn look_at(&self, id: u64, key: Ahead, questions: &mut Vec<(Option<Ahead>, Question)>) {
         let (options, weighed, tasks) = self.weigh_said(id);
         let loaded = self.loaded(id);
         let state = self.instance(id).engine.state().to_string();
@@ -2199,12 +2326,15 @@ impl<'a> Turn<'a> {
             let before = options[..index].iter().filter(|o| o.to.is_none()).count();
             tasks.get(before).copied()
         };
-        let reach: Vec<usize> = match engine::by_rules(&loaded.diagram, &options, &weighed) {
+        let settled = engine::by_rules(&loaded.diagram, &options, &weighed);
+        // It stays when rules leave it nothing, or the model is unsure.
+        let may_stay = settled.as_ref().is_none_or(|pick| pick.index.is_none());
+        let reach: Vec<usize> = match settled {
             Some(pick) => pick.index.into_iter().collect(),
             None => {
                 let question =
                     engine::question(&loaded.diagram, &state, &Event::Said, &options, &weighed);
-                questions.push((Some(Ahead::Machine(id)), self.worded(id, &question)));
+                questions.push((Some(key), self.worded(id, &question)));
                 weighed.pool.clone()
             }
         };
@@ -2219,6 +2349,9 @@ impl<'a> Turn<'a> {
             .filter_map(|(_, task)| task)
             .collect();
         self.look_ahead(id, &candidates, &outside, questions);
+        if may_stay && let Some(above) = self.hands_to(id) {
+            self.look_above(above, id, questions);
+        }
     }
 
     fn default_question(&self, id: u64, at: &str, event: &Event) -> String {

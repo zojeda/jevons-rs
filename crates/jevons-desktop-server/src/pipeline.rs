@@ -2392,6 +2392,228 @@ confirm = false
         let _ = std::fs::remove_dir_all(file.parent().unwrap());
     }
 
+    /// The search task's tree, where the agent starts a search only on "search …", as the
+    /// example does, and the task, the agent or both hand what they are unsure about to the
+    /// machine above.
+    fn handing_up(agent: bool, task: bool) -> Arc<FlowTree> {
+        handing_up_from(agent, task, "idle --> find : said [search]")
+    }
+
+    /// The same, with the agent's transition into a search as `starts` says.
+    fn handing_up_from(agent: bool, task: bool, starts: &str) -> Arc<FlowTree> {
+        const SEARCH: &str = "\n[guards.search]\nwhen = { transcript = \"(?i)^search\" }\n\
+            prefer = { transcript = \"(?i)^search\" }";
+        let by_rule = starts.ends_with("[search]");
+        let files: Vec<(&str, String)> = SEARCH_TASK
+            .iter()
+            .map(|(path, text)| {
+                let up = "\nunsure = \"parent\"";
+                let text = text
+                    .replace("timer idle = 40", "timer idle = 600000")
+                    .replace("idle --> find : said", starts);
+                let rule = if by_rule { SEARCH } else { "" };
+                let text = match *path {
+                    "research/agent.toml" if agent => format!("{text}{up}{rule}"),
+                    "research/agent.toml" => format!("{text}{rule}"),
+                    "research/find/task.toml" if task => format!("{text}{up}"),
+                    _ => text,
+                };
+                (*path, text)
+            })
+            .collect();
+        let files = files.iter().map(|(p, t)| (*p, t.as_str()));
+        let tree = FlowTree::load(&Memory::new("test", files), &tool_host().catalog());
+        assert!(tree.is_valid(), "{:?}", tree.errors);
+        Arc::new(tree)
+    }
+
+    /// A model sure that what is said is for the search that waits, and unsure which of the
+    /// search's transitions it is for.
+    fn sure_of_the_search_alone() -> Decider {
+        sure_of(&["research", "find-1"])
+    }
+
+    /// A model sure of the candidates in `known`, and of any yes-or-no question, and unsure of
+    /// every other choice.
+    fn sure_of(known: &'static [&'static str]) -> Decider {
+        Arc::new(move |request: &Value| {
+            let answers: serde_json::Map<String, Value> = request["questions"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(key, question)| {
+                    if question["type"] == "noul" {
+                        return (key.clone(), json!({"type": "noul", "noul": 0.9}));
+                    }
+                    let offered: Vec<&String> =
+                        question["criteria"].as_object().unwrap().keys().collect();
+                    let choice = known
+                        .iter()
+                        .find(|l| offered.iter().any(|o| o == *l))
+                        .map_or_else(|| offered[0].clone(), |l| l.to_string());
+                    let sure = if known.contains(&choice.as_str()) {
+                        0.9
+                    } else {
+                        0.4
+                    };
+                    let answer = json!({"type": "choice", "choice": choice,
+                        "probabilities": {choice.clone(): sure}, "confidence": sure});
+                    (key.clone(), answer)
+                })
+                .collect();
+            json!({"model": "jev", "usage": {"input_tokens": 1, "output_tokens": 1}, "answers": answers})
+        })
+    }
+
+    #[tokio::test]
+    async fn an_unsure_take_goes_up_a_level_where_the_machine_says_so() {
+        // Dictation while a search waits. The model takes the words for the search, and the
+        // search does not know what to do with them.
+        let words = "hello team, the build is green";
+        let run = |agent: bool, task: bool, entry: Option<&'static str>| {
+            run_on(handing_up(agent, task), entry)
+        };
+        async fn run_on(
+            flows: Arc<FlowTree>,
+            entry: Option<&'static str>,
+        ) -> (
+            Trace,
+            Vec<String>,
+            Vec<usize>,
+            crate::flow::machine::runtime::View,
+        ) {
+            let words = "hello team, the build is green";
+            let (client, _) = server(prefer(&["research"]), "Results.").await;
+            let sink = RecordingSink::new(Some(7));
+            let machines = Arc::new(Runtime::new());
+            let env = Env {
+                flows,
+                tools: Some(tool_host()),
+                machines: machines.clone(),
+                ..env(client, Some(&sink))
+            };
+            let first = say(&env, 1, "search for crates").await;
+            assert_eq!(first.error, None, "{:?}", first.notes);
+            assert_eq!(machines.view().path(), "research › find › answering");
+            let (client, seen) = server(sure_of_the_search_alone(), "unused").await;
+            let env = Env {
+                routes: routes(client),
+                ..env
+            };
+            let (updates, _) = mpsc::unbounded_channel();
+            let start = TakeStart {
+                id: 2,
+                context: context(None),
+                entry: entry.map(String::from),
+            };
+            let trace = run_transcript(&env, start, words, &updates).await;
+            let typed: Vec<String> = sink.requests().iter().map(|r| r.text.clone()).collect();
+            // How many questions each decision call asked.
+            let asked: Vec<usize> = seen
+                .decisions
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|request| request["questions"].as_object().map_or(0, |q| q.len()))
+                .collect();
+            (trace, typed, asked, machines.view())
+        }
+
+        // By default it stays there, and nothing is typed.
+        let (trace, typed, asked, view) = run(false, false, None).await;
+        assert_eq!(
+            inner(&trace),
+            ["idle said → task find-1", "answering said → answering"]
+        );
+        assert_eq!((typed.len(), asked.len()), (0, 1));
+        assert!(view.in_task());
+
+        // The search hands it up: its agent takes it as if the search were not there, has no
+        // transition for words that do not ask for a search, and stays, having no leave to
+        // hand it on.
+        let (trace, typed, asked, _) = run(false, true, None).await;
+        assert_eq!(
+            inner(&trace),
+            [
+                "idle said → task find-1",
+                "answering said → answering",
+                "idle said → idle"
+            ]
+        );
+        assert_eq!((typed.len(), asked.len()), (0, 1), "{:?}", trace.notes);
+
+        // Both hand up: the root takes it without the agent, and its `[else]` types the
+        // words. One request asked the search, its agent without it, and the root.
+        let (trace, typed, asked, view) = run(true, true, None).await;
+        assert_eq!(
+            moves(&trace),
+            [
+                "idle said → research",
+                "research done → idle",
+                "idle said → task find-1",
+                "answering said → answering",
+                "idle said → idle",
+                "idle said → typing",
+                "typing done → idle",
+                "idle said → type",
+                "type done → idle"
+            ],
+            "{:?}",
+            trace.notes
+        );
+        assert_eq!(typed, [words]);
+        // One decision call, of three questions: the root's, the agent's and the search's.
+        // What the agent and the root would ask on the way back, rules settle.
+        assert_eq!(asked, [3], "one decision call");
+        assert_eq!(trace.error, None);
+        assert!(
+            trace.notes.contains(
+                &"find-1 did not take what you said (unsure (end 0.40): stayed): research takes it"
+                    .to_string()
+            ) && trace.notes.contains(
+                &"research did not take what you said (no transition applies: stayed): the \
+                  root takes it"
+                    .to_string()
+            ),
+            "{:?}",
+            trace.notes
+        );
+        // The search still waits, and the bubble no longer follows it: the words were typed.
+        assert_eq!(view.focus, None);
+        assert_eq!(view.stack.last().unwrap().state, "answering");
+        // What it was unsure about is still the user's to answer.
+        assert!(view.stack.last().unwrap().unsure.is_some());
+
+        // The same from a hotkey that starts at the agent, where the root asks nothing: the
+        // agent's request carries the root's question too.
+        let (trace, typed, asked, _) = run(true, true, Some("research")).await;
+        assert_eq!(typed, [words], "{:?}", trace.notes);
+        assert_eq!(asked.len(), 1, "one decision call: {asked:?}");
+
+        // An agent whose own transition is the model's to judge: that question, without the
+        // search, rode in the request that asked the search, so no second one is made. This
+        // model says yes to it, and another search starts.
+        let by_model = "idle --> find : said [the user asks to search the web]";
+        let (trace, _, asked, view) = run_on(handing_up_from(false, true, by_model), None).await;
+        assert_eq!(
+            inner(&trace),
+            [
+                "idle said → task find-1",
+                "answering said → answering",
+                "idle said → find",
+                "find done → idle",
+                "[*] start → searching",
+                "searching done → answering"
+            ],
+            "{:?}",
+            trace.notes
+        );
+        // The root's question, the agent's, the search's, and the agent's without the search.
+        assert_eq!(asked, [4], "one decision call");
+        assert_eq!(view.path(), "research › find › answering");
+        assert_eq!(view.stack.last().unwrap().number, 2);
+    }
+
     /// A file to keep the machines in, in a folder of this test's own.
     fn kept_in(test: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("jevons-kept-{test}-{}", std::process::id()));
@@ -4053,6 +4275,40 @@ allow = ["research/search/*"]
             second.calls[0].result
         );
         assert_eq!(searched.lock().unwrap().len(), 2, "two searches, no more");
+        // What is dictated while the search waits: the model takes it for the search, which
+        // does not know what to do with it. The example hands it up, to the agent and then
+        // the root, whose `[else]` types it. The search still waits.
+        let known = &["research", "search-1", "verbatim"];
+        let (client, seen) = server(sure_of(known), "unused").await;
+        let sink = RecordingSink::new(Some(7));
+        let dictating = Env {
+            routes: routes(client),
+            desk: self::desk(Some(&sink)),
+            ..env.clone()
+        };
+        let dictated = say(&dictating, 9, "hello team, the build is green").await;
+        assert_eq!(dictated.error, None, "{:?}", dictated.notes);
+        let typed: Vec<String> = sink.requests().iter().map(|r| r.text.clone()).collect();
+        assert_eq!(
+            typed,
+            ["hello team, the build is green"],
+            "{:?}",
+            dictated.notes
+        );
+        assert!(
+            dictated
+                .notes
+                .iter()
+                .any(|n| n.starts_with("search-1 did not take what you said"))
+                && dictated
+                    .notes
+                    .iter()
+                    .any(|n| n.starts_with("research did not take")),
+            "{:?}",
+            dictated.notes
+        );
+        assert_eq!(seen.decisions.lock().unwrap().len(), 1, "one decision call");
+        assert_eq!(machines.view().stack.last().unwrap().state, "results");
         // Done: the search ends, and with none waiting the agent is no choice for the root.
         let (client, _) = server(prefer(&["research", "search-1", "end"]), "unused").await;
         let env = Env {

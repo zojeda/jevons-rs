@@ -94,9 +94,10 @@ Tests: `decisions_need_described_branches_and_a_branch_that_always_applies`
 ### R9 A decision's numbers are in range
 
 `min_probability` is from 0 to 1, `steps` from 1 to 8 and `samples` from 1 to 32. `enrich` needs
-`min_probability`. Other values are errors.
+`min_probability`. A machine's `unsure` is `"stay"` or `"parent"`
+([machines](machines.md) R59). Other values are errors.
 
-Tests: none yet
+Tests: `only_a_machine_with_one_above_it_hands_up`
 
 ### R10 Shared branches come from a `_` folder
 

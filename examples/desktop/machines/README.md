@@ -12,6 +12,11 @@ follow-up leaves it there, and two quiet minutes end it. Opening a result asks f
 starts a search only on "Search …" or "Busca …"; anything else is for it only while a search
 waits.
 
+Both machines set `unsure = "parent"`: words the search does not know what to do with go back to
+the agent, and from there to the root, so what you dictate while a search waits is still typed.
+The search's diagram in the Machines tab then offers its transitions, should the words have been
+for it after all.
+
 1. Register the tools, each in the settings file of the side that runs it. `allow` keeps them to
    this task's states. The search runs with the server, in `jevons-server.toml`:
 

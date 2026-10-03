@@ -15,7 +15,7 @@ use super::machine::{self, Loaded, Machine, NamedGuard};
 use super::shape::{Shape, is_identifier};
 use super::spec::{
     Common, DecideSpec, GenerateSpec, InvestigateSpec, LoopSpec, MachineSpec, Output, RunSpec,
-    Select, ToolSpec, TranscriptSpec,
+    Select, ToolSpec, TranscriptSpec, WhenUnsure,
 };
 use super::template::{Template, is_builtin};
 use jevons_desktop_protocol::delivery::Action;
@@ -957,6 +957,14 @@ impl Loader<'_> {
                     format!("guards.{name}: no transition of {fsm} uses it"),
                 );
             }
+        }
+        if machine::Level::of(file) == Some(machine::Level::Root)
+            && spec.unsure == Some(WhenUnsure::Parent)
+        {
+            self.error(
+                file,
+                "unsure: the root has no machine above it to hand what was said to",
+            );
         }
         if machine::Level::of(file) == Some(machine::Level::Task) && !diagram.ends() {
             self.error(
@@ -2350,6 +2358,37 @@ mod tests {
         let [r, a, t] = hashes("main/agent.toml", "description = \"The main agent\"");
         assert_ne!(a, agent);
         assert_eq!((r, t), (root, task));
+    }
+
+    #[test]
+    fn only_a_machine_with_one_above_it_hands_up() {
+        let files = |root: &'static str, agent: &'static str| {
+            [
+                ("root.toml", root),
+                (
+                    "root.fsm",
+                    "fsm App {\n[*] --> idle\nidle --> main : said\nmain --> idle\n}",
+                ),
+                ("main/agent.toml", agent),
+                (
+                    "main/agent.fsm",
+                    "fsm Main {\n[*] --> idle\nidle --> type : said\ntype --> idle\n}",
+                ),
+                ("main/type/transcript.toml", ""),
+            ]
+        };
+        let up = "description = \"Main\"\nunsure = \"parent\"";
+        assert_eq!(tree_of_errors(&files("", up)), Vec::<String>::new());
+        assert_eq!(
+            tree_of_errors(&files("", "description = \"Main\"\nunsure = \"stay\"")),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            tree_of_errors(&files("unsure = \"parent\"", up)),
+            ["root.toml: unsure: the root has no machine above it to hand what was said to"]
+        );
+        let errors = tree_of_errors(&files("", "description = \"Main\"\nunsure = \"up\""));
+        assert!(errors[0].contains("unknown variant `up`"), "{errors:?}");
     }
 
     #[test]

@@ -113,6 +113,19 @@ pub enum Select {
     Rules,
 }
 
+/// What a machine does with what the user said when it would stay where it is: the model was
+/// unsure, or nothing applied.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WhenUnsure {
+    /// It stays, and the take ends there.
+    #[default]
+    Stay,
+    /// It stays, and the machine above it takes what was said as if this one were not there:
+    /// a task's agent, an agent's root.
+    Parent,
+}
+
 /// Where a leaf's text goes.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -330,6 +343,11 @@ node_spec! {
         /// System One samples averaged (1 to 32).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub samples: Option<u32>,
+        /// What happens to what the user said when this machine would stay where it is:
+        /// `"stay"` (the default), or `"parent"`, which hands it to the machine above (a
+        /// task's agent, an agent's root) as if this one were not there. Not for the root.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub unsure: Option<WhenUnsure>,
     }
 }
 

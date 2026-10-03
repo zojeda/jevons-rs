@@ -596,12 +596,32 @@ Done when: a search waiting in `results` is still there after a restart.
       kept, then neighbours swap while that helps; edges down the rows are curves that leave and
       arrive straight, and those that point back round their corners. Checked by eye on the
       search example's diagram.
-- [ ] **Hand unsure takes back up.** The live case: "Buscar …" said while a search waited matched
+- [x] **Hand unsure takes back up.** The live case: "Buscar …" said while a search waited matched
       the root's `[search]` rule, but the task had it first, was unsure and stayed. Phase 2
       already lets an agent choose between its running tasks and its own transitions. What remains: a take the chosen task is then unsure about,
       and a take its agent is unsure about, may go up a level (an opt-in per machine,
       `unsure = "parent"`; the default stays `"stay"`), so dictation keeps working while a task
       waits.
+
+What phase 8 decided on the way:
+
+- **Up means "as if it were not there".** The machine above gets the words as its own `said`
+  without the machine that handed them: an agent does not offer that task again, the root
+  counts that agent out. It decides the usual way among what is left: rules, then the model,
+  then `[else]`.
+- **One call still.** What the machine above would ask without the one below rides in the request
+  that asks the one below, for every machine that hands up, so the way back asks nothing new.
+  Over the 12-question limit, the question left out is asked when its turn comes.
+- **Any stay hands up,** not only an unsure model: no transition applying, no model, an answer
+  that does not apply.
+- **The bubble stops following the task** whose take went up, so words typed as dictation do
+  not join its conversation.
+- **Its decision stays the user's to answer** in the Machines tab: the words were typed, and a
+  click still sends them to the task. Answering after a hand-up acts twice, by the user's
+  choice.
+- **The example opts in** at both levels; the built-in agents have nothing to hand up.
+- **Not done in phase 8:** the tray app as a client of a separate server (the phase 5 leftover),
+  and declining a waiting question on a cancel that comes over the wire (the client's to do).
 
 ## Risks
 

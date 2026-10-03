@@ -174,8 +174,12 @@ fsm Search {
   criterion: the guard's sentence (`[the user wants one of the results opened]`), else the target
   folder's `description` (the diagram's state description when it has no folder). Below
   `min_probability` it takes the transition marked `[else]`, or, on `said`, stays where it was:
-  an unsure take never moves a task on. The root's question, the agent's, the task's and the
-  first decision of the work they lead to go in one request, so a take costs one decision call.
+  an unsure take never moves a task on. With `unsure = "parent"` in its node file, the machine
+  that stays also hands what was said to the one above (a task to its agent, an agent to the
+  root), which takes it as if that machine were not there: this is how dictation keeps working
+  while a task waits. The root's question, the agent's, the task's and the first decision of the
+  work they lead to go in one request, with what the machine above would ask on the way back,
+  so a take costs one decision call.
 - **Named guards:** a one-word guard, `[search]`, is `[guards.search]` in the machine's node file, with
   `when` (rules for it to be a candidate), `prefer` (rules that choose it) and `criterion` (what
   the model reads), all optional.
@@ -197,6 +201,7 @@ fsm Search {
 | `tools` | Every tool its states call (tool nodes, loops' tools, `script:<name>` or `script:*` for automations, `server:*`). A state that calls another is an error, so the list is all a task can do, an agent's covers its tasks', and the root's covers everything. |
 | `[guards.<name>]` | The named guards: `when`, `prefer`, `criterion`. |
 | `steps`, `samples` | System One refinement steps (1 to 8) and samples (1 to 32). |
+| `unsure` | What happens to what the user said when the machine would stay where it is: `"stay"` (the default), or `"parent"` to hand it to the machine above. Not in `root.toml`. |
 
 A state's node file keeps `description`, `[when]` and `[prefer]` (how transitions into it are
 weighed), and so does an agent's `agent.toml` for the root's choice; `priority` has no effect
