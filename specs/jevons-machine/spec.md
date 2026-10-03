@@ -26,7 +26,7 @@ It has no async code, no HTTP and no JSON: serde derives only.
 
 ## Requirements
 
-The diagram is R1 to R10; the layout, R11 to R13; the engine, R14 on.
+The diagram is R1 to R10; the layout, R11 to R13 and R32 to R34; the engine, R14 to R31.
 
 ### R1 A diagram is one `fsm` block
 
@@ -299,3 +299,31 @@ never run again, and the machine takes `failed` as it does for any failed work (
 the machine no longer has brings nothing back.
 
 Tests: `a_kept_instance_waits_again_and_work_cut_short_fails_without_running_again`
+
+### R32 Rows are ordered for fewer crossings
+
+Each row is ordered by the average place of its neighbours in the row before, sweeping down and
+up. Of the orders the sweeps pass through, the one whose edges cross least is kept, the later
+one when two tie; neighbours in a row then swap for as long as a swap leaves fewer crossings.
+The layout says how many crossings are left among the edges that run down the rows.
+
+Tests: `rows_are_ordered_for_fewer_crossings`
+
+### R33 Edges are curves
+
+`path` gives an edge as SVG path data with no corners. An edge that runs down the rows leaves
+its source and arrives at its target straight down, with one curve between each two of its
+points, so a vertical edge is a straight line. An edge that points back, and a loop on a node,
+keep their straight runs and round their corners. `arrow` gives the arrowhead at its end, which
+points the way the edge arrives: down for an edge down the rows, along the last run otherwise.
+
+Tests: `edges_curve_through_their_points_and_arrive_straight`
+
+### R34 An edge says what decides it
+
+`decided_by` gives, from the definition's decisions (R28), what decides whether the machine
+takes an edge: the event alone, rules, rules and then the model, or the model. An edge that
+holds several transitions shows the most demanding of them. A choice point's branch is decided
+at the choice point. Nothing decides the start's edge.
+
+Tests: `an_edge_says_what_decides_it`

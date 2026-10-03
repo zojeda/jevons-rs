@@ -543,6 +543,9 @@ p { margin: 0; }
   white-space: nowrap;
 }
 .fsm-label[data-hot="true"] { color: var(--accent); }
+.fsm-legend { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--secondary-color-5); }
+.fsm-legend-item { display: flex; align-items: center; gap: 6px; }
+.fsm-swatch { display: inline-block; width: 18px; height: 3px; border-radius: 2px; }
 .fsm-choice-name { position: absolute; color: var(--secondary-color-5); font-size: 11px; white-space: nowrap; }
 .fsm-out { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .fsm-guard { color: var(--secondary-color-2); }

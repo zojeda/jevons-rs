@@ -3,9 +3,12 @@
 //! Machines are small (a few to a few dozen states), so a simple Sugiyama layout does: edges
 //! that point back (a cycle) are set aside, each node's row is its longest path from the start,
 //! edges spanning several rows pass through a point per row, rows are ordered by the average
-//! place of their neighbours, and edges that point back run up the right side. Parallel
-//! transitions between the same two nodes share one edge with a label each.
+//! place of their neighbours (the order with the fewest crossings is kept, and neighbours in a
+//! row then swap while that leaves fewer), and edges that point back run up the right side.
+//! Parallel transitions between the same two nodes share one edge with a label each. An edge
+//! is drawn as a curve through its points ([`Edge::path`]).
 
+use crate::engine::{DecidedBy, Decides};
 use crate::{Machine, Target};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
@@ -22,7 +25,11 @@ const LANE: f32 = 28.0;
 const MARGIN: f32 = 24.0;
 /// The space between edges that point back, on the right.
 const BACK_GAP: f32 = 22.0;
-const SWEEPS: usize = 6;
+const SWEEPS: usize = 12;
+/// How far a corner of an edge that points back, or of a loop, is rounded.
+const CORNER: f32 = 8.0;
+/// An arrowhead's length and half its width.
+const ARROW: (f32, f32) = (8.0, 4.0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -68,12 +75,96 @@ pub struct Edge {
     pub back: bool,
 }
 
+impl Edge {
+    /// Whether it runs down the rows: not one that points back, nor a loop on its node.
+    fn forward(&self) -> bool {
+        !self.back && self.from != self.to
+    }
+
+    /// The edge as SVG path data, with no corners. One that runs down the rows leaves and
+    /// arrives straight down and curves between its points; one that points back, or a loop,
+    /// keeps its straight runs and rounds its corners.
+    pub fn path(&self) -> String {
+        let Some(&(x, y)) = self.points.first() else {
+            return String::new();
+        };
+        let mut d = format!("M{x:.1} {y:.1}");
+        if self.forward() {
+            for pair in self.points.windows(2) {
+                let ((x0, y0), (x1, y1)) = (pair[0], pair[1]);
+                let mid = (y0 + y1) / 2.0;
+                d.push_str(&format!(
+                    " C{x0:.1} {mid:.1} {x1:.1} {mid:.1} {x1:.1} {y1:.1}"
+                ));
+            }
+            return d;
+        }
+        // Towards `to` from `from`, by at most `by`.
+        let towards = |from: (f32, f32), to: (f32, f32), by: f32| {
+            let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+            let length = (dx * dx + dy * dy).sqrt().max(0.001);
+            let by = by.min(length / 2.0);
+            (from.0 + dx / length * by, from.1 + dy / length * by)
+        };
+        for corner in self.points.windows(3) {
+            let (before, at, after) = (corner[0], corner[1], corner[2]);
+            let (a, b) = (towards(at, before, CORNER), towards(at, after, CORNER));
+            d.push_str(&format!(
+                " L{:.1} {:.1} Q{:.1} {:.1} {:.1} {:.1}",
+                a.0, a.1, at.0, at.1, b.0, b.1
+            ));
+        }
+        if let Some((x, y)) = self.points.last().filter(|_| self.points.len() > 1) {
+            d.push_str(&format!(" L{x:.1} {y:.1}"));
+        }
+        d
+    }
+
+    /// The arrowhead at its end: the tip, and the two corners behind it. `None` for an edge
+    /// with no length.
+    pub fn arrow(&self) -> Option<[(f32, f32); 3]> {
+        let n = self.points.len();
+        if n < 2 {
+            return None;
+        }
+        let (tip, from) = (self.points[n - 1], self.points[n - 2]);
+        // An edge down the rows arrives straight down, however far aside it started.
+        let (dx, dy) = if self.forward() {
+            (0.0, 1.0)
+        } else {
+            (tip.0 - from.0, tip.1 - from.1)
+        };
+        let length = (dx * dx + dy * dy).sqrt().max(0.001);
+        let (ux, uy) = (dx / length, dy / length);
+        let base = (tip.0 - ux * ARROW.0, tip.1 - uy * ARROW.0);
+        let (px, py) = (-uy * ARROW.1, ux * ARROW.1);
+        Some([tip, (base.0 + px, base.1 + py), (base.0 - px, base.1 - py)])
+    }
+
+    /// What decides whether the machine takes this edge, from its definition's report
+    /// ([`Definition::decisions`](crate::engine::Definition::decisions)): what decides its
+    /// transitions, the most demanding when they differ, and the choice point's own for one of
+    /// its branches. Nothing decides the start's edge.
+    pub fn decided_by(&self, decisions: &[Decides]) -> Option<DecidedBy> {
+        decisions
+            .iter()
+            .filter(|d| match d.event {
+                Some(_) => d.transitions.iter().any(|t| self.transitions.contains(t)),
+                None => d.at == self.from,
+            })
+            .map(|d| d.by)
+            .max()
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Layout {
     pub width: f32,
     pub height: f32,
     pub nodes: Vec<Placed>,
     pub edges: Vec<Edge>,
+    /// How many times edges that run down the rows cross, as the rows were ordered.
+    pub crossings: usize,
 }
 
 impl Layout {
@@ -100,6 +191,12 @@ struct Link {
 
 /// Lays `machine` out.
 pub fn layout(machine: &Machine) -> Layout {
+    arrange(machine, true)
+}
+
+/// Lays `machine` out. Without `refine`, the rows are ordered by their neighbours' average
+/// places alone, as the last of a few sweeps left them.
+fn arrange(machine: &Machine, refine: bool) -> Layout {
     // Nodes: the start, the states in the order written, the choice points, the end.
     let mut keys: Vec<(String, NodeKind)> = vec![("start".into(), NodeKind::Start)];
     keys.extend(
@@ -271,7 +368,39 @@ pub fn layout(machine: &Machine) -> Layout {
             }
         }
     };
-    for sweep in 0..SWEEPS {
+    // How many times the edges between each row and the next cross, in an order of the rows.
+    let crossings = |rows: &[Vec<Member>]| -> usize {
+        let mut count = 0;
+        for pair in rows.windows(2) {
+            let below: HashMap<usize, usize> = pair[1]
+                .iter()
+                .enumerate()
+                .map(|(p, m)| (member_id(*m, n), p))
+                .collect();
+            let mut runs: Vec<(usize, usize)> = Vec::new();
+            for (p, m) in pair[0].iter().enumerate() {
+                for to in neighbours(*m, false) {
+                    if let Some(q) = below.get(&member_id(to, n)) {
+                        runs.push((p, *q));
+                    }
+                }
+            }
+            for (i, a) in runs.iter().enumerate() {
+                count += runs[i + 1..]
+                    .iter()
+                    .filter(|b| (a.0 < b.0 && a.1 > b.1) || (a.0 > b.0 && a.1 < b.1))
+                    .count();
+            }
+        }
+        count
+    };
+    // The order kept: the one with the fewest crossings, the later one when two tie.
+    let mut best = rows.clone();
+    let mut fewest = crossings(&rows);
+    for sweep in 0..if refine { SWEEPS } else { SWEEPS / 2 } {
+        if refine && fewest == 0 {
+            break;
+        }
         let up = sweep % 2 == 0;
         let range: Vec<usize> = if up {
             (1..rows.len()).collect()
@@ -303,6 +432,30 @@ pub fn layout(machine: &Machine) -> Layout {
                 .collect();
             scored.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
             rows[r] = scored.into_iter().map(|(_, _, m)| m).collect();
+        }
+        let now = crossings(&rows);
+        if now <= fewest || !refine {
+            fewest = now;
+            best = rows.clone();
+        }
+    }
+    let mut rows = best;
+    // Neighbours in a row swap while that leaves fewer crossings: what the averages miss.
+    while refine && fewest > 0 {
+        let before = fewest;
+        for r in 0..rows.len() {
+            for p in 1..rows[r].len() {
+                rows[r].swap(p - 1, p);
+                let now = crossings(&rows);
+                if now < fewest {
+                    fewest = now;
+                } else {
+                    rows[r].swap(p - 1, p);
+                }
+            }
+        }
+        if fewest == before {
+            break;
         }
     }
 
@@ -453,6 +606,7 @@ pub fn layout(machine: &Machine) -> Layout {
         height,
         nodes,
         edges,
+        crossings: fewest,
     }
 }
 
@@ -530,6 +684,111 @@ mod tests {
 
     fn machine(text: &str) -> Machine {
         Machine::parse(text).unwrap()
+    }
+
+    #[test]
+    fn rows_are_ordered_for_fewer_crossings() {
+        // Averages alone leave two crossings here; keeping the best order and swapping
+        // neighbours leaves one.
+        let m = machine(
+            "fsm A {\n[*] --> s0\nstate s0\nstate s1\nstate s2\nstate s3\nstate s4\nstate s5\ns0 --> s1 : said [a]\ns0 --> s5 : said [b]\ns1 --> s2 : said [c]\ns1 --> s3 : said [d]\ns2 --> s3 : said [e]\ns2 --> s4 : said [f]\ns4 --> s5 : said [g]\ns3 --> [*] : said [h]\ns5 --> [*] : said [i]\n}",
+        );
+        assert_eq!(arrange(&m, false).crossings, 2);
+        let l = layout(&m);
+        assert_eq!(l.crossings, 1);
+        // The rows are the same, and nothing overlaps within one.
+        let rows = |l: &Layout| -> Vec<i32> { l.nodes.iter().map(|n| n.y as i32).collect() };
+        assert_eq!(rows(&l), rows(&arrange(&m, false)));
+        for a in &l.nodes {
+            for b in l.nodes.iter().filter(|b| b.key != a.key && b.y == a.y) {
+                assert!(a.x + a.width <= b.x || b.x + b.width <= a.x, "{a:?} {b:?}");
+            }
+        }
+        // A machine with no crossing to begin with has none.
+        let plain = machine("fsm A {\n[*] --> a\nstate a\nstate b\na --> b\nb --> [*] : said\n}");
+        assert_eq!(layout(&plain).crossings, 0);
+    }
+
+    #[test]
+    fn edges_curve_through_their_points_and_arrive_straight() {
+        let m = machine(
+            "fsm A {\n[*] --> a\nstate a\nstate b\nstate c\na --> b\nb --> c : said [go on]\nc --> a : said [again]\nc --> c : said [once more]\nc --> [*] : said [stop]\na --> c : failed\n}",
+        );
+        let l = layout(&m);
+        let edge = |from: &str, to: &str| {
+            l.edges
+                .iter()
+                .find(|e| e.from == from && e.to == to)
+                .unwrap()
+        };
+        let count = |path: &str, c: char| path.chars().filter(|x| *x == c).count();
+        // Down the rows: one curve between each two points, and no corner.
+        let (short, long) = (edge("a", "b"), edge("a", "c"));
+        assert_eq!((short.points.len(), long.points.len()), (2, 3));
+        let path = short.path();
+        assert!(path.starts_with('M'), "{path}");
+        assert_eq!((count(&path, 'C'), count(&path, 'L')), (1, 0), "{path}");
+        assert_eq!(count(&long.path(), 'C'), 2);
+        // It leaves and arrives straight down: the curve's handles are above and below its
+        // ends, and the arrowhead points down whatever the slant.
+        let (x0, y0) = short.points[0];
+        let (x1, y1) = short.points[1];
+        let mid = (y0 + y1) / 2.0;
+        assert_eq!(
+            path,
+            format!("M{x0:.1} {y0:.1} C{x0:.1} {mid:.1} {x1:.1} {mid:.1} {x1:.1} {y1:.1}")
+        );
+        let [tip, left, right] = long.arrow().unwrap();
+        assert_eq!(tip, *long.points.last().unwrap());
+        assert_eq!((left.1, right.1), (tip.1 - 8.0, tip.1 - 8.0));
+        assert_eq!((left.0 - tip.0, tip.0 - right.0), (-4.0, -4.0));
+        // Back up the side, and a loop: straight runs with rounded corners, and the arrowhead
+        // follows the last run, into the node from its right.
+        for turning in [edge("c", "a"), edge("c", "c")] {
+            let path = turning.path();
+            assert_eq!((count(&path, 'C'), count(&path, 'Q')), (0, 2), "{path}");
+            let [tip, left, right] = turning.arrow().unwrap();
+            assert!(left.0 > tip.0 && right.0 > tip.0, "{:?}", turning.arrow());
+        }
+    }
+
+    #[test]
+    fn an_edge_says_what_decides_it() {
+        use crate::engine::Definition;
+        let m = machine(
+            "fsm A {\n[*] --> a\nstate a\nstate b\nstate c\nchoice which {\n[it is short] -> a\n[else] -> c\n}\na --> b\nb --> c : said [go on]\nb --> <<which>> : said [the user asks]\nc --> a : said [again]\nc --> a : failed\nc --> [*] : said [stop]\n}",
+        );
+        let mut def = Definition::from(m);
+        def.working.insert("a".into());
+        // `go on` carries rules; the other guards are criteria for the model.
+        def.ruled.guards.insert("go".into());
+        let decisions = def.decisions();
+        let l = layout(&def.machine);
+        let by = |from: &str, to: &str| {
+            let edge = l.edges.iter().find(|e| e.from == from && e.to == to);
+            edge.unwrap().decided_by(&decisions)
+        };
+        assert_eq!(by("start", "a"), None);
+        assert_eq!(by("a", "b"), Some(DecidedBy::Event));
+        // Two transitions on `said` out of b: the model chooses, and so for each of their edges.
+        assert_eq!(by("b", "c"), Some(DecidedBy::Model));
+        assert_eq!(by("b", "<<which>>"), Some(DecidedBy::Model));
+        // A choice point's branches are decided at the choice point.
+        assert_eq!(by("<<which>>", "a"), Some(DecidedBy::Model));
+        assert_eq!(by("<<which>>", "c"), Some(DecidedBy::Model));
+        // One edge, two transitions: `said`, which the model decides, and `failed`, which
+        // nothing does. The edge shows the more demanding.
+        assert_eq!(
+            l.edges
+                .iter()
+                .filter(|e| e.from == "c" && e.to == "a")
+                .count(),
+            1
+        );
+        assert_eq!(by("c", "a"), Some(DecidedBy::Model));
+        assert!(
+            DecidedBy::Event < DecidedBy::Rules && DecidedBy::RulesThenModel < DecidedBy::Model
+        );
     }
 
     #[test]

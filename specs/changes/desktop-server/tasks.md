@@ -570,8 +570,8 @@ Done when: a search waiting in `results` is still there after a restart.
 
 ## Phase 8: UI follow-ups
 
-- [ ] **Decided-by on the diagram.** Colour each edge by what decides it (event, rules, model),
-      from the loader's report.
+- [x] **Decided-by on the diagram.** Colour each edge by what decides it (event, rules, model),
+      from the loader's report. An edge that holds several transitions shows the most demanding.
 - [ ] **Answer a decision from the Machines tab.** When the model is unsure, show the candidates
       and let a click answer the `Decide`. Keep each answer, with the state and the
       probabilities, as a labelled example for tuning descriptions.
@@ -580,8 +580,11 @@ Done when: a search waiting in `results` is still there after a restart.
 - [ ] **Draft states under a machine** in the Flows tab: write the state's folder and append its
       transitions (`idle --> x : said`, `x --> idle`) to the parent's `.fsm`. Today only decision
       parents are offered.
-- [ ] **Edge routing:** fewer crossings (more ordering sweeps, transposition), and orthogonal or
-      spline edges instead of straight segments.
+- [x] **Edge routing:** fewer crossings (more ordering sweeps, transposition), and orthogonal or
+      spline edges instead of straight segments. Done as: the order with the fewest crossings is
+      kept, then neighbours swap while that helps; edges down the rows are curves that leave and
+      arrive straight, and those that point back round their corners. Checked by eye on the
+      search example's diagram.
 - [ ] **Hand unsure takes back up.** The live case: "Buscar …" said while a search waited matched
       the root's `[search]` rule, but the task had it first, was unsure and stayed. Phase 2
       already lets an agent choose between its running tasks and its own transitions. What remains: a take the chosen task is then unsure about,

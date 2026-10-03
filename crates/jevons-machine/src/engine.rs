@@ -168,8 +168,9 @@ impl Definition {
     }
 }
 
-/// What decides a state's transitions on an event, or a choice point's branches.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+/// What decides a state's transitions on an event, or a choice point's branches. In order:
+/// each asks more than the one before it.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DecidedBy {
     /// The event alone: one transition, with nothing to check or judge.

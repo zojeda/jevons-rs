@@ -1396,6 +1396,24 @@ mod tests {
         assert!(doc.query_selector(".fsm-lines circle").unwrap().is_some());
         assert!(doc.query_selector_all(".fsm-lines polygon").unwrap().len() >= 7);
         assert!(texts(&doc, ".fsm-label").iter().any(|l| l == "said [else]"));
+        // Each edge says what decides it: the agents' ends are the event alone, and what the
+        // user said is for rules and then the model. The legend names the colours.
+        let decided = |by: &str| {
+            let selector = format!(".fsm-lines g[data-by=\"{by}\"]");
+            doc.query_selector_all(&selector).unwrap().len()
+        };
+        assert_eq!(
+            (
+                decided("none"),
+                decided("event"),
+                decided("rules_then_model")
+            ),
+            (1, 3, 3)
+        );
+        assert_eq!(
+            texts(&doc, ".fsm-legend-item"),
+            ["the event", "rules", "rules, then the model", "the model"]
+        );
         // States are boxes where the layout put them, not collapsed.
         let state = doc.query_selector(".fsm-state").unwrap().unwrap();
         let size = doc.get_node(state).unwrap().final_layout.size;

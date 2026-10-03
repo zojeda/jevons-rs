@@ -10,7 +10,9 @@ use crate::agent::Command;
 use dioxus::prelude::*;
 use jevons_desktop_server::flow::machine::layout::{self, Edge, Layout, NodeKind, Placed};
 use jevons_desktop_server::flow::machine::runtime::{Running, Step, View as Machines};
-use jevons_desktop_server::flow::machine::{self, Condition, Level, Loaded, Target};
+use jevons_desktop_server::flow::machine::{
+    self, Condition, DecidedBy, Decides, Level, Loaded, Target,
+};
 use jevons_desktop_server::flow::tree::{FlowTree, Node, NodeSpec};
 use jevons_desktop_server::flow::{Kind, defaults};
 use std::sync::Arc;
@@ -19,6 +21,21 @@ use std::sync::Arc;
 const LINE: &str = "#5d5d5d";
 const BACK: &str = "#3e3e3e";
 const HOT: &str = "#22e6f2";
+/// And by what decides an edge: the event alone is the quiet line.
+const BY_RULES: &str = "#6fbf7f";
+const BY_RULES_THEN_MODEL: &str = "#d9a441";
+const BY_MODEL: &str = "#b98ae6";
+
+/// An edge's colour and its name in `data-by`, by what decides it.
+fn by_colour(by: Option<DecidedBy>) -> (&'static str, &'static str) {
+    match by {
+        None => (LINE, "none"),
+        Some(DecidedBy::Event) => (LINE, "event"),
+        Some(DecidedBy::Rules) => (BY_RULES, "rules"),
+        Some(DecidedBy::RulesThenModel) => (BY_RULES_THEN_MODEL, "rules_then_model"),
+        Some(DecidedBy::Model) => (BY_MODEL, "model"),
+    }
+}
 /// The most characters of an edge label drawn on the diagram (the layout leaves room for that
 /// many); the rest is in its tooltip.
 const LABEL: usize = jevons_desktop_server::flow::machine::layout::LABEL_CHARS;
@@ -72,46 +89,18 @@ fn machine_nodes(tree: &FlowTree) -> Vec<&Node> {
 }
 
 /// An arrowhead at the polyline's end, as polygon points.
-fn arrow(points: &[(f32, f32)]) -> String {
-    let n = points.len();
-    if n < 2 {
-        return String::new();
-    }
-    let (tip, from) = (points[n - 1], points[n - 2]);
-    let (dx, dy) = (tip.0 - from.0, tip.1 - from.1);
-    let length = (dx * dx + dy * dy).sqrt().max(0.001);
-    let (ux, uy) = (dx / length, dy / length);
-    let base = (tip.0 - ux * 8.0, tip.1 - uy * 8.0);
-    let (px, py) = (-uy * 4.0, ux * 4.0);
-    format!(
-        "{:.1},{:.1} {:.1},{:.1} {:.1},{:.1}",
-        tip.0,
-        tip.1,
-        base.0 + px,
-        base.1 + py,
-        base.0 - px,
-        base.1 - py
-    )
-}
-
-fn polyline(points: &[(f32, f32)]) -> String {
-    points
-        .iter()
-        .enumerate()
-        .map(|(i, (x, y))| format!("{}{x:.1} {y:.1}", if i == 0 { "M" } else { " L" }))
-        .collect()
-}
-
 /// The edge an edge's transitions include `transition`.
 fn holds(edge: &Edge, transition: Option<usize>) -> bool {
     transition.is_some_and(|t| edge.transitions.contains(&t))
 }
 
-/// The diagram: edges and dots in one SVG, states and labels as boxes over it.
+/// The diagram: edges and dots in one SVG, states and labels as boxes over it. Each edge is
+/// coloured by what decides it, from `decisions`.
 fn diagram(
     tree: &FlowTree,
     machine: &Node,
     layout: &Layout,
+    decisions: &[Decides],
     current: Option<&str>,
     hot: Option<usize>,
     mut selected: Signal<Option<String>>,
@@ -144,17 +133,23 @@ fn diagram(
     });
     let lines = layout.edges.iter().enumerate().map(|(i, edge)| {
         let hot = holds(edge, hot);
+        let (decided, by) = by_colour(edge.decided_by(decisions));
         let color = if hot {
             HOT
-        } else if edge.back {
+        } else if edge.back && decided == LINE {
             BACK
         } else {
-            LINE
+            decided
         };
-        let d = polyline(&edge.points);
-        let head = arrow(&edge.points);
+        let d = edge.path();
+        let head: String = edge
+            .arrow()
+            .iter()
+            .flatten()
+            .map(|(x, y)| format!("{x:.1},{y:.1} "))
+            .collect();
         rsx! {
-            g { key: "edge-{i}",
+            g { key: "edge-{i}", "data-by": by,
                 path { d: "{d}", fill: "none", stroke: color, stroke_width: if hot { "2.5" } else { "1.5" },
                     stroke_dasharray: if edge.back && !hot { "5 4" } else { "none" } }
                 polygon { points: "{head}", fill: color }
@@ -213,6 +208,18 @@ fn diagram(
                 {choice_names}
                 {boxes}
             }
+        }
+        div { class: "fsm-legend",
+            span { class: "muted", "Decided by" }
+            {[DecidedBy::Event, DecidedBy::Rules, DecidedBy::RulesThenModel, DecidedBy::Model].into_iter().map(|by| {
+                let (colour, name) = by_colour(Some(by));
+                rsx! {
+                    span { key: "{name}", class: "fsm-legend-item",
+                        span { class: "fsm-swatch", style: "background: {colour};" }
+                        "{by}"
+                    }
+                }
+            })}
         }
     }
 }
@@ -466,9 +473,10 @@ pub fn MachinesPage(rev: u64) -> Element {
         }
         Some(loaded) => {
             let drawn = layout::layout(&loaded.diagram);
+            let decisions = loaded.diagram.decisions();
             let state = selected().filter(|s| loaded.diagram.state(s).is_some());
             rsx! {
-                {diagram(&tree, node, &drawn, current.as_deref(), hot, selected)}
+                {diagram(&tree, node, &drawn, &decisions, current.as_deref(), hot, selected)}
                 if let Some(state) = state {
                     {state_card(&tree, node, loaded, &state, current.as_deref() == Some(state.as_str()))}
                 }

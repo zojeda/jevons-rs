@@ -175,7 +175,8 @@ each agent and, under it, the tasks it runs (`search-1`), each with its state an
 waits for; a task has its own **Cancel**. Selecting a row shows that machine's diagram, and the
 task the latest take reached shows otherwise; a machine can also be picked by folder. The diagram
 draws states as boxes where the layout puts them, start and end dots, choice diamonds, and an
-arrowhead and label per edge. The current state of the machine shown is marked and its latest
+arrowhead and label per edge. Each edge is a curve, coloured by what decides it (the event
+alone, rules, rules and then the model, the model), with a legend below the diagram. The current state of the machine shown is marked and its latest
 transition's label lit. Each state shows its work in a few words (such as `tool · web_search`,
 `loop`, `run`, `decide`, `machine`) or `waits`. A tree whose root is a decision says it has no
 machines.
