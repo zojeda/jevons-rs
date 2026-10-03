@@ -244,6 +244,9 @@ with what was said and what the task answered or how the turn ended. **Copy** an
 the latest text the conversation holds. **Close** hides it, and **Show the task's conversation**
 in the tray menu brings it back while the task waits and no take runs. When the task ends, the
 conversation ends with it: the bubble follows R9 again, a conversation left resting in it goes,
-and the next take starts a bubble of its own.
+and the next take starts a bubble of its own. A take that goes elsewhere while the task waits
+(dictation, another agent) is no part of the conversation: its bubble follows R9, and the
+conversation stays as it was for the next take that reaches the task. A take that reaches another
+task starts that task's conversation.
 
 Tests: `a_waiting_task_s_turns_stay_in_the_bubble_for_the_next_take`, `menu_ids_map_to_commands`

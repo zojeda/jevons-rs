@@ -380,6 +380,8 @@ impl Runtime {
         );
         turn.transcript = turn.trace.transcript.clone();
         turn.forget();
+        // The bubble follows the task this take reaches, if it reaches one.
+        turn.forest.focus = None;
         let root = tree.root();
         let at = turn.forest.root();
         match (entry.filter(|id| *id != root), at) {
@@ -444,6 +446,9 @@ impl Runtime {
         self.publish(&forest, true, None);
         let mut turn = Turn::new(self, env, tree, &mut forest, start, updates, &mut trace);
         turn.forget();
+        // A task's timer is a take of that task's.
+        let task = turn.forest.instances[&due.instance].parent.is_some();
+        turn.forest.focus = task.then_some(due.instance);
         turn.drive(Next::Input(
             due.instance,
             Input::Event(Event::Timer(due.event)),

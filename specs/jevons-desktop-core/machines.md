@@ -330,12 +330,13 @@ The view lists the machines that run: the root, the agents, then the tasks in th
 started, each with its folder, name, level, state, entry time, the events it waits for, its id and
 state entry, and for a task its agent and its number. It gives the task the latest take reached
 while it runs, and where the app is by it (`research › search › results`, or the root's state
-when none runs). It says whether a take or timer is moving the machines, whether everything is at
+when the take reached none: dictation while a search waits leaves the search where it was and is
+no part of it). It says whether a take or timer is moving the machines, whether everything is at
 rest, and whether a timer that ran out is still waited for (its machine is in the state entry it
 was armed in), and keeps the last 200 transitions. Each state entry updates the view, and a
 task's then sends its new place to the app.
 
-Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`, `an_unsure_take_leaves_a_waiting_task_where_it_was`, `a_timer_ends_a_task_that_waits_and_stale_timers_do_nothing`, `two_tasks_of_one_agent_run_side_by_side_and_each_gets_its_own_follow_ups`
+Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`, `an_unsure_take_leaves_a_waiting_task_where_it_was`, `a_timer_ends_a_task_that_waits_and_stale_timers_do_nothing`, `two_tasks_of_one_agent_run_side_by_side_and_each_gets_its_own_follow_ups`, `a_take_for_another_agent_leaves_a_waiting_task_alone`
 
 ### R40 Every transition and stay is traced
 

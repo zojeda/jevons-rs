@@ -232,7 +232,13 @@ What phase 2 decided on the way:
 - **A take always starts at the root.** A follow-up reaches a waiting task through the root and
   its agent, in the same request. Dictation while a search waits is therefore typed, where the
   spike gave every take to the waiting task.
-- **The bubble follows one task:** the one the latest take reached.
+- **The bubble follows one task:** the one the latest take reached. A take that goes elsewhere
+  (dictation while a search waits) is no part of its conversation, which stays for the next take
+  that reaches it. The app's side of this has no test harness; the runtime's side has.
+- **A follow-up can now be mistyped.** It goes through the root, so when the model is unsure
+  between the agent whose task waits and dictation, the root's `[else]` types the words. In the
+  spike an unsure follow-up stayed in the task. Dictation while a task waits is typed again,
+  which the spike could not do.
 - **Before the next Windows install, the user's flows folder needs moving by hand again:** it is
   an edited tree with inline root states and `search/` under the root, which no longer loads
   (the app then runs the built-in tree). Its states go under agents, and `search/` under a
@@ -253,6 +259,10 @@ its own follow-ups.
 ## Phase 3: the inference router and provider profiles
 
 Scope: route each capability to its own provider, and describe each decision provider.
+
+Before installing it: the single runtime mode goes away, and the settings file rejects unknown
+fields, so an existing `jevons-desktop.toml` stops loading. The user's needs moving by hand, as
+their flows folder did; keep `[providers]` and `[routes]` a short diff from `[server]`.
 
 - [ ] Settings:
       - `[providers.<name>]`: the kind (embedded, jevons, openrouter, openai-compatible), base

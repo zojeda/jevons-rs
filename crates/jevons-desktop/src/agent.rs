@@ -629,6 +629,9 @@ pub struct Agent {
     /// The bubble of the waiting task's latest turn, with the turns before it: what the next
     /// take joins, and what the tray's Show the task's conversation brings back.
     thread: Option<Feedback>,
+    /// The task that conversation is of: it stays while that task runs, whatever other takes
+    /// do in between.
+    thread_task: Option<u64>,
     /// The window (and tree) the Context tab's extracts were last read in.
     extracts_read: Option<String>,
     workbench: Workbench,
@@ -727,6 +730,7 @@ impl Agent {
             replacing: None,
             messages: 0,
             thread: None,
+            thread_task: None,
             extracts_read: None,
             workbench: Workbench::default(),
             finding: false,
@@ -1093,8 +1097,7 @@ impl Agent {
             Command::AutomationFinished(trace) => self.automation_finished(*trace),
             Command::MachineTimer(due) => self.machine_timer(due),
             Command::CancelOneTask(id) => {
-                // The bubble follows the task the latest take reached.
-                if self.machines.view().focus == Some(id) {
+                if self.thread_task == Some(id) {
                     self.end_conversation();
                 }
                 let machines = self.machines.clone();
@@ -1188,6 +1191,7 @@ impl Agent {
     /// The task is over: its conversation goes, and the bubble with it when it only rested
     /// there.
     fn end_conversation(&mut self) {
+        self.thread_task = None;
         let Some(conversation) = self.thread.take() else {
             return;
         };
@@ -2485,12 +2489,13 @@ impl Agent {
         let env = self.take_env(connection, None);
         let updates = self.watch_updates(id);
         if self.active.is_none() {
-            let turns = self.thread.as_ref().map(Feedback::conversation);
-            let state = self
+            // The timer of the task the conversation is of joins it.
+            let thread = self
                 .thread
                 .as_ref()
-                .map(|t| t.state.clone())
-                .unwrap_or_default();
+                .filter(|_| self.thread_task == Some(due.instance));
+            let turns = thread.map(Feedback::conversation);
+            let state = thread.map(|t| t.state.clone()).unwrap_or_default();
             self.view().feedback = Some(Feedback {
                 take: id,
                 status: format!("Timer: {}", due.event),
@@ -2617,10 +2622,21 @@ impl Agent {
             }
         }
         let failed = trace.error.is_some();
-        // A task that still waits keeps its conversation in the bubble, for the next turn.
+        // A task that still waits keeps its conversation in the bubble, for the next turn. The
+        // take is part of it when it reached that task; a take that went elsewhere (dictation
+        // while a search waits) is not, and leaves the conversation as it was.
         let machines = self.machines.view();
         let waits = machines.in_task();
-        let earlier = self.thread.as_ref().map(Feedback::conversation);
+        let same = machines.focus == self.thread_task;
+        let reached = waits
+            || self
+                .thread_task
+                .is_some_and(|task| trace.machine.iter().any(|s| s.instance == task));
+        let earlier = self
+            .thread
+            .as_ref()
+            .filter(|_| same)
+            .map(Feedback::conversation);
         let conversation = {
             let mut view = self.view();
             view.dictating = false;
@@ -2634,9 +2650,16 @@ impl Agent {
             if let Some(feedback) = view.feedback.as_mut().filter(|f| f.take == trace.take) {
                 feedback.finish(&trace);
                 if waits {
+                    // Another task's turns are not this one's.
+                    if !same {
+                        feedback.turns.clear();
+                    }
                     feedback.task = true;
                     feedback.state = machines.path();
                     conversation = Some(feedback.clone());
+                } else if !reached {
+                    feedback.task = false;
+                    feedback.turns.clear();
                 }
                 // Long enough to read the outcome, errors longer; an answer stays until Close
                 // (or the next take), since reading it may take a while, and so does the
@@ -2671,7 +2694,17 @@ impl Agent {
             view.traces.truncate(HISTORY);
             conversation
         };
-        self.thread = conversation;
+        if waits {
+            self.thread = conversation;
+            self.thread_task = machines.focus;
+        } else if !self
+            .thread_task
+            .is_some_and(|task| machines.running(task).is_some())
+        {
+            // Its task is over.
+            self.thread = None;
+            self.thread_task = None;
+        }
         self.set_tray(if failed {
             TrayState::Error
         } else {

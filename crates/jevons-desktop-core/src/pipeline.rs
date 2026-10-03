@@ -2310,6 +2310,79 @@ confirm = false
     }
 
     #[tokio::test]
+    async fn a_take_for_another_agent_leaves_a_waiting_task_alone() {
+        // The model routes "search …" to research, "open …" to the task that waits, and the
+        // rest to typing.
+        let router: Decider = Arc::new(|request: &Value| {
+            let said = request["state"].as_str().unwrap_or_default().to_string();
+            let wanted: &[&str] = if said.contains("search for") {
+                &["research", "find"]
+            } else if said.contains("open") {
+                &["research", "find-1", "opening"]
+            } else {
+                &["typing"]
+            };
+            let answers: serde_json::Map<String, Value> = request["questions"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(key, question)| {
+                    let offered = question["criteria"].as_object().unwrap();
+                    let choice = wanted
+                        .iter()
+                        .copied()
+                        .find(|l| offered.contains_key(*l))
+                        .unwrap_or_else(|| offered.keys().next().unwrap());
+                    let answer = json!({"type": "choice", "choice": choice,
+                        "probabilities": {choice: 0.9}, "confidence": 0.9});
+                    (key.clone(), answer)
+                })
+                .collect();
+            json!({"model": "jev", "usage": {"input_tokens": 1, "output_tokens": 1}, "answers": answers})
+        });
+        let (client, _) = server(router, "Results.").await;
+        let machines = Arc::new(Runtime::new());
+        let sink = RecordingSink::new(Some(7));
+        let env = Env {
+            machines: machines.clone(),
+            flows: tree_of(SEARCH_TASK),
+            tools: Some(tool_host()),
+            ..env(client, Some(&sink))
+        };
+        say(&env, 1, "search for crates").await;
+        let task = machines.view().focus.expect("the search waits");
+        // Dictation while the search waits is typed, and is no part of the search: the app is
+        // not in a task for this take, and the search is where it was.
+        let typed = say(&env, 2, "see you at five").await;
+        assert_eq!(typed.error, None, "{:?}", typed.notes);
+        assert_eq!(
+            moves(&typed),
+            [
+                "idle said → typing",
+                "typing done → idle",
+                "idle said → type",
+                "type done → idle"
+            ]
+        );
+        assert_eq!(sink.requests()[0].text, "see you at five");
+        let view = machines.view();
+        assert!(!view.in_task());
+        assert_eq!((view.focus, view.path().as_str()), (None, "idle"));
+        assert_eq!(view.running(task).unwrap().state, "answering");
+        // A follow-up reaches it again.
+        let opened = say(&env, 3, "open the first one").await;
+        assert_eq!(
+            inner(&opened),
+            [
+                "idle said → task find-1",
+                "answering said → opening",
+                "opening done → [*]"
+            ]
+        );
+        assert!(opened.machine[3..].iter().all(|s| s.instance == task));
+    }
+
+    #[tokio::test]
     async fn one_task_can_be_cancelled_and_the_others_go_on() {
         let (client, _) = server(prefer(&["research", "find"]), "Results.").await;
         let machines = Arc::new(Runtime::new());
