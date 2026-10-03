@@ -122,7 +122,7 @@ Tests: none yet
 ### R13 `--reset-settings` puts the defaults back
 
 `--reset-settings` resets the settings folder as the tray does (jevons-desktop-core's
-[settings](../jevons-desktop-core/settings.md)), before loading the settings, so it also mends a
+[settings](settings.md)), before loading the settings, so it also mends a
 file that does not load. It prints the entries removed, the folder, whether it was committed, and
 each note. Quit the tray app first.
 

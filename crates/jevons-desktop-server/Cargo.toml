@@ -1,0 +1,41 @@
+[package]
+name = "jevons-desktop-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "The jevons desktop server: the flow tree, the machines, the inference router and the take pipeline, behind the desk a client implements."
+
+[dependencies]
+jevons-desktop-protocol.workspace = true
+jevons-machine.workspace = true
+adk-agent.workspace = true
+adk-core.workspace = true
+adk-runner.workspace = true
+adk-session.workspace = true
+adk-tool.workspace = true
+# The forwarder: the API the app serves to other clients.
+axum = { workspace = true, features = ["ws"] }
+base64.workspace = true
+futures-util = { workspace = true, features = ["sink", "std"] }
+globset.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "process"] }
+tokio-tungstenite.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# The client's side of the desk, over fakes: the pipeline suite runs against it.
+jevons-desktop-core = { workspace = true, features = ["testing"] }
+jevons-audio.workspace = true
+
+[lints]
+workspace = true

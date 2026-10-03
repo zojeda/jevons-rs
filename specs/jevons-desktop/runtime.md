@@ -3,11 +3,11 @@
 [Back to jevons-desktop](spec.md)
 
 The runtime is where inference runs. Each capability goes to the provider its route names
-([settings](../jevons-desktop-core/settings.md) R19 to R21): the embedded provider is the models
+([settings](settings.md) R19 to R21): the embedded provider is the models
 loaded in this process, served over HTTP by the embedded jevons-api, and the others are servers
 elsewhere. The runtime thread owns the loaded models and the forwarder that serves other
 clients, so the API can move to another address without reloading the models. Takes reach their providers through
-jevons-desktop-core's [client](../jevons-desktop-core/client.md), and the catalog that fills
+jevons-desktop-core's [client](../jevons-desktop-server/client.md), and the catalog that fills
 unselected services is described there too.
 
 ## Requirements
@@ -51,7 +51,7 @@ Tests: `exposing_the_api_serves_what_the_routes_serve_until_it_is_turned_off`
 ### R5 Exposing the API serves other clients
 
 With `expose` on and anything served, the forwarder
-([client](../jevons-desktop-core/client.md) R23 to R28) listens on `bind:port` with the key from
+([client](../jevons-desktop-server/client.md) R23 to R28) listens on `bind:port` with the key from
 `TYPESAFE_API_KEY`, else `api_key`; an empty key counts as none, and without a key the API is
 open. Other clients get what the routes serve, whichever provider serves it. The status reads
 "Serving the API on <address>", or "Using <providers>; serving the API on <address>" with no

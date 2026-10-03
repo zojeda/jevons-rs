@@ -332,26 +332,26 @@ What phase 3 decided on the way:
 Scope: move the desktop server's parts out, behind a Rust trait boundary, and keep everything in
 one process.
 
-- [ ] New crate `jevons-desktop-server`, holding:
+- [x] New crate `jevons-desktop-server`, holding:
       - `flow/` (tree, walker, extract and investigate orchestration, the investigator, agents,
         `JevonsLlm`);
       - the machine host;
       - the server tools in the tool host;
       - the router and providers;
       - the server's settings.
-- [ ] `jevons-desktop-core` keeps the client:
+- [x] `jevons-desktop-core` keeps the client:
       - platform traits, context, XPath, delivery and paste safety;
       - gestures, recording, the automation engine and library;
       - client tools, icons, the catalog and downloads.
-- [ ] Define the boundary as a trait the server calls: deliver, show, confirm, read the screen
-      (a batch of extracts, an investigator step), open, run a client tool. The client core
-      implements it in-process.
-- [ ] Split the pipeline:
+- [x] Define the boundary as a trait the server calls: deliver, confirm, read the screen
+      (an extract, an investigator step), run a client tool. The client core implements it
+      in-process (`LocalDesk`). "Show" and "open" are noted below.
+- [x] Split the pipeline:
       - the client captures (audio, context) and delivers;
       - the server transcribes through its speech route, moves the machines, walks and decides.
-- [ ] Split the settings file in two (client: hotkeys, microphone, privacy, client tools,
-      automations; server: providers, routes, flows folder, server tools), in the same settings
-      folder and git repository in the all-in-one mode.
+- [x] Split the settings file in two (client: hotkeys, microphone, privacy, automations; server:
+      providers, routes, models, flows folder, tools, the API log), in the same settings folder
+      and git repository in the all-in-one mode.
 
 How phase 4 is cut (decided 2026-10-03, before carving):
 
@@ -378,6 +378,27 @@ How phase 4 is cut (decided 2026-10-03, before carving):
   move of `client/`, `forward`, `flow/`, the pipeline's server half and the server's settings,
   with the pipeline suite run against the client core's desk as a dev-dependency; (D) the
   settings file in two.
+
+What phase 4 found on the way:
+
+- **Neither crate depends on the other** (`cargo tree` shows it both ways). The server's tests
+  use the client core as a dev-dependency: the pipeline suite runs against `LocalDesk` over
+  fakes.
+- **The settings folder as a whole is the app's** (`jevons-desktop/src/settings.rs` and
+  `config.rs`): it sees both halves. The app keeps one value for the Settings tab and writes
+  each half to its own file.
+- **`privacy.log_api` is the server's,** under `[privacy]` in `jevons-server.toml`. `[models]` is
+  the server's too (the embedded provider's), and filling unselected services from the
+  downloaded catalog is the app's.
+- **The automation author gets its model as a `Planner`** the app implements over the generation
+  route, since the client core does not know the API client.
+- **The guarded writer exists twice,** in the server for the flows folder's guides and in the
+  client core for the automations library's: forty lines, and no crate both may depend on is
+  the place for file writing.
+- **Before the next Windows install, the settings file needs splitting by hand:** `[server]`,
+  `[providers.*]`, `[routes]`, `[models]`, `[tools.*]`, `[mcp.*]`, `flows_dir` and `log_api`
+  (under `[privacy]`) move to a new `jevons-server.toml` next to `jevons-desktop.toml`. Left in
+  the client's file they are unknown fields, and the app starts on the defaults.
 
 Crates: `jevons-desktop-server` (new), `jevons-desktop-core`, `jevons-desktop`.
 Tested by: the pipeline suite moved to the server crate and run against a client-core

@@ -7,7 +7,7 @@ such as posting a message to a Slack channel. The library is a folder of them, o
 Each one is checked before it runs and dry-run against the demonstrations it was written from, and
 it runs for real only in the version the user approved. The author writes one from a recording.
 Recording is in [recording](recording.md), `script:<name>` tools and `run.toml` nodes in
-[tools](tools.md), and the tray, hotkeys and the approval prompt in jevons-desktop.
+[tools](../jevons-desktop-server/tools.md), and the tray, hotkeys and the approval prompt in jevons-desktop.
 
 ## Requirements
 

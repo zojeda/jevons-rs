@@ -6,11 +6,9 @@
 //! The runtime thread owns a Tokio runtime, the loaded models and the forwarder. Exposing the
 //! API or changing its port only rebinds the forwarder, so the models stay in memory.
 
-use jevons_desktop_core::client::{Client, Profile, Route, Routes};
-use jevons_desktop_core::config::{
-    Capability, DesktopConfig, ModelRef, Models, Provider, ProviderKind,
-};
-use jevons_desktop_core::forward::{self, Forwarder};
+use crate::config::{Capability, DesktopConfig, ModelRef, Models, Provider, ProviderKind};
+use jevons_desktop_server::client::{Client, Profile, Route, Routes};
+use jevons_desktop_server::forward::{self, Forwarder};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -324,7 +322,7 @@ fn run(
             let catalog_file = file.parent().unwrap_or(Path::new(".")).join("models.toml");
             let (catalog, _) = jevons_desktop_core::catalog::load(&catalog_file);
             let folder = config.models_folder();
-            let models = config.models.with_defaults(&folder, &catalog);
+            let models = crate::config::with_downloaded(&config.models, &folder, &catalog);
             runtime_settings(&models, &file, wanted).unwrap_or_else(|e| {
                 failures.push(e);
                 None
@@ -490,7 +488,7 @@ mod embedded {
     use super::Served;
     use jevons_api::config::Settings;
     use jevons_api::{AppState, Workers};
-    use jevons_desktop_core::client::Client;
+    use jevons_desktop_server::client::Client;
     use std::net::SocketAddr;
     use std::path::Path;
     use std::sync::Arc;

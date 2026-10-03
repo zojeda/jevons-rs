@@ -61,8 +61,8 @@ pub fn App() -> Element {
         .trim_start_matches("jevons: ")
         .to_string();
     let verb = |mode| match mode {
-        jevons_desktop_core::config::HotkeyMode::Hold => "hold",
-        jevons_desktop_core::config::HotkeyMode::Toggle => "press",
+        crate::config::HotkeyMode::Hold => "hold",
+        crate::config::HotkeyMode::Toggle => "press",
     };
     let hotkey = format!(
         "{} {}",

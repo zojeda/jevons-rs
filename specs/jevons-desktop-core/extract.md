@@ -18,8 +18,8 @@ and save, selectors (`xpath/selector.rs`) and the interface browser (`interface.
 Elsewhere:
 
 - When the walk reads an extract, lazy reads, reuse within a take, and the placeholder checks on
-  `$variables`: [flows.md](flows.md).
-- The investigator's `xpath` tool: [investigator.md](investigator.md). Automation scripts' use of
+  `$variables`: [flows.md](../jevons-desktop-server/flows.md).
+- The investigator's `xpath` tool: [investigator.md](../jevons-desktop-server/investigator.md). Automation scripts' use of
   XPath: [automations.md](automations.md).
 - Recorded interfaces (`--tree`, **Record tree**), which every read here also reads:
   [recording.md](recording.md).

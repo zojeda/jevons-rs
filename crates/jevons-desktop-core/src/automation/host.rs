@@ -261,7 +261,8 @@ fn failed(name: &str, kind: ErrorKind, message: String) -> RunTrace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recorded::{ReplayActor, tests::slack_demonstration};
+    use crate::fake::slack_demonstration;
+    use crate::recorded::ReplayActor;
 
     fn library_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("jevons-host-{name}-{}", std::process::id()));

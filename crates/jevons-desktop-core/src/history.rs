@@ -3,7 +3,7 @@
 //! `~/jevons` (recordings where the settings say), and only the files jevons writes there are
 //! removed; anything else in those folders is left alone.
 
-use crate::config::{DesktopConfig, user_dir};
+use crate::config::{ClientConfig, user_dir};
 use std::path::{Path, PathBuf};
 
 /// The app's log, which a running app keeps open: it is emptied rather than removed.
@@ -36,7 +36,7 @@ impl History {
     }
 
     /// Its folder.
-    pub fn dir(self, config: &DesktopConfig) -> PathBuf {
+    pub fn dir(self, config: &ClientConfig) -> PathBuf {
         match self {
             Self::Logs => user_dir().join("logs"),
             Self::Traces => user_dir().join("traces"),
@@ -93,7 +93,7 @@ impl std::fmt::Display for Cleared {
 }
 
 /// Clears one kind of history.
-pub fn clear(kind: History, config: &DesktopConfig) -> Cleared {
+pub fn clear(kind: History, config: &ClientConfig) -> Cleared {
     clear_in(kind, &kind.dir(config))
 }
 

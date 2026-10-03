@@ -428,14 +428,14 @@ impl ApplicationHandler<BlitzShellEvent> for Shell {
 mod tests {
     use super::*;
     use crate::agent::View;
+    use crate::config::DesktopConfig;
     use blitz_dom::Document as _;
-    use jevons_desktop_core::config::DesktopConfig;
     use jevons_desktop_core::context::{AppInfo, ContextSnapshot, Element as Focused, WindowInfo};
-    use jevons_desktop_core::flow::spec::Output;
-    use jevons_desktop_core::flow::walk::{self, Leaf};
-    use jevons_desktop_core::flow::{Catalog, FlowTree, defaults};
-    use jevons_desktop_core::pipeline::{Trace, TranscriptionPath};
     use jevons_desktop_core::platform::{Action, DeliveryMethod, DeliveryOutcome};
+    use jevons_desktop_server::flow::spec::Output;
+    use jevons_desktop_server::flow::walk::{self, Leaf};
+    use jevons_desktop_server::flow::{Catalog, FlowTree, defaults};
+    use jevons_desktop_server::pipeline::{Trace, TranscriptionPath};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -580,7 +580,7 @@ mod tests {
             Box::new(|f| {
                 f.working = true;
                 f.stages.push(crate::agent::StageView {
-                    kind: jevons_desktop_core::pipeline::StageKind::Deciding,
+                    kind: jevons_desktop_server::pipeline::StageKind::Deciding,
                     label: "what to do".into(),
                     choices: vec!["assistant".into(), "dictation".into()],
                     detail: String::new(),
@@ -595,7 +595,7 @@ mod tests {
                 stage.detail = "0.92".into();
                 stage.ok = Some(true);
                 f.stages.push(crate::agent::StageView {
-                    kind: jevons_desktop_core::pipeline::StageKind::Writing,
+                    kind: jevons_desktop_server::pipeline::StageKind::Writing,
                     label: "text".into(),
                     choices: Vec::new(),
                     detail: "writing".into(),
@@ -790,7 +790,7 @@ mod tests {
 
     #[test]
     fn the_extract_workbench_loads_the_chosen_extract_and_shows_a_trial_in_blitz() {
-        use jevons_desktop_core::flow::extract::{Extracted, Trial};
+        use jevons_desktop_server::flow::extract::{Extracted, Trial};
         let folder = std::env::temp_dir().join(format!("jevons-ui-bench-{}", std::process::id()));
         let view = Arc::new(Mutex::new(view(&folder)));
         let (commands, mut received) = tokio::sync::mpsc::unbounded_channel();
@@ -1413,9 +1413,9 @@ mod tests {
     #[test]
     fn a_running_task_shows_under_its_agent_with_its_state_and_can_be_cancelled() {
         use crate::agent::Command;
-        use jevons_desktop_core::flow::Memory;
-        use jevons_desktop_core::flow::machine::runtime::Runtime as Machines;
-        use jevons_desktop_core::pipeline::{Env, Settings, TakeStart};
+        use jevons_desktop_server::flow::Memory;
+        use jevons_desktop_server::flow::machine::runtime::Runtime as Machines;
+        use jevons_desktop_server::pipeline::{Env, Settings, TakeStart};
         let tree = Arc::new(FlowTree::load(
             &Memory::new(
                 "test",
@@ -1444,7 +1444,7 @@ mod tests {
         // model is asked.
         let machines = Arc::new(Machines::new());
         let env = Env {
-            routes: jevons_desktop_core::client::Routes::default(),
+            routes: jevons_desktop_server::client::Routes::default(),
             flows: tree.clone(),
             settings: Settings::default(),
             desk: std::sync::Arc::new(jevons_desktop_protocol::desk::Nobody),

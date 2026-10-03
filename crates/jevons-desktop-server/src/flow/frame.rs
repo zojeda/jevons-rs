@@ -6,7 +6,7 @@
 use super::extract::Extract;
 use super::tree::{Investigation, Node, NodeId};
 use crate::context::ContextSnapshot;
-use crate::platform::DeliveryMethod;
+use jevons_desktop_protocol::delivery::DeliveryMethod;
 use serde_json::Value;
 use std::collections::BTreeMap;
 

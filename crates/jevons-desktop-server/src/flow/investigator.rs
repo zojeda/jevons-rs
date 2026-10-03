@@ -354,10 +354,10 @@ impl Investigate for Investigator {
 mod tests {
     use super::*;
     use crate::context::{AppInfo, ContextSnapshot, Privacy, WindowInfo};
-    use crate::desk::LocalDesk;
-    use crate::fake::slack_inspector;
     use crate::flow::tool_loop::tests::chat_server;
-    use crate::look::{Looks, PathCache};
+    use jevons_desktop_core::desk::LocalDesk;
+    use jevons_desktop_core::fake::slack_inspector;
+    use jevons_desktop_core::look::{Looks, PathCache};
 
     fn inquiry_snapshot() -> ContextSnapshot {
         ContextSnapshot {

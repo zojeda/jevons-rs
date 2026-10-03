@@ -18,7 +18,7 @@ use super::spec::{
     Select, ToolSpec, TranscriptSpec,
 };
 use super::template::{Template, is_builtin};
-use crate::platform::Action;
+use jevons_desktop_protocol::delivery::Action;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;

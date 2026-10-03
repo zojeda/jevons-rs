@@ -16,22 +16,24 @@
 
 mod agent;
 mod audio;
+mod config;
 mod hold;
 mod platform;
 mod runtime;
+mod settings;
 mod tray;
 mod tuning;
 mod ui;
 
+use crate::config::{DesktopConfig, default_config_file};
 use agent::{Agent, Command, Layers, View};
 use clap::Parser;
-use jevons_desktop_core::config::{DesktopConfig, default_config_file};
 use jevons_desktop_core::context::ContextSnapshot;
 use jevons_desktop_core::fake::FileAudioSource;
-use jevons_desktop_core::flow::{FlowTree, defaults};
 use jevons_desktop_core::history::{self, History};
-use jevons_desktop_core::pipeline::{self, Env, TakeStart};
 use jevons_desktop_core::platform::AudioSource;
+use jevons_desktop_server::flow::{FlowTree, defaults};
+use jevons_desktop_server::pipeline::{self, Env, TakeStart};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
@@ -512,10 +514,10 @@ fn check_flows(
         Arc::new(jevons_desktop_core::platform::Unsupported),
     ));
     let desk = jevons_desktop_core::desk::LocalDesk::default().with_automations(automations);
-    let catalog = jevons_desktop_core::flow::tools::ToolHost::new(&config.tools, &config.mcp)
+    let catalog = jevons_desktop_server::flow::tools::ToolHost::new(&config.tools, &config.mcp)
         .with_desk(Arc::new(desk))
         .catalog();
-    let tree = FlowTree::load(&jevons_desktop_core::flow::Disk::new(dir), &catalog);
+    let tree = FlowTree::load(&jevons_desktop_server::flow::Disk::new(dir), &catalog);
     for error in &tree.errors {
         eprintln!("{error}");
     }
@@ -550,7 +552,7 @@ fn check_flows(
 /// `~/jevons/logs/jevons-desktop.log`; the previous run's log is kept next to it. It is opened
 /// to append, so clearing the logs can empty it while the app writes.
 fn log_file() -> Option<std::fs::File> {
-    let dir = jevons_desktop_core::config::user_dir().join("logs");
+    let dir = crate::config::user_dir().join("logs");
     std::fs::create_dir_all(&dir).ok()?;
     let file = dir.join(history::DESKTOP_LOG);
     let _ = std::fs::rename(&file, dir.join("jevons-desktop.previous.log"));
@@ -563,7 +565,7 @@ fn log_file() -> Option<std::fs::File> {
 
 /// `--reset-settings`: the defaults back in the settings folder.
 fn reset_settings(config_file: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-    let report = jevons_desktop_core::settings::reset(config_file).map_err(|e| e.to_string())?;
+    let report = crate::settings::reset(config_file).map_err(|e| e.to_string())?;
     if !report.removed.is_empty() {
         println!("removed {}", report.removed.join(", "));
     }
@@ -588,7 +590,7 @@ fn clear_history(what: &[Clear], config: &DesktopConfig) -> Result<(), Box<dyn s
         what.iter().flat_map(|w| w.kinds()).copied().collect();
     let mut failed = false;
     for kind in kinds {
-        let cleared = history::clear(kind, config);
+        let cleared = history::clear(kind, &config.client());
         println!("{cleared} in {}", cleared.dir.display());
         failed |= !cleared.failed.is_empty();
     }
@@ -600,7 +602,7 @@ fn clear_history(what: &[Clear], config: &DesktopConfig) -> Result<(), Box<dyn s
 
 /// Commits files a headless command wrote in the settings folder, when it is jevons' repository.
 fn commit_written(config_file: &std::path::Path, paths: Vec<PathBuf>, message: &str) {
-    let dir = jevons_desktop_core::settings::folder(config_file);
+    let dir = crate::settings::folder(config_file);
     if let Some(repository) = jevons_desktop_core::git::Repository::open(dir)
         && let Err(e) = repository.commit(&paths, message)
     {
@@ -614,7 +616,7 @@ fn replay(
     config: DesktopConfig,
     config_file: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    jevons_desktop_core::client::log::apply(config.privacy.log_api);
+    crate::config::log_api(config.log_api);
     let context: ContextSnapshot = match &args.context {
         Some(file) => serde_json::from_str(&std::fs::read_to_string(file)?)?,
         None => ContextSnapshot::default(),
@@ -652,7 +654,7 @@ fn replay(
     ));
     let scripts = jevons_desktop_core::desk::LocalDesk::default().with_automations(automations);
     let tools = Arc::new(
-        jevons_desktop_core::flow::tools::ToolHost::new(&config.tools, &config.mcp)
+        jevons_desktop_server::flow::tools::ToolHost::new(&config.tools, &config.mcp)
             .with_desk(Arc::new(scripts))
             .dry_run(),
     );
@@ -689,11 +691,13 @@ fn replay(
     }
     let desk: Arc<dyn jevons_desktop_protocol::desk::Desk> = Arc::new(desk);
     let investigator = routes.generation.as_ref().map(|route| {
-        Arc::new(jevons_desktop_core::flow::investigator::Investigator::new(
-            route.client.clone(),
-            route.model.clone(),
-            desk.clone(),
-        )) as Arc<dyn jevons_desktop_core::flow::investigate::Investigate>
+        Arc::new(
+            jevons_desktop_server::flow::investigator::Investigator::new(
+                route.client.clone(),
+                route.model.clone(),
+                desk.clone(),
+            ),
+        ) as Arc<dyn jevons_desktop_server::flow::investigate::Investigate>
     });
     let dictation = &config.dictation;
     let env = Env {

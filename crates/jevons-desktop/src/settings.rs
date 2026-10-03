@@ -5,8 +5,8 @@
 //! [`prepare`] fills the folder with the defaults it lacks and makes it a repository, and
 //! [`reset`] puts the defaults back, committing what was there first so the history keeps it.
 
-use crate::config::{DesktopConfig, default_config_file};
-use crate::git::{GitError, Repository, Standing, standing};
+use crate::config::{DesktopConfig, default_config_file, server_file};
+use jevons_desktop_core::git::{GitError, Repository, Standing, standing};
 use std::path::{Path, PathBuf};
 
 /// The folder of a settings file.
@@ -132,7 +132,18 @@ pub fn reset(config_file: &Path) -> Result<Reset, ResetError> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let ours = [file_name.as_str(), "flows", "automations", ".git"];
+    let server = server_file(config_file);
+    let server_name = server
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ours = [
+        file_name.as_str(),
+        server_name.as_str(),
+        "flows",
+        "automations",
+        ".git",
+    ];
     let others: Vec<String> = entries
         .iter()
         .filter(|e| !ours.contains(&e.as_str()))
@@ -227,15 +238,21 @@ pub fn list(paths: &[String]) -> String {
 fn fill(config_file: &Path, config: &DesktopConfig) -> std::io::Result<Vec<PathBuf>> {
     let mut written = Vec::new();
     std::fs::create_dir_all(folder(config_file))?;
-    if !config_file.exists() {
+    // Both halves of the settings, each in its own file.
+    let server = server_file(config_file);
+    if !config_file.exists() || !server.exists() {
+        let missing: Vec<PathBuf> = [config_file.to_path_buf(), server]
+            .into_iter()
+            .filter(|file| !file.exists())
+            .collect();
         config.save(config_file).map_err(std::io::Error::other)?;
-        written.push(config_file.to_path_buf());
+        written.extend(missing);
     }
     let flows = config.flows_dir(config_file);
-    let report = crate::flow::defaults::init(&flows)?;
+    let report = jevons_desktop_server::flow::defaults::init(&flows)?;
     written.extend(report.changed().map(|f| flows.join(f)));
     let library = config.automations_dir(config_file);
-    let report = crate::automation::defaults::init(&library)?;
+    let report = jevons_desktop_core::automation::defaults::init(&library)?;
     written.extend(report.written.iter().map(|f| library.join(f)));
     Ok(written)
 }
@@ -279,7 +296,7 @@ fn is_default_folder(dir: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::{available, test_run};
+    use jevons_desktop_core::git::{available, test_run};
     use sha2::Digest;
 
     fn settings_file(name: &str) -> PathBuf {
@@ -357,7 +374,12 @@ mod tests {
         let report = reset(&file).unwrap();
         assert_eq!(
             report.removed,
-            ["automations", "flows", "jevons-desktop.toml"]
+            [
+                "automations",
+                "flows",
+                "jevons-desktop.toml",
+                "jevons-server.toml"
+            ]
         );
         assert!(report.repository.is_some());
         assert_eq!(

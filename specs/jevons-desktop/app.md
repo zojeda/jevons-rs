@@ -5,7 +5,7 @@
 The app lives in the tray. The agent thread turns hotkeys and menu items into takes, recordings
 and automation runs, asks the user in the bubble before anything risky, and keeps the settings
 folder, the flow tree and the automations library in step with the files on disk. What a take does
-once it starts is in jevons-desktop-core's [pipeline](../jevons-desktop-core/pipeline.md); this
+once it starts is in jevons-desktop-core's [pipeline](../jevons-desktop-server/pipeline.md); this
 file covers what the app does around it. The window and the bubble are in [ui](ui.md).
 
 ## Requirements
@@ -52,7 +52,7 @@ Tests: none yet
 
 ### R5 Hotkeys register from the settings
 
-The app registers every hotkey the settings bind ([pipeline](../jevons-desktop-core/pipeline.md)
+The app registers every hotkey the settings bind ([pipeline](../jevons-desktop-server/pipeline.md)
 R18), again whenever they change. A hotkey assigned twice, one that cannot be registered, and one
 that does not parse are reported in the window's status bar, and the others work.
 

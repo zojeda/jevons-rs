@@ -287,8 +287,8 @@ pub fn as_toml(name: &str, spec: &ExtractSpec) -> String {
 mod tests {
     use super::*;
     use crate::context::{AppInfo, Privacy, WindowInfo};
-    use crate::reader::Reader;
-    use crate::recorded::{RecordedInspector, RecordedTree};
+    use jevons_desktop_core::reader::Reader;
+    use jevons_desktop_core::recorded::{RecordedInspector, RecordedTree};
     use serde_json::json;
     use std::sync::Arc;
 

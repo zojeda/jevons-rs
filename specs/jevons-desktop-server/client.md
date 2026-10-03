@@ -1,13 +1,13 @@
-# jevons-desktop-core: client
+# jevons-desktop-server: client
 
-[Back to jevons-desktop-core](spec.md)
+[Back to jevons-desktop-server](spec.md)
 
 The client speaks to the jevons API, embedded in the app or on a server, and to other providers
 of the same APIs: typed requests for Realtime sessions, transcription uploads, System One
 decisions, Responses and Chat Completions, with the API log that can record them. Each capability
-has a route to its provider, and a decision route knows what its provider takes. Next to it sit
-the model catalog and its downloads from Hugging Face, and the tray icon's frames. The wire
-formats themselves belong to jevons-api; the client mirrors them without sharing its types.
+has a route to its provider, and a decision route knows what its provider takes. The forwarder
+serves the same APIs to other clients. The wire formats themselves belong to jevons-api; the
+client mirrors them without sharing its types.
 Turning the settings' providers and routes into live routes is in jevons-desktop
 ([runtime](../jevons-desktop/runtime.md)).
 
@@ -103,78 +103,39 @@ Tests: `the_log_holds_each_call_s_request_and_response_only_while_it_is_on`
 
 ### R10 The catalog lists the models the app can download
 
-The built-in catalog holds, in order: DiffusionGemma 26B-A4B Q4_K_M (generative and decision, from
-`unsloth/diffusiongemma-26B-A4B-it-GGUF`, with its vision projector from
-`FreedomAISVR/DiffusionGemma-26B-A4B-it-MXFP4-GGUF`), Nemotron-Labs-Diffusion 3B and VLM 8B
-(generative and decision), and Parakeet TDT 0.6B v3 (speech). Each entry downloads into a folder
-named by its id under the models folder, and loads as its model file or as that folder.
-
-Tests: `user_entries_extend_and_override_the_builtin_catalog`, `downloaded_catalog_models_fill_unset_services_with_gemma_first`
+Removed: now [models](../jevons-desktop-core/models.md) R1.
 
 ### R11 `models.toml` extends the catalog
 
-Entries in `models.toml` next to the settings file add to the built-in catalog, and an entry with
-a built-in id replaces that one. Unknown fields are errors. A file that does not parse leaves the
-built-in catalog, with the error.
-
-Tests: `user_entries_extend_and_override_the_builtin_catalog`
+Removed: now [models](../jevons-desktop-core/models.md) R2.
 
 ### R12 Downloaded models fill the services nobody chose
 
-A service with no model selected uses the first downloaded catalog entry that serves it, in
-catalog order: DiffusionGemma first for generative and decision, then Parakeet for speech. A
-selected model stays. With `runtime_config` set, nothing is filled.
-
-Tests: `downloaded_catalog_models_fill_unset_services_with_gemma_first`
+Removed: now [models](../jevons-desktop-core/models.md) R3.
 
 ### R13 Downloads fetch only what the entry names
 
-A download lists the repository's files at the entry's revision (and those of its extra sources)
-and keeps the ones its globs match; none matching is an error. `HF_TOKEN`, when set, goes with
-every request. Nothing downloads unless the user asks.
-
-Tests: `interrupted_download_resumes_with_range`, `extra_sources_download_into_the_same_folder`
+Removed: now [models](../jevons-desktop-core/models.md) R4.
 
 ### R14 Downloads resume and verify
 
-Each file downloads into `<file>.part`, resuming an interrupted one with an HTTP range. A file with
-a SHA-256 in the repository is checked against it: a mismatch removes the part file, keeps no
-final file and fails the download. A finished file is renamed into place, and once every file is
-in place a marker makes the entry ready.
-
-Tests: `interrupted_download_resumes_with_range`, `checksum_mismatch_marks_model_corrupt_and_keeps_no_final_file`
+Removed: now [models](../jevons-desktop-core/models.md) R5.
 
 ### R15 Downloads can be cancelled and never run twice
 
-A cancelled download stops, keeps its part file for a later resume, and leaves the entry not
-ready. A model folder that is being downloaded cannot start a second download in the same
-process.
-
-Tests: `a_cancelled_download_keeps_its_part_file`, `a_model_being_downloaded_cannot_be_downloaded_twice`
+Removed: now [models](../jevons-desktop-core/models.md) R6.
 
 ### R16 Downloads stay in their folder
 
-A repository path that is absolute or climbs out with `..` is refused, so no file lands outside
-the model's folder.
-
-Tests: `repository_paths_cannot_escape_the_model_folder`
+Removed: now [models](../jevons-desktop-core/models.md) R7.
 
 ### R17 Every tray state has its own frame
 
-The tray icon is the jevons alien at 32 pixels: cyan when ready, blue while the models load, grey
-with no model loaded, amber while GPU kernels are tuned, red after a failed take, and magenta
-while a demonstration is recorded. Listening shows a waveform with one frame per meter level,
-louder levels drawing taller bars. Transcribing (green) and deciding and writing (violet) show
-dots that cycle through three frames, 180 ms apart. Each state indexes its own frame and has its
-own tooltip.
-
-Tests: `every_state_indexes_its_own_frame`, `tuning_has_its_own_amber_frame_and_explains_itself`, `louder_audio_draws_taller_bars`, `processing_states_cycle_through_three_frames`
+Removed: now [models](../jevons-desktop-core/models.md) R8.
 
 ### R18 The app icon glows at the eyes
 
-The app icon, drawn at any size, is a dark head with glowing eyes and clear corners.
-
-Tests: `the_app_icon_glows_at_the_eyes_on_a_dark_head_with_clear_corners`
+Removed: now [models](../jevons-desktop-core/models.md) R9.
 
 ### R19 Each capability has a route
 

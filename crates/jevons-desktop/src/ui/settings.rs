@@ -3,11 +3,11 @@
 use super::Ctx;
 use super::components::{Choice, CopyButton, HotkeyField, Select, Switch, badge};
 use crate::agent::Command;
-use crate::runtime::Status;
-use dioxus::prelude::*;
-use jevons_desktop_core::config::{
+use crate::config::{
     Capability, DesktopConfig, EMBEDDED, HotkeyMode, Provider, ProviderKind, RouteTo,
 };
+use crate::runtime::Status;
+use dioxus::prelude::*;
 use std::collections::BTreeMap;
 
 /// The hotkey mode a switch sets: on holds the hotkey while speaking.
@@ -657,11 +657,11 @@ pub fn SettingsPage(rev: u64) -> Element {
                 }
                 div { class: "field",
                     span { class: "field-label", "API log" }
-                    Switch { checked: d.privacy.log_api,
+                    Switch { checked: d.log_api,
                         label: "Write every decision and generation request and response to logs/api.log".to_string(),
-                        onchange: move |on| draft.edit(|c| c.privacy.log_api = on) }
+                        onchange: move |on| draft.edit(|c| c.log_api = on) }
                 }
-                if d.privacy.log_api {
+                if d.log_api {
                     p { class: "warn", "The log holds what you say and the text of your screen, in full. Turn it off when you are done debugging." }
                 }
             }

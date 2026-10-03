@@ -1,13 +1,15 @@
-# Investigator
+# jevons-desktop-server: investigator
 
-[jevons-desktop-core](spec.md)
+[Back to jevons-desktop-server](spec.md)
 
 ## Purpose
 
 The context investigator answers a question about what is on screen, in a fixed shape. It is a
-built-in agent that reads the interface of the user's applications through the platform's
-inspector (UI Automation on Windows). It moves through the interface with a few read-only tools,
-and remembers where it found an answer, so the next time the same question costs one model call.
+built-in agent that reads the interface of the user's applications (UI Automation on Windows). Its
+model loop runs here; the screen is the client's. Each of its few read-only tools is one step
+asked of the desk, which keeps the elements the investigation has seen and remembers where an
+answer was found ([desk](../jevons-desktop-core/desk.md) R5), so the next time the same question
+costs one model call.
 
 ## Scope
 
@@ -19,7 +21,7 @@ Elsewhere:
 
 - When the walk runs an investigation, `lazy`, `enrich` and reuse within a take:
   [flows.md](flows.md). Answer shapes and placeholders: [flows.md](flows.md).
-- The XPath its `xpath` tool and its remembered paths use: [extract.md](extract.md).
+- The XPath its `xpath` tool and its remembered paths use: [extract.md](../jevons-desktop-core/extract.md).
 - The agent loop it runs on, and agents in general: [tools.md](tools.md).
 
 ## Declaring an investigation

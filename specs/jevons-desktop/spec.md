@@ -42,6 +42,7 @@ Each file numbers its own requirements.
 | Spec | Covers |
 | --- | --- |
 | [app](app.md) | The tray and its menu, hotkey gestures, takes in the app, confirmations, recordings and automation runs from the tray, settings, reset and history actions, reloading |
+| [settings](settings.md) | The two settings files, their defaults, the folder's git repository, the reset and history clears |
 | [runtime](runtime.md) | The embedded runtime and its listener, the other providers, each capability's route, the runtime's status |
 | [ui](ui.md) | The inspector's tabs (Context, Takes, Flows, Machines, Settings, Models) and the feedback bubble |
 | [platform](platform.md) | Context and text input per OS, the microphone, the keyboard hook, interface actions and the recorder on Windows |

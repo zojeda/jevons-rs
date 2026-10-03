@@ -7,8 +7,8 @@ use super::Ctx;
 use super::components::{Choice, Collapsible, CopyButton, Select, Switch};
 use crate::agent::{Command, TrialRequest};
 use dioxus::prelude::*;
-use jevons_desktop_core::flow::extract;
-use jevons_desktop_core::flow::spec::{ExtractAs, ExtractSpec};
+use jevons_desktop_server::flow::extract;
+use jevons_desktop_server::flow::spec::{ExtractAs, ExtractSpec};
 use std::collections::BTreeMap;
 
 const KINDS: [(ExtractAs, &str); 5] = [

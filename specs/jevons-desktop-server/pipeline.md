@@ -1,14 +1,16 @@
-# jevons-desktop-core: pipeline
+# jevons-desktop-server: pipeline
 
-[Back to jevons-desktop-core](spec.md)
+[Back to jevons-desktop-server](spec.md)
 
 A take is one dictation: the context when it starts, the microphone's audio, the transcript, the
 walk through the flow tree, and the delivery of the leaf's text into the application, the bubble
 or the clipboard. Live dictation is a take that ends phrases at pauses and shows them as they are
 heard. Every step goes into the take's trace, and live updates feed the tray and the bubble. How
 the flow tree routes a take is in [flows](flows.md), and how machines take it in
-[machines](machines.md). The hotkeys' press and release, the microphone and the text sink are in
-jevons-desktop.
+[machines](machines.md). The server asks the desk to deliver the text; typing it only into the
+window the take started in, once no key is held, is the client's rule
+([desk](../jevons-desktop-core/desk.md) R2). The hotkeys' press and release, the microphone and the
+text sink are in jevons-desktop.
 
 ## Requirements
 

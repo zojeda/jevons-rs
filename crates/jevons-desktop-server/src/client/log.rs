@@ -24,25 +24,9 @@ pub fn set(file: Option<PathBuf>) {
     *current = file;
 }
 
-/// Starts or stops the API log in its default file, as `privacy.log_api` says.
-pub fn apply(on: bool) {
-    let file = on.then(default_file);
-    if let Some(file) = &file
-        && !enabled()
-    {
-        tracing::info!(file = %file.display(), "Writing the API log");
-    }
-    set(file);
-}
-
 /// Whether calls are being written.
 pub fn enabled() -> bool {
     ON.load(Ordering::Relaxed)
-}
-
-/// The API log's file in the logs folder.
-pub fn default_file() -> PathBuf {
-    crate::config::user_dir().join("logs").join("api.log")
 }
 
 /// One call on its way: its request, if the log is on.

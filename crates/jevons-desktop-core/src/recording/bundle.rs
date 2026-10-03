@@ -185,7 +185,7 @@ mod tests {
 
     #[test]
     fn a_saved_recording_has_its_steps_fixture_and_guide() {
-        let (demonstration, random, _) = crate::recorded::tests::slack_demonstration();
+        let (demonstration, random, _) = crate::fake::slack_demonstration();
         let recording = Recording {
             description: "Post lunch is ready to random".into(),
             steps: demonstration

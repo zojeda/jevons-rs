@@ -509,53 +509,9 @@ pub(crate) mod tests {
         );
     }
 
-    /// Selecting a channel, typing into the composer, and pressing Enter, over the Slack
-    /// fixture.
-    pub(crate) fn slack_demonstration() -> (Demonstration, String, String) {
-        let tree: RecordedTree =
-            serde_json::from_str(include_str!("../../../examples/desktop/trees/slack.json"))
-                .unwrap();
-        let inspector = RecordedInspector::new(tree.clone());
-        let flat = inspector.subtree("w-slack", 64, 10_000).unwrap();
-        let id = |role: &str, name: &str| {
-            flat.iter()
-                .find(|(_, e)| e.role == role && e.name == name)
-                .map(|(_, e)| e.id.clone())
-                .unwrap()
-        };
-        let random = id("TreeItem", "random");
-        let composer = id("Edit", "Message #general");
-        let demonstration = Demonstration {
-            steps: vec![
-                DemonstratedStep {
-                    tree: tree.clone(),
-                    deed: Deed::Act {
-                        target: random.clone(),
-                        action: UiAction::Click,
-                    },
-                },
-                DemonstratedStep {
-                    tree: tree.clone(),
-                    deed: Deed::Act {
-                        target: composer.clone(),
-                        action: UiAction::TypeText("lunch is ready".into()),
-                    },
-                },
-                DemonstratedStep {
-                    tree: tree.clone(),
-                    deed: Deed::Press {
-                        chord: Chord::parse("enter").unwrap(),
-                    },
-                },
-            ],
-            end: tree,
-        };
-        (demonstration, random, composer)
-    }
-
     #[test]
     fn a_replay_moves_on_with_each_matching_action_and_explains_the_others() {
-        let (demonstration, random, composer) = slack_demonstration();
+        let (demonstration, random, composer) = crate::fake::slack_demonstration();
         let replay = ReplayActor::new(demonstration.clone());
         assert_eq!(replay.front_app().as_deref(), Some("slack.exe"));
         let general = RecordedInspector::new(demonstration.end.clone())

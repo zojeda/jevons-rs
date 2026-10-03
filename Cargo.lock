@@ -6176,20 +6176,25 @@ dependencies = [
  "dioxus",
  "dioxus-native",
  "enigo",
+ "futures-util",
  "global-hotkey",
  "globset",
  "jevons-api",
  "jevons-audio",
  "jevons-desktop-core",
  "jevons-desktop-protocol",
+ "jevons-desktop-server",
  "notify",
  "peniko",
  "pulldown-cmark",
  "rdev",
  "rfd",
+ "serde",
  "serde_json",
+ "sha2",
  "sysinfo",
  "tao",
+ "thiserror 2.0.20",
  "tokio",
  "toml 1.1.6+spec-1.1.0",
  "tracing",
@@ -6204,11 +6209,6 @@ dependencies = [
 name = "jevons-desktop-core"
 version = "0.1.0"
 dependencies = [
- "adk-agent",
- "adk-core",
- "adk-runner",
- "adk-session",
- "adk-tool",
  "axum",
  "base64 0.22.1",
  "directories",
@@ -6217,7 +6217,6 @@ dependencies = [
  "image",
  "jevons-audio",
  "jevons-desktop-protocol",
- "jevons-machine",
  "regex",
  "reqwest",
  "rhai",
@@ -6227,9 +6226,7 @@ dependencies = [
  "sha2",
  "thiserror 2.0.20",
  "tokio",
- "tokio-tungstenite",
  "toml 1.1.6+spec-1.1.0",
- "toml_edit 0.25.15+spec-1.1.0",
  "tracing",
 ]
 
@@ -6244,6 +6241,37 @@ dependencies = [
  "serde",
  "serde_json",
  "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
+name = "jevons-desktop-server"
+version = "0.1.0"
+dependencies = [
+ "adk-agent",
+ "adk-core",
+ "adk-runner",
+ "adk-session",
+ "adk-tool",
+ "axum",
+ "base64 0.22.1",
+ "futures-util",
+ "globset",
+ "jevons-audio",
+ "jevons-desktop-core",
+ "jevons-desktop-protocol",
+ "jevons-machine",
+ "regex",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-tungstenite",
+ "toml 1.1.6+spec-1.1.0",
+ "toml_edit 0.25.15+spec-1.1.0",
+ "tracing",
 ]
 
 [[package]]

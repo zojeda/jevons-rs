@@ -77,9 +77,6 @@ pub struct Privacy {
     /// as `["slack.exe", "chrome.exe"]`; empty allows none.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub readable_apps: Vec<String>,
-    /// Whether every decision and generation request and its response are written, whole, to
-    /// `~/jevons/logs/api.log` (they hold what the user said and the screen's text).
-    pub log_api: bool,
 }
 
 impl Default for Privacy {
@@ -89,7 +86,6 @@ impl Default for Privacy {
             read_clipboard: false,
             read_other_windows: false,
             readable_apps: Vec::new(),
-            log_api: false,
         }
     }
 }

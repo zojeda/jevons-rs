@@ -65,7 +65,7 @@ The app starts in the tray, with no console window. The [Desktop workflow](.gith
 2. **Wait for the first load.** The icon is blue while the models load. On the first runs on a machine it turns amber while GPU kernels are tuned, which takes a few minutes and is cached for later runs.
 3. **Dictate.** When the icon glows cyan, hold `Ctrl+Alt+Space` in any text field and speak. Hold `F9` for live dictation. **Settings** changes the hotkeys, the hold-or-toggle mode, the microphone and the language. Set the language if you always speak one: the transcript then stays in that language's alphabet.
 
-Settings are in `%APPDATA%\jevons\config\jevons-desktop.toml` (see [jevons-desktop.example.toml](jevons-desktop.example.toml)). The flow tree is in the `flows` folder next to it. The folder is a git repository, and jevons commits each change it makes there. **Reset settings to the defaults…** in the tray menu (or `--reset-settings`) puts the defaults back, and the earlier settings stay in the git history. Logs and traces are in `~/jevons`, which the tray's **Open logs and traces** opens. **Clear history** clears them by kind, or all at once (`--clear logs,traces` or `--clear all`).
+Settings are in `%APPDATA%\jevons\config`: `jevons-desktop.toml` for the app (see [jevons-desktop.example.toml](jevons-desktop.example.toml)) and `jevons-server.toml` for providers, models and tools (see [jevons-server.example.toml](jevons-server.example.toml)). The flow tree is in the `flows` folder next to it. The folder is a git repository, and jevons commits each change it makes there. **Reset settings to the defaults…** in the tray menu (or `--reset-settings`) puts the defaults back, and the earlier settings stay in the git history. Logs and traces are in `~/jevons`, which the tray's **Open logs and traces** opens. **Clear history** clears them by kind, or all at once (`--clear logs,traces` or `--clear all`).
 
 ### The flow tree
 
@@ -140,7 +140,7 @@ flowchart TB
         recorder["Recorder<br/>clicks · chords · typing<br/>while a demonstration records"]
     end
 
-    subgraph core["jevons-desktop-core · platform-free"]
+    subgraph core["jevons-desktop-server · jevons-desktop-core · platform-free"]
         direction LR
         pipeline["pipeline<br/>one take: speech · walk · delivery<br/>a trace of every step"]
         xpath["xpath/<br/>XPath 1.0 subset · roles as names<br/>descendant steps as native searches"]
@@ -267,7 +267,7 @@ flowchart TB
     burn --> gpu
 ```
 
-- **Desktop** (`jevons-desktop`, over the platform-free `jevons-desktop-core` and `jevons-machine`, which knows what a state machine is and nothing about the desktop): the desktop agent. Each platform layer (accessibility context, microphone, text input, hotkey, tray) is a trait with a per-OS implementation; the pipeline, the flow tree and tray states are shared. It loads the API layer in-process, optionally exposing it on a port.
+- **Desktop** (`jevons-desktop`, over `jevons-desktop-server`, the platform-free client `jevons-desktop-core`, `jevons-desktop-protocol` between the two, and `jevons-machine`, which knows what a state machine is and nothing about the desktop): the desktop agent. The server decides what to do with a take (the pipeline, the flow tree, the machines, the inference routes) and asks the client for what happens at your desk (typing, confirming, reading the screen, automations). Each platform layer (accessibility context, microphone, text input, hotkey, tray) is a trait with a per-OS implementation. It loads the API layer in-process, optionally exposing it on a port.
 - **API layer** (`jevons-api`): routes, authentication, settings and the wire formats. OpenAI requests become Generative or Speech calls, and System One questions compile into Decision reads. Each loaded model gets one worker thread: the diffusion worker serves both Generative and Decision jobs on one engine, and the speech worker runs live Realtime passes ahead of queued uploads. The `jevons-rs` binary is a thin wrapper around it.
 - **Services** take typed Rust requests and return typed results, with no HTTP or async code, and JSON only as data (tool arguments, schemas, structured answers):
   - **Generative** (`jevons-generative`) frames conversations, reserves an optional thought, and streams the answer while holding back text that could still become a stop sequence.

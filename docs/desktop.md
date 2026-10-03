@@ -8,7 +8,7 @@
 cargo run --release --locked -p jevons-desktop
 ```
 
-The first run opens the window when no tray is available; otherwise use the tray icon's menu. Settings live in `jevons-desktop.toml` in the platform configuration folder (`%APPDATA%\jevons\config` on Windows, `~/.config/jevons` on Linux). See [jevons-desktop.example.toml](../jevons-desktop.example.toml) for every field.
+The first run opens the window when no tray is available; otherwise use the tray icon's menu. Settings live in two files in the platform configuration folder (`%APPDATA%\jevons\config` on Windows, `~/.config/jevons` on Linux): `jevons-desktop.toml` holds the app's (dictation, privacy, automations) and `jevons-server.toml` the server's (providers and routes, models, the flows folder, tools, the API log). See [jevons-desktop.example.toml](../jevons-desktop.example.toml) and [jevons-server.example.toml](../jevons-server.example.toml) for every field.
 
 ### The settings folder and its history
 
@@ -190,7 +190,7 @@ Investigations read only the window the take started in. To let a question like 
 A `tool.toml` node calls one tool; a `loop.toml` node runs a tool-calling loop over several (at most `max_steps` model turns). Tools are registered in the desktop settings, never in the flows folder, so a folder a coding agent edits can call only what you registered:
 
 ```toml
-# jevons-desktop.toml
+# jevons-server.toml
 [tools.search]
 kind = "open"                          # open | command | http
 description = "Searches the web for a query"
@@ -327,7 +327,7 @@ The app asks models for four things, and each can come from a different place:
 | Generation | Rewrites, answers, loops, the investigator | `/v1/responses`, `/v1/chat/completions` |
 
 By default all four run on the models the app loads (the `embedded` provider). To send one
-elsewhere, add a provider and route the capability to it, in the Settings tab or the file:
+elsewhere, add a provider and route the capability to it, in the Settings tab or in `jevons-server.toml`:
 
 ```toml
 [providers.openrouter]
@@ -392,7 +392,7 @@ The app has no console window on Windows. Everything to review is in the `jevons
 - `traces/<time>-take<n>.json`: the full trace of each take, the same one the Takes tab shows (context, route with the guards checked, decision requests and probabilities, investigations, prompt, output, delivery). The newest 200 are kept.
 - `trees/<time>-<app>.json`: the interfaces the inspector's **Record tree** saved.
 - `recordings/<time>-<name>/`: recorded demonstrations, for writing automations from (`[automation] recordings_dir` moves them).
-- `logs/api.log`, when **API log** is on (Settings → Privacy, or `log_api = true` under `[privacy]`): every call to the decision and generation APIs, the investigator's and agents' included. Each record holds the call's exact request body and its response: a decision's whole answer, and for a streamed generation the assembled text plus every event that is not a text delta (such as the final usage). Records are pretty-printed JSON, one after another, so `jq` reads the file as a stream (`jq 'select(.api == "POST /v1/systemone") | .response.answers' logs/api.log`). The log starts over at 32 MB, keeping `api.previous.log`. It holds your words and your screen's text in full, so it is off by default; keys are headers and never written.
+- `logs/api.log`, when **API log** is on (Settings → Privacy, or `log_api = true` under `[privacy]` in `jevons-server.toml`): every call to the decision and generation APIs, the investigator's and agents' included. Each record holds the call's exact request body and its response: a decision's whole answer, and for a streamed generation the assembled text plus every event that is not a text delta (such as the final usage). Records are pretty-printed JSON, one after another, so `jq` reads the file as a stream (`jq 'select(.api == "POST /v1/systemone") | .response.answers' logs/api.log`). The log starts over at 32 MB, keeping `api.previous.log`. It holds your words and your screen's text in full, so it is off by default; keys are headers and never written.
 
 **Clear history** in the tray menu clears the logs, the take traces, the recorded interfaces or the recordings, or **All of it**. It asks in the bubble first, and clearing the traces also empties the Takes tab. From a terminal, use `jevons-desktop --clear logs,traces`, or `--clear all` (the kinds are `logs`, `traces`, `trees` and `recordings`). Only the files jevons writes there are removed: `.log` files, trace and tree `.json` files, and recording folders. Anything else in those folders stays. The open log is emptied, not removed, so a running app goes on writing to it. `models/` is never touched.
 
@@ -424,7 +424,7 @@ For the automations library (the settings' one, or `--library <dir>`):
 
 ## Platform status
 
-Every platform layer is a trait in `jevons-desktop-core::platform`. The pipeline, the flow tree, gestures, paste safety and tray states are shared, and each OS implements the layers:
+Every platform layer is a trait in `jevons-desktop-core::platform`, the client. The pipeline, the flow tree and the machines are in `jevons-desktop-server`, which asks the client for delivery, confirmations, screen reads and automations through the `Desk` trait of `jevons-desktop-protocol`; paste safety and tray states are the client's. Each OS implements the layers:
 
 | Layer | Windows | Linux | macOS |
 | --- | --- | --- | --- |
@@ -448,7 +448,7 @@ flowchart LR
     inspector["Inspector · settings<br/>dioxus-native window"] <--> agent
     agent["Agent thread<br/>gestures · takes"] --> context["ContextProvider<br/>UIA · AT-SPI · AX"]
     agent --> mic["AudioSource<br/>CPAL"]
-    agent --> pipeline["Pipeline<br/>jevons-desktop-core"]
+    agent --> pipeline["Pipeline<br/>jevons-desktop-server"]
     pipeline --> client["API client"]
     client -- "one route per capability" --> api["jevons-api<br/>embedded runtime thread"]
     client -- "HTTPS" --> providers["Other providers<br/>a jevons server · OpenRouter"]

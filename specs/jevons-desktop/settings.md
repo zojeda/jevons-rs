@@ -1,22 +1,26 @@
-# jevons-desktop-core: settings
+# jevons-desktop: settings
 
-[Back to jevons-desktop-core](spec.md)
+[Back to jevons-desktop](spec.md)
 
-The settings folder holds `jevons-desktop.toml` and, next to it unless the settings move them, the
-flow tree in `flows/` and the automations library in `automations/`. jevons fills in whatever the
+The settings folder holds two files, `jevons-desktop.toml` (the client's settings) and
+`jevons-server.toml` (the server's), and next to them unless the settings move them, the flow tree
+in `flows/` and the automations library in `automations/`. The app reads both files into one
+value, which the Settings tab edits, and writes each half back to its own file. jevons fills in whatever the
 folder lacks, keeps it in a git repository of its own, commits what it writes there, and can put
 the defaults back with the earlier settings kept in the history. The history clears remove the
 logs, traces, recorded interfaces and recordings jevons keeps under `~/jevons`. The tools and MCP
-servers the file registers are in [tools](tools.md), and the model selections in
-[client](client.md). The tray and the Settings tab that drive all this are in jevons-desktop.
+servers the server's file registers are in [tools](../jevons-desktop-server/tools.md), and the
+model catalog in [models](../jevons-desktop-core/models.md). The settings' types are the
+client core's (`ClientConfig`) and the server's (`ServerConfig`); the folder as a whole is this
+crate's.
 
 ## Requirements
 
 ### R1 Where the settings live
 
-The settings file is `--config`, or `jevons-desktop.toml` in the platform configuration folder
-(`%APPDATA%\jevons\config` on Windows, `~/.config/jevons` on Linux). The flow tree is `flows_dir`,
-or `flows/` next to the file. The automations library is `[automation] dir`, or `automations/`
+The client's settings file is `--config`, or `jevons-desktop.toml` in the platform configuration
+folder (`%APPDATA%\jevons\config` on Windows, `~/.config/jevons` on Linux). The server's is
+`jevons-server.toml` next to it. The flow tree is `flows_dir`, or `flows/` next to the file. The automations library is `[automation] dir`, or `automations/`
 next to the file. `models.toml` sits next to the file. What jevons keeps of past use goes under
 `~/jevons`: `logs/`, `traces/`, `trees/`, `recordings/` (or `[automation] recordings_dir`), and
 `models/` (or `[models] folder`).
@@ -25,12 +29,15 @@ Tests: `approvals_are_written_alone_and_saving_the_settings_keeps_them`
 
 ### R2 A missing file means defaults, and unknown fields are errors
 
-A settings file that does not exist loads as the defaults. A field the file format does not have,
-in any section, fails the load with the file's path and the parser's message.
+A settings file that does not exist loads as that half's defaults. A field its format does not
+have, in any section, fails the load with that file's path and the parser's message: a section
+of the server's in the client's file is one.
 
-Tests: `a_missing_file_gives_defaults_and_unknown_fields_are_errors`, `the_example_settings_file_parses`
+Tests: `a_missing_file_gives_defaults_and_unknown_fields_are_errors`, `the_example_settings_file_parses`, `the_two_halves_make_the_settings_and_back`
 
-### R3 The file's sections and defaults
+### R3 The files' sections and defaults
+
+`jevons-server.toml`:
 
 | Section | Fields and defaults |
 | --- | --- |
@@ -38,14 +45,20 @@ Tests: `a_missing_file_gives_defaults_and_unknown_fields_are_errors`, `the_examp
 | `[providers.<name>]` | `kind` (`embedded`, `jevons`, `openrouter` or `openai-compatible`), `url` (the kind's), `key` (the kind's environment variable), `extensions`, `max_questions` and `min_probability` (the kind's profile) |
 | `[routes]` | `speech`, `realtime`, `decision` and `generation`, each a `provider` and an optional `model` (all `embedded`) |
 | `[models]` | `folder`, `runtime_config`, `generative`, `decision` and `speech` (each a `path`, an optional `mmproj` and the `catalog` entry it came from), `realtime` (true) |
-| `[dictation]` | `hotkey` (`Ctrl+Alt+Space`), `hotkey_mode` (`hold`), `live_hotkey` (`F9`), `live_hotkey_mode` (`hold`), `live_feedback` (true), `inspector_hotkey` (none), `branch_hotkeys` (none), `microphone` (the default device), `language` (detected), `decide` (true), `max_output_tokens` (1024) |
-| `[privacy]` | `max_context_chars` (2000), `read_clipboard` (false), `read_other_windows` (false), `readable_apps` (none), `log_api` (false) |
-| `[automation]` | `dir`, `recordings_dir`, `record_hotkey` (none), `hotkeys` (none), `approved` (none), `unconfirmed` (none), `allow` (none), `author_model` (the generative model) |
+| `[privacy]` | `log_api` (false) |
 | top level | `flows_dir`, `[tools.<name>]`, `[mcp.<name>]` |
 
-The example file, `jevons-desktop.example.toml`, parses.
+`jevons-desktop.toml`:
 
-Tests: `the_example_settings_file_parses`, `saved_settings_load_back_unchanged`
+| Section | Fields and defaults |
+| --- | --- |
+| `[dictation]` | `hotkey` (`Ctrl+Alt+Space`), `hotkey_mode` (`hold`), `live_hotkey` (`F9`), `live_hotkey_mode` (`hold`), `live_feedback` (true), `inspector_hotkey` (none), `branch_hotkeys` (none), `microphone` (the default device), `language` (detected), `decide` (true), `max_output_tokens` (1024) |
+| `[privacy]` | `max_context_chars` (2000), `read_clipboard` (false), `read_other_windows` (false), `readable_apps` (none) |
+| `[automation]` | `dir`, `recordings_dir`, `record_hotkey` (none), `hotkeys` (none), `approved` (none), `unconfirmed` (none), `allow` (none), `author_model` (the generative model) |
+
+The example files, `jevons-desktop.example.toml` and `jevons-server.example.toml`, parse.
+
+Tests: `the_example_settings_file_parses`, `saved_settings_load_back_unchanged`, `the_two_halves_make_the_settings_and_back`
 
 ### R4 Hotkey modes are `hold` or `toggle`
 
@@ -77,8 +90,8 @@ Tests: `approvals_are_written_alone_and_saving_the_settings_keeps_them`
 
 ### R8 jevons fills in what the folder lacks
 
-On every start, jevons writes the settings file when there is none, the built-in flow tree and its
-guides ([flows](flows.md)), and the automations library's guides ([automations](automations.md)).
+On every start, jevons writes each settings file there is none of, the built-in flow tree and its
+guides ([flows](../jevons-desktop-server/flows.md)), and the automations library's guides ([automations](../jevons-desktop-core/automations.md)).
 A deleted folder gets the defaults again on the next start.
 
 Tests: `a_new_settings_folder_gets_the_defaults_in_a_repository_of_its_own`
@@ -132,7 +145,7 @@ Tests: `a_reset_puts_the_defaults_back_and_keeps_the_earlier_settings_in_the_his
 ### R14 A reset touches only a folder that is jevons' own
 
 A reset goes ahead in the platform's settings folder, or in a folder that holds nothing but the
-settings file, `flows/`, `automations/` and `.git`. Any other folder is left as it is, and the
+two settings files, `flows/`, `automations/` and `.git`. Any other folder is left as it is, and the
 error names the entries that are not jevons'.
 
 Tests: `a_folder_holding_more_than_jevons_settings_is_not_reset`

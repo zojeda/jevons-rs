@@ -18,13 +18,13 @@ writes into a flows folder, and the upgrade of an unedited one.
 Elsewhere:
 
 - `root.toml`, `task.toml`, their diagrams and the machine runtime: [machines.md](machines.md).
-- `[extract]` and XPath: [extract.md](extract.md). `[investigate]` fields and the investigator:
+- `[extract]` and XPath: [extract.md](../jevons-desktop-core/extract.md). `[investigate]` fields and the investigator:
   [investigator.md](investigator.md).
 - How a tool node fills its arguments and sends its result, how a tool runs, asks and is
   allowed, and the agent loop: [tools.md](tools.md). Run nodes and the automations they run:
-  [tools.md](tools.md) and [automations.md](automations.md).
+  [tools.md](tools.md) and [automations.md](../jevons-desktop-core/automations.md).
 - Delivering a leaf's text: [pipeline.md](pipeline.md). Committing what `init` writes:
-  [settings.md](settings.md).
+  [settings.md](../jevons-desktop/settings.md).
 
 ## Node files
 

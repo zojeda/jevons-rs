@@ -6,8 +6,8 @@ use super::interface::Interface;
 use super::workbench::{self, Workbench};
 use crate::agent::{Command, ExtractsProbe};
 use dioxus::prelude::*;
-use jevons_desktop_core::flow::Check;
-use jevons_desktop_core::flow::walk::FlowStep;
+use jevons_desktop_server::flow::Check;
+use jevons_desktop_server::flow::walk::FlowStep;
 use std::collections::BTreeSet;
 use std::time::Duration;
 
@@ -336,8 +336,8 @@ fn RouteTree(route: RouteProp, about: String) -> Element {
     }
 }
 
-fn kind_word(kind: jevons_desktop_core::flow::Kind) -> &'static str {
-    use jevons_desktop_core::flow::Kind;
+fn kind_word(kind: jevons_desktop_server::flow::Kind) -> &'static str {
+    use jevons_desktop_server::flow::Kind;
     match kind {
         Kind::Machine => "machine",
         Kind::Decide => "decide",

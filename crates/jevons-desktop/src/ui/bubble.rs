@@ -12,7 +12,7 @@ use super::{Ctx, markdown};
 use crate::agent::{BubbleAction, BubbleScroll, Command, Feedback, StageView, Turn};
 use blitz_dom::BaseDocument;
 use dioxus::prelude::*;
-use jevons_desktop_core::pipeline::StageKind;
+use jevons_desktop_server::pipeline::StageKind;
 
 /// Where the bubble's arrow points: its distance from the bubble's left edge in logical pixels,
 /// and whether the icon is below the bubble (a taskbar at the bottom of the screen); and the

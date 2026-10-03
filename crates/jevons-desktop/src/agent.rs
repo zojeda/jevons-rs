@@ -2,30 +2,22 @@
 //! tray and the inspector as views. It runs on its own thread; takes run on the runtime's
 //! workers so a slow generation never blocks the hotkey.
 
+use crate::config::{Capability, DesktopConfig, HotkeyMode};
 use crate::runtime::{Runtime, Status};
+use crate::settings;
 use crate::tray::Tray;
-use jevons_desktop_core::automation::author::{self, Authored};
+use jevons_desktop_core::automation::author::{self, Authored, Planner};
 use jevons_desktop_core::automation::check::CheckReport;
 use jevons_desktop_core::automation::host::AutomationHost;
 use jevons_desktop_core::automation::run::RunTrace;
-use jevons_desktop_core::client::Routes;
-use jevons_desktop_core::config::{Capability, DesktopConfig, HotkeyMode};
 use jevons_desktop_core::confirm::{ChannelConfirmer, Confirmation};
 use jevons_desktop_core::context::ContextSnapshot;
 use jevons_desktop_core::desk::LocalDesk;
-use jevons_desktop_core::flow::extract;
-use jevons_desktop_core::flow::investigate::Investigate;
-use jevons_desktop_core::flow::investigator::Investigator;
-use jevons_desktop_core::flow::machine::runtime::{Due, Runtime as Machines};
-use jevons_desktop_core::flow::tools::ToolHost;
-use jevons_desktop_core::flow::walk::{self, FlowStep};
-use jevons_desktop_core::flow::{Catalog, FlowError, FlowTree, defaults};
 use jevons_desktop_core::git::Repository;
 use jevons_desktop_core::history::{self, History};
 use jevons_desktop_core::icons::TrayState;
 use jevons_desktop_core::interface;
 use jevons_desktop_core::look::{Looks, PathCache};
-use jevons_desktop_core::pipeline::{self, Env, StageKind, TakeStart, Trace, Update};
 use jevons_desktop_core::platform::{
     AudioDevice, AudioSource, Binding, CaptureHandle, ContextInspector, ContextProvider,
     DeliveryOutcome, HotkeyAction, HotkeyEvent, MenuCommand, MenuModel, Recorder, RecordingHandle,
@@ -34,9 +26,17 @@ use jevons_desktop_core::platform::{
 use jevons_desktop_core::reader::Reader;
 use jevons_desktop_core::recorded::RecordedTree;
 use jevons_desktop_core::recording::{Session, bundle};
-use jevons_desktop_core::settings;
 use jevons_desktop_core::xpath::selector::Candidate;
 use jevons_desktop_protocol::desk::{Desk, Nobody};
+use jevons_desktop_server::client::Routes;
+use jevons_desktop_server::flow::extract;
+use jevons_desktop_server::flow::investigate::Investigate;
+use jevons_desktop_server::flow::investigator::Investigator;
+use jevons_desktop_server::flow::machine::runtime::{Due, Runtime as Machines};
+use jevons_desktop_server::flow::tools::ToolHost;
+use jevons_desktop_server::flow::walk::{self, FlowStep};
+use jevons_desktop_server::flow::{Catalog, FlowError, FlowTree, defaults};
+use jevons_desktop_server::pipeline::{self, Env, StageKind, TakeStart, Trace, Update};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -474,7 +474,7 @@ pub struct TrialRequest {
     /// The node file that declares it (such as `ask/slack/generate.toml`); `None` for a new one.
     pub file: Option<String>,
     pub name: String,
-    pub spec: jevons_desktop_core::flow::spec::ExtractSpec,
+    pub spec: jevons_desktop_server::flow::spec::ExtractSpec,
     /// Typed rather than asked for: wait for a pause first.
     pub debounce: bool,
 }
@@ -687,7 +687,7 @@ impl Agent {
         repaint: Arc<dyn Fn() + Send + Sync>,
         commands: mpsc::UnboundedSender<Command>,
     ) -> Self {
-        jevons_desktop_core::client::log::apply(config.privacy.log_api);
+        crate::config::log_api(config.log_api);
         // The defaults the folder lacks, versioned: the loads below then write nothing.
         let prepared = settings::prepare(&config_file, &config);
         for note in &prepared.notes {
@@ -1240,7 +1240,7 @@ impl Agent {
             }
             MenuCommand::ShowConversation => self.show_conversation(),
             MenuCommand::OpenLogsFolder => {
-                let dir = jevons_desktop_core::config::user_dir();
+                let dir = crate::config::user_dir();
                 let _ = std::fs::create_dir_all(dir.join("traces"));
                 open_folder(&dir);
             }
@@ -1260,7 +1260,7 @@ impl Agent {
                     self.notice(&e.to_string());
                 } else {
                     self.commit(
-                        vec![self.config_file.clone()],
+                        self.settings_files(),
                         if config.dictation.live_feedback {
                             "Turn live feedback on"
                         } else {
@@ -1336,7 +1336,11 @@ impl Agent {
                     details: kinds
                         .iter()
                         .map(|k| {
-                            format!("Removes {} in {}", k.label(), k.dir(&self.config).display())
+                            format!(
+                                "Removes {} in {}",
+                                k.label(),
+                                k.dir(&self.config.client()).display()
+                            )
                         })
                         .collect::<Vec<_>>()
                         .join("\n"),
@@ -2099,7 +2103,7 @@ impl Agent {
                     40,
                     5000,
                 )?;
-                let dir = jevons_desktop_core::config::user_dir().join("trees");
+                let dir = crate::config::user_dir().join("trees");
                 let millis = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| d.as_millis());
@@ -2162,7 +2166,7 @@ impl Agent {
             return;
         }
         self.commit(
-            vec![self.config_file.clone()],
+            self.settings_files(),
             "Save the settings from the Settings panel",
         );
         self.adopt(config, false);
@@ -2186,7 +2190,7 @@ impl Agent {
             || config.automations_dir(&self.config_file)
                 != self.config.automations_dir(&self.config_file);
         self.config = config;
-        jevons_desktop_core::client::log::apply(self.config.privacy.log_api);
+        crate::config::log_api(self.config.log_api);
         self.automations
             .set_settings(self.config.automation.clone());
         if hotkeys_changed && let Some(tray) = &self.tray {
@@ -2225,6 +2229,14 @@ impl Agent {
     }
 
     /// Commits what jevons just wrote in the settings folder, when it is jevons' repository.
+    /// The two settings files: the client's and the server's.
+    fn settings_files(&self) -> Vec<PathBuf> {
+        vec![
+            self.config_file.clone(),
+            crate::config::server_file(&self.config_file),
+        ]
+    }
+
     fn commit(&self, paths: Vec<PathBuf>, message: &str) {
         commit_in_background(self.repository.clone(), paths, message.into());
     }
@@ -2291,7 +2303,7 @@ impl Agent {
         let cleared: Vec<String> = kinds
             .iter()
             .map(|kind| {
-                let cleared = history::clear(*kind, &self.config);
+                let cleared = history::clear(*kind, &self.config.client());
                 tracing::info!(cleared = %cleared, "History cleared");
                 cleared.to_string()
             })
@@ -2840,9 +2852,14 @@ impl Agent {
             .runtime
             .routes()
             .and_then(|routes| routes.generation)
-            .map(|route| {
-                let model = self.config.automation.author_model.clone();
-                (route.client, model.unwrap_or(route.model))
+            .map(|route| RoutePlanner {
+                model: self
+                    .config
+                    .automation
+                    .author_model
+                    .clone()
+                    .unwrap_or(route.model),
+                client: route.client,
             });
         tokio::spawn(async move {
             let into = library.clone();
@@ -2877,10 +2894,8 @@ impl Agent {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let client = author_with
-                .as_ref()
-                .map(|(client, model)| (client, model.as_str()));
-            let authored = author::author(client, &done, &name, &library, replacing.as_deref())
+            let planner = author_with.as_ref().map(|p| p as &dyn Planner);
+            let authored = author::author(planner, &done, &name, &library, replacing.as_deref())
                 .await
                 .map(Box::new);
             let _ = commands.send(Command::Authored(authored));
@@ -3022,7 +3037,7 @@ impl Agent {
         match DesktopConfig::approve(&self.config_file, name, version) {
             Ok(saved) => {
                 self.commit(
-                    vec![self.config_file.clone()],
+                    self.settings_files(),
                     &format!("Approve the automation {name} ({version})"),
                 );
                 self.config.automation.approved = saved.automation.approved;
@@ -3064,7 +3079,7 @@ impl Agent {
         }
         // Say the arguments: a take through a one-node tree that runs this automation.
         let tree = FlowTree::load(
-            &jevons_desktop_core::flow::Memory::new(
+            &jevons_desktop_server::flow::Memory::new(
                 "automation",
                 [(
                     "run.toml",
@@ -3384,6 +3399,39 @@ fn served(routes: Option<&Routes>) -> BTreeMap<&'static str, String> {
     .collect()
 }
 
+/// The automation author's model: the generation route's provider, asked for an answer in a
+/// schema.
+struct RoutePlanner {
+    client: jevons_desktop_server::client::Client,
+    model: String,
+}
+
+impl Planner for RoutePlanner {
+    fn plan<'a>(
+        &'a self,
+        instruction: &'a str,
+        prompt: String,
+        schema: serde_json::Value,
+    ) -> futures_util::future::BoxFuture<'a, Option<String>> {
+        use jevons_desktop_server::client::{ChatMessage, ChatReply, ChatRequest};
+        Box::pin(async move {
+            let request = ChatRequest {
+                model: self.model.clone(),
+                messages: vec![
+                    ChatMessage::text("system", instruction),
+                    ChatMessage::text("user", prompt),
+                ],
+                ..ChatRequest::default()
+            }
+            .answer_schema(schema);
+            match self.client.chat(&request, |_| {}).await.ok()? {
+                ChatReply::Text(answer) => Some(answer),
+                _ => None,
+            }
+        })
+    }
+}
+
 /// The desk the tool host reaches the client's tools through: the automations library.
 fn tool_desk(automations: &Arc<AutomationHost>) -> Arc<dyn Desk> {
     Arc::new(LocalDesk::default().with_automations(automations.clone()))
@@ -3402,7 +3450,7 @@ fn commit_in_background(repository: Option<Repository>, paths: Vec<PathBuf>, mes
 
 /// Writes an automation run's trace next to the take traces.
 fn save_run(trace: &RunTrace) {
-    let dir = jevons_desktop_core::config::user_dir().join("traces");
+    let dir = crate::config::user_dir().join("traces");
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis());
@@ -3420,7 +3468,7 @@ const SAVED_TRACES: usize = 200;
 
 /// Writes `trace` to `~/jevons/traces` as JSON, keeping the newest [`SAVED_TRACES`].
 fn save_trace(trace: &Trace) {
-    let dir = jevons_desktop_core::config::user_dir().join("traces");
+    let dir = crate::config::user_dir().join("traces");
     let turn = trace.turn.map_or(String::new(), |t| format!("-turn{t}"));
     let file = dir.join(format!(
         "{}-take{}{turn}.json",
@@ -3574,7 +3622,7 @@ mod tests {
             (feedback.heard.as_str(), feedback.partial.as_str()),
             ("Hola a todos.", "")
         );
-        feedback.apply(&Update::Stage(jevons_desktop_core::pipeline::Stage {
+        feedback.apply(&Update::Stage(jevons_desktop_server::pipeline::Stage {
             kind: StageKind::Deciding,
             label: "what to do".into(),
             choices: vec!["ask".into(), "dictate".into()],
@@ -3586,7 +3634,7 @@ mod tests {
             chosen: Some("dictate".into()),
             ok: true,
         });
-        feedback.apply(&Update::Stage(jevons_desktop_core::pipeline::Stage::new(
+        feedback.apply(&Update::Stage(jevons_desktop_server::pipeline::Stage::new(
             StageKind::Investigating,
             "conversation",
         )));

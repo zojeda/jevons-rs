@@ -14,7 +14,7 @@ use crate::flow::spec::Output;
 use crate::flow::tools::ToolHost;
 use crate::flow::walk::{self, FlowStep, Leaf, ToolTrace, Walked};
 use crate::flow::{FlowTree, Kind};
-use crate::platform::{
+use jevons_desktop_protocol::delivery::{
     Action, AudioEvent, DeliveryMethod, DeliveryOutcome, DeliveryRequest, SAMPLE_RATE,
 };
 use jevons_desktop_protocol::desk::{Delivery, Desk};
@@ -852,11 +852,11 @@ mod tests {
     use super::*;
     use crate::client::{Client, Profile, Route};
     use crate::context::{AppInfo, Element, WindowInfo};
-    use crate::desk::LocalDesk;
-    use crate::fake::RecordingSink;
     use crate::flow::{Catalog, Memory};
     use axum::Json;
     use axum::routing::{get, post};
+    use jevons_desktop_core::desk::LocalDesk;
+    use jevons_desktop_core::fake::RecordingSink;
     use serde_json::{Value, json};
     use std::sync::Mutex;
 
@@ -1550,17 +1550,19 @@ mod tests {
         );
         assert!(tree.is_valid(), "{:?}", tree.errors);
         let (client, seen) = server(prefer(&["reply"]), "Sure.").await;
-        let recorded: crate::recorded::RecordedTree =
+        let recorded: jevons_desktop_core::recorded::RecordedTree =
             serde_json::from_str(include_str!("../../../examples/desktop/trees/slack.json"))
                 .unwrap();
         let env = Env {
             flows: Arc::new(tree),
-            desk: Arc::new(
-                LocalDesk::default().with_reader(Arc::new(crate::reader::Reader::new(
-                    Arc::new(crate::recorded::RecordedInspector::new(recorded)),
+            desk: Arc::new(LocalDesk::default().with_reader(Arc::new(
+                jevons_desktop_core::reader::Reader::new(
+                    Arc::new(jevons_desktop_core::recorded::RecordedInspector::new(
+                        recorded,
+                    )),
                     crate::context::Privacy::default(),
-                ))),
-            ),
+                ),
+            ))),
             ..env(client, None)
         };
         let (audio, finish) = one_second_of_audio();
@@ -1732,17 +1734,19 @@ mod tests {
         let tree = FlowTree::load(&crate::flow::defaults::builtin(), &Catalog::default());
         assert!(tree.is_valid(), "{:?}", tree.errors);
         let (client, seen) = server(prefer(&["assistant"]), "Five.").await;
-        let recorded: crate::recorded::RecordedTree =
+        let recorded: jevons_desktop_core::recorded::RecordedTree =
             serde_json::from_str(include_str!("../../../examples/desktop/trees/slack.json"))
                 .unwrap();
         let env = Env {
             flows: Arc::new(tree),
-            desk: Arc::new(
-                LocalDesk::default().with_reader(Arc::new(crate::reader::Reader::new(
-                    Arc::new(crate::recorded::RecordedInspector::new(recorded)),
+            desk: Arc::new(LocalDesk::default().with_reader(Arc::new(
+                jevons_desktop_core::reader::Reader::new(
+                    Arc::new(jevons_desktop_core::recorded::RecordedInspector::new(
+                        recorded,
+                    )),
                     crate::context::Privacy::default(),
-                ))),
-            ),
+                ),
+            ))),
             ..env(client, None)
         };
         let (audio, finish) = one_second_of_audio();
@@ -1825,16 +1829,18 @@ mod tests {
             "find(\"//TreeItem[.//Text[@name = $channel]]\").invoke();\n`opened ${args.channel}`\n",
         )
         .unwrap();
-        let (demonstration, _, _) = crate::recorded::tests::slack_demonstration();
-        let replay = Arc::new(crate::recorded::ReplayActor::new(demonstration));
-        let host = Arc::new(crate::automation::host::AutomationHost::new(
+        let (demonstration, _, _) = jevons_desktop_core::fake::slack_demonstration();
+        let replay = Arc::new(jevons_desktop_core::recorded::ReplayActor::new(
+            demonstration,
+        ));
+        let host = Arc::new(jevons_desktop_core::automation::host::AutomationHost::new(
             &dir,
-            crate::config::AutomationSettings::default(),
+            jevons_desktop_core::config::AutomationSettings::default(),
             replay.clone(),
             replay.clone(),
         ));
         let version = host.list()[0].version.clone();
-        let mut settings = crate::config::AutomationSettings::default();
+        let mut settings = jevons_desktop_core::config::AutomationSettings::default();
         settings.approved.insert("open-channel".into(), version);
         settings.unconfirmed.push("open-channel".into());
         host.set_settings(settings);
@@ -1866,7 +1872,7 @@ mod tests {
     }
 
     fn tool_host() -> Arc<ToolHost> {
-        let config: crate::config::DesktopConfig = toml::from_str(
+        let config: crate::config::ServerConfig = toml::from_str(
             r#"
 [tools.note]
 kind = "command"
@@ -1899,7 +1905,8 @@ confirm = false
     #[tokio::test]
     async fn a_tool_node_fills_its_arguments_asks_and_answers_with_the_result() {
         let (client, seen) = server(prefer(&["work"]), "Launch moved").await;
-        let (confirm, mut asked) = mpsc::unbounded_channel::<crate::confirm::Confirmation>();
+        let (confirm, mut asked) =
+            mpsc::unbounded_channel::<jevons_desktop_core::confirm::Confirmation>();
         let approver = tokio::spawn(async move {
             let call = asked.recv().await.unwrap();
             let tool = call.tool.clone();
@@ -1912,10 +1919,9 @@ confirm = false
                 "tool = \"note\"\n[args.title]\ngenerate = \"A short title\"\n[args.folder]\nchoose = { inbox = \"Unsorted\", work = \"About work\" }\n[args.body]\nvalue = \"{transcript}\"",
             )]),
             tools: Some(tool_host()),
-            desk: Arc::new(
-                LocalDesk::default()
-                    .with_confirmer(Arc::new(crate::confirm::ChannelConfirmer::new(confirm))),
-            ),
+            desk: Arc::new(LocalDesk::default().with_confirmer(Arc::new(
+                jevons_desktop_core::confirm::ChannelConfirmer::new(confirm),
+            ))),
             ..env(client, None)
         };
         let trace = take(&env, None).await;
@@ -2698,18 +2704,20 @@ confirm = false
         assert!(tree.is_valid(), "{:?}", tree.errors);
         // The second take is for the task that waits, not for another one.
         let (client, seen) = server(prefer(&["task-1"]), "Sure.").await;
-        let recorded: crate::recorded::RecordedTree =
+        let recorded: jevons_desktop_core::recorded::RecordedTree =
             serde_json::from_str(include_str!("../../../examples/desktop/trees/slack.json"))
                 .unwrap();
         let machines = Arc::new(Runtime::new());
         let env = Env {
             flows: tree,
-            desk: Arc::new(
-                LocalDesk::default().with_reader(Arc::new(crate::reader::Reader::new(
-                    Arc::new(crate::recorded::RecordedInspector::new(recorded)),
+            desk: Arc::new(LocalDesk::default().with_reader(Arc::new(
+                jevons_desktop_core::reader::Reader::new(
+                    Arc::new(jevons_desktop_core::recorded::RecordedInspector::new(
+                        recorded,
+                    )),
                     crate::context::Privacy::default(),
-                ))),
-            ),
+                ),
+            ))),
             machines: machines.clone(),
             ..env(client, None)
         };
@@ -2819,7 +2827,7 @@ confirm = false
             }
         }
         files.extend(search);
-        let config: crate::config::DesktopConfig = toml::from_str(
+        let config: crate::config::ServerConfig = toml::from_str(
             r#"
 [tools.web_search]
 kind = "http"
@@ -2854,7 +2862,8 @@ allow = ["research/search/*"]
         let (flows, tools) = with_search_example();
         let labels = &["research", "search-1", "opening", "end"];
         let (client, seen) = server(prefer(labels), "1. jevons-fsm").await;
-        let (confirm, mut asked) = mpsc::unbounded_channel::<crate::confirm::Confirmation>();
+        let (confirm, mut asked) =
+            mpsc::unbounded_channel::<jevons_desktop_core::confirm::Confirmation>();
         let approver = tokio::spawn(async move {
             let call = asked.recv().await.unwrap();
             call.reply.send(true).unwrap();
@@ -2864,10 +2873,9 @@ allow = ["research/search/*"]
         let env = Env {
             flows,
             tools: Some(tools),
-            desk: Arc::new(
-                LocalDesk::default()
-                    .with_confirmer(Arc::new(crate::confirm::ChannelConfirmer::new(confirm))),
-            ),
+            desk: Arc::new(LocalDesk::default().with_confirmer(Arc::new(
+                jevons_desktop_core::confirm::ChannelConfirmer::new(confirm),
+            ))),
             machines: machines.clone(),
             ..env(client, None)
         };

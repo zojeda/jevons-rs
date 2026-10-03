@@ -12,15 +12,7 @@ testing = []
 
 [dependencies]
 jevons-audio.workspace = true
-jevons-machine.workspace = true
 jevons-desktop-protocol.workspace = true
-adk-agent.workspace = true
-adk-core.workspace = true
-adk-runner.workspace = true
-adk-session.workspace = true
-adk-tool.workspace = true
-# The forwarder: the API the app serves to other clients.
-axum = { workspace = true, features = ["ws"] }
 base64.workspace = true
 directories.workspace = true
 futures-util = { workspace = true, features = ["sink", "std"] }
@@ -34,12 +26,11 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util"] }
-tokio-tungstenite.workspace = true
 toml.workspace = true
-toml_edit.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+axum.workspace = true
 # The render_icons example.
 image.workspace = true
 

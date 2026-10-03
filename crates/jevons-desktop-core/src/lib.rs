@@ -25,7 +25,6 @@
 
 pub mod automation;
 pub mod catalog;
-pub mod client;
 pub mod config;
 pub mod confirm;
 pub use jevons_desktop_protocol::context;
@@ -34,18 +33,15 @@ pub mod desk;
 pub mod download;
 #[cfg(any(test, feature = "testing"))]
 pub mod fake;
-pub mod flow;
-pub mod forward;
 pub mod git;
+pub mod guarded;
 pub mod history;
 pub mod icons;
 pub mod interface;
 pub mod levels;
 pub mod look;
-pub mod pipeline;
 pub mod platform;
 pub mod reader;
 pub mod recorded;
 pub mod recording;
-pub mod settings;
 pub mod xpath;

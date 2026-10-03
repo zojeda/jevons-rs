@@ -1,10 +1,11 @@
-# jevons-desktop-core: tools
+# jevons-desktop-server: tools
 
-[Back to jevons-desktop-core](spec.md)
+[Back to jevons-desktop-server](spec.md)
 
 The tool host runs what flow nodes and tool loops call: the built-in tools (`command`, `http`, `open`)
-and MCP servers registered in the desktop settings, and the library's automations as
-`script:<name>`. It asks before a call runs, keeps each tool to the nodes its `allow` names, and in
+and MCP servers registered in the server's settings, and the client's tools, the library's
+automations as `script:<name>`, which it lists from the desk and passes each call on to
+([desk](../jevons-desktop-core/desk.md) R6). It asks the desk before a call runs, keeps each tool to the nodes its `allow` names, and in
 a dry run records a call instead of making it. Agents run their tool-calling loop on adk-rust,
 over the jevons API, through `JevonsLlm`. The node files (`tool.toml`, `loop.toml`, `run.toml`)
 and the checks made when they load are in [flows](flows.md). A machine's `tools` list is in

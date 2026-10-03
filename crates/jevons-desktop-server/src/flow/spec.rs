@@ -4,7 +4,7 @@
 //! and `[extract.<name>]`); unknown fields are errors with their line.
 
 use super::guard::When;
-use crate::platform::{Action, DeliveryMethod};
+use jevons_desktop_protocol::delivery::{Action, DeliveryMethod};
 pub use jevons_desktop_protocol::extract::{ExtractAs, ExtractSpec};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

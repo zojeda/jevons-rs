@@ -824,7 +824,7 @@ mod tests {
     use super::*;
 
     fn builtin(text: &str) -> BTreeMap<String, ToolConfig> {
-        toml::from_str::<crate::config::DesktopConfig>(text)
+        toml::from_str::<crate::config::ServerConfig>(text)
             .unwrap()
             .tools
     }
@@ -947,15 +947,15 @@ arguments = { text = "Text" }
         )
         .unwrap();
         std::fs::write(dir.join("post/script.rhai"), "#{}\n").unwrap();
-        let mut settings = crate::config::AutomationSettings::default();
+        let mut settings = jevons_desktop_core::config::AutomationSettings::default();
         settings.allow.insert("post".into(), vec!["run".into()]);
-        let host = Arc::new(crate::automation::host::AutomationHost::new(
+        let host = Arc::new(jevons_desktop_core::automation::host::AutomationHost::new(
             &dir,
             settings,
-            Arc::new(crate::platform::Unsupported),
-            Arc::new(crate::platform::Unsupported),
+            Arc::new(jevons_desktop_core::platform::Unsupported),
+            Arc::new(jevons_desktop_core::platform::Unsupported),
         ));
-        let desk = Arc::new(crate::desk::LocalDesk::default().with_automations(host));
+        let desk = Arc::new(jevons_desktop_core::desk::LocalDesk::default().with_automations(host));
         let tools = ToolHost::new(&BTreeMap::new(), &BTreeMap::new()).with_desk(desk);
         let catalog = tools.catalog();
         assert!(catalog.servers["script"]);
@@ -1046,7 +1046,7 @@ for line in sys.stdin:
         let script = dir.join("server.py");
         std::fs::write(&script, SERVER).unwrap();
         let mcp: BTreeMap<String, McpConfig> =
-            toml::from_str::<crate::config::DesktopConfig>(&format!(
+            toml::from_str::<crate::config::ServerConfig>(&format!(
                 "[mcp.calc]\ncommand = [{python:?}, {:?}]\nunconfirmed = [\"add\"]\n",
                 script.display().to_string()
             ))

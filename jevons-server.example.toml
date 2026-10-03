@@ -1,0 +1,96 @@
+# The jevons desktop server's settings: where inference comes from, the API it serves, the
+# models it loads, the flows folder and the tools flows may call. The Settings panel writes this
+# file; every field is optional. It sits next to jevons-desktop.toml.
+# The flow tree that routes each take is in the flows folder next to it; set flows_dir to move it.
+# flows_dir = "D:/jevons/flows"
+
+[server]
+# Serve the API to other clients. When false, the API listens on an ephemeral loopback port
+# with a key only the app knows.
+expose = false
+bind = "127.0.0.1"
+port = 8080
+# The key other clients send when exposed. Prefer TYPESAFE_API_KEY; never commit a key.
+# api_key = ""
+
+# Where inference comes from. `embedded`, the models this app loads ([models] below), is always
+# there, and every capability uses it unless [routes] says otherwise. Other kinds:
+#   "jevons"             a jevons server (url: http://127.0.0.1:8080; key: TYPESAFE_API_KEY)
+#   "openrouter"         OpenRouter (url: https://openrouter.ai/api; key: OPENROUTER_API_KEY)
+#   "openai-compatible"  any server with OpenAI's API (url required: the root, without /v1)
+# `key = "${env:NAME}"` takes the key from the environment, so it stays out of this file.
+# [providers.box]
+# kind = "jevons"
+# url = "http://box.local:8080"
+#
+# [providers.openrouter]
+# kind = "openrouter"
+# key = "${env:OPENROUTER_API_KEY}"
+# What its decision model takes, in place of the kind's. A jevons server takes every System One
+# extension and any number of questions. For the other kinds jevons assumes TypeSafe's contract
+# alone: no extensions (a flow that sets `steps`, `samples` or a thinking budget still runs,
+# without them, and its trace says so) and 8 questions a request (more go in several requests).
+# OpenRouter documents no limit, so 8 is a cautious guess.
+# extensions = ["steps", "samples", "think"]
+# max_questions = 8
+# How sure its model must be for a machine to take its choice (0.7 unless set: tuned on
+# DiffusionGemma, and not measured on other models).
+# min_probability = 0.7
+
+# The provider and model of each capability. One left out goes to `embedded`; `realtime` left out
+# follows `speech` when that is embedded or a jevons server. An embedded or jevons provider
+# names its own model when `model` is left out; the others need one.
+# [routes]
+# speech = { provider = "embedded" }
+# realtime = { provider = "embedded" }
+# decision = { provider = "openrouter", model = "typesafe/jev-1.13" }
+# generation = { provider = "box" }
+
+[models]
+# Where models live (default: ~/jevons/models, such as C:\Users\<you>\jevons\models).
+# folder = "D:/models"
+# Load an existing jevons-rs settings file instead of the selections below.
+# runtime_config = "jevons.toml"
+realtime = true
+
+# Unset services use the first downloaded catalog model that serves them: DiffusionGemma for
+# generative and decision, Parakeet for speech. Or choose a model on disk:
+# [models.generative]
+# path = "D:/models/diffusiongemma/diffusiongemma-26B-A4B-it-Q4_K_M.gguf"
+# mmproj = "D:/models/diffusiongemma/mmproj-diffusiongemma-26b-a4b-f16.gguf"
+# [models.decision]
+# path = "D:/models/diffusiongemma/diffusiongemma-26B-A4B-it-Q4_K_M.gguf"
+# [models.speech]
+# path = "D:/models/parakeet-tdt-0.6b-v3"
+
+[privacy]
+# For debugging: write every decision and generation request and its response, whole, to
+# ~/jevons/logs/api.log. They hold what you say and your screen's text; keys are never written.
+log_api = false
+
+# Tools flow nodes may call (tool.toml, agent.toml). Flow files can use these, never add them.
+# Each asks in the bubble before it runs unless confirm = false here. {argument} takes a call's
+# argument; ${env:NAME} an environment variable, for secrets.
+# [tools.search]
+# kind = "open"                       # open | command | http
+# description = "Searches the web for a query"
+# url = "https://duckduckgo.com/?q={query}"
+# arguments = { query = "What to search for" }
+# confirm = false
+#
+# [tools.lights]
+# kind = "http"
+# description = "Turns on the lights of a room"
+# method = "POST"
+# url = "http://homeassistant.local:8123/api/services/light/turn_on"
+# headers = { Authorization = "Bearer ${env:HA_TOKEN}" }
+# body = '{"entity_id": "light.{room}"}'
+# arguments = { room = "The room, such as kitchen" }
+#
+# MCP servers, started on demand over standard input and output; their tools are server:tool.
+# [mcp.fs]
+# command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "C:/Users/me/notes"]
+# unconfirmed = ["read_file", "list_directory"]   # these run without asking
+
+# Automations: scripts in the library folder (`automations` next to this file), written from
+# recorded demonstrations. An automation runs only once approved in the app, which pins its

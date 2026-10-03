@@ -25,13 +25,12 @@ It leaves:
 
 - evaluating an expression against an application's interface, typing text, asking the user and
   running automations to the client, `jevons-desktop-core`;
-- what to do with a take to the server (still in `jevons-desktop-core`, on its way to
-  `jevons-desktop-server`: see `specs/changes/desktop-server`).
+- what to do with a take to the server, `jevons-desktop-server`.
 
 It has no async runtime, no HTTP and no platform code. What the types mean is specified where
-they are used: snapshots and delivery in [pipeline](../jevons-desktop-core/pipeline.md), extracts
+they are used: snapshots and delivery in [pipeline](../jevons-desktop-server/pipeline.md), extracts
 and the grammar in [extract](../jevons-desktop-core/extract.md), shapes in
-[flows](../jevons-desktop-core/flows.md).
+[flows](../jevons-desktop-server/flows.md).
 
 ## Requirements
 

@@ -25,8 +25,8 @@ use crate::client::{
     Answer, ClientError, DecisionRequest, Question, Reasoning, ResponseRequest, probability_of,
 };
 use crate::pipeline::{DecisionTrace, Env, GenerationTrace, Stage, StageKind, Trace, Update};
-use crate::platform::{Action, DeliveryMethod};
 use adk_core::Tool;
+use jevons_desktop_protocol::delivery::{Action, DeliveryMethod};
 use jevons_desktop_protocol::desk::{Ask, NO_INVESTIGATOR, Read};
 use serde::Serialize;
 use serde_json::{Map, Value, json};

@@ -65,7 +65,7 @@ pub fn standing(dir: &Path) -> Result<Standing, GitError> {
 
 impl Repository {
     /// The repository of `dir`, whoever created it.
-    pub(crate) fn at(dir: &Path) -> Self {
+    pub fn at(dir: &Path) -> Self {
         Self { dir: dir.into() }
     }
 
@@ -213,8 +213,8 @@ fn run(dir: &Path, args: &[&str]) -> Result<String, GitError> {
 }
 
 /// Whether git can run here, for tests that need it.
-#[cfg(test)]
-pub(crate) fn available() -> bool {
+#[cfg(any(test, feature = "testing"))]
+pub fn available() -> bool {
     Command::new("git")
         .arg("--version")
         .output()
@@ -222,8 +222,8 @@ pub(crate) fn available() -> bool {
 }
 
 /// Runs git in `dir` for a test, returning its output.
-#[cfg(test)]
-pub(crate) fn test_run(dir: &Path, args: &[&str]) -> String {
+#[cfg(any(test, feature = "testing"))]
+pub fn test_run(dir: &Path, args: &[&str]) -> String {
     run(dir, args).unwrap_or_else(|e| panic!("git {args:?}: {e}"))
 }
 

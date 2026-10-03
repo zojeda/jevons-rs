@@ -18,7 +18,7 @@ typing, the start of its value, the selection, and the text before and after the
 Chrome, Edge, Firefox, Brave, Opera and Vivaldi it adds the page address from the address bar,
 with `https://` when the bar shows none. A password field gives its role and name and no text.
 What cannot be read is listed in the snapshot's errors. The snapshot then keeps to the privacy
-settings ([pipeline](../jevons-desktop-core/pipeline.md) R1).
+settings ([pipeline](../jevons-desktop-server/pipeline.md) R1).
 
 Tests: none yet
 

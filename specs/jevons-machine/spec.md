@@ -19,7 +19,7 @@ It leaves to other crates:
 
 - Machine folders, named guards' rules, the states' work, the decision model, the timers' clock,
   and tasks nested in states: `jevons-desktop-core`
-  ([machines](../jevons-desktop-core/machines.md)).
+  ([machines](../jevons-desktop-server/machines.md)).
 - Drawing the layout: `jevons-desktop`.
 
 It has no async code, no HTTP and no JSON: serde derives only.

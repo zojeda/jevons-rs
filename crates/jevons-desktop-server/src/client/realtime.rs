@@ -2,10 +2,10 @@
 //! [`SAMPLE_RATE`] and commits the turn itself when the hotkey is released (no server VAD).
 
 use super::{Client, ClientError};
-use crate::platform::SAMPLE_RATE;
 use base64::Engine;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
+use jevons_desktop_protocol::delivery::SAMPLE_RATE;
 use serde_json::json;
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;

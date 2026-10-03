@@ -8,11 +8,11 @@ use super::Ctx;
 use super::components::{Choice as Option_, Select, badge};
 use crate::agent::Command;
 use dioxus::prelude::*;
-use jevons_desktop_core::flow::machine::layout::{self, Edge, Layout, NodeKind, Placed};
-use jevons_desktop_core::flow::machine::runtime::{Running, Step, View as Machines};
-use jevons_desktop_core::flow::machine::{self, Condition, Level, Loaded, Target};
-use jevons_desktop_core::flow::tree::{FlowTree, Node, NodeSpec};
-use jevons_desktop_core::flow::{Kind, defaults};
+use jevons_desktop_server::flow::machine::layout::{self, Edge, Layout, NodeKind, Placed};
+use jevons_desktop_server::flow::machine::runtime::{Running, Step, View as Machines};
+use jevons_desktop_server::flow::machine::{self, Condition, Level, Loaded, Target};
+use jevons_desktop_server::flow::tree::{FlowTree, Node, NodeSpec};
+use jevons_desktop_server::flow::{Kind, defaults};
 use std::sync::Arc;
 
 /// The edges' colours: the theme's quiet line, and the accent for the latest transition.
@@ -21,7 +21,7 @@ const BACK: &str = "#3e3e3e";
 const HOT: &str = "#22e6f2";
 /// The most characters of an edge label drawn on the diagram (the layout leaves room for that
 /// many); the rest is in its tooltip.
-const LABEL: usize = jevons_desktop_core::flow::machine::layout::LABEL_CHARS;
+const LABEL: usize = jevons_desktop_server::flow::machine::layout::LABEL_CHARS;
 /// The transitions the history card lists.
 const HISTORY: usize = 40;
 
