@@ -53,6 +53,12 @@ pub struct DesktopConfig {
     pub tools: BTreeMap<String, ToolConfig>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub mcp: BTreeMap<String, McpConfig>,
+    /// The client's `[tools]` and `[mcp]`: they run on this machine, where the server's run
+    /// with the server.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub desk_tools: BTreeMap<String, ToolConfig>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub desk_mcp: BTreeMap<String, McpConfig>,
     pub automation: AutomationSettings,
 }
 
@@ -96,6 +102,8 @@ impl DesktopConfig {
             flows_dir: server.flows_dir,
             tools: server.tools,
             mcp: server.mcp,
+            desk_tools: client.tools,
+            desk_mcp: client.mcp,
             automation: client.automation,
         }
     }
@@ -105,6 +113,8 @@ impl DesktopConfig {
         ClientConfig {
             dictation: self.dictation.clone(),
             privacy: self.privacy.clone(),
+            tools: self.desk_tools.clone(),
+            mcp: self.desk_mcp.clone(),
             automation: self.automation.clone(),
         }
     }

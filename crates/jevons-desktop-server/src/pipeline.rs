@@ -3052,8 +3052,213 @@ confirm = false
         assert_eq!(trace.calls[0].confirmed, Some(false));
     }
 
-    /// The built-in tree with `examples/desktop/machines/research` added as its README says.
-    fn with_search_example() -> (Arc<FlowTree>, Arc<ToolHost>) {
+    /// A server whose settings register an HTTP tool (answered here) and a client whose
+    /// settings register a program: each asks the user unless its own settings say not to.
+    async fn two_sides(
+        client: &str,
+        confirm: Option<mpsc::UnboundedSender<jevons_desktop_core::confirm::Confirmation>>,
+    ) -> (Arc<ToolHost>, Arc<dyn Desk>, Arc<Mutex<usize>>) {
+        let hits = Arc::new(Mutex::new(0usize));
+        let got = hits.clone();
+        let app = axum::Router::new().route(
+            "/lookup",
+            get(move || {
+                *got.lock().unwrap() += 1;
+                async { Json(json!({"found": "the answer"})) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let server: crate::config::ServerConfig = toml::from_str(&format!(
+            "[tools.lookup]\nkind = \"http\"\nmethod = \"GET\"\ndescription = \"Looks it up\"\n\
+             url = \"http://{address}/lookup?q={{query}}\"\narguments = {{ query = \"What\" }}\n"
+        ))
+        .unwrap();
+        let client: jevons_desktop_core::config::ClientConfig = toml::from_str(client).unwrap();
+        let mut desk = LocalDesk::default().with_tools(Arc::new(
+            jevons_desktop_tools::ToolSet::new(&client.tools, &client.mcp),
+        ));
+        if let Some(confirm) = confirm {
+            desk = desk.with_confirmer(Arc::new(
+                jevons_desktop_core::confirm::ChannelConfirmer::new(confirm),
+            ));
+        }
+        let desk: Arc<dyn Desk> = Arc::new(desk);
+        let tools = Arc::new(ToolHost::new(&server.tools, &server.mcp).with_desk(desk.clone()));
+        (tools, desk, hits)
+    }
+
+    /// A program the client runs: it echoes what was said.
+    const SAY: &str = "[tools.say]\nkind = \"command\"\ndescription = \"Says it\"\n\
+        program = \"echo\"\nargs = [\"{text}\"]\narguments = { text = \"What to say\" }\n";
+
+    #[tokio::test]
+    async fn a_server_tool_asks_through_the_client_and_a_client_tool_asks_by_itself() {
+        if cfg!(windows) {
+            return;
+        }
+        let (confirm, mut asked) =
+            mpsc::unbounded_channel::<jevons_desktop_core::confirm::Confirmation>();
+        let (tools, desk, hits) = two_sides(SAY, Some(confirm)).await;
+        // The user says yes to each call, and what was asked is kept.
+        let questions = Arc::new(Mutex::new(Vec::<String>::new()));
+        let kept = questions.clone();
+        tokio::spawn(async move {
+            while let Some(question) = asked.recv().await {
+                kept.lock().unwrap().push(question.tool.clone());
+                let _ = question.reply.send(true);
+            }
+        });
+        let catalog = tools.catalog();
+        assert!(!catalog.tools["lookup"].client && catalog.tools["say"].client);
+        let md = tools.tools_md();
+        let about = |name: &str| {
+            let at = md.find(&format!("## `{name}`")).unwrap();
+            md[at..].lines().nth(4).unwrap().to_string()
+        };
+        assert_eq!(
+            about("lookup"),
+            "Runs on the server. Asks in the bubble before it runs."
+        );
+        assert_eq!(
+            about("say"),
+            "Runs on the client. Asks in the bubble before it runs."
+        );
+        let take_with = |tool: &'static str, argument: &'static str| {
+            let (tools, desk, catalog) = (tools.clone(), desk.clone(), catalog.clone());
+            async move {
+                let (client, _) = server(prefer(&[]), "unused").await;
+                let node =
+                    format!("tool = \"{tool}\"\n[args.{argument}]\nvalue = \"{{transcript}}\"");
+                let tree = FlowTree::load(
+                    &Memory::new("test", [("tool.toml", node.as_str())]),
+                    &catalog,
+                );
+                assert!(tree.is_valid(), "{:?}", tree.errors);
+                let env = Env {
+                    flows: Arc::new(tree),
+                    tools: Some(tools),
+                    desk,
+                    ..env(client, None)
+                };
+                take(&env, None).await
+            }
+        };
+        // The server's tool: the server asks, through the client, and then runs it itself.
+        let trace = take_with("lookup", "query").await;
+        assert_eq!(trace.error, None, "{:?}", trace.notes);
+        assert_eq!(trace.calls[0].confirmed, Some(true));
+        assert_eq!(*hits.lock().unwrap(), 1);
+        assert!(trace.output.contains("the answer"), "{}", trace.output);
+        // The client's tool: the node does not ask, the server does not ask, and the client
+        // asks all the same, because its settings say so. Then it runs there.
+        let trace = take_with("say", "text").await;
+        assert_eq!(trace.error, None, "{:?}", trace.notes);
+        assert_eq!(trace.calls[0].confirmed, Some(true));
+        assert_eq!(trace.output.trim(), "hello world");
+        assert_eq!(*questions.lock().unwrap(), ["lookup", "say"]);
+    }
+
+    #[tokio::test]
+    async fn a_declined_client_tool_takes_the_denied_transition() {
+        // Nobody answers at the client: its tool does not run, and the machine takes `denied`.
+        let (tools, desk, _) = two_sides(SAY, None).await;
+        let files = [
+            ("root.toml", "tools = [\"say\"]"),
+            (
+                "root.fsm",
+                "fsm App {\n[*] --> idle\nidle --> saying : said\nsaying --> idle\nsaying --> told : denied\nstate told\ntold --> idle\n}",
+            ),
+            (
+                "saying/tool.toml",
+                "description = \"Says it\"\ntool = \"say\"\n[args.text]\nvalue = \"{transcript}\"",
+            ),
+            ("told/transcript.toml", "output = \"clipboard\""),
+        ];
+        let mut wrapped = vec![
+            ("root.toml".to_string(), "tools = [\"say\"]".to_string()),
+            (
+                "root.fsm".to_string(),
+                "fsm Root {\n[*] --> idle\nidle --> main : said\nmain --> idle\n}".to_string(),
+            ),
+        ];
+        for (path, text) in files {
+            let (path, text) = match path {
+                "root.toml" => (
+                    "main/agent.toml".to_string(),
+                    format!("description = \"Main\"\n{text}"),
+                ),
+                "root.fsm" => ("main/agent.fsm".to_string(), text.to_string()),
+                other => (format!("main/{other}"), text.to_string()),
+            };
+            wrapped.push((path, text));
+        }
+        let tree = FlowTree::load(
+            &Memory::new(
+                "test",
+                wrapped.iter().map(|(p, t)| (p.as_str(), t.as_str())),
+            ),
+            &tools.catalog(),
+        );
+        assert!(tree.is_valid(), "{:?}", tree.errors);
+        let (client, _) = server(prefer(&[]), "unused").await;
+        let env = Env {
+            flows: Arc::new(tree),
+            tools: Some(tools),
+            desk,
+            ..env(client, None)
+        };
+        let trace = say(&env, 1, "the build is green").await;
+        assert_eq!(
+            inner(&trace),
+            [
+                "idle said → saying",
+                "saying denied → told",
+                "told done → idle"
+            ]
+        );
+        assert_eq!(trace.calls[0].tool, "say");
+        assert_eq!(trace.calls[0].confirmed, Some(false));
+        assert!(
+            trace.notes.iter().any(|n| n.contains("not confirmed")),
+            "{:?}",
+            trace.notes
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tool_both_sides_register_is_nobody_s_to_run() {
+        let twice = "[tools.lookup]\nkind = \"open\"\ndescription = \"Opens it\"\nurl = \"{query}\"\n\
+            arguments = { query = \"What\" }\n";
+        let (tools, _, _) = two_sides(twice, None).await;
+        assert_eq!(
+            tools.clashes(),
+            ["the tool lookup is registered by both the server and the client"]
+        );
+        let refused = tools
+            .resolve(&["lookup".into()], "any")
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(
+            refused,
+            "the tool lookup is registered by both the server and the client"
+        );
+    }
+
+    /// The built-in tree with `examples/desktop/machines/research` added as its README says:
+    /// `web_search` in the server's settings, answered by a fake search here, and `open_url` in
+    /// the client's, where nothing opens and the user is asked through `confirm`. Returns the
+    /// tree, the server's tools, the client's desk and the searches the fake got.
+    async fn with_search_example(
+        confirm: mpsc::UnboundedSender<jevons_desktop_core::confirm::Confirmation>,
+    ) -> (
+        Arc<FlowTree>,
+        Arc<ToolHost>,
+        Arc<dyn Desk>,
+        Arc<Mutex<Vec<String>>>,
+    ) {
         let example = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../examples/desktop/machines/research");
         let read = |file: &str| std::fs::read_to_string(example.join(file)).unwrap();
@@ -3088,18 +3293,34 @@ confirm = false
             }
         }
         files.extend(search);
-        let config: crate::config::ServerConfig = toml::from_str(
+        // A search service that answers every query with one result.
+        let searched = Arc::new(Mutex::new(Vec::<String>::new()));
+        let got = searched.clone();
+        let search = axum::Router::new().route(
+            "/search",
+            get(move |query: axum::extract::RawQuery| {
+                got.lock().unwrap().push(query.0.unwrap_or_default());
+                async { Json(json!({"results": [{"title": "jevons-fsm", "url": "https://x/1"}]})) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, search).await.unwrap() });
+        let server: crate::config::ServerConfig = toml::from_str(&format!(
             r#"
 [tools.web_search]
 kind = "http"
 method = "GET"
 description = "Searches the web and returns the top results as JSON"
-url = "https://api.search.brave.com/res/v1/web/search?q={query}&count=5"
-headers = { Accept = "application/json", "X-Subscription-Token" = "${env:BRAVE_API_KEY}" }
-arguments = { query = "What to search for" }
+url = "http://{address}/search?q={{query}}&count=5"
+arguments = {{ query = "What to search for" }}
 confirm = false
 allow = ["research/search/*"]
-
+"#
+        ))
+        .unwrap();
+        let client: jevons_desktop_core::config::ClientConfig = toml::from_str(
+            r#"
 [tools.open_url]
 kind = "open"
 description = "Opens an address in the default browser"
@@ -3109,22 +3330,37 @@ allow = ["research/search/*"]
 "#,
         )
         .unwrap();
-        let tools = Arc::new(ToolHost::new(&config.tools, &config.mcp).dry_run());
+        // The client's tools check and ask as always, and then only say what they would do:
+        // no browser opens in a test.
+        let desk: Arc<dyn Desk> = Arc::new(
+            LocalDesk::default()
+                .with_confirmer(Arc::new(
+                    jevons_desktop_core::confirm::ChannelConfirmer::new(confirm),
+                ))
+                .with_tools(Arc::new(jevons_desktop_tools::ToolSet::new(
+                    &client.tools,
+                    &client.mcp,
+                )))
+                .dry_run(),
+        );
+        let tools = Arc::new(ToolHost::new(&server.tools, &server.mcp).with_desk(desk.clone()));
+        let catalog = tools.catalog();
+        assert!(!catalog.tools["web_search"].client && catalog.tools["open_url"].client);
         let tree = FlowTree::load(
             &Memory::new("test", files.iter().map(|(p, t)| (p.as_str(), t.as_str()))),
-            &tools.catalog(),
+            &catalog,
         );
         assert!(tree.is_valid(), "{:?}", tree.errors);
-        (Arc::new(tree), tools)
+        (Arc::new(tree), tools, desk, searched)
     }
 
     #[tokio::test]
     async fn the_search_example_searches_answers_and_opens_a_result_once_approved() {
-        let (flows, tools) = with_search_example();
-        let labels = &["research", "search-1", "opening", "end"];
-        let (client, seen) = server(prefer(labels), "1. jevons-fsm").await;
         let (confirm, mut asked) =
             mpsc::unbounded_channel::<jevons_desktop_core::confirm::Confirmation>();
+        let (flows, tools, desk, searched) = with_search_example(confirm).await;
+        let labels = &["research", "search-1", "opening", "end"];
+        let (client, seen) = server(prefer(labels), "1. jevons-fsm").await;
         let approver = tokio::spawn(async move {
             let call = asked.recv().await.unwrap();
             call.reply.send(true).unwrap();
@@ -3134,9 +3370,7 @@ allow = ["research/search/*"]
         let env = Env {
             flows,
             tools: Some(tools),
-            desk: Arc::new(LocalDesk::default().with_confirmer(Arc::new(
-                jevons_desktop_core::confirm::ChannelConfirmer::new(confirm),
-            ))),
+            desk,
             machines: machines.clone(),
             ..env(client, None)
         };
@@ -3160,7 +3394,16 @@ allow = ["research/search/*"]
                 "answering done → results"
             ]
         );
+        // The search ran with the server: its request reached the search service.
         assert_eq!(first.calls[0].tool, "web_search");
+        assert_eq!(searched.lock().unwrap().len(), 1);
+        assert!(
+            first.calls[0]
+                .result
+                .as_ref()
+                .unwrap()
+                .contains("jevons-fsm")
+        );
         assert_eq!(first.delivery, Some(DeliveryOutcome::Shown));
         assert_eq!(machines.view().path(), "research › search › results");
         assert!(seen.decisions.lock().unwrap().is_empty());
@@ -3200,8 +3443,20 @@ allow = ["research/search/*"]
             ]
         );
         assert_eq!(seen.decisions.lock().unwrap().len(), 2, "one request");
+        // Opening is the client's: it asked the user by itself, and ran there.
         assert_eq!(approver.await.unwrap(), "open_url");
+        assert_eq!(second.calls[0].tool, "open_url");
         assert_eq!(second.calls[0].confirmed, Some(true));
+        assert!(
+            second.calls[0]
+                .result
+                .as_ref()
+                .unwrap()
+                .contains("would_call"),
+            "{:?}",
+            second.calls[0].result
+        );
+        assert_eq!(searched.lock().unwrap().len(), 2, "two searches, no more");
         // Done: the search ends, and with none waiting the agent is no choice for the root.
         let (client, _) = server(prefer(&["research", "search-1", "end"]), "unused").await;
         let env = Env {

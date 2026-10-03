@@ -51,7 +51,12 @@ pub struct Host {
     key: Option<String>,
     /// The client connected now, for what the session does by itself.
     client: Arc<Mutex<Option<mpsc::UnboundedSender<ToClient>>>>,
+    /// Run whenever a client says what it can do: its tools are known from then on.
+    greeted: Mutex<Option<Greeted>>,
 }
+
+/// What a host does when a client has said hello.
+pub type Greeted = Arc<dyn Fn() + Send + Sync>;
 
 impl Host {
     /// Serves `session` to the clients that connect; `events` is what the session does by
@@ -94,7 +99,21 @@ impl Host {
             session,
             key: key.filter(|k| !k.is_empty()),
             client,
+            greeted: Mutex::default(),
         })
+    }
+
+    /// Runs `then` each time a client says hello, once its desk has the seat: the flow tree
+    /// can be checked again, now that the client's tools are known.
+    pub fn when_greeted(&self, then: Greeted) {
+        *self.greeted.lock().expect("the host lock") = Some(then);
+    }
+
+    fn greeted(&self) {
+        let then = self.greeted.lock().expect("the host lock").clone();
+        if let Some(then) = then {
+            then();
+        }
     }
 
     /// The session clients are served.
@@ -137,6 +156,7 @@ impl Host {
             }
         };
         self.session.set_desk(desk.clone());
+        self.greeted();
         *self.client.lock().expect("the client lock") = Some(tx.clone());
         let _ = tx.send(ToClient::Welcome { version: VERSION });
         // Where the machines are: a client that comes back finds its tasks as they were.
@@ -154,6 +174,7 @@ impl Host {
                 } => {
                     desk.set_tools(tools);
                     self.session.set_settings(settings(&of));
+                    self.greeted();
                 }
                 ToServer::Take {
                     take,

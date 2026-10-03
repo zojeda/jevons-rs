@@ -1,8 +1,9 @@
 //! `jevons-desktop.toml`: the client's settings. Dictation and its hotkeys, what a snapshot may
-//! keep, and the automations library with its approvals. The Settings panel edits and saves it;
+//! keep, the tools that run on this machine, and the automations library with its approvals. The Settings panel edits and saves it;
 //! a missing file means defaults.
 
 use crate::context::Privacy;
+pub use jevons_desktop_tools::config::{McpConfig, ToolConfig, ToolKind};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -12,6 +13,13 @@ use std::path::{Path, PathBuf};
 pub struct ClientConfig {
     pub dictation: Dictation,
     pub privacy: Privacy,
+    /// Built-in tools that run on this machine, by name: flow nodes may call them, and each
+    /// asks here before it runs unless it says otherwise.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub tools: BTreeMap<String, ToolConfig>,
+    /// MCP servers that run on this machine, whose tools flow nodes may call as `server:tool`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub mcp: BTreeMap<String, McpConfig>,
     /// The automations library, recording demonstrations, and which versions may run.
     #[serde(skip_serializing_if = "AutomationSettings::is_default")]
     pub automation: AutomationSettings,

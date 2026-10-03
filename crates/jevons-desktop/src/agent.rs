@@ -36,6 +36,7 @@ use jevons_desktop_server::flow::walk::{self, FlowStep};
 use jevons_desktop_server::flow::{Catalog, FlowError, FlowTree, defaults};
 use jevons_desktop_server::pipeline::{self, StageKind, TakeStart, Trace, Update};
 use jevons_desktop_server::session::{Event as SessionEvent, Session as ServerSession};
+use jevons_desktop_tools::ToolSet;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -652,6 +653,8 @@ pub struct Agent {
     flows: Arc<FlowTree>,
     /// The server's side of the app: it runs the takes and keeps the machines.
     session: Arc<ServerSession>,
+    /// The tools this machine runs, from the client's settings.
+    desk_tools: Arc<ToolSet>,
     /// Where the desk sends the tool calls to confirm.
     confirm: mpsc::UnboundedSender<Confirmation>,
     /// Where each timer's take shows what it is doing.
@@ -718,6 +721,7 @@ impl Agent {
         let sink = Arc::new(Mutex::new(layers.sink));
         let paths = Arc::new(Mutex::new(PathCache::open(PathCache::default_file())));
         // The client's side of the app: one desk, which the server's parts reach it through.
+        let desk_tools = Arc::new(ToolSet::new(&config.desk_tools, &config.desk_mcp));
         let desk = local_desk(
             &config,
             &sink,
@@ -725,6 +729,7 @@ impl Agent {
             &paths,
             &confirm,
             &automations,
+            &desk_tools,
         );
         let tools = Arc::new(ToolHost::new(&config.tools, &config.mcp).with_desk(desk.clone()));
         let (tree, report) = defaults::open(&flows_dir, &tools.catalog());
@@ -771,6 +776,7 @@ impl Agent {
             search_next: None,
             flows,
             session,
+            desk_tools,
             confirm,
             timer_updates: HashMap::new(),
             config,
@@ -821,11 +827,15 @@ impl Agent {
     /// Starts the MCP servers in the background; their tools then check the flows.
     fn list_tools(&self) {
         let tools = self.tools.clone();
+        let desk_tools = self.desk_tools.clone();
         let commands = self.commands.clone();
         let dir = self.config.flows_dir(&self.config_file);
         let repository = self.repository.clone();
         tokio::spawn(async move {
-            let problems = tools.start().await;
+            // The client's MCP servers first: the host lists their tools from the desk.
+            let mut problems = desk_tools.start().await;
+            problems.extend(tools.start().await);
+            problems.extend(tools.clashes());
             for problem in &problems {
                 tracing::warn!(problem = %problem, "An MCP server is unavailable");
             }
@@ -2213,8 +2223,11 @@ impl Agent {
                 != Binding::for_automations(&self.config.automation);
         let flows_changed =
             anew || config.flows_dir(&self.config_file) != self.config.flows_dir(&self.config_file);
-        let tools_changed =
-            anew || config.tools != self.config.tools || config.mcp != self.config.mcp;
+        let tools_changed = anew
+            || config.tools != self.config.tools
+            || config.mcp != self.config.mcp
+            || config.desk_tools != self.config.desk_tools
+            || config.desk_mcp != self.config.desk_mcp;
         let library_changed = anew
             || config.automations_dir(&self.config_file)
                 != self.config.automations_dir(&self.config_file);
@@ -2247,6 +2260,11 @@ impl Agent {
         }
         // The desk reads within the privacy settings as they are now, and the takes run with
         // the dictation settings as they are now.
+        // The client's own tools: their MCP servers keep running unless they changed.
+        if tools_changed {
+            self.desk_tools =
+                Arc::new(ToolSet::new(&self.config.desk_tools, &self.config.desk_mcp));
+        }
         let desk = local_desk(
             &self.config,
             &self.sink,
@@ -2254,6 +2272,7 @@ impl Agent {
             &self.paths,
             &self.confirm,
             &self.automations,
+            &self.desk_tools,
         );
         self.session.set_desk(desk.clone());
         self.session.set_settings(take_settings(&self.config));
@@ -3428,6 +3447,7 @@ fn local_desk(
     paths: &Arc<Mutex<PathCache>>,
     confirm: &mpsc::UnboundedSender<Confirmation>,
     automations: &Arc<AutomationHost>,
+    tools: &Arc<ToolSet>,
 ) -> Arc<dyn Desk> {
     let privacy = &config.privacy;
     let reader = Reader::new(inspector.clone(), privacy.clone());
@@ -3438,7 +3458,8 @@ fn local_desk(
             .with_reader(Arc::new(reader))
             .with_looks(Arc::new(looks))
             .with_confirmer(Arc::new(ChannelConfirmer::new(confirm.clone())))
-            .with_automations(automations.clone()),
+            .with_automations(automations.clone())
+            .with_tools(tools.clone()),
     )
 }
 

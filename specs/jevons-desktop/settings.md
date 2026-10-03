@@ -46,7 +46,7 @@ Tests: `a_missing_file_gives_defaults_and_unknown_fields_are_errors`, `the_examp
 | `[routes]` | `speech`, `realtime`, `decision` and `generation`, each a `provider` and an optional `model` (all `embedded`) |
 | `[models]` | `folder`, `runtime_config`, `generative`, `decision` and `speech` (each a `path`, an optional `mmproj` and the `catalog` entry it came from), `realtime` (true) |
 | `[privacy]` | `log_api` (false) |
-| top level | `flows_dir`, `[tools.<name>]`, `[mcp.<name>]` |
+| top level | `flows_dir`, and `[tools.<name>]` and `[mcp.<name>]`: the tools and MCP servers that run with the server |
 
 `jevons-desktop.toml`:
 
@@ -54,6 +54,7 @@ Tests: `a_missing_file_gives_defaults_and_unknown_fields_are_errors`, `the_examp
 | --- | --- |
 | `[dictation]` | `hotkey` (`Ctrl+Alt+Space`), `hotkey_mode` (`hold`), `live_hotkey` (`F9`), `live_hotkey_mode` (`hold`), `live_feedback` (true), `inspector_hotkey` (none), `branch_hotkeys` (none), `microphone` (the default device), `language` (detected), `decide` (true), `max_output_tokens` (1024) |
 | `[privacy]` | `max_context_chars` (2000), `read_clipboard` (false), `read_other_windows` (false), `readable_apps` (none) |
+| `[tools.<name>]`, `[mcp.<name>]` | the tools and MCP servers that run on this machine ([desk](../jevons-desktop-core/desk.md) R6) |
 | `[automation]` | `dir`, `recordings_dir`, `record_hotkey` (none), `hotkeys` (none), `approved` (none), `unconfirmed` (none), `allow` (none), `author_model` (the generative model) |
 
 The example files, `jevons-desktop.example.toml` and `jevons-server.example.toml`, parse.

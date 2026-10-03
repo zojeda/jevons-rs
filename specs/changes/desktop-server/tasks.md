@@ -484,14 +484,34 @@ traces.
 
 Scope: each tool runs on its side, and confirmation is enforced by the side that runs it.
 
-- [ ] Add `runs = "server" | "client"` to tools and MCP servers. Defaults: `http` on the server;
-      `open` and `command` on the client; MCP where it is configured; automations always on the
-      client.
-- [ ] Client tools become effects. The client checks its own settings' `confirm` and `allow`
+- [x] Each tool runs on its side. Adapted: where a tool is written is where it runs (the
+      server's settings file or the client's), in place of a `runs` key; see below.
+- [x] Client tools become effects. The client checks its own settings' `confirm` and `allow`
       before running one, whatever the server asked.
-- [ ] A server tool that needs confirmation sends a confirm effect and waits for its answer.
-- [ ] `TOOLS.md` and the catalog list each tool with where it runs. A machine's `tools` list keeps
+- [x] A server tool that needs confirmation sends a confirm effect and waits for its answer.
+- [x] `TOOLS.md` and the catalog list each tool with where it runs. A machine's `tools` list keeps
       covering both kinds.
+
+What phase 6 decided on the way:
+
+- **The file is the partition, not a field.** The client must check "its own settings' `confirm`
+  and `allow`", so a client tool's definition has to be in the client's file, and the server
+  learns of it from the hello. A `runs` key could only repeat, or contradict, the file it is in.
+  Any kind may be in either file: an `http` tool in the client's file sends its request from the
+  client's machine.
+- **`jevons-desktop-tools` holds what both sides run:** the settings' tool types, the three
+  built-in runners, MCP servers and `ToolSet`. The client core gets `adk-core` and `adk-tool`
+  back through it, for MCP.
+- **`run_tool` carries the calling node and whether the server asks too.** The client asks once:
+  when its own settings say so, or when the node's `confirm` does. The server does not ask for a
+  client tool, so nobody is asked twice. The protocol's version stays 1: nothing was released
+  between.
+- **A name in both files is an error,** reported by the app, `--check-flows` and at the call.
+- **`--serve` reads the flow tree again when a client says hello,** since a client's tools are
+  unknown before that.
+- **Before the next Windows install,** the fourth step of the hand migration: `open` and
+  `command` tools (the example's `open_url`) stay in, or move back to, `jevons-desktop.toml`;
+  `http` tools (`web_search`) go to `jevons-server.toml`.
 
 Crates: server, client core, protocol.
 Tested by: a server `http` tool with confirmation asking through the client; a client tool still

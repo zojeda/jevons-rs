@@ -221,6 +221,8 @@ impl std::fmt::Display for FlowError {
 /// A tool the settings register, for checking tool and agent nodes.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CatalogTool {
+    /// The client runs it; otherwise the server does.
+    pub client: bool,
     pub description: String,
     /// The JSON Schema of its arguments, when known.
     pub parameters: Option<serde_json::Value>,
@@ -1921,6 +1923,7 @@ mod tests {
             tools: BTreeMap::from([(
                 "search".to_string(),
                 CatalogTool {
+                    client: false,
                     description: "Search".into(),
                     parameters: Some(serde_json::json!({
                         "type": "object",

@@ -12,8 +12,8 @@ follow-up leaves it there, and two quiet minutes end it. Opening a result asks f
 starts a search only on "Search …" or "Busca …"; anything else is for it only while a search
 waits.
 
-1. Register the tools in the desktop settings (`jevons-desktop.toml`). `allow` keeps them to this
-   task's states:
+1. Register the tools, each in the settings file of the side that runs it. `allow` keeps them to
+   this task's states. The search runs with the server, in `jevons-server.toml`:
 
    ```toml
    [tools.web_search]
@@ -25,7 +25,11 @@ waits.
    arguments = { query = "What to search for" }
    confirm = false                  # it only reads
    allow = ["research/search/*"]
+   ```
 
+   Opening a result happens on your machine, in `jevons-desktop.toml`:
+
+   ```toml
    [tools.open_url]
    kind = "open"
    description = "Opens an address in the default browser"

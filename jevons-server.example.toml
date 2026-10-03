@@ -68,18 +68,13 @@ realtime = true
 # ~/jevons/logs/api.log. They hold what you say and your screen's text; keys are never written.
 log_api = false
 
-# Tools flow nodes may call (tool.toml, agent.toml). Flow files can use these, never add them.
-# Each asks in the bubble before it runs unless confirm = false here. {argument} takes a call's
-# argument; ${env:NAME} an environment variable, for secrets.
-# [tools.search]
-# kind = "open"                       # open | command | http
-# description = "Searches the web for a query"
-# url = "https://duckduckgo.com/?q={query}"
-# arguments = { query = "What to search for" }
-# confirm = false
-#
+# Tools that run with the server, which flow nodes may call (tool.toml, loop.toml). Flow files can
+# use these, never add them. A tool written here runs here; one that should run on your machine
+# (opening an address, running a program) goes in jevons-desktop.toml. Each asks in the bubble
+# before it runs unless confirm = false here. {argument} takes a call's argument; ${env:NAME} an
+# environment variable, for secrets.
 # [tools.lights]
-# kind = "http"
+# kind = "http"                       # http | command | open
 # description = "Turns on the lights of a room"
 # method = "POST"
 # url = "http://homeassistant.local:8123/api/services/light/turn_on"
@@ -87,10 +82,7 @@ log_api = false
 # body = '{"entity_id": "light.{room}"}'
 # arguments = { room = "The room, such as kitchen" }
 #
-# MCP servers, started on demand over standard input and output; their tools are server:tool.
-# [mcp.fs]
-# command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "C:/Users/me/notes"]
-# unconfirmed = ["read_file", "list_directory"]   # these run without asking
-
-# Automations: scripts in the library folder (`automations` next to this file), written from
-# recorded demonstrations. An automation runs only once approved in the app, which pins its
+# MCP servers that run with the server, started on demand over standard input and output; their
+# tools are server:tool.
+# [mcp.search]
+# command = ["npx", "-y", "some-search-mcp-server"]

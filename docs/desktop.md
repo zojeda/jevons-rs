@@ -187,10 +187,10 @@ Investigations read only the window the take started in. To let a question like 
 
 ### Tools and tool loops
 
-A `tool.toml` node calls one tool; a `loop.toml` node runs a tool-calling loop over several (at most `max_steps` model turns). Tools are registered in the desktop settings, never in the flows folder, so a folder a coding agent edits can call only what you registered:
+A `tool.toml` node calls one tool; a `loop.toml` node runs a tool-calling loop over several (at most `max_steps` model turns). Tools are registered in the settings, never in the flows folder, so a folder a coding agent edits can call only what you registered. A tool runs on the side whose file it is in: one in `jevons-desktop.toml` runs on your machine, and one in `jevons-server.toml` with the server. Flow files name them the same way either way, and `TOOLS.md` in the flows folder says where each runs.
 
 ```toml
-# jevons-server.toml
+# jevons-desktop.toml: these run on your machine
 [tools.search]
 kind = "open"                          # open | command | http
 description = "Searches the web for a query"
@@ -203,6 +203,16 @@ command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "C:/Users/me/
 unconfirmed = ["read_file", "list_directory"]
 ```
 
+```toml
+# jevons-server.toml: these run with the server
+[tools.lights]
+kind = "http"
+description = "Turns on the lights of a room"
+url = "http://homeassistant.local:8123/api/services/light/turn_on"
+body = '{"entity_id": "light.{room}"}'
+arguments = { room = "The room, such as kitchen" }
+```
+
 - **Built-in tools:**
   - `command` runs a program directly, never through a shell, with each argument as its own element. Only a few basic environment variables and the ones you list reach it, and it has a time limit.
   - `http` sends a request. Arguments are URL-encoded in the address and JSON-escaped in the body, and `${env:NAME}` keeps secrets out of files.
@@ -210,7 +220,7 @@ unconfirmed = ["read_file", "list_directory"]
 - **MCP servers** start in the background when the app starts and list their tools, which then check the flow files and fill `TOOLS.md` in the flows folder. The model knows an MCP tool as `server__tool`, because tool names cannot hold a colon.
 - **Arguments** of a tool node come from `generate` (the language model writes the value), `choose` and `noul` (all of them in one decision read), and `value` (text with placeholders). With `output = "next"`, the node's single branch gets the result as `{result}`.
 - **Agents** can always call `investigate`, the context investigator, to read the screen. Their answer streams into the bubble.
-- **Confirmation:** every call that asks shows in the bubble first (see [Using it](#using-it)). `allow` on a tool or server limits which flow nodes may use it.
+- **Confirmation:** every call that asks shows in the bubble first (see [Using it](#using-it)). `allow` on a tool or server limits which flow nodes may use it. The side that runs a tool is the one that enforces both: a tool on your machine asks and checks `allow` there, whatever the server asked for, and automations are always yours. A name registered in both files is an error.
 - **Headless runs** (`--replay`, `--transcript`) list the MCP servers' tools but run nothing: each call returns what it would have done, and the trace records it.
 
 ### Writing a branch against the real context

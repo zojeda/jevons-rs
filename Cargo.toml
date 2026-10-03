@@ -17,6 +17,7 @@ jevons-decision = { path = "crates/jevons-decision" }
 jevons-desktop-core = { path = "crates/jevons-desktop-core" }
 jevons-desktop-protocol = { path = "crates/jevons-desktop-protocol" }
 jevons-desktop-server = { path = "crates/jevons-desktop-server" }
+jevons-desktop-tools = { path = "crates/jevons-desktop-tools" }
 jevons-diffusion = { path = "crates/jevons-diffusion" }
 jevons-formats = { path = "crates/jevons-formats" }
 jevons-gemma4-diffusion = { path = "crates/jevons-gemma4-diffusion" }

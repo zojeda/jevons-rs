@@ -58,12 +58,31 @@ element read under the look's key and returns it.
 
 Tests: `an_investigation_reports_each_step_and_remembers_the_path_to_its_answer`, `other_windows_need_the_settings_and_their_app_allowed`, `outlines_skip_empty_wrappers_and_tools_offer_only_seen_ids`
 
-### R6 The client's tools are the automations library
+### R6 The client's tools are its settings' and the automations library
 
-`tools` serves the kind `script` and lists every automation as `script:<name>`, with its
-description, its arguments' schema, whether this version is approved, whether it asks first and
-the flow nodes that may call it. `run_tool` runs an approved automation and answers with its
-result alone (`{"done": true}` when it has none); a script's error keeps its line and column.
-Anything else is "no tool … is registered".
+`tools` lists what the client runs: every built-in tool and listed MCP tool of its own settings
+file, and every automation as `script:<name>`, each with its description, its arguments' schema,
+whether it asks first and the flow nodes that may call it; an automation also says whether this
+version is approved. It serves the kind `script` and each of its MCP servers by name, whether or
+not their tools are listed yet.
 
-Tests: `only_approved_versions_run_and_tools_carry_their_arguments`, `automations_are_script_tools_that_ask_and_respect_allow`
+`run_tool` runs one for a flow node, whatever the server asked:
+
+- a node its own `allow` does not name is refused with "<tool> does not allow the node <node>",
+  and the user is not asked;
+- when its own settings say it asks, or the server adds a confirmation, the user is asked once,
+  and anything but a yes fails with "it was not confirmed";
+- then it runs. An automation answers with its result alone (`{"done": true}` when it has none),
+  and a script's error keeps its line and column.
+
+Anything it does not register is "no tool … is registered".
+
+Tests: `a_client_tool_runs_only_for_a_node_it_allows_and_after_a_yes`, `only_approved_versions_run_and_tools_carry_their_arguments`, `automations_are_script_tools_that_ask_and_respect_allow`, `a_server_tool_asks_through_the_client_and_a_client_tool_asks_by_itself`
+
+### R7 A dry desk runs nothing
+
+A desk in dry-run mode checks `allow` and asks as always, and then answers
+`{"dry_run": true, "would_call": <reference>, "arguments": <arguments>}` without running the
+tool. Headless takes use it.
+
+Tests: `a_dry_run_checks_and_asks_as_always_and_runs_nothing`

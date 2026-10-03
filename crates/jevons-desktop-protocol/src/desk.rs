@@ -132,11 +132,21 @@ pub trait Desk: Send + Sync {
     /// The tools the client runs.
     fn tools(&self) -> ClientTools;
 
-    /// Runs one of the client's tools.
-    fn run_tool(&self, reference: String, arguments: Value)
-    -> BoxFuture<'_, Result<Value, String>>;
+    /// Runs one of the client's tools for the flow node `node`. The client checks its own
+    /// `allow` against the node and asks the user when its own settings say so, or when
+    /// `confirm` does: the server can add a confirmation, never remove one. A call the user
+    /// did not let run fails with [`NOT_CONFIRMED`].
+    fn run_tool(
+        &self,
+        reference: String,
+        arguments: Value,
+        node: String,
+        confirm: bool,
+    ) -> BoxFuture<'_, Result<Value, String>>;
 }
 
+/// Why a tool did not run: the user did not let it.
+pub const NOT_CONFIRMED: &str = "it was not confirmed";
 /// Why an extract is empty where nothing reads the interface.
 pub const NO_READER: &str = "No interface reader is available here";
 /// Why an investigation is empty where nothing reads the interface.
@@ -191,7 +201,13 @@ impl Desk for Nobody {
         ClientTools::default()
     }
 
-    fn run_tool(&self, reference: String, _: Value) -> BoxFuture<'_, Result<Value, String>> {
+    fn run_tool(
+        &self,
+        reference: String,
+        _: Value,
+        _: String,
+        _: bool,
+    ) -> BoxFuture<'_, Result<Value, String>> {
         Box::pin(async move { Err(format!("no tool {reference:?} is registered")) })
     }
 }
@@ -258,8 +274,10 @@ impl Desk for Seat {
         &self,
         reference: String,
         arguments: Value,
+        node: String,
+        confirm: bool,
     ) -> BoxFuture<'_, Result<Value, String>> {
         let desk = self.now();
-        Box::pin(async move { desk.run_tool(reference, arguments).await })
+        Box::pin(async move { desk.run_tool(reference, arguments, node, confirm).await })
     }
 }

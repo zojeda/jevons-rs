@@ -142,6 +142,10 @@ pub enum Effect {
     RunTool {
         reference: String,
         arguments: Value,
+        /// The flow node that calls it, for the client's `allow`.
+        node: String,
+        /// The server asks for a confirmation besides the client's own.
+        confirm: bool,
     },
 }
 
@@ -200,8 +204,10 @@ pub async fn carry_out(desk: &dyn Desk, effect: Effect) -> Reply {
         Effect::RunTool {
             reference,
             arguments,
+            node,
+            confirm,
         } => Reply::Ran {
-            result: desk.run_tool(reference, arguments).await,
+            result: desk.run_tool(reference, arguments, node, confirm).await,
         },
     }
 }
@@ -411,11 +417,15 @@ impl Desk for RemoteDesk {
         &self,
         reference: String,
         arguments: Value,
+        node: String,
+        confirm: bool,
     ) -> BoxFuture<'_, Result<Value, String>> {
         Box::pin(async move {
             let effect = Effect::RunTool {
                 reference,
                 arguments,
+                node,
+                confirm,
             };
             match self.ask(effect).await {
                 Some(Reply::Ran { result }) => result,
@@ -513,6 +523,8 @@ mod tests {
             Effect::RunTool {
                 reference: "script:post".into(),
                 arguments: json!({"channel": "random"}),
+                node: "automations/run".into(),
+                confirm: true,
             },
         ];
         let replies = vec![
@@ -756,8 +768,10 @@ mod tests {
             &self,
             reference: String,
             arguments: Value,
+            node: String,
+            _: bool,
         ) -> BoxFuture<'_, Result<Value, String>> {
-            Box::pin(async move { Ok(json!({"ran": reference, "with": arguments})) })
+            Box::pin(async move { Ok(json!({"ran": reference, "with": arguments, "for": node})) })
         }
     }
 
@@ -810,8 +824,9 @@ mod tests {
         );
         assert_eq!(desk.look_end(4, true).await.as_deref(), Some("//Edit"));
         assert_eq!(
-            desk.run_tool("script:post".into(), json!({"a": 1})).await,
-            Ok(json!({"ran": "script:post", "with": {"a": 1}}))
+            desk.run_tool("script:post".into(), json!({"a": 1}), "run".into(), false)
+                .await,
+            Ok(json!({"ran": "script:post", "with": {"a": 1}, "for": "run"}))
         );
         // The client's tools are what its hello said: no effect is sent for them.
         assert_eq!(desk.tools(), tools());
@@ -867,7 +882,8 @@ mod tests {
         assert_eq!(opened.session, None);
         assert!(opened.note.unwrap().ends_with(GONE));
         assert_eq!(
-            desk.run_tool("script:post".into(), json!({})).await,
+            desk.run_tool("script:post".into(), json!({}), "run".into(), false)
+                .await,
             Err(GONE.into())
         );
         // An answer nobody waits for is dropped.

@@ -8,6 +8,7 @@ description = "The jevons desktop server: the flow tree, the machines, the infer
 
 [dependencies]
 jevons-desktop-protocol = { workspace = true, features = ["server"] }
+jevons-desktop-tools.workspace = true
 jevons-machine.workspace = true
 adk-agent.workspace = true
 adk-core.workspace = true

@@ -27,7 +27,7 @@ use crate::client::{
 use crate::pipeline::{DecisionTrace, Env, GenerationTrace, Stage, StageKind, Trace, Update};
 use adk_core::Tool;
 use jevons_desktop_protocol::delivery::{Action, DeliveryMethod};
-use jevons_desktop_protocol::desk::{Ask, NO_INVESTIGATOR, Read};
+use jevons_desktop_protocol::desk::{Ask, NO_INVESTIGATOR, NOT_CONFIRMED, Read};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -1091,6 +1091,14 @@ impl Walker<'_> {
             .await
             .map_err(ClientError::Protocol)?
             .remove(0);
+        // A tool the client runs asks by itself, under its own settings; a node that sets
+        // `confirm` adds its question to that.
+        let resolved = if resolved.at_desk && t.confirm {
+            resolved.asking()
+        } else {
+            resolved
+        };
+        let asks = resolved.confirm || t.confirm;
         let schema = resolved.tool.parameters_schema();
         self.stage(Stage::new(StageKind::Calling, &resolved.reference));
         let arguments = match self.arguments(node, t, schema.as_ref()).await {
@@ -1107,10 +1115,12 @@ impl Walker<'_> {
             result: None,
             confirmed: None,
         };
-        if resolved.confirm || t.confirm {
+        if asks {
             let _ = self
                 .updates
                 .send(Update::Progress("waiting for your confirmation".into()));
+        }
+        if asks && !resolved.at_desk {
             let approved = self
                 .env
                 .desk
@@ -1124,7 +1134,7 @@ impl Walker<'_> {
                 self.trace.calls.push(record);
                 self.done("not confirmed", None, false);
                 return Err(ClientError::Protocol(format!(
-                    "{} did not run: it was not confirmed",
+                    "{} did not run: {NOT_CONFIRMED}",
                     resolved.reference
                 )));
             }
@@ -1139,6 +1149,16 @@ impl Walker<'_> {
             .push(("tool".into(), began.elapsed().as_millis() as u64));
         let result = match result {
             Ok(result) => result,
+            // The client asked, and the user did not let it run.
+            Err(e) if resolved.at_desk && e.to_string().contains(NOT_CONFIRMED) => {
+                record.confirmed = Some(false);
+                self.trace.calls.push(record);
+                self.done("not confirmed", None, false);
+                return Err(ClientError::Protocol(format!(
+                    "{} did not run: {NOT_CONFIRMED}",
+                    resolved.reference
+                )));
+            }
             Err(e) => {
                 record.result = Some(format!("error: {e}"));
                 self.trace.calls.push(record);
@@ -1149,6 +1169,9 @@ impl Walker<'_> {
                 )));
             }
         };
+        if asks && resolved.at_desk {
+            record.confirmed = Some(true);
+        }
         record.result = Some(result_text(&result).chars().take(600).collect());
         self.trace.calls.push(record);
         self.done("done", None, true);
@@ -1432,9 +1455,10 @@ impl Walker<'_> {
                 ));
             }
         };
+        // The server asks for its own tools; the client's ask by themselves.
         let confirm: BTreeSet<String> = resolved
             .iter()
-            .filter(|r| r.confirm)
+            .filter(|r| r.confirm && !r.at_desk)
             .map(|r| r.tool.name().to_string())
             .collect();
         let names: HashMap<String, String> = resolved

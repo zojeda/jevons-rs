@@ -533,10 +533,18 @@ fn check_flows(
         Arc::new(jevons_desktop_core::platform::Unsupported),
         Arc::new(jevons_desktop_core::platform::Unsupported),
     ));
-    let desk = jevons_desktop_core::desk::LocalDesk::default().with_automations(automations);
-    let catalog = jevons_desktop_server::flow::tools::ToolHost::new(&config.tools, &config.mcp)
-        .with_desk(Arc::new(desk))
-        .catalog();
+    let desk = jevons_desktop_core::desk::LocalDesk::default()
+        .with_automations(automations)
+        .with_tools(Arc::new(jevons_desktop_tools::ToolSet::new(
+            &config.desk_tools,
+            &config.desk_mcp,
+        )));
+    let tools = jevons_desktop_server::flow::tools::ToolHost::new(&config.tools, &config.mcp)
+        .with_desk(Arc::new(desk));
+    for clash in tools.clashes() {
+        eprintln!("{clash}");
+    }
+    let catalog = tools.catalog();
     let tree = FlowTree::load(&jevons_desktop_server::flow::Disk::new(dir), &catalog);
     for error in &tree.errors {
         eprintln!("{error}");
@@ -672,10 +680,10 @@ fn replay(
         Arc::new(jevons_desktop_core::platform::Unsupported),
         Arc::new(jevons_desktop_core::platform::Unsupported),
     ));
-    let scripts = jevons_desktop_core::desk::LocalDesk::default().with_automations(automations);
+    let desk = headless_desk(args, &config, Some(automations))?;
     let tools = Arc::new(
         jevons_desktop_server::flow::tools::ToolHost::new(&config.tools, &config.mcp)
-            .with_desk(Arc::new(scripts))
+            .with_desk(desk.clone())
             .dry_run(),
     );
     for problem in tokio.block_on(tools.start()) {
@@ -691,7 +699,6 @@ fn replay(
         }
         return Err("the flow tree has problems; see above".into());
     }
-    let desk = headless_desk(args, &config)?;
     let dictation = &config.dictation;
     let settings = pipeline::Settings {
         language: dictation.language.clone(),
@@ -762,11 +769,13 @@ fn replay(
 }
 
 /// The client's side of a headless take: the interface is read within the privacy settings
-/// (from `--tree` when given), the text is typed only with --deliver, and there is no one to
-/// confirm a tool.
+/// (from `--tree` when given), the text is typed only with --deliver, there is no one to
+/// confirm a tool, and no tool runs. With the automations library, its automations and the
+/// client's own tools are listed, so flows that name them load.
 fn headless_desk(
     args: &Args,
     config: &DesktopConfig,
+    automations: Option<Arc<jevons_desktop_core::automation::host::AutomationHost>>,
 ) -> Result<Arc<dyn jevons_desktop_protocol::desk::Desk>, Box<dyn std::error::Error>> {
     let inspector: Arc<dyn jevons_desktop_core::platform::ContextInspector> = match &args.tree {
         Some(file) => Arc::new(jevons_desktop_core::recorded::RecordedInspector::load(
@@ -780,7 +789,13 @@ fn headless_desk(
         jevons_desktop_core::look::Looks::new(inspector, config.privacy.clone(), Arc::default());
     let mut desk = jevons_desktop_core::desk::LocalDesk::default()
         .with_reader(Arc::new(reader))
-        .with_looks(Arc::new(looks));
+        .with_looks(Arc::new(looks))
+        .dry_run();
+    if let Some(automations) = automations {
+        desk = desk.with_automations(automations).with_tools(Arc::new(
+            jevons_desktop_tools::ToolSet::new(&config.desk_tools, &config.desk_mcp),
+        ));
+    }
     if args.deliver {
         desk = desk.with_sink(Arc::new(Mutex::new(platform::text_sink())));
     }
@@ -822,7 +837,8 @@ fn replay_on(
         Some(file) => serde_json::from_str(&std::fs::read_to_string(file)?)?,
         None => ContextSnapshot::default(),
     };
-    let desk = headless_desk(args, config)?;
+    // A client of a server offers no tools: nothing runs here but reading and typing.
+    let desk = headless_desk(args, config, None)?;
     let key = args
         .key
         .clone()
@@ -962,24 +978,38 @@ fn serve(config: DesktopConfig, config_file: PathBuf) -> Result<(), Box<dyn std:
         for problem in tools.start().await {
             eprintln!("note: {problem}");
         }
-        // The automations are the client's, and none is connected yet: `script:` tools are
-        // taken as there, to be listed when one is.
-        let mut catalog = tools.catalog();
-        catalog.servers.entry("script".into()).or_insert(false);
-        let (flows, report) = defaults::open(&config.flows_dir(&config_file), &catalog);
-        for note in report.notes {
-            eprintln!("note: {note}");
-        }
-        if flows.is_valid() {
-            session.set_flows(Arc::new(flows));
-        } else {
-            for error in &flows.errors {
-                eprintln!("{error}");
+        // The flow tree is checked against the tools known now. The client's are known once
+        // one says hello, and the tree is read again then: until then a flow that names one
+        // of them does not load, and the built-in tree runs.
+        let dir = config.flows_dir(&config_file);
+        let load = {
+            let (session, tools) = (session.clone(), tools.clone());
+            move || {
+                // The automations are the client's: with none connected, `script:` tools are
+                // taken as there.
+                let mut catalog = tools.catalog();
+                catalog.servers.entry("script".into()).or_insert(false);
+                let (flows, report) = defaults::open(&dir, &catalog);
+                for note in report.notes {
+                    eprintln!("note: {note}");
+                }
+                if flows.is_valid() {
+                    session.set_flows(Arc::new(flows));
+                } else {
+                    for error in &flows.errors {
+                        eprintln!("{error}");
+                    }
+                    eprintln!(
+                        "note: the flow tree has problems: the tree before it runs until it is fixed"
+                    );
+                }
             }
-            eprintln!("note: the flow tree has problems: the built-in tree runs until it is fixed");
-        }
+        };
+        load();
         session.set_tools(Some(tools));
-        runtime.serve(Host::new(session.clone(), events, config.exposed_key()));
+        let host = Host::new(session.clone(), events, config.exposed_key());
+        host.when_greeted(Arc::new(load));
+        runtime.serve(host);
         session
     });
     runtime.apply(&config, &config_file);

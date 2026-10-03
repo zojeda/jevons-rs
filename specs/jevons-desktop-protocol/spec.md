@@ -58,7 +58,7 @@ Tests: `paths_predicates_and_functions_parse`, `mistakes_are_errors_at_their_col
 | `confirm` | ask the user whether a tool may run | yes or no |
 | `read` | read an `[extract]` from the interface | its answer, how many matched, and a note |
 | `look`, `look_step`, `look_end` | open an investigation of the screen, take one navigation step, and end it | what it may read and a remembered text; what the step showed and what may be named next; the path it remembered |
-| `tools`, `run_tool` | list and run the tools it runs itself (`script:<name>`) | the kinds it serves and its tools; a tool's result |
+| `tools`, `run_tool` | list the tools it runs itself, and run one for a flow node, asking the user when its own settings or the server say so | the kinds it serves and its tools; a tool's result, or "it was not confirmed" |
 
 The client decides how each is carried out and applies its own safety rules; the server never
 reaches the platform. A client that cannot do something says so in its answer, and nothing in the

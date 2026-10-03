@@ -75,6 +75,7 @@ moves to `changes/archive/`.
 | [jevons-desktop](jevons-desktop/spec.md) | The tray app: agent, runtime, the settings folder, inspector and bubble, platform layers, CLI |
 | [jevons-desktop-server](jevons-desktop-server/spec.md) | What is done with a take: flows, machines, the investigator's model loop, tools, the pipeline, inference routes and forwarding |
 | [jevons-desktop-core](jevons-desktop-core/spec.md) | The client at the user's desk: the desk the server calls, extracts, automations, recording, the model catalog |
+| [jevons-desktop-tools](jevons-desktop-tools/spec.md) | The tools either side runs from its settings: programs, HTTP requests, addresses opened, MCP servers |
 | [jevons-desktop-protocol](jevons-desktop-protocol/spec.md) | What the desktop server and its client say to each other: context, delivery, extracts and their grammar, shapes |
 | [jevons-machine](jevons-machine/spec.md) | State machines: the diagram's model and checks, and its layout |
 | **API** | |

@@ -18,6 +18,7 @@ jevons-audio.workspace = true
 jevons-desktop-core = { workspace = true, features = ["testing"] }
 jevons-desktop-protocol = { workspace = true, features = ["client"] }
 jevons-desktop-server.workspace = true
+jevons-desktop-tools.workspace = true
 active-win-pos-rs.workspace = true
 arboard.workspace = true
 clap.workspace = true

@@ -6184,6 +6184,7 @@ dependencies = [
  "jevons-desktop-core",
  "jevons-desktop-protocol",
  "jevons-desktop-server",
+ "jevons-desktop-tools",
  "notify",
  "peniko",
  "pulldown-cmark",
@@ -6217,6 +6218,7 @@ dependencies = [
  "image",
  "jevons-audio",
  "jevons-desktop-protocol",
+ "jevons-desktop-tools",
  "regex",
  "reqwest",
  "rhai",
@@ -6262,6 +6264,7 @@ dependencies = [
  "jevons-audio",
  "jevons-desktop-core",
  "jevons-desktop-protocol",
+ "jevons-desktop-tools",
  "jevons-machine",
  "regex",
  "reqwest",
@@ -6274,6 +6277,21 @@ dependencies = [
  "tokio-tungstenite",
  "toml 1.1.6+spec-1.1.0",
  "toml_edit 0.25.15+spec-1.1.0",
+ "tracing",
+]
+
+[[package]]
+name = "jevons-desktop-tools"
+version = "0.1.0"
+dependencies = [
+ "adk-core",
+ "adk-tool",
+ "globset",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml 1.1.6+spec-1.1.0",
  "tracing",
 ]
 

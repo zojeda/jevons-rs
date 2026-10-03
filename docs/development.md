@@ -11,6 +11,7 @@ The workspace is layered: the API on top, three services, the diffusion layer th
 | Desktop | `jevons-desktop` | The tray dictation binary: tray and hotkey thread, agent, inspector and settings window, CPAL microphone, per-OS context and text input, the embedded runtime and the routes to other providers ([guide](desktop.md)) |
 | | `jevons-desktop-server` | What is done with a take, with no platform code: the flow tree (node files, guards, validation, the walker), the machines' host, the take pipeline, the typed API client with its routes, the forwarder, the server's settings |
 | | `jevons-desktop-core` | The platform-free client: the platform traits, the desk the server calls (delivery and paste safety, confirmations, extract reads, investigations' elements), XPath over accessibility trees, automations, recording, the client's settings, tray frames, the model catalog and downloads |
+| | `jevons-desktop-tools` | The tools either side runs from its settings: programs, HTTP requests, addresses opened, MCP servers |
 | | `jevons-desktop-protocol` | What the server and the client say to each other: context snapshots, delivery, extracts and their grammar, shapes, the `Desk` trait |
 | API | `jevons-api` | Routes, authentication, settings, the wire formats, the model workers and Realtime sessions; `load` starts the workers, `serve` serves them on a listener, and `run` does both for the server |
 | | `jevons-rs` | The server binary (`main.rs`: logging, then `jevons_api::run`) |

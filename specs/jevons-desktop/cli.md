@@ -46,8 +46,8 @@ runtime to be ready; with nothing served they fail with its status, and a provid
 is a note while the others serve the take. The context is the
 snapshot in `--context <json>`, or empty. `--flow <branch>` starts the take at that branch. `--tree
 <json>` answers extracts and investigations from a recorded interface instead of the live one.
-The tools run as a dry run with no one to confirm them: MCP servers are started and listed, and
-nothing runs. A flow tree with problems prints them and fails. Progress (the words heard, each
+The tools run as a dry run on both sides with no one to confirm them: MCP servers are started
+and listed, and nothing runs. A flow tree with problems prints them and fails. Progress (the words heard, each
 stage with ✓ or ✗, the machines' states) goes to standard error. The command fails with the first
 take's error.
 
@@ -142,8 +142,9 @@ Tests: `clearing_takes_kinds_of_history_or_all_of_it`
 models routed to the app and the flows folder, and listens on the settings' `bind:port` for
 desktop clients (`ws://<bind>:<port>/desktop`), with the key the exposed API has, until the process
 is stopped. Nobody is at the desk until a client connects; `script:` tools are taken as the
-client's, listed once one connects. A flow tree with problems prints them, and the built-in tree
-runs until it is fixed. The API for other clients is served on the same address only when the
+client's, listed once one connects. The flow tree is read again whenever a client says what tools
+it runs: until then a flow that names a client's tool has a problem. A flow tree with problems
+prints them, and the tree before it (the built-in one at first) runs until it is fixed. The API for other clients is served on the same address only when the
 settings expose it.
 
 Tests: none yet
