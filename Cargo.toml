@@ -20,6 +20,7 @@ jevons-formats = { path = "crates/jevons-formats" }
 jevons-gemma4-diffusion = { path = "crates/jevons-gemma4-diffusion" }
 jevons-generative = { path = "crates/jevons-generative" }
 jevons-kernels = { path = "crates/jevons-kernels" }
+jevons-machine = { path = "crates/jevons-machine" }
 jevons-models = { path = "crates/jevons-models", default-features = false }
 jevons-nemotron-diffusion = { path = "crates/jevons-nemotron-diffusion" }
 jevons-parakeet = { path = "crates/jevons-parakeet" }

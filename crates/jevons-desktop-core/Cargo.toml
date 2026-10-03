@@ -12,6 +12,7 @@ testing = []
 
 [dependencies]
 jevons-audio.workspace = true
+jevons-machine.workspace = true
 adk-agent.workspace = true
 adk-core.workspace = true
 adk-runner.workspace = true
@@ -21,7 +22,6 @@ base64.workspace = true
 directories.workspace = true
 futures-util = { workspace = true, features = ["sink", "std"] }
 globset.workspace = true
-oxidate-fsm.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 rhai.workspace = true

@@ -74,6 +74,7 @@ moves to `changes/archive/`.
 | **Desktop** | |
 | [jevons-desktop](jevons-desktop/spec.md) | The tray app: agent, runtime, inspector and bubble, platform layers, CLI |
 | [jevons-desktop-core](jevons-desktop-core/spec.md) | Flows, machines, extracts, investigator, tools, automations, recording, settings, pipeline, client |
+| [jevons-machine](jevons-machine/spec.md) | State machines: the diagram's model and checks, and its layout |
 | **API** | |
 | [jevons-api](jevons-api/spec.md) | HTTP routes and auth, settings, workers, OpenAI routes, tools, transcriptions, Realtime, System One |
 | [jevons-rs](jevons-rs/spec.md) | The runtime binary |

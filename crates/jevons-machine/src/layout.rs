@@ -6,7 +6,7 @@
 //! place of their neighbours, and edges that point back run up the right side. Parallel
 //! transitions between the same two nodes share one edge with a label each.
 
-use super::{Machine, Target};
+use crate::{Machine, Target};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 
