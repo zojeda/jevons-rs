@@ -28,7 +28,7 @@ use crate::flow::tree::{FlowTree, Kind, Node, NodeId, NodeSpec};
 use crate::flow::walk::{self, BranchCheck, FlowStep, Walked};
 use crate::pipeline::{DecisionTrace, Env, Stage, StageKind, TakeStart, Trace, Update};
 use jevons_machine::engine::{
-    self, Candidate, Chosen, Decision, Effect, Facts, Input, MAX_STEPS, Outcome, Verdict,
+    self, By, Candidate, Chosen, Decision, Effect, Facts, Input, MAX_STEPS, Outcome, Verdict,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -986,19 +986,16 @@ impl<'a> Turn<'a> {
             self.stage(level, &chosen.at, &chosen.event, chosen.pool.clone());
         }
         if visible {
-            let how = &chosen.how;
-            let detail = match chosen
+            let probability = chosen
                 .chosen
                 .as_ref()
-                .and_then(|c| chosen.probabilities.get(c))
-            {
-                Some(p) if !how.contains("fallback") && !how.contains("stayed") => {
-                    format!("{p:.2}")
-                }
-                _ if how.starts_with("preferred") => "preferred".into(),
-                _ if how.contains("fallback") => "fallback".into(),
-                _ if how.contains("stayed") => "stayed".into(),
-                _ => "only one applies".into(),
+                .and_then(|c| chosen.probabilities.get(c));
+            let detail = match (chosen.by, probability) {
+                (By::Model, Some(p)) => format!("{p:.2}"),
+                (By::Preferred, _) => "preferred".into(),
+                (By::Fallback, _) => "fallback".into(),
+                (By::Stayed, _) => "stayed".into(),
+                (By::Only | By::Model, _) => "only one applies".into(),
             };
             let _ = self.updates.send(Update::StageDone {
                 detail,
@@ -1301,18 +1298,17 @@ pub fn preview(
     };
     let weighed = engine::weigh(&options, &rules);
     step.branches = rules.seen.into_inner();
-    let chosen = match weighed.pool.as_slice() {
-        [only] => {
-            step.how = Some(if weighed.rules.is_empty() {
-                "the only transition that applies".into()
-            } else {
-                format!("preferred: its {} rule passed", weighed.rules.join(" and "))
-            });
-            Some(*only)
+    let chosen = match engine::by_rules(&loaded.diagram, &options, &weighed) {
+        Some(pick) => {
+            step.how = Some(pick.how);
+            pick.index
         }
-        [] => None,
-        several => {
-            let names: Vec<&str> = several.iter().map(|&i| options[i].label.as_str()).collect();
+        None => {
+            let names: Vec<&str> = weighed
+                .pool
+                .iter()
+                .map(|&i| options[i].label.as_str())
+                .collect();
             step.how = Some(format!(
                 "the decision model chooses among {}",
                 names.join(", ")

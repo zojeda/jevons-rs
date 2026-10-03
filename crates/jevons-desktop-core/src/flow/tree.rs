@@ -473,6 +473,24 @@ impl FlowTree {
         rows
     }
 
+    /// What decides each place of each machine, by the machine's folder (`/` for the root):
+    /// the event alone, rules, or the decision model.
+    pub fn decided(&self) -> Vec<(String, machine::Decides)> {
+        let mut machines: Vec<&Node> = self.nodes.iter().filter(|n| n.machine.is_some()).collect();
+        machines.sort_by(|a, b| a.path.cmp(&b.path));
+        machines
+            .into_iter()
+            .flat_map(|node| {
+                let loaded = node.machine.as_ref().expect("a machine");
+                loaded
+                    .diagram
+                    .decisions()
+                    .into_iter()
+                    .map(|d| (node.label().to_string(), d))
+            })
+            .collect()
+    }
+
     /// The root's branches: where a hotkey may start.
     pub fn entries(&self) -> Vec<(String, String)> {
         if self.nodes.is_empty() {
@@ -750,6 +768,11 @@ impl Loader<'_> {
                         .described
                         .insert(work.name.clone(), description.to_string());
                 }
+                // Its own `[when]` and `[prefer]`, and a run state's approved automations, are
+                // rules on the transitions into it.
+                if !work.guard.is_empty() || !work.prefer.is_empty() || work.kind() == Kind::Run {
+                    loaded.diagram.ruled.states.insert(work.name.clone());
+                }
             }
             self.nodes[id.0].machine = Some(Arc::new(loaded));
         }
@@ -897,6 +920,12 @@ impl Loader<'_> {
         }
         // What the engine needs beyond the diagram; its states' work is added once the
         // subfolders are loaded.
+        let mut diagram = machine::Definition::from(diagram);
+        diagram.ruled.guards = guards
+            .iter()
+            .filter(|(_, g)| !g.when.is_empty() || !g.prefer.is_empty())
+            .map(|(name, _)| name.clone())
+            .collect();
         let diagram = machine::Definition {
             criteria: guards
                 .iter()
@@ -905,7 +934,7 @@ impl Loader<'_> {
             min_probability: spec
                 .min_probability
                 .unwrap_or(machine::runtime::DEFAULT_MIN_PROBABILITY),
-            ..machine::Definition::from(diagram)
+            ..diagram
         };
         Some(Arc::new(Loaded { diagram, guards }))
     }
@@ -1932,6 +1961,78 @@ mod tests {
         let states: Vec<&str> = tree.children(root.id).map(|c| c.name.as_str()).collect();
         assert_eq!(states, ["ask", "dictate", "run"]);
         assert_eq!(tree.entries().len(), 3);
+    }
+
+    #[test]
+    fn the_tree_says_what_decides_each_transition_of_its_machines() {
+        use crate::flow::machine::DecidedBy;
+        // The built-in root: `ask` and `dictate` carry `[prefer]` rules and `run` needs an
+        // approved automation, so rules come first and the model decides what they leave.
+        let tree = FlowTree::load(&super::super::defaults::builtin(), &Catalog::default());
+        let said: Vec<(String, String, DecidedBy)> = tree
+            .decided()
+            .into_iter()
+            .map(|(machine, d)| {
+                let event = d.event.map(|e| e.to_string()).unwrap_or_default();
+                (machine, format!("{} {event}", d.at), d.by)
+            })
+            .collect();
+        assert_eq!(
+            said,
+            [
+                ("/".into(), "idle said".into(), DecidedBy::RulesThenModel),
+                ("/".into(), "ask done".into(), DecidedBy::Event),
+                ("/".into(), "dictate done".into(), DecidedBy::Event),
+                ("/".into(), "run done".into(), DecidedBy::Event),
+            ]
+        );
+        // A task: a named guard with rules and a criterion, and sentences for the model.
+        let files = [
+            (
+                "root.toml",
+                "tools = [\"search\"]\n[guards.start]\nwhen = { transcript = \"^find\" }",
+            ),
+            (
+                "root.fsm",
+                "fsm App {\n[*] --> idle\nidle --> find : said [start]\nfind --> idle\n}",
+            ),
+            (
+                "find/task.toml",
+                "tools = [\"search\"]\n[guards.again]\nprefer = { transcript = \"^again\" }\n\
+                 criterion = \"Search again\"",
+            ),
+            (
+                "find/task.fsm",
+                "fsm Find {\n[*] --> look\nlook --> shown\n\
+                 shown --> look : said [again]\nshown --> [*] : said [the user is done]\n}",
+            ),
+            ("find/look/tool.toml", "tool = \"search\""),
+        ];
+        let catalog = Catalog {
+            tools: BTreeMap::from([("search".to_string(), CatalogTool::default())]),
+            servers: BTreeMap::new(),
+        };
+        let tree = FlowTree::load(&Memory::new("test", files), &catalog);
+        assert!(tree.is_valid(), "{:?}", tree.errors);
+        let by = |machine: &str, at: &str, event: &str| {
+            tree.decided()
+                .into_iter()
+                .find(|(m, d)| {
+                    m == machine
+                        && d.at == at
+                        && d.event.as_ref().is_some_and(|e| e.name() == event)
+                })
+                .unwrap_or_else(|| panic!("{machine} {at} {event}"))
+                .1
+                .by
+        };
+        // One transition, nothing to check: the event alone.
+        assert_eq!(by("/", "find", "done"), DecidedBy::Event);
+        assert_eq!(by("find", "look", "done"), DecidedBy::Event);
+        // One transition behind rules, with no criterion: rules alone, never the model.
+        assert_eq!(by("/", "idle", "said"), DecidedBy::Rules);
+        // Rules first, then the model.
+        assert_eq!(by("find", "shown", "said"), DecidedBy::RulesThenModel);
     }
 
     #[test]

@@ -238,3 +238,28 @@ Past 32 transitions with more to follow, the machine stops where it is and says 
 work the host runs ends the count: the host bounds what one take causes across machines.
 
 Tests: `states_that_never_wait_stop_after_32_transitions`
+
+### R27 Every decision says what settled it
+
+A decision reported names what settled it: its rules preferred the candidate, it was the only one
+left with nothing to judge, the oracle chose it, it is the `[else]` taken because nothing else
+was, or nothing was taken and the machine stays. `by_rules` gives what rules alone settle among
+weighed candidates, ahead of any take, or says that the oracle must decide.
+
+Tests: `every_decision_says_what_settled_it`
+
+### R28 A definition says what decides each place
+
+Read off the definition alone, each state's event and each choice point is decided by:
+
+- **the event:** one transition, with no guard to judge and no rules that may drop it;
+- **rules:** one transition with nothing to judge, behind rules (its named guard's, or its
+  target state's own);
+- **rules, then the model:** several transitions, or one with a criterion, where some carry
+  rules;
+- **the model:** several, or one with a criterion, and no rules.
+
+A named guard's criterion and a sentence are for the model to judge. The definition lists which
+named guards and which states carry rules.
+
+Tests: `a_definition_says_what_decides_each_place_whatever_the_take`

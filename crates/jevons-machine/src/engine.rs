@@ -21,6 +21,7 @@
 //! the timers; the engine moves one instance at a time.
 
 use crate::{Choice, Condition, Event, Machine, Target};
+use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Deref;
 use std::time::Duration;
@@ -42,8 +43,18 @@ pub struct Definition {
     pub described: BTreeMap<String, String>,
     /// What the oracle reads for a named guard. A named guard without one is rules alone.
     pub criteria: BTreeMap<String, String>,
+    /// The named guards that carry rules, and the states whose work carries rules of its own:
+    /// candidates [`Facts`] may drop or prefer. The others always pass.
+    pub ruled: Ruled,
     /// Below this probability the oracle's choice is not taken.
     pub min_probability: f64,
+}
+
+/// What carries rules in a definition.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Ruled {
+    pub guards: BTreeSet<String>,
+    pub states: BTreeSet<String>,
 }
 
 impl From<Machine> for Definition {
@@ -53,6 +64,7 @@ impl From<Machine> for Definition {
             working: BTreeSet::new(),
             described: BTreeMap::new(),
             criteria: BTreeMap::new(),
+            ruled: Ruled::default(),
             min_probability: DEFAULT_MIN_PROBABILITY,
         }
     }
@@ -99,6 +111,99 @@ impl Definition {
             Condition::Criterion(_) => false,
         }
     }
+
+    /// Whether rules may drop or prefer a candidate.
+    fn rules(&self, candidate: &Candidate) -> bool {
+        let guard = matches!(&candidate.condition, Condition::Named(name) if self.ruled.guards.contains(name));
+        let target =
+            matches!(&candidate.to, Target::State(state) if self.ruled.states.contains(state));
+        guard || target
+    }
+
+    /// What decides among `candidates`, whatever the take: read off the definition alone.
+    pub fn decided_by(&self, candidates: &[Candidate]) -> DecidedBy {
+        let rules = candidates.iter().any(|c| self.rules(c));
+        match candidates {
+            [only] if self.sure(only) => {
+                if rules {
+                    DecidedBy::Rules
+                } else {
+                    DecidedBy::Event
+                }
+            }
+            _ if rules => DecidedBy::RulesThenModel,
+            _ => DecidedBy::Model,
+        }
+    }
+
+    /// What decides each event of each state, and each choice point, in the order written.
+    pub fn decisions(&self) -> Vec<Decides> {
+        let mut decisions = Vec::new();
+        for state in &self.states {
+            for event in self.events(&state.name) {
+                let candidates = candidates(self, &state.name, &event);
+                decisions.push(Decides {
+                    at: state.name.clone(),
+                    event: Some(event),
+                    by: self.decided_by(&candidates),
+                    transitions: candidates.iter().filter_map(|c| c.transition).collect(),
+                });
+            }
+        }
+        for choice in &self.choices {
+            decisions.push(Decides {
+                at: format!("<<{}>>", choice.name),
+                event: None,
+                by: self.decided_by(&branches(choice)),
+                transitions: Vec::new(),
+            });
+        }
+        decisions
+    }
+}
+
+/// What decides a state's transitions on an event, or a choice point's branches.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecidedBy {
+    /// The event alone: one transition, with nothing to check or judge.
+    Event,
+    /// Rules, with no model: one transition, which its rules may drop.
+    Rules,
+    /// Rules first; the model when they leave more than one, or one to judge.
+    RulesThenModel,
+    /// The model: several transitions, or one with a criterion, and no rules.
+    Model,
+}
+
+impl DecidedBy {
+    /// Whether the model may be asked.
+    pub fn model(self) -> bool {
+        matches!(self, Self::RulesThenModel | Self::Model)
+    }
+}
+
+impl std::fmt::Display for DecidedBy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Event => "the event",
+            Self::Rules => "rules",
+            Self::RulesThenModel => "rules, then the model",
+            Self::Model => "the model",
+        })
+    }
+}
+
+/// What decides one place of a machine.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Decides {
+    /// The state, or `<<choice point>>`.
+    pub at: String,
+    /// The event; none for a choice point.
+    pub event: Option<Event>,
+    pub by: DecidedBy,
+    /// The diagram's transitions it decides among; none for a choice point.
+    pub transitions: Vec<usize>,
 }
 
 /// A transition or choice branch the machine may take.
@@ -298,6 +403,22 @@ pub struct Question {
     pub candidates: Vec<Asked>,
 }
 
+/// What settled a decision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum By {
+    /// Its rules preferred the candidate.
+    Preferred,
+    /// It was the only candidate left, with nothing to judge.
+    Only,
+    /// The oracle chose it, sure enough.
+    Model,
+    /// Nothing else was taken: the `[else]` candidate.
+    Fallback,
+    /// Nothing was taken, and there is no `[else]`: the machine stays.
+    Stayed,
+}
+
 /// A decision made, by rules or by the oracle.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Chosen {
@@ -310,6 +431,8 @@ pub struct Chosen {
     pub pool: Vec<String>,
     /// `None`: none, and the machine stays.
     pub chosen: Option<String>,
+    pub by: By,
+    /// The same in words, for the trace.
     pub how: String,
     pub probabilities: BTreeMap<String, f64>,
     /// The oracle was asked.
@@ -404,30 +527,59 @@ enum Pending {
     Decision(Box<Asking>),
 }
 
-enum Pick {
-    Take {
-        index: usize,
-        how: String,
-        probabilities: BTreeMap<String, f64>,
-    },
-    Stay {
-        how: String,
-        probabilities: BTreeMap<String, f64>,
-    },
+/// What a decision came to: the candidate taken, or none, and the machine stays.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pick {
+    /// The candidate's place among those weighed.
+    pub index: Option<usize>,
+    pub by: By,
+    pub how: String,
+    pub probabilities: BTreeMap<String, f64>,
 }
 
 /// The `[else]` candidate, or staying, when nothing else is taken.
 fn otherwise(fallback: Option<usize>, how: String, probabilities: BTreeMap<String, f64>) -> Pick {
     match fallback {
-        Some(index) => Pick::Take {
-            index,
+        Some(index) => Pick {
+            index: Some(index),
+            by: By::Fallback,
             how: format!("{how}: the fallback"),
             probabilities,
         },
-        None => Pick::Stay {
+        None => Pick {
+            index: None,
+            by: By::Stayed,
             how: format!("{how}: stayed"),
             probabilities,
         },
+    }
+}
+
+/// What rules alone decide among weighed `candidates`; `None` when the oracle must.
+pub fn by_rules(def: &Definition, candidates: &[Candidate], weighed: &Weighed) -> Option<Pick> {
+    let pool = &weighed.pool;
+    if pool.is_empty() {
+        Some(otherwise(
+            weighed.fallback,
+            "no transition applies".into(),
+            BTreeMap::new(),
+        ))
+    } else if weighed.preferred && pool.len() == 1 {
+        Some(Pick {
+            index: Some(pool[0]),
+            by: By::Preferred,
+            how: format!("preferred: its {} rule passed", weighed.rules.join(" and ")),
+            probabilities: BTreeMap::new(),
+        })
+    } else if pool.len() == 1 && def.sure(&candidates[pool[0]]) {
+        Some(Pick {
+            index: Some(pool[0]),
+            by: By::Only,
+            how: "the only transition that applies".into(),
+            probabilities: BTreeMap::new(),
+        })
+    } else {
+        None
     }
 }
 
@@ -629,26 +781,8 @@ impl Instance {
         options: Vec<Candidate>,
     ) -> Option<Event> {
         let weighed = weigh(&options, turn.facts);
-        let pool = weighed.pool;
-        let pick = if pool.is_empty() {
-            otherwise(
-                weighed.fallback,
-                "no transition applies".into(),
-                BTreeMap::new(),
-            )
-        } else if weighed.preferred && pool.len() == 1 {
-            Pick::Take {
-                index: pool[0],
-                how: format!("preferred: its {} rule passed", weighed.rules.join(" and ")),
-                probabilities: BTreeMap::new(),
-            }
-        } else if pool.len() == 1 && turn.def.sure(&options[pool[0]]) {
-            Pick::Take {
-                index: pool[0],
-                how: "the only transition that applies".into(),
-                probabilities: BTreeMap::new(),
-            }
-        } else {
+        let Some(pick) = by_rules(turn.def, &options, &weighed) else {
+            let pool = weighed.pool;
             turn.out.push(Effect::Decide(Question {
                 at: self.place(&at),
                 event: event.clone(),
@@ -671,6 +805,7 @@ impl Instance {
             })));
             return None;
         };
+        let pool = weighed.pool;
         turn.out
             .push(chose(self, &at, event, &options, &pool, &pick, false));
         self.picked(turn, event, at, &options, pick)
@@ -693,21 +828,17 @@ impl Instance {
         options: &[Candidate],
         pick: Pick,
     ) -> Option<Event> {
-        match (at, pick) {
-            (
-                At::State,
-                Pick::Stay {
-                    how, probabilities, ..
-                },
-            ) => {
+        let to = pick.index.map(|index| options[index].to.clone());
+        match (at, to) {
+            (At::State, None) => {
                 turn.out.push(Effect::Step(Step {
                     from: self.state.clone(),
                     event: event.name().into(),
                     to: self.state.clone(),
                     transition: None,
                     through: Vec::new(),
-                    how,
-                    probabilities,
+                    how: pick.how,
+                    probabilities: pick.probabilities,
                     stayed: true,
                 }));
                 if turn.working {
@@ -715,20 +846,13 @@ impl Instance {
                 }
                 None
             }
-            (
-                At::State,
-                Pick::Take {
-                    index,
-                    how,
-                    probabilities,
-                },
-            ) => {
+            (At::State, Some(to)) => {
                 let taken = Taken {
-                    transition: options[index].transition,
-                    how,
-                    probabilities,
+                    transition: pick.index.and_then(|index| options[index].transition),
+                    how: pick.how,
+                    probabilities: pick.probabilities,
                 };
-                self.reach(turn, event, options[index].to.clone(), taken, Vec::new())
+                self.reach(turn, event, to, taken, Vec::new())
             }
             (
                 At::Branch {
@@ -737,14 +861,8 @@ impl Instance {
                     otherwise,
                     ..
                 },
-                pick,
-            ) => {
-                let to = match pick {
-                    Pick::Take { index, .. } => options[index].to.clone(),
-                    Pick::Stay { .. } => otherwise,
-                };
-                self.reach(turn, event, to, taken, through)
-            }
+                to,
+            ) => self.reach(turn, event, to.unwrap_or(otherwise), taken, through),
         }
     }
 
@@ -847,8 +965,9 @@ fn by_oracle(
             probability,
             probabilities,
         } => match pool.iter().find(|&&i| options[i].label == label) {
-            Some(&index) if probability >= def.min_probability => Pick::Take {
-                index,
+            Some(&index) if probability >= def.min_probability => Pick {
+                index: Some(index),
+                by: By::Model,
                 how: format!("model {probability:.2}"),
                 probabilities,
             },
@@ -876,22 +995,15 @@ fn chose(
     pick: &Pick,
     asked: bool,
 ) -> Effect {
-    let (chosen, how, probabilities) = match pick {
-        Pick::Take {
-            index,
-            how,
-            probabilities,
-        } => (Some(options[*index].label.clone()), how, probabilities),
-        Pick::Stay { how, probabilities } => (None, how, probabilities),
-    };
     Effect::Chose(Chosen {
         at: instance.place(at),
         event: event.clone(),
         options: options.iter().map(|o| o.label.clone()).collect(),
         pool: pool.iter().map(|&i| options[i].label.clone()).collect(),
-        chosen,
-        how: how.clone(),
-        probabilities: probabilities.clone(),
+        chosen: pick.index.map(|index| options[index].label.clone()),
+        by: pick.by,
+        how: pick.how.clone(),
+        probabilities: pick.probabilities.clone(),
         asked,
     })
 }
@@ -1456,6 +1568,123 @@ mod tests {
         task.handle(&def, Input::Event(Event::Said), &none());
         task.handle(&def, chose("shown", 0.9), &none());
         assert_eq!((task.state(), task.busy()), ("shown", false));
+    }
+
+    #[test]
+    fn a_definition_says_what_decides_each_place_whatever_the_take() {
+        let mut search = def(SEARCH, &["searching", "answering", "opening"]);
+        let by = |def: &Definition, at: &str, event: &str| {
+            def.decisions()
+                .into_iter()
+                .find(|d| d.at == at && d.event.as_ref().is_some_and(|e| e.name() == event))
+                .unwrap_or_else(|| panic!("no decision at {at} on {event}"))
+                .by
+        };
+        // One transition with nothing to check or judge: the event alone.
+        assert_eq!(by(&search, "searching", "done"), DecidedBy::Event);
+        assert_eq!(by(&search, "results", "quiet"), DecidedBy::Event);
+        assert_eq!(by(&search, "opening", "denied"), DecidedBy::Event);
+        // Several, or one with a criterion: the model, after the rules when some carry any.
+        assert_eq!(by(&search, "results", "said"), DecidedBy::Model);
+        search.ruled.guards.insert("again".into());
+        assert_eq!(by(&search, "results", "said"), DecidedBy::RulesThenModel);
+        assert!(by(&search, "results", "said").model());
+        assert_eq!(
+            search
+                .decisions()
+                .iter()
+                .find(|d| d.at == "results" && d.event == Some(Event::Said))
+                .unwrap()
+                .transitions
+                .len(),
+            3
+        );
+        // One transition its rules may drop, with nothing to judge: rules, never the model.
+        let body = "
+            [*] --> waiting
+            choice next {
+                [it worked] -> waiting
+                [else] -> gone
+            }
+            waiting --> gone : said [ready]
+            gone --> <<next>>";
+        let mut gated = def(body, &[]);
+        assert_eq!(by(&gated, "waiting", "said"), DecidedBy::Event);
+        gated.ruled.guards.insert("ready".into());
+        assert_eq!(by(&gated, "waiting", "said"), DecidedBy::Rules);
+        assert!(!DecidedBy::Rules.model());
+        gated.ruled.guards.clear();
+        gated.ruled.states.insert("gone".into());
+        assert_eq!(by(&gated, "waiting", "said"), DecidedBy::Rules);
+        // A named guard's criterion is for the model to judge.
+        gated.ruled.states.clear();
+        gated.criteria.insert("ready".into(), "It is ready".into());
+        assert_eq!(by(&gated, "waiting", "said"), DecidedBy::Model);
+        // A choice point is decided like a state's event.
+        let choice = gated
+            .decisions()
+            .into_iter()
+            .find(|d| d.at == "<<next>>")
+            .unwrap();
+        assert_eq!((choice.event, choice.by), (None, DecidedBy::Model));
+        assert_eq!(
+            DecidedBy::RulesThenModel.to_string(),
+            "rules, then the model"
+        );
+    }
+
+    #[test]
+    fn every_decision_says_what_settled_it() {
+        let def = def(SEARCH, &["searching", "answering", "opening"]);
+        let settled = |effects: &[Effect]| {
+            effects
+                .iter()
+                .find_map(|e| match e {
+                    Effect::Chose(c) => Some(c.by),
+                    _ => None,
+                })
+                .expect("a decision")
+        };
+        let (mut task, _) = Instance::start(&def, &none());
+        let effects = task.handle(&def, Input::Finished(Outcome::Done), &none());
+        assert_eq!(settled(&effects), By::Only);
+        let mut task = waiting(&def);
+        let prefer = Rules {
+            prefer: vec!["searching"],
+            ..Rules::default()
+        };
+        let effects = task.handle(&def, Input::Event(Event::Said), &prefer);
+        assert_eq!(settled(&effects), By::Preferred);
+        let mut task = waiting(&def);
+        task.handle(&def, Input::Event(Event::Said), &none());
+        assert_eq!(
+            settled(&task.handle(&def, chose("opening", 0.9), &none())),
+            By::Model
+        );
+        let mut task = waiting(&def);
+        task.handle(&def, Input::Event(Event::Said), &none());
+        assert_eq!(
+            settled(&task.handle(&def, chose("opening", 0.2), &none())),
+            By::Stayed
+        );
+        let root = super::tests::def(ROOT, &["ask", "dictate"]);
+        let mut instance = Instance::resting(&root);
+        instance.handle(&root, Input::Event(Event::Said), &none());
+        assert_eq!(
+            settled(&instance.handle(&root, chose("ask", 0.2), &none())),
+            By::Fallback
+        );
+        // Rules alone, asked ahead of any take: what they settle, or that the model must.
+        let candidates = candidates(&root, "idle", &Event::Said);
+        let weighed = weigh(&candidates, &none());
+        assert_eq!(by_rules(&root, &candidates, &weighed), None);
+        let prefer = Rules {
+            prefer: vec!["ask"],
+            ..Rules::default()
+        };
+        let weighed = weigh(&candidates, &prefer);
+        let pick = by_rules(&root, &candidates, &weighed).expect("rules settle it");
+        assert_eq!((pick.index, pick.by), (Some(0), By::Preferred));
     }
 
     #[test]

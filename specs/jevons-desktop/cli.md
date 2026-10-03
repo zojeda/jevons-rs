@@ -64,7 +64,9 @@ Tests: none yet
 `--check-flows [DIR]` loads the folder (by default the settings' one) against the tools the
 settings register and the automations library, with MCP tools checked by server since their
 servers are not started. It prints every problem with its file and line on standard error and
-fails when there is one; otherwise it prints how many nodes and leaves the tree has.
+fails when there is one; otherwise it prints how many nodes and leaves the tree has, then, for
+each machine, what decides each state's event and each choice point (`/ · idle on said: rules,
+then the model`).
 
 Tests: `flow_commands_take_an_optional_folder`
 

@@ -536,6 +536,13 @@ fn check_flows(
         dir.display(),
         tree.nodes().len()
     );
+    // Where the decision model may be asked, and where it never is.
+    for (machine, decides) in tree.decided() {
+        match &decides.event {
+            Some(event) => println!("{machine} · {} on {event}: {}", decides.at, decides.by),
+            None => println!("{machine} · {}: {}", decides.at, decides.by),
+        }
+    }
     Ok(())
 }
 

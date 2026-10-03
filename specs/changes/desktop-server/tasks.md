@@ -170,8 +170,10 @@ in desktop-core becomes the host.
       placeholders now.
 - [ ] Typed results: a tool's result (JSON) and a structured generation keep their fields, so value
       checks and `{state.field}` placeholders can read them.
-- [ ] Decided-by: the loader reports, for each state and event, whether the event alone, rules or
-      the model decides its transitions; `--check-flows` prints it.
+- [x] Decided-by: the loader reports, for each state and event, whether the event alone, rules or
+      the model decides its transitions; `--check-flows` prints it. Every decision made also says
+      what settled it (`By`), so the bubble and the route preview no longer read the trace's
+      words.
 - [x] Turn `flow/machine/runtime.rs` into a host that carries out the effects: walks, delivery,
       tokio timers, and System One with the lookahead batching.
 - [x] Engine tests with a scripted oracle and scripted facts: every rule of the selection order,

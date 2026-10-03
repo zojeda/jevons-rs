@@ -326,6 +326,16 @@ said when no task listens), the task ends with it, running nothing more
 
 Tests: `a_machine_that_leaves_its_state_leaves_the_task_running_there`
 
+### R47 The tree says what decides each transition
+
+A loaded machine knows which of its named guards carry rules (`when` or `prefer`) and which states'
+work carries rules of its own: a `[when]`, a `[prefer]`, or a run state, which needs an approved
+automation. From that the tree lists, for each machine, what decides each state's event and each
+choice point: the event, rules, rules then the model, or the model
+([jevons-machine](../jevons-machine/spec.md) R28).
+
+Tests: `the_tree_says_what_decides_each_transition_of_its_machines`
+
 ## Layout
 
 ### R41 Rows follow the longest path

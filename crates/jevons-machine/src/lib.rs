@@ -30,8 +30,8 @@ pub mod engine;
 pub mod layout;
 
 pub use engine::{
-    Asked, Candidate, Chosen, Decision, Definition, Effect, Facts, Input, Instance, Outcome,
-    Question, Step, Verdict, Weighed,
+    Asked, By, Candidate, Chosen, DecidedBy, Decides, Decision, Definition, Effect, Facts, Input,
+    Instance, Outcome, Pick, Question, Ruled, Step, Verdict, Weighed,
 };
 
 use serde::Serialize;
