@@ -31,7 +31,10 @@ takes; an unsure follow-up stays there, and two quiet minutes end it. Opening a 
    ```
 
    Any search API that answers a GET with text works the same way, such as a SearXNG instance
-   (`https://<host>/search?q={query}&format=json`).
+   (`https://<host>/search?q={query}&format=json`). To try it with no key, search English
+   Wikipedia's articles:
+   `https://en.wikipedia.org/w/api.php?action=query&generator=search&gsrsearch={query}&gsrlimit=5&prop=info&inprop=url&format=json&formatversion=2`,
+   with a `User-Agent` header, since Wikipedia refuses requests without one.
 
 2. Copy `search/` into the flows folder, beside `root.fsm`.
 
