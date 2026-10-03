@@ -340,6 +340,8 @@ pub struct MenuModel {
     pub automations: Vec<(String, String, bool)>,
     /// Whether a task waits with a conversation the bubble can show again.
     pub conversation: bool,
+    /// Whether a task runs, or a machine is away from its first state: something to cancel.
+    pub tasks: bool,
 }
 
 /// What a tray menu item asks for.
@@ -349,6 +351,8 @@ pub enum MenuCommand {
     ToggleLiveDictation,
     /// Abandons the running take without delivering anything.
     CancelTake,
+    /// Ends every task, and answers a question one of them waits on no.
+    CancelTasks,
     /// Shows the waiting task's conversation in the bubble again.
     ShowConversation,
     /// Opens the folder with the logs and take traces.

@@ -269,13 +269,25 @@ impl Host {
                         });
                     });
                 }
+                // A cancel waits for the take in flight, which may wait for this client's
+                // answer to a question: it runs beside this loop, which goes on reading.
                 ToServer::Cancel => {
-                    self.session.cancel().await;
-                    let _ = tx.send(machines());
+                    let (session, tx) = (self.session.clone(), tx.clone());
+                    tokio::spawn(async move {
+                        session.cancel().await;
+                        let _ = tx.send(ToClient::Machines {
+                            view: view_json(&session.view()),
+                        });
+                    });
                 }
                 ToServer::CancelTask { id } => {
-                    self.session.cancel_task(id).await;
-                    let _ = tx.send(machines());
+                    let (session, tx) = (self.session.clone(), tx.clone());
+                    tokio::spawn(async move {
+                        session.cancel_task(id).await;
+                        let _ = tx.send(ToClient::Machines {
+                            view: view_json(&session.view()),
+                        });
+                    });
                 }
                 ToServer::Reply { id, reply } => desk.answer(id, reply),
             }

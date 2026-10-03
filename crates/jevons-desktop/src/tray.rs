@@ -377,6 +377,12 @@ fn build_menu(model: &MenuModel) -> Menu {
         &MenuItem::with_id("live", live, !model.dictating, None),
         &MenuItem::with_id("cancel", "Cancel the current take", model.busy, None),
         &MenuItem::with_id(
+            "cancel:tasks",
+            "Cancel the tasks that run",
+            model.tasks,
+            None,
+        ),
+        &MenuItem::with_id(
             "conversation",
             "Show the task's conversation",
             model.conversation,
@@ -435,6 +441,7 @@ fn menu_command(id: &str) -> Option<MenuCommand> {
         }
         "live" => MenuCommand::ToggleLiveDictation,
         "cancel" => MenuCommand::CancelTake,
+        "cancel:tasks" => MenuCommand::CancelTasks,
         "conversation" => MenuCommand::ShowConversation,
         "logs" => MenuCommand::OpenLogsFolder,
         "inspector" => MenuCommand::ShowInspector,
@@ -475,6 +482,8 @@ mod tests {
             Some(MenuCommand::ShowConversation)
         );
         assert_eq!(menu_command("feedback"), Some(MenuCommand::ToggleFeedback));
+        assert_eq!(menu_command("cancel"), Some(MenuCommand::CancelTake));
+        assert_eq!(menu_command("cancel:tasks"), Some(MenuCommand::CancelTasks));
         assert_eq!(
             menu_command("clear:machines"),
             Some(MenuCommand::ClearHistory(vec![History::Machines]))

@@ -2764,6 +2764,64 @@ confirm = false
     }
 
     #[tokio::test]
+    async fn a_cancel_while_a_take_waits_on_a_question_leaves_the_stream_open() {
+        let (client, _) = server(prefer(&[]), "unused").await;
+        let tree = agent_tree(&[
+            ("root.toml", "tools = [\"note\"]"),
+            (
+                "root.fsm",
+                "fsm App {\n[*] --> idle\nidle --> saving : said\nsaving --> idle\nsaving --> idle : denied\n}",
+            ),
+            (
+                "saving/tool.toml",
+                "description = \"Saves a note\"\ntool = \"note\"\n[args.title]\nvalue = \"x\"\n[args.folder]\nvalue = \"y\"\n[args.body]\nvalue = \"{transcript}\"",
+            ),
+        ]);
+        let (session, events) = Session::open(Arc::new(Nobody), tree, Settings::default());
+        session.set_routes(Some(routes(client)));
+        session.set_tools(Some(tool_host()));
+        let host = Host::new(session, events, None);
+        let (confirm, mut asked) =
+            mpsc::unbounded_channel::<jevons_desktop_core::confirm::Confirmation>();
+        let desk: Arc<dyn Desk> = Arc::new(LocalDesk::default().with_confirmer(Arc::new(
+            jevons_desktop_core::confirm::ChannelConfirmer::new(confirm),
+        )));
+        let mut client = connected(&host, desk, false).await;
+        client.welcomed().await;
+        client
+            .say
+            .send(ToServer::Transcript {
+                take: 1,
+                context: context(None),
+                entry: None,
+                text: "note that the build is green".into(),
+            })
+            .unwrap();
+        let question = tokio::time::timeout(Duration::from_secs(5), asked.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        // The user cancels while the question is out. The cancel waits for the take, and the
+        // take for the answer: the server goes on reading, so the answer reaches it.
+        client.say.send(ToServer::Cancel).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        question.reply.send(false).unwrap();
+        // The take ends declined, and the client is told where the machines are after it and
+        // after the cancel, in whichever order the two finish.
+        let (mut traces, mut views) = (Vec::new(), 0);
+        for _ in 0..3 {
+            match client.next().await {
+                ToClient::Trace { trace, .. } => traces.push(trace),
+                ToClient::Machines { .. } => views += 1,
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!((traces.len(), views), (1, 2));
+        assert_eq!(traces[0]["calls"][0]["confirmed"], false, "{}", traces[0]);
+        assert!(host.session().view().at_rest());
+    }
+
+    #[tokio::test]
     async fn a_client_that_leaves_is_refused_and_finds_its_tasks_when_it_returns() {
         // A client whose user never answers is asked to confirm a tool, and leaves.
         let (client, _) = server(prefer(&[]), "unused").await;

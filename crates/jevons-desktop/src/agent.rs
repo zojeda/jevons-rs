@@ -143,6 +143,8 @@ pub enum Command {
     /// A machine's timer turned out stale after its bubble showed: the bubble goes back to
     /// what it replaced.
     TimerStale(u64),
+    /// Tasks ended outside a take: the tray menu and the window follow.
+    TasksChanged,
     /// Hides a message, unless a newer one replaced it.
     HideMessage(u64),
     /// A take asks before calling a tool.
@@ -917,6 +919,7 @@ impl Agent {
                 .map(|a| (a.name, a.description, a.approved))
                 .collect(),
             conversation: self.thread.is_some(),
+            tasks: !self.session.view().at_rest(),
         };
         self.view().automations = menu.automations.clone();
         if let Some(tray) = &mut self.tray {
@@ -1147,25 +1150,29 @@ impl Agent {
                 if self.thread_task == Some(id) {
                     self.end_conversation();
                 }
+                // A take of that task that waits on a question holds the machines: the
+                // answer is no, and the task ends once the take has.
+                if self.session.view().focus == Some(id) {
+                    self.confirmed(false);
+                }
                 let session = self.session.clone();
-                let repaint = self.repaint.clone();
+                let commands = self.commands.clone();
                 tokio::spawn(async move {
                     if let Some(ended) = session.cancel_task(id).await {
                         tracing::info!(%ended, "Cancelled a task");
                     }
-                    repaint();
+                    let _ = commands.send(Command::TasksChanged);
                 });
             }
-            Command::CancelTask => {
-                self.end_conversation();
-                let session = self.session.clone();
-                let repaint = self.repaint.clone();
-                tokio::spawn(async move {
-                    if let Some(ended) = session.cancel().await {
-                        tracing::info!(%ended, "Cancelled the task");
-                    }
-                    repaint();
-                });
+            Command::CancelTask => self.cancel_tasks(),
+            Command::TasksChanged => {
+                // A take that ended meanwhile may have kept the conversation of a task that
+                // is gone now.
+                if !self.session.view().in_task() {
+                    self.end_conversation();
+                }
+                self.publish_menu();
+                self.repaint();
             }
             Command::ReloadRuntime => self.runtime.apply(&self.config, &self.config_file),
             Command::RuntimeChanged => {
@@ -1291,6 +1298,7 @@ impl Agent {
                 self.set_tray(TrayState::Idle);
                 self.publish_menu();
             }
+            MenuCommand::CancelTasks => self.cancel_tasks(),
             MenuCommand::ShowConversation => self.show_conversation(),
             MenuCommand::OpenLogsFolder => {
                 let dir = crate::config::user_dir();
@@ -2388,15 +2396,7 @@ impl Agent {
         }
         // What is kept of the tasks goes with the tasks: they end, as when cancelled.
         if kinds.contains(&History::Machines) {
-            self.end_conversation();
-            let session = self.session.clone();
-            let repaint = self.repaint.clone();
-            tokio::spawn(async move {
-                if let Some(ended) = session.cancel().await {
-                    tracing::info!(%ended, "Ended the tasks with their history");
-                }
-                repaint();
-            });
+            self.cancel_tasks();
         }
         self.message(&format!("Cleared {}", cleared.join("; ")), 8);
     }
@@ -2646,6 +2646,21 @@ impl Agent {
         self.set_tray(TrayState::Transcribing { frame: 0 });
         self.publish_menu();
         self.repaint();
+    }
+
+    /// Ends every task. A take that waits on a question holds the machines until it is
+    /// answered: the answer is no, so the take ends and the tasks with it.
+    fn cancel_tasks(&mut self) {
+        self.confirmed(false);
+        self.end_conversation();
+        let session = self.session.clone();
+        let commands = self.commands.clone();
+        tokio::spawn(async move {
+            if let Some(ended) = session.cancel().await {
+                tracing::info!(%ended, "Cancelled the tasks");
+            }
+            let _ = commands.send(Command::TasksChanged);
+        });
     }
 
     fn cancel_take(&mut self) {

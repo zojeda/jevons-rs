@@ -575,8 +575,12 @@ Done when: a search waiting in `results` is still there after a restart.
 - [ ] **Answer a decision from the Machines tab.** When the model is unsure, show the candidates
       and let a click answer the `Decide`. Keep each answer, with the state and the
       probabilities, as a labelled example for tuning descriptions.
-- [ ] **Cancel task** in the tray menu. Cancelling also ends a take that waits on a confirmation.
-      Today cancel waits for the running take to finish.
+- [x] **Cancel task** in the tray menu. Cancelling also ends a take that waits on a confirmation.
+      Done as **Cancel the tasks that run**: the app answers the waiting question no, and the
+      tasks end once that take has. A take that does anything else (a generation, a tool that
+      runs) is still waited for. Over the wire the host no longer stops reading while a cancel
+      waits, which held a client's answer back until its question timed out; declining the
+      question there is the client's to do.
 - [ ] **Draft states under a machine** in the Flows tab: write the state's folder and append its
       transitions (`idle --> x : said`, `x --> idle`) to the parent's `.fsm`. Today only decision
       parents are offered.

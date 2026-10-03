@@ -24,8 +24,8 @@ Tests: `a_tuning_event_makes_tuning_active_and_notifies_once`
 ### R2 The tray menu
 
 The menu holds: **Start dictation** or **Stop dictation**, **Start live dictation** or **Stop
-live dictation**, **Cancel the current take** (while one runs), **Show the task's conversation**
-(while a task waits with one), **Start takes at** (the root or
+live dictation**, **Cancel the current take** (while one runs), **Cancel the tasks that run**
+(while one does), **Show the task's conversation** (while a task waits with one), **Start takes at** (the root or
 each top-level branch), **Show context inspector**, **Live feedback**, **Pause context capture**,
 **Record an automation…** or **Stop recording**, **Automations** (per automation: its
 description, **Run** and **Run step by step** when approved or **Review and approve…** when not,
@@ -262,3 +262,15 @@ and shows in the Machines tab's transitions. The conversation in the bubble is n
 next take that reaches the task starts one.
 
 Tests: none yet
+
+### R27 Cancel the tasks that run
+
+**Cancel the tasks that run** in the tray menu ends every task and puts the root and the agents
+back in their first states, as **Cancel all tasks** in the Machines tab does, and ends the
+conversation in the bubble. A take that waits on a question holds the machines until it is
+answered: the cancel answers it no, so that take ends as its machine handles a declined call,
+and the tasks end after it. A task's own **Cancel** does the same for a question of a take that
+reached that task. A take that does anything else is waited for. The menu item is enabled while
+a task runs or a machine is away from its first state.
+
+Tests: `menu_ids_map_to_commands`

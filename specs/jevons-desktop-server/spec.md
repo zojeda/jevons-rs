@@ -102,6 +102,14 @@ the client connected then as `timer`, its updates, and its `trace` or `stale`.
 
 Tests: `a_take_over_a_stream_is_the_take_run_directly`, `a_client_that_leaves_is_refused_and_finds_its_tasks_when_it_returns`
 
+### R8 A cancel does not hold the stream
+
+A client's cancel, of every task or of one, waits for the take in flight, which may wait for
+that client's answer to a question. The host goes on reading the stream meanwhile, so the answer
+reaches the take, and tells the client where the machines are once the cancel is done.
+
+Tests: `a_cancel_while_a_take_waits_on_a_question_leaves_the_stream_open`
+
 ### R6 The machines outlive the client
 
 When a client's stream ends, what waited on it is refused (a take in flight ends with its tool
