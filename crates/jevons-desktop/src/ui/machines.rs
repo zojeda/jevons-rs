@@ -487,11 +487,15 @@ pub fn MachinesPage(rev: u64) -> Element {
                         div { class: "row",
                             {unsure.candidates.iter().map(|label| {
                                 let (send, chosen) = (answer.clone(), label.clone());
-                                let sure = unsure.probabilities.get(label).map(|p| format!(" {p:.2}")).unwrap_or_default();
+                                // One string: a release build joins a text's parts with `+`.
+                                let text = match unsure.probabilities.get(label) {
+                                    Some(p) => format!("{label} {p:.2}"),
+                                    None => label.clone(),
+                                };
                                 rsx! {
                                     button { key: "{label}", class: "dx-button fsm-answer", "data-style": "outline", "data-size": "sm",
                                         onclick: move |_| send.send(Command::AnswerDecision { instance: id, label: chosen.clone() }),
-                                        "{label}{sure}"
+                                        "{text}"
                                     }
                                 }
                             })}
