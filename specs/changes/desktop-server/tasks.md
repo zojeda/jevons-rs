@@ -572,9 +572,14 @@ Done when: a search waiting in `results` is still there after a restart.
 
 - [x] **Decided-by on the diagram.** Colour each edge by what decides it (event, rules, model),
       from the loader's report. An edge that holds several transitions shows the most demanding.
-- [ ] **Answer a decision from the Machines tab.** When the model is unsure, show the candidates
+- [x] **Answer a decision from the Machines tab.** When the model is unsure, show the candidates
       and let a click answer the `Decide`. Keep each answer, with the state and the
-      probabilities, as a labelled example for tuning descriptions.
+      probabilities, as a labelled example for tuning descriptions. Done as: the engine drops a
+      decision when the machine stays, so the host keeps it; the answer gives the machine what
+      was said again and answers the `Decide` it asks then (`Decision::Told`), which keeps the
+      rules, the trace and an agent's hand-off to a task those of any take. Examples go to
+      `~/jevons/machines/examples.jsonl`, under **Clear history**. The decision is not kept
+      across a restart. Over the wire: `answer` and `answered`; the protocol's version stays 1.
 - [x] **Cancel task** in the tray menu. Cancelling also ends a take that waits on a confirmation.
       Done as **Cancel the tasks that run**: the app answers the waiting question no, and the
       tasks end once that take has. A take that does anything else (a generation, a tool that

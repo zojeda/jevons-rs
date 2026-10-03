@@ -164,8 +164,9 @@ Tests: none yet
 
 Clearing a kind of history removes, from that kind's folder, only what jevons writes there:
 `.log` files in `logs/`, `.json` files in `traces/` and `trees/`, folders holding
-`recording.json` in the recordings folder, and the file the tasks that run are kept in
-(`machines/machines.json` in the data folder, and a `.tmp` beside it). Anything else stays and
+`recording.json` in the recordings folder, and in `machines/` of the data folder the file the
+tasks that run are kept in (`machines.json`, and a `.tmp` beside it) and the answers given to
+unsure decisions (`examples.jsonl`). Anything else stays and
 is reported as not jevons'. The models folder is never a kind of history.
 
 Tests: `clearing_recordings_removes_only_recording_folders`, `clearing_the_logs_empties_the_open_one_and_leaves_other_files`, `clearing_the_tasks_removes_what_was_kept_of_them`

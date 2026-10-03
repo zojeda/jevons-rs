@@ -2251,6 +2251,147 @@ confirm = false
         ))
     }
 
+    #[tokio::test]
+    async fn the_user_answers_an_unsure_decision_and_the_take_goes_on() {
+        use crate::session::{Event, Session, TIMER_TAKES};
+        // A model sure of everything but of opening a result.
+        let decide: Decider = Arc::new(|request: &Value| {
+            let labels = ["research", "find-1", "opening"];
+            let answers: serde_json::Map<String, Value> = request["questions"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(key, question)| {
+                    if question["type"] == "noul" {
+                        return (key.clone(), json!({"type": "noul", "noul": 0.9}));
+                    }
+                    let offered: Vec<&String> =
+                        question["criteria"].as_object().unwrap().keys().collect();
+                    let choice = labels
+                        .iter()
+                        .find(|l| offered.iter().any(|o| o == *l))
+                        .map_or_else(|| offered[0].clone(), |l| l.to_string());
+                    let sure = if choice == "opening" { 0.4 } else { 0.9 };
+                    let answer = json!({"type": "choice", "choice": choice,
+                        "probabilities": {choice.clone(): sure}, "confidence": sure});
+                    (key.clone(), answer)
+                })
+                .collect();
+            json!({"model": "jev", "usage": {"input_tokens": 1, "output_tokens": 1}, "answers": answers})
+        });
+        let (client, seen) = server(decide, "Results.").await;
+        let file = kept_in("answer");
+        let sink = RecordingSink::new(Some(7));
+        let (session, mut events) = Session::open(
+            desk(Some(&sink)),
+            search_quiet_after(600_000),
+            Settings::default(),
+        );
+        session.keep_machines_in(file.clone());
+        session.set_routes(Some(routes(client)));
+        session.set_tools(Some(tool_host()));
+        let (updates, _) = mpsc::unbounded_channel();
+        let said = |id: u64, text: &'static str| {
+            let start = TakeStart {
+                id,
+                context: context(None),
+                entry: None,
+            };
+            let (session, updates) = (session.clone(), updates.clone());
+            async move { session.transcript(start, text, &updates).await }
+        };
+        let first = said(1, "search for crates").await;
+        assert_eq!(first.error, None, "{:?}", first.notes);
+        // The follow-up reaches the search, and the model is unsure which of its transitions
+        // it is for: the search stays, and keeps what it was asked.
+        let second = said(2, "open the first one").await;
+        assert_eq!(
+            inner(&second),
+            ["idle said → task find-1", "answering said → answering"]
+        );
+        let view = session.view();
+        let task = view.focus.unwrap();
+        let unsure = view.running(task).unwrap().unsure.clone().unwrap();
+        assert_eq!(unsure.said, "open the first one");
+        assert_eq!(unsure.candidates, ["opening", "end"]);
+        assert_eq!(
+            unsure.probabilities,
+            std::collections::BTreeMap::from([("opening".to_string(), 0.4)])
+        );
+        assert_eq!(unsure.how, "unsure (opening 0.40): stayed");
+        let asked = seen.decisions.lock().unwrap().len();
+        // What is no candidate, or no machine, starts nothing.
+        session.answer(task, "elsewhere".into()).await;
+        session.answer(task + 100, "opening".into()).await;
+        assert!(events.try_recv().is_err());
+
+        // The user says which: the take goes on with what was said, as a take of the
+        // session's own, and no model is asked for that decision.
+        session.answer(task, "opening".into()).await;
+        let Some(Event::Answered {
+            take,
+            instance,
+            label,
+        }) = events.recv().await
+        else {
+            panic!("the answer's take starts first");
+        };
+        assert!(take >= TIMER_TAKES);
+        assert_eq!((instance, label.as_str()), (task, "opening"));
+        let trace = loop {
+            match events.recv().await.unwrap() {
+                Event::Update { take: of, .. } => assert_eq!(of, take),
+                Event::Finished(trace) => break trace,
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(trace.transcript, "open the first one");
+        assert_eq!(
+            moves(&trace),
+            ["answering said → opening", "opening done → [*]"]
+        );
+        assert_eq!(trace.machine[0].how, "the user chose");
+        assert_eq!(trace.calls[0].tool, "search");
+        assert_eq!(seen.decisions.lock().unwrap().len(), asked);
+        assert!(session.view().at_rest());
+        // The answer is kept as a labelled example, beside the kept machines.
+        let examples = std::fs::read_to_string(file.with_file_name("examples.jsonl")).unwrap();
+        let example: Value = serde_json::from_str(examples.trim()).unwrap();
+        assert_eq!(
+            (
+                &example["machine"],
+                &example["state"],
+                &example["said"],
+                &example["chosen"],
+                &example["probabilities"]["opening"]
+            ),
+            (
+                &json!("research/find"),
+                &json!("answering"),
+                &json!("open the first one"),
+                &json!("opening"),
+                &json!(0.4)
+            )
+        );
+
+        // An unsure decision is the user's to answer only until its machine gets another
+        // event: what is said next takes its place.
+        said(3, "search for crates").await;
+        said(4, "open the first one").await;
+        let task = session.view().focus.unwrap();
+        assert!(session.view().running(task).unwrap().unsure.is_some());
+        let (client, _) = server(prefer(&["research", "find-1", "end"]), "unused").await;
+        session.set_routes(Some(routes(client)));
+        let last = said(5, "that is all, thanks").await;
+        assert_eq!(
+            inner(&last),
+            ["idle said → task find-1", "answering said → [*]"]
+        );
+        session.answer(task, "opening".into()).await;
+        assert!(events.try_recv().is_err());
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
     /// A file to keep the machines in, in a folder of this test's own.
     fn kept_in(test: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("jevons-kept-{test}-{}", std::process::id()));

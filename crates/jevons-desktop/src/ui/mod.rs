@@ -1494,7 +1494,7 @@ mod tests {
         let mut state = view(&folder);
         state.flows = tree;
         state.machines = machines.clone();
-        let (mut doc, mut commands) = machines_doc_with(state);
+        let (mut doc, _) = machines_doc_with(state);
         // What runs: the root, the agent, and the agent's task under it.
         assert_eq!(texts(&doc, ".fsm-run-name"), ["/", "helper", "task-1"]);
         assert_eq!(
@@ -1542,10 +1542,45 @@ mod tests {
             texts(&doc, ".fsm-state[data-current=\"true\"] .fsm-name"),
             ["idle"]
         );
+        // What is said next has two takers, the agent's own transition and its task, and no
+        // model to say which: the agent stays, and its diagram offers the candidates.
+        let start = TakeStart {
+            id: 8,
+            context: ContextSnapshot::default(),
+            entry: None,
+        };
+        let mut trace = Trace::new(&start);
+        trace.transcript = "go on".into();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(machines.take(&env, &start, None, &updates, &mut trace));
+        let helper = machines.view().stack[1].id;
+        assert!(machines.view().running(helper).unwrap().unsure.is_some());
+        let mut state = view(&folder);
+        state.flows = env.flows.clone();
+        state.machines = machines.clone();
+        let (mut doc, mut commands) = machines_doc_with(state);
+        click_text(&mut doc, ".fsm-run", "helper");
+        let unsure = texts(&doc, ".fsm-unsure").join(" ");
+        assert!(
+            unsure.contains("Unsure what you meant") && unsure.contains("“go on”"),
+            "{unsure}"
+        );
+        assert_eq!(texts(&doc, ".fsm-answer"), ["task", "task-1"]);
+        click_text(&mut doc, ".fsm-answer", "task-1");
+        let mut answers = Vec::new();
+        while let Ok(command) = commands.try_recv() {
+            if let Command::AnswerDecision { instance, label } = command {
+                answers.push((instance, label));
+            }
+        }
+        assert_eq!(answers, [(helper, "task-1".to_string())]);
         // A task has its own Cancel; the root and the agent have none.
         assert_eq!(texts(&doc, ".fsm-run button"), ["Cancel"]);
         click(&mut doc, ".fsm-run button");
-        let task = machines.view().focus.unwrap();
+        let task = machines.view().stack[2].id;
         let mut asked = Vec::new();
         while let Ok(command) = commands.try_recv() {
             if let Command::CancelOneTask(id) = command {

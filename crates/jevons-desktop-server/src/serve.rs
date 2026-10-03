@@ -81,6 +81,15 @@ impl Host {
                         instance: due.instance,
                         event: due.event,
                     },
+                    Event::Answered {
+                        take,
+                        instance,
+                        label,
+                    } => ToClient::Answered {
+                        take,
+                        instance,
+                        label,
+                    },
                     Event::Update { take, update } => ToClient::Update { take, update },
                     Event::Finished(trace) => ToClient::Trace {
                         take: trace.take,
@@ -288,6 +297,11 @@ impl Host {
                             view: view_json(&session.view()),
                         });
                     });
+                }
+                // The take it starts is the session's own: its events tell the client.
+                ToServer::Answer { instance, label } => {
+                    let session = self.session.clone();
+                    tokio::spawn(async move { session.answer(instance, label).await });
                 }
                 ToServer::Reply { id, reply } => desk.answer(id, reply),
             }

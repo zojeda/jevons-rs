@@ -80,8 +80,9 @@ Tests: `a_desk_that_cannot_look_answers_empty_with_its_note`
 The client says: `hello` (its version and key, the tools it runs and its settings for its takes;
 again when they change), `take` (where the user was, and whether it is push-to-talk, live
 dictation or a transcription alone), `audio` and `finish` for that take, `transcript` (a take
-from text), `cancel`, `cancel_task` and `reply`. The server says: `welcome`, `effect`, `update`
-(what a take is doing), `trace` (a finished take), `transcribed`, `timer` and `stale` (a timer's
+from text), `cancel`, `cancel_task`, `answer` (the user's choice for an unsure decision) and
+`reply`. The server says: `welcome`, `effect`, `update`
+(what a take is doing), `trace` (a finished take), `transcribed`, `timer`, `answered` and `stale` (a timer's or an answer's
 take, which the server starts by itself), `machines` (where the machines are) and `closed` (with
 why). Each is JSON with its name in `type`, and every message, effect, reply and update reads
 back as it was written.

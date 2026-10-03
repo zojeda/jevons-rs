@@ -110,6 +110,16 @@ reaches the take, and tells the client where the machines are once the cancel is
 
 Tests: `a_cancel_while_a_take_waits_on_a_question_leaves_the_stream_open`
 
+### R9 The user's answer to an unsure decision is a take of the session's own
+
+`answer` on the session, for a machine and one of the candidates its view lists
+([machines](machines.md) R58), runs the take that goes on from the answer by itself, numbered
+as a timer's is, and tells the client through its events: `answered` with the take, the machine
+and the candidate, the take's updates, then its trace, or `stale` when another event reached the
+machine first. A client asks for it with `answer`.
+
+Tests: `the_user_answers_an_unsure_decision_and_the_take_goes_on`
+
 ### R6 The machines outlive the client
 
 When a client's stream ends, what waited on it is refused (a take in flight ends with its tool

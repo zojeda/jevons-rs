@@ -31,6 +31,12 @@ pub const TIMER_TAKES: u64 = 1 << 32;
 pub enum Event {
     /// A machine's timer ran out, and its take started.
     Timer { take: u64, due: Due },
+    /// The user answered a decision the model was unsure about, and the take it left goes on.
+    Answered {
+        take: u64,
+        instance: u64,
+        label: String,
+    },
     /// What that take is doing.
     Update { take: u64, update: Update },
     /// It ended.
@@ -242,6 +248,46 @@ impl Session {
     /// Ends one task; returns what ended.
     pub async fn cancel_task(&self, id: u64) -> Option<String> {
         self.machines.cancel_task(id).await
+    }
+
+    /// The user says which candidate the machine `instance`'s unsure decision was for: what
+    /// was said goes to that machine again with the answer, as a take of the session's own,
+    /// told through its events like a timer's. Nothing when the machine waits with no such
+    /// decision, or no provider answers.
+    pub async fn answer(&self, instance: u64, label: String) {
+        let waits = self.machines.view().running(instance).is_some_and(|r| {
+            r.unsure
+                .as_ref()
+                .is_some_and(|u| u.candidates.contains(&label))
+        });
+        if !waits || !self.ready() {
+            return;
+        }
+        let take = self.timer_takes.fetch_add(1, Ordering::Relaxed);
+        let _ = self.events.send(Event::Answered {
+            take,
+            instance,
+            label: label.clone(),
+        });
+        let (updates, mut said) = mpsc::unbounded_channel();
+        let events = self.events.clone();
+        let forward = tokio::spawn(async move {
+            while let Some(update) = said.recv().await {
+                let _ = events.send(Event::Update { take, update });
+            }
+        });
+        let env = self.env(None);
+        let trace = self
+            .machines
+            .answer(&env, instance, &label, take, &updates)
+            .await;
+        drop(updates);
+        let _ = forward.await;
+        let _ = self.events.send(match trace {
+            Some(trace) => Event::Finished(Box::new(trace)),
+            // Another event reached the machine meanwhile.
+            None => Event::Stale { take },
+        });
     }
 
     /// A machine's timer ran out: its event moves the machines, as a take of the session's

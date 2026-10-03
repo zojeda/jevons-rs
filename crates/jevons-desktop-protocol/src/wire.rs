@@ -78,6 +78,9 @@ pub enum ToServer {
     Cancel,
     /// Ends one task.
     CancelTask { id: u64 },
+    /// The user says which candidate the machine `instance`'s unsure decision was for (the
+    /// machines' view lists them): the take it left goes on, as a take of the server's own.
+    Answer { instance: u64, label: String },
     /// The answer to the effect `id`.
     Reply { id: u64, reply: Reply },
 }
@@ -106,7 +109,14 @@ pub enum ToClient {
         instance: u64,
         event: String,
     },
-    /// A timer's take found its machine elsewhere: nothing happened.
+    /// The user's answer to an unsure decision started a take, by the server.
+    Answered {
+        take: u64,
+        /// The machine it is of, and the candidate chosen.
+        instance: u64,
+        label: String,
+    },
+    /// A timer's take, or an answer's, found its machine elsewhere: nothing happened.
     Stale { take: u64 },
     /// Where the machines are: sent when the session opens and whenever they moved.
     Machines { view: Value },
@@ -603,6 +613,10 @@ mod tests {
             },
             ToServer::Cancel,
             ToServer::CancelTask { id: 5 },
+            ToServer::Answer {
+                instance: 5,
+                label: "opening".into(),
+            },
         ];
         to_server.extend(
             replies
@@ -652,6 +666,11 @@ mod tests {
                 take: 1 << 32,
                 instance: 4,
                 event: "quiet".into(),
+            },
+            ToClient::Answered {
+                take: (1 << 32) + 1,
+                instance: 5,
+                label: "opening".into(),
             },
             ToClient::Stale { take: 1 << 32 },
             ToClient::Machines {

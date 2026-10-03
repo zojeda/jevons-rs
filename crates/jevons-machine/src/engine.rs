@@ -445,6 +445,9 @@ pub enum Decision {
     },
     /// It gave no answer; why, for the trace: "no decision model", "the decision failed".
     Unanswered(String),
+    /// The user said which, in the oracle's place: the candidate `label`, with nothing to be
+    /// sure of.
+    Told(String),
 }
 
 /// What moves an instance.
@@ -486,6 +489,8 @@ pub enum By {
     Only,
     /// The oracle chose it, sure enough.
     Model,
+    /// The user chose it, in the oracle's place.
+    User,
     /// Nothing else was taken: the `[else]` candidate.
     Fallback,
     /// Nothing was taken, and there is no `[else]`: the machine stays.
@@ -1122,6 +1127,19 @@ fn by_oracle(
 ) -> Pick {
     match decision {
         Decision::Unanswered(why) => otherwise(fallback, why, BTreeMap::new()),
+        Decision::Told(label) => match pool.iter().find(|&&i| options[i].label == label) {
+            Some(&index) => Pick {
+                index: Some(index),
+                by: By::User,
+                how: "the user chose".into(),
+                probabilities: BTreeMap::new(),
+            },
+            None => otherwise(
+                fallback,
+                format!("the user chose {label:?}, which does not apply"),
+                BTreeMap::new(),
+            ),
+        },
         Decision::Chose {
             label,
             probability,
@@ -1409,6 +1427,32 @@ mod tests {
         assert_eq!(steps(&effects), ["results said → opening: model 0.90"]);
         assert!(matches!(&effects[0], Effect::Chose(c) if c.asked));
         assert_eq!(task.state(), "opening");
+    }
+
+    #[test]
+    fn the_user_may_answer_in_the_oracle_s_place() {
+        let def = def(SEARCH, &["searching", "answering", "opening"]);
+        // The oracle was unsure, and the machine stayed. Asked again, the user says which.
+        let mut task = waiting(&def);
+        task.handle(&def, Input::Event(Event::Said), &none());
+        task.handle(&def, chose("opening", 0.4), &none());
+        assert_eq!(task.state(), "results");
+        let effects = task.handle(&def, Input::Event(Event::Said), &none());
+        assert!(asks(&effects));
+        let told = Input::Decided(Decision::Told("opening".into()));
+        let effects = task.handle(&def, told, &none());
+        assert_eq!(steps(&effects), ["results said → opening: the user chose"]);
+        assert!(matches!(&effects[0], Effect::Chose(c) if c.by == By::User && c.asked));
+        assert_eq!(task.state(), "opening");
+        // What is no candidate moves nothing.
+        let mut task = waiting(&def);
+        task.handle(&def, Input::Event(Event::Said), &none());
+        let told = Input::Decided(Decision::Told("elsewhere".into()));
+        let effects = task.handle(&def, told, &none());
+        assert_eq!(
+            steps(&effects),
+            ["results said → results: the user chose \"elsewhere\", which does not apply: stayed"]
+        );
     }
 
     #[test]

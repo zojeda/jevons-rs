@@ -61,8 +61,8 @@ impl History {
         match self {
             Self::Logs => extension("log"),
             Self::Traces | Self::Trees => extension("json"),
-            // The file, and one a write was cut short on.
-            Self::Machines => extension("json") || extension("tmp"),
+            // The kept tasks, a write of them cut short, and the answers the user gave.
+            Self::Machines => extension("json") || extension("tmp") || extension("jsonl"),
             Self::Recordings => path.join("recording.json").is_file(),
         }
     }
@@ -210,13 +210,14 @@ mod tests {
         let dir = folder("machines");
         std::fs::write(dir.join("machines.json"), "{}").unwrap();
         std::fs::write(dir.join("machines.tmp"), "{").unwrap();
+        std::fs::write(dir.join("examples.jsonl"), "{}\n").unwrap();
         std::fs::write(dir.join("notes.txt"), "mine").unwrap();
         let cleared = clear_in(History::Machines, &dir);
-        assert_eq!(cleared.removed, 2, "{cleared}");
+        assert_eq!(cleared.removed, 3, "{cleared}");
         assert_eq!(cleared.kept, ["notes.txt"]);
         assert_eq!(
             cleared.to_string(),
-            "tasks that run: 2 removed (kept notes.txt, not jevons')"
+            "tasks that run: 3 removed (kept notes.txt, not jevons')"
         );
         assert!(History::ALL.contains(&History::Machines));
         assert!(machines_file().ends_with("machines/machines.json"));

@@ -26,7 +26,7 @@ It has no async code, no HTTP and no JSON: serde derives only.
 
 ## Requirements
 
-The diagram is R1 to R10 and R35; the layout, R11 to R13 and R32 to R34; the engine, R14 to R31.
+The diagram is R1 to R10 and R35; the layout, R11 to R13 and R32 to R34; the engine, R14 to R31 and R36.
 
 ### R1 A diagram is one `fsm` block
 
@@ -338,3 +338,12 @@ name that is already a state or a choice point, and a diagram that is not valid 
 are errors, and the text is not changed.
 
 Tests: `a_state_is_added_where_the_machine_waits`
+
+### R36 The user may answer in the oracle's place
+
+A decision the oracle was asked for may be answered `Told`, with a candidate's label: the user
+said which. That candidate is taken, whatever the floor, and the decision says the user chose
+it. A label that is no candidate is no answer: the `[else]` candidate is taken, or the machine
+stays.
+
+Tests: `the_user_may_answer_in_the_oracle_s_place`

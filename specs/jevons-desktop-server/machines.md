@@ -449,6 +449,26 @@ a file nothing is kept and nothing comes back.
 
 Tests: `work_cut_short_by_a_restart_fails_and_is_not_run_again`, `a_task_whose_files_changed_is_ended_instead_of_resumed`
 
+### R58 An unsure decision is the user's to answer
+
+When what the user said leaves a machine where it was, with candidates it could have taken
+(the model was unsure, chose none of them, or was not there), the host keeps the decision with
+the machine: what was said, the candidates, the probability of each, and why none was taken. The
+view shows it. It lasts until the machine gets its next event; it is not kept across a restart.
+
+`answer` takes the user's choice among those candidates: the machine gets what was said again,
+in the context of the take it stayed on, and the choice answers its decision in the model's
+place, with no model asked for it. The take goes on from there as any take: a task of the
+agent's gets the words as its own `said`, a state's work runs, and the trace says the user
+chose. Anything but a candidate of a decision that still waits does nothing.
+
+Each answer is kept as a labelled example, one JSON object a line in `examples.jsonl` beside
+the kept machines (R53): the machine, its state, what was said, the candidates, their
+probabilities, why none was taken, and the one chosen. Without a file to keep the machines in,
+none is kept.
+
+Tests: `the_user_answers_an_unsure_decision_and_the_take_goes_on`
+
 ## Layout
 
 ### R41 Rows follow the longest path

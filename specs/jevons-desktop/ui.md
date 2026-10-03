@@ -181,7 +181,9 @@ task the latest take reached shows otherwise; a machine can also be picked by fo
 draws states as boxes where the layout puts them, start and end dots, choice diamonds, and an
 arrowhead and label per edge. Each edge is a curve, coloured by what decides it (the event
 alone, rules, rules and then the model, the model), with a legend below the diagram. The current state of the machine shown is marked and its latest
-transition's label lit. Each state shows its work in a few words (such as `tool · web_search`,
+transition's label lit. When the machine shown stayed on an unsure decision, a block above the
+diagram says what was said and why nothing was taken, with a button per candidate and its
+probability; a click answers the decision with that candidate. Each state shows its work in a few words (such as `tool · web_search`,
 `loop`, `run`, `decide`, `machine`) or `waits`. A tree whose root is a decision says it has no
 machines.
 

@@ -145,6 +145,11 @@ pub enum Command {
     TimerStale(u64),
     /// Tasks ended outside a take: the tray menu and the window follow.
     TasksChanged,
+    /// The user says which candidate a machine's unsure decision was for.
+    AnswerDecision {
+        instance: u64,
+        label: String,
+    },
     /// Hides a message, unless a newer one replaced it.
     HideMessage(u64),
     /// A take asks before calling a tool.
@@ -1165,6 +1170,10 @@ impl Agent {
                 });
             }
             Command::CancelTask => self.cancel_tasks(),
+            Command::AnswerDecision { instance, label } => {
+                let session = self.session.clone();
+                tokio::spawn(async move { session.answer(instance, label).await });
+            }
             Command::TasksChanged => {
                 // A take that ended meanwhile may have kept the conversation of a task that
                 // is gone now.
@@ -2590,31 +2599,43 @@ impl Agent {
 
     /// What the session did by itself: a machine's timer ran out, and its take runs, as a
     /// take of its own whose work is delivered to the window the task started in.
+    /// A take the session started by itself for the machine `instance`: a timer's, or the
+    /// user's answer to an unsure decision. Its bubble shows `status` while it runs, unless
+    /// another take is in the way.
+    fn own_take(&mut self, take: u64, instance: u64, status: String) {
+        let updates = self.watch_updates(take);
+        self.timer_updates.insert(take, updates);
+        if self.active.is_none() {
+            // The take of the task the conversation is of joins it.
+            let thread = self
+                .thread
+                .as_ref()
+                .filter(|_| self.thread_task == Some(instance));
+            let turns = thread.map(Feedback::conversation);
+            let state = thread.map(|t| t.state.clone()).unwrap_or_default();
+            self.view().feedback = Some(Feedback {
+                take,
+                status,
+                working: true,
+                task: turns.is_some(),
+                turns: turns.unwrap_or_default(),
+                state,
+                ..Feedback::default()
+            });
+            self.repaint();
+        }
+    }
+
     fn session_event(&mut self, event: SessionEvent) {
         match event {
             SessionEvent::Timer { take, due } => {
-                let updates = self.watch_updates(take);
-                self.timer_updates.insert(take, updates);
-                if self.active.is_none() {
-                    // The timer of the task the conversation is of joins it.
-                    let thread = self
-                        .thread
-                        .as_ref()
-                        .filter(|_| self.thread_task == Some(due.instance));
-                    let turns = thread.map(Feedback::conversation);
-                    let state = thread.map(|t| t.state.clone()).unwrap_or_default();
-                    self.view().feedback = Some(Feedback {
-                        take,
-                        status: format!("Timer: {}", due.event),
-                        working: true,
-                        task: turns.is_some(),
-                        turns: turns.unwrap_or_default(),
-                        state,
-                        ..Feedback::default()
-                    });
-                    self.repaint();
-                }
+                self.own_take(take, due.instance, format!("Timer: {}", due.event));
             }
+            SessionEvent::Answered {
+                take,
+                instance,
+                label,
+            } => self.own_take(take, instance, format!("You chose {label}")),
             SessionEvent::Update { take, update } => {
                 if let Some(updates) = self.timer_updates.get(&take) {
                     let _ = updates.send(update);

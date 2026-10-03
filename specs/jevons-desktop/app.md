@@ -215,7 +215,9 @@ Tests: none yet
 
 When a task's timer runs out, its event moves the machines as a take of its own, whose work
 delivers into the window the task started in. With no take running, the bubble shows the timer.
-A timer whose state the machine has left does nothing and shows nothing. In the Machines tab,
+A timer whose state the machine has left does nothing and shows nothing. An answer to an unsure
+decision, given in the Machines tab, runs the same way: a take of its own, whose bubble says
+which candidate was chosen. In the Machines tab,
 **Cancel all tasks** ends every task and a task's own **Cancel** ends that one; when it is the
 task the bubble follows, its conversation goes with it.
 

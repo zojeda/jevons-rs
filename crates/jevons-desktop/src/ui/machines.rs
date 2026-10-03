@@ -475,7 +475,29 @@ pub fn MachinesPage(rev: u64) -> Element {
             let drawn = layout::layout(&loaded.diagram);
             let decisions = loaded.diagram.decisions();
             let state = selected().filter(|s| loaded.diagram.state(s).is_some());
+            let unsure = running.and_then(|r| r.unsure.clone().map(|u| (r.id, u)));
+            let answer = ctx.clone();
             rsx! {
+                if let Some((id, unsure)) = unsure {
+                    div { class: "fsm-unsure",
+                        div { class: "stack",
+                            span { class: "fsm-unsure-title", "Unsure what you meant" }
+                            span { class: "muted", "“{shorten(&unsure.said, 120)}” · {unsure.how}" }
+                        }
+                        div { class: "row",
+                            {unsure.candidates.iter().map(|label| {
+                                let (send, chosen) = (answer.clone(), label.clone());
+                                let sure = unsure.probabilities.get(label).map(|p| format!(" {p:.2}")).unwrap_or_default();
+                                rsx! {
+                                    button { key: "{label}", class: "dx-button fsm-answer", "data-style": "outline", "data-size": "sm",
+                                        onclick: move |_| send.send(Command::AnswerDecision { instance: id, label: chosen.clone() }),
+                                        "{label}{sure}"
+                                    }
+                                }
+                            })}
+                        }
+                    }
+                }
                 {diagram(&tree, node, &drawn, &decisions, current.as_deref(), hot, selected)}
                 if let Some(state) = state {
                     {state_card(&tree, node, loaded, &state, current.as_deref() == Some(state.as_str()))}

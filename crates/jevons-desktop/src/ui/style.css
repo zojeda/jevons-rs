@@ -543,6 +543,8 @@ p { margin: 0; }
   white-space: nowrap;
 }
 .fsm-label[data-hot="true"] { color: var(--accent); }
+.fsm-unsure { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 8px 12px; border: 1px solid var(--accent); border-radius: 10px; background: var(--accent-soft); }
+.fsm-unsure-title { color: var(--secondary-color-1); font-weight: 600; }
 .fsm-legend { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--secondary-color-5); }
 .fsm-legend-item { display: flex; align-items: center; gap: 6px; }
 .fsm-swatch { display: inline-block; width: 18px; height: 3px; border-radius: 2px; }

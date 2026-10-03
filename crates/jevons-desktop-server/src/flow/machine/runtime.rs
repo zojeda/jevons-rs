@@ -25,6 +25,11 @@
 //! states wrote (as `{state}`) until it ends. Timers fire through the channel the app gives, and
 //! their work delivers to the window the task started in, or to the clipboard when it changed.
 //!
+//! When the model is unsure and a machine stays, the host keeps what it was asked
+//! ([`Unsure`]) until the machine next gets an event: the user may say which candidate it was
+//! ([`Runtime::answer`]), and the take goes on from there, with the answer kept as a labelled
+//! example beside the kept machines.
+//!
 //! The machines outlive the server: given a file ([`Runtime::keep_in`]), the host writes them
 //! there at every change and brings them back when it next runs ([`Runtime::restore`]). A
 //! machine that waited waits again. One whose work ran takes `failed`: work cut short is never
@@ -116,6 +121,23 @@ pub struct Running {
     pub parent: Option<u64>,
     /// Which of its agent's running tasks of the same folder it is, from 1; 0 otherwise.
     pub number: usize,
+    /// The decision the model was unsure about, which left it here; the user may answer it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unsure: Option<Unsure>,
+}
+
+/// A decision that left a machine where it was: what the user said, the candidates, and how
+/// sure the model was of each.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Unsure {
+    /// What the user said.
+    pub said: String,
+    /// The candidates the choice was among, by the labels the model answers with.
+    pub candidates: Vec<String>,
+    pub probabilities: BTreeMap<String, f64>,
+    /// Why nothing was taken, such as `unsure (opening 0.58): stayed`.
+    pub how: String,
+    pub at_ms: u64,
 }
 
 impl Running {
@@ -239,6 +261,8 @@ struct Instance {
     origin: TakeStart,
     /// The last text its states produced: a task's result.
     last: Option<String>,
+    /// The decision that left it where it is, and the take it was for, until its next event.
+    unsure: Option<(Unsure, TakeStart)>,
 }
 
 /// The machines as they are kept while the server does not run.
@@ -334,6 +358,9 @@ struct Keeping {
     written: Option<String>,
 }
 
+/// The file of labelled examples, beside the kept machines: one JSON object a line.
+pub const EXAMPLES: &str = "examples.jsonl";
+
 /// Why work that ran when the server stopped failed.
 const CUT_SHORT: &str = "jevons stopped while it ran";
 
@@ -372,6 +399,7 @@ impl Instance {
             since_ms: now_ms(),
             origin: origin.clone(),
             last: None,
+            unsure: None,
         }
     }
 }
@@ -888,6 +916,83 @@ impl Runtime {
         Some(trace)
     }
 
+    /// The user says which candidate an unsure decision was for: the machine `instance` gets
+    /// what was said again, and `label` is the answer in the model's place. The take goes on
+    /// from there as any take, under the number `id`. `None` when the machine does not wait
+    /// with such a decision, or `label` is none of its candidates.
+    pub async fn answer(
+        &self,
+        env: &Env,
+        instance: u64,
+        label: &str,
+        id: u64,
+        updates: &UnboundedSender<Update>,
+    ) -> Option<Trace> {
+        let mut forest = self.forest.lock().await;
+        let tree = forest.tree.clone()?;
+        let waiting = forest.instances.get(&instance)?;
+        let (unsure, origin) = waiting.unsure.clone()?;
+        if !unsure.candidates.iter().any(|c| c == label) {
+            return None;
+        }
+        let example = json!({
+            "at_ms": now_ms(),
+            "machine": tree.node(waiting.machine).label(),
+            "state": waiting.engine.state(),
+            "said": unsure.said,
+            "candidates": unsure.candidates,
+            "probabilities": unsure.probabilities,
+            "how": unsure.how,
+            "chosen": label,
+        });
+        let task = waiting.parent.is_some();
+        let start = TakeStart {
+            id,
+            context: origin.context,
+            entry: None,
+        };
+        let mut trace = Trace::new(&start);
+        trace.transcript = unsure.said.clone();
+        self.publish(&forest, true, None);
+        let mut turn = Turn::new(self, env, tree, &mut forest, start, updates, &mut trace);
+        turn.transcript = unsure.said;
+        turn.forget();
+        turn.told = Some((instance, label.to_string()));
+        turn.forest.focus = task.then_some(instance);
+        turn.drive(Next::Input(instance, Input::Event(Event::Said)))
+            .await;
+        if let Some(e) = turn.failure.take() {
+            turn.trace.error.get_or_insert(e);
+        }
+        drop(turn);
+        self.publish(&forest, false, None);
+        self.keep_example(&example);
+        Some(trace)
+    }
+
+    /// Adds a labelled example to the file beside the kept machines: what was said, how sure
+    /// the model was of each candidate, and which one the user chose. Nothing without a file.
+    fn keep_example(&self, example: &Value) {
+        let file = self.keeping.lock().expect("the keeping lock").file.clone();
+        let Some(file) = file.map(|f| f.with_file_name(EXAMPLES)) else {
+            return;
+        };
+        use std::io::Write;
+        let wrote = file
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&file)
+            })
+            .and_then(|mut file| writeln!(file, "{example}"));
+        if let Err(e) = wrote {
+            tracing::warn!(error = %e, "Could not keep the example");
+        }
+    }
+
     /// Ends every task and puts the root and the agents back in their first states, running no
     /// work. What it ended, or `None` when no task ran and they all waited there.
     pub async fn cancel(&self) -> Option<String> {
@@ -974,6 +1079,7 @@ impl Runtime {
                         generation: i.engine.generation(),
                         parent: i.parent,
                         number: i.number,
+                        unsure: i.unsure.as_ref().map(|(unsure, _)| unsure.clone()),
                         waiting: loaded
                             .map(|m| {
                                 m.diagram
@@ -1184,6 +1290,8 @@ struct Turn<'a> {
     steps: usize,
     /// The tasks each agent offered with the take, in the order the engine saw them.
     offered: HashMap<u64, Vec<u64>>,
+    /// The user's answer to the next decision of a machine, in the model's place.
+    told: Option<(u64, String)>,
 }
 
 impl<'a> Turn<'a> {
@@ -1212,6 +1320,7 @@ impl<'a> Turn<'a> {
             asked: None,
             steps: 0,
             offered: HashMap::new(),
+            told: None,
         }
     }
 
@@ -1390,6 +1499,10 @@ impl<'a> Turn<'a> {
             self.offered.insert(id, tasks);
         }
         let instance = self.forest.instances.get_mut(&id).expect("it runs");
+        // An event is what an unsure decision waited for: it is no longer the user's to answer.
+        if matches!(input, Input::Event(_)) {
+            instance.unsure = None;
+        }
         let effects = instance
             .engine
             .handle_among(&loaded.diagram, input, &rules, outside);
@@ -1776,6 +1889,7 @@ impl<'a> Turn<'a> {
                 since_ms: now_ms(),
                 origin: self.start.clone(),
                 last: None,
+                unsure: None,
             },
         );
         self.forest.focus = Some(task);
@@ -1844,6 +1958,20 @@ impl<'a> Turn<'a> {
 
     /// The engine decided, by rules or by the model's answer: the bubble's stage and the trace.
     fn chose(&mut self, id: u64, chosen: Chosen) {
+        // What the user said moved nothing, with candidates to choose among: theirs to answer.
+        if chosen.by == By::Stayed && chosen.event == Event::Said && !chosen.pool.is_empty() {
+            let unsure = Unsure {
+                said: self.transcript.clone(),
+                candidates: chosen.pool.clone(),
+                probabilities: chosen.probabilities.clone(),
+                how: chosen.how.clone(),
+                at_ms: now_ms(),
+            };
+            let start = self.start.clone();
+            if let Some(instance) = self.forest.instances.get_mut(&id) {
+                instance.unsure = Some((unsure, start));
+            }
+        }
         let considered = chosen.options.len().min(self.checks.len());
         let branches: Vec<BranchCheck> = self.checks.drain(..considered).collect();
         let asked = if chosen.asked {
@@ -1865,6 +1993,7 @@ impl<'a> Turn<'a> {
                 (By::Preferred, _) => "preferred".into(),
                 (By::Fallback, _) => "fallback".into(),
                 (By::Stayed, _) => "stayed".into(),
+                (By::User, _) => "you chose".into(),
                 (By::Only | By::Model, _) => "only one applies".into(),
             };
             let _ = self.updates.send(Update::StageDone {
@@ -1965,6 +2094,10 @@ impl<'a> Turn<'a> {
             began: Instant::now(),
             decision: None,
         });
+        // The user answers in the model's place.
+        if let Some((_, label)) = self.told.take_if(|(of, _)| *of == id) {
+            return Decision::Told(label);
+        }
         // The request that led here already asked it.
         if let Some(answer) = self.answered.remove(&id) {
             return Self::decision(question, answer);
