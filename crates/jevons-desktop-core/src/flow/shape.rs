@@ -20,6 +20,8 @@ pub enum Shape {
     Enum(Vec<String>),
     List(Box<Shape>),
     Object(BTreeMap<String, Shape>),
+    /// Whatever came back, such as a tool's result: any field may be read, and may be missing.
+    Any,
 }
 
 impl Shape {
@@ -94,6 +96,7 @@ impl Shape {
                 labels.push(Value::Null);
                 json!({"enum": labels})
             }
+            Self::Any => json!({}),
             Self::List(item) => json!({"type": ["array", "null"], "items": item.json_schema()}),
             Self::Object(fields) => {
                 let properties: Map<String, Value> = fields
@@ -118,6 +121,7 @@ impl Shape {
         match self {
             Self::Object(fields) => fields.get(first)?.field(rest),
             Self::List(item) => item.field(path),
+            Self::Any => Some(self),
             _ => None,
         }
     }
@@ -127,6 +131,7 @@ impl Shape {
     pub fn conform(&self, value: &Value) -> Value {
         match (self, value) {
             (_, Value::Null) => Value::Null,
+            (Self::Any, _) => value.clone(),
             (Self::String, Value::String(_)) => value.clone(),
             (Self::String, Value::Number(n)) => json!(n.to_string()),
             (Self::String, Value::Bool(b)) => json!(b.to_string()),

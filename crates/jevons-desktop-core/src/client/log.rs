@@ -161,6 +161,7 @@ mod tests {
             input: "hi".into(),
             max_output_tokens: None,
             reasoning: None,
+            text: None,
         };
         let file = std::env::temp_dir().join(format!("jevons-api-log-{}.log", std::process::id()));
         let _ = std::fs::remove_file(&file);

@@ -164,11 +164,11 @@ in desktop-core becomes the host.
       implements it over the frame and the target folders, as `Turn::check` did.
 - [x] Keep `Decide` as data (the candidates with their labels and criteria) and `Decided` as a
       label and probability, or nothing.
-- [ ] Value checks in guards: `when = { value = "{state.field}", … }` with `empty`, `equals`,
+- [x] Value checks in guards: `when = { value = "{state.field}", … }` with `empty`, `equals`,
       `matches` and number comparisons, answered by `Facts` from the instance's values. The loader
       checks each path against the state results and the shapes of typed results, as it checks
       placeholders now.
-- [ ] Typed results: a tool's result (JSON) and a structured generation keep their fields, so value
+- [x] Typed results: a tool's result (JSON) and a structured generation keep their fields, so value
       checks and `{state.field}` placeholders can read them.
 - [x] Decided-by: the loader reports, for each state and event, whether the event alone, rules or
       the model decides its transitions; `--check-flows` prints it. Every decision made also says

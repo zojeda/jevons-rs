@@ -52,16 +52,18 @@ pub struct BranchCheck {
     pub prefer: Vec<Check>,
 }
 
-/// A branch's `[prefer]` checks, when it has rules; and whether they all passed.
+/// A branch's `[prefer]` checks, when it has rules; and whether they all passed. `values` reads
+/// the named values a value rule checks.
 fn prefer_checks(
     child: &Node,
     snapshot: &crate::context::ContextSnapshot,
     transcript: &str,
+    values: &dyn Fn(&[String]) -> Option<Value>,
 ) -> (Vec<Check>, bool) {
     if child.prefer.is_empty() {
         return (Vec::new(), false);
     }
-    let checks = child.prefer.check(snapshot, transcript);
+    let checks = child.prefer.check_with(snapshot, transcript, values);
     let passed = checks.iter().all(|c| c.passed);
     (checks, passed)
 }
@@ -239,6 +241,10 @@ pub struct Leaf {
     /// The leaf's path.
     pub node: String,
     pub text: String,
+    /// What the leaf wrote as data, when it has fields to read: a tool's result, or a
+    /// generation's structured answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<Value>,
     pub output: Output,
     pub action: Action,
     pub delivery: DeliveryMethod,
@@ -633,9 +639,11 @@ impl Walker<'_> {
 
     /// How one branch fares against its guard and its `[prefer]`.
     fn branch(&self, child: &Node) -> BranchCheck {
-        let mut checks = child
-            .guard
-            .check(&self.frame.snapshot, &self.frame.transcript);
+        let values = |path: &[String]| self.frame.json(path);
+        let mut checks =
+            child
+                .guard
+                .check_with(&self.frame.snapshot, &self.frame.transcript, &values);
         // A run branch applies only when it has an approved automation to run.
         if let NodeSpec::Run(r) = &child.spec {
             let runnable = self.runnable(r);
@@ -648,7 +656,7 @@ impl Walker<'_> {
         }
         let passed = checks.iter().all(|c| c.passed);
         let (prefer, preferred) = if passed {
-            prefer_checks(child, &self.frame.snapshot, &self.frame.transcript)
+            prefer_checks(child, &self.frame.snapshot, &self.frame.transcript, &values)
         } else {
             (Vec::new(), false)
         };
@@ -1118,12 +1126,12 @@ impl Walker<'_> {
         self.done("done", None, true);
         match t.output.unwrap_or(Output::Bubble) {
             Output::Next => Ok(Ahead::Next(result)),
-            output => Ok(Ahead::Leaf(self.leaf(
-                node,
-                result_text(&result),
-                output,
-                Action::Insert,
-            ))),
+            output => {
+                let mut leaf = self.leaf(node, result_text(&result), output, Action::Insert);
+                // A result with fields keeps them, for what reads it later.
+                leaf.value = matches!(result, Value::Object(_) | Value::Array(_)).then_some(result);
+                Ok(Ahead::Leaf(leaf))
+            }
         }
     }
 
@@ -1361,6 +1369,7 @@ impl Walker<'_> {
                     .unwrap_or(self.env.settings.max_output_tokens),
             ),
             reasoning: None,
+            text: None,
         };
         let began = Instant::now();
         let written = tokio::time::timeout(
@@ -1498,6 +1507,7 @@ impl Walker<'_> {
         Leaf {
             node: node.label().to_string(),
             text,
+            value: None,
             output,
             action,
             delivery: self.frame.delivery.unwrap_or_default(),
@@ -1589,6 +1599,12 @@ impl Walker<'_> {
                     .unwrap_or(self.env.settings.max_output_tokens),
             ),
             reasoning: (think > 0).then(|| Reasoning::for_budget(think)),
+            text: None,
+        };
+        // A structured answer: the model writes JSON in the node's shape.
+        let request = match &node.shape {
+            Some(shape) => request.answer_schema(shape.json_schema()),
+            None => request,
         };
         self.stage(match output {
             Output::Bubble => Stage::new(StageKind::Answering, "answer"),
@@ -1627,7 +1643,14 @@ impl Walker<'_> {
                     request,
                     output: text.clone(),
                 });
-                Ok(self.leaf(node, text.trim().to_string(), output, action))
+                let mut leaf = self.leaf(node, text.trim().to_string(), output, action);
+                if let Some(shape) = &node.shape {
+                    // What does not parse or fit comes back null: an answer never breaks what
+                    // reads it.
+                    let answer = serde_json::from_str(text.trim()).unwrap_or(Value::Null);
+                    leaf.value = Some(shape.conform(&answer));
+                }
+                Ok(leaf)
             }
             Ok(Err(e)) => {
                 self.done("failed", None, false);
@@ -1721,7 +1744,7 @@ pub fn preview(
                 candidates.push(child.id);
             }
             let (prefer, preferred) = if passed {
-                prefer_checks(child, snapshot, "")
+                prefer_checks(child, snapshot, "", &|_| None)
             } else {
                 (Vec::new(), false)
             };

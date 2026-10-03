@@ -128,9 +128,12 @@ Tests: `a_nested_machine_must_end_and_list_every_tool_its_states_call`
 ### R17 States read what earlier states wrote
 
 Below a machine, each state's name is a placeholder, `{state}`, that holds what that state's work
-wrote last. Each state's work counts its model decisions anew.
+wrote last. A result with fields keeps them, and `{state.field}` reads one: a tool's, an agent's
+or an automation's result may have any field, a generation with a `schema` has its schema's, and
+a generation without one and the words as heard are text, with no fields. A field the shape
+lacks is a load error. Each state's work counts its model decisions anew.
 
-Tests: `states_read_what_earlier_states_wrote`
+Tests: `states_read_what_earlier_states_wrote`, `results_have_shapes_and_guards_check_values_that_exist`, `a_generation_with_a_schema_answers_in_fields_later_states_read`
 
 ## The runtime
 
@@ -335,6 +338,15 @@ choice point: the event, rules, rules then the model, or the model
 ([jevons-machine](../jevons-machine/spec.md) R28).
 
 Tests: `the_tree_says_what_decides_each_transition_of_its_machines`
+
+### R48 Named guards check what the states wrote
+
+A named guard's `when` and `prefer` may carry a value rule ([flows](flows.md) R48) on a state's
+result or on a value the task read on the way to it. Its placeholder must resolve among them, with
+a field the result's shape has, or it is a load error. The runtime checks it against the task's
+values, so a transition can depend on a result with no model call.
+
+Tests: `a_guard_on_a_state_s_result_takes_a_transition_with_no_model`, `results_have_shapes_and_guards_check_values_that_exist`
 
 ## Layout
 

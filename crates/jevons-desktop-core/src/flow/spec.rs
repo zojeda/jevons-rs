@@ -177,6 +177,11 @@ node_spec! {
         /// The model's input; by default the context, the investigations and what the user said.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub prompt: Option<String>,
+        /// The answer's shape, written as an investigation's `schema`: the model answers in
+        /// JSON, and what reads the result reads its fields, such as `{state.field}`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "Option<serde_json::Value>")]
+        pub schema: Option<toml::Value>,
     }
 }
 

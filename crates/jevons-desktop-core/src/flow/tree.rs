@@ -148,6 +148,8 @@ pub struct Node {
     pub templates: BTreeMap<String, Template>,
     pub investigations: BTreeMap<String, Investigation>,
     pub extracts: BTreeMap<String, Extract>,
+    /// The shape of what a generate node writes, when its `schema` says: a structured answer.
+    pub shape: Option<Shape>,
     /// A machine's diagram and guards (`None` when the diagram has errors).
     pub machine: Option<Arc<Loaded>>,
     pub children: Vec<NodeId>,
@@ -669,6 +671,13 @@ impl Loader<'_> {
             NodeSpec::Machine(m) => self.machine(&file, m),
             _ => None,
         };
+        let shape = match &spec {
+            NodeSpec::Generate(GenerateSpec {
+                schema: Some(schema),
+                ..
+            }) => Shape::parse(schema).map_err(|e| self.error(&file, e)).ok(),
+            _ => None,
+        };
         let id = NodeId(self.nodes.len());
         self.nodes.push(Node {
             id,
@@ -682,6 +691,7 @@ impl Loader<'_> {
             templates,
             investigations,
             extracts,
+            shape,
             machine: machine.clone(),
             children: Vec::new(),
         });
@@ -1386,6 +1396,15 @@ impl Loader<'_> {
         } else {
             String::new()
         };
+        // The node's own rules are checked before it is entered: a value they check is one
+        // declared above it.
+        for (table, guard) in [("when", &node.guard), ("prefer", &node.prefer)] {
+            if let Some(path) = guard.value_path()
+                && let Some(why) = unresolved(path, &scope)
+            {
+                self.error(&node.file, format!("{table}.value: {why}{via}"));
+            }
+        }
         let declared = node
             .investigations
             .values()
@@ -1480,22 +1499,50 @@ impl Loader<'_> {
             node.spec,
             NodeSpec::Tool(_) | NodeSpec::Agent(_) | NodeSpec::Run(_)
         ) && node.spec.output() == Some(Output::Next);
-        for child in node.children.clone() {
-            let mut next = scope.clone();
-            if passes_result {
-                next.result = true;
+        let mut next = scope.clone();
+        if passes_result {
+            next.result = true;
+        }
+        // Each state's work is a walk of its own, and reads what the earlier states wrote. So do
+        // the machine's named guards.
+        if let Some(loaded) = &node.machine {
+            next.model_decisions = 0;
+            next.result = false;
+            for state in &loaded.diagram.states {
+                let shape = self.result_shape(&node, &state.name);
+                next.values
+                    .entry(state.name.clone())
+                    .or_insert((shape, node.label().to_string()));
             }
-            // Each state's work is a walk of its own, and reads what the earlier states wrote.
-            if let Some(loaded) = &node.machine {
-                next.model_decisions = 0;
-                next.result = false;
-                for state in &loaded.diagram.states {
-                    next.values
-                        .entry(state.name.clone())
-                        .or_insert((Shape::String, node.label().to_string()));
+            for (name, guard) in &loaded.guards {
+                for (table, rules) in [("when", &guard.when), ("prefer", &guard.prefer)] {
+                    if let Some(path) = rules.value_path()
+                        && let Some(why) = unresolved(path, &next)
+                    {
+                        self.error(&node.file, format!("guards.{name}.{table}.value: {why}"));
+                    }
                 }
             }
+        }
+        for child in node.children.clone() {
             self.check_paths(child, &next, checked);
+        }
+    }
+
+    /// The shape of what a state's work writes: a generation's `schema`, or text; the words as
+    /// heard; and whatever came back from a tool, an agent, an automation or a walk through
+    /// further nodes, whose fields are known only once it runs.
+    fn result_shape(&self, machine: &Node, state: &str) -> Shape {
+        let work = machine
+            .children
+            .iter()
+            .map(|c| &self.nodes[c.0])
+            .find(|c| c.name == state);
+        match work.map(|w| (&w.spec, &w.shape)) {
+            None => Shape::String,
+            Some((NodeSpec::Generate(_), shape)) => shape.clone().unwrap_or(Shape::String),
+            Some((NodeSpec::Transcript(_), _)) => Shape::String,
+            Some(_) => Shape::Any,
         }
     }
 }
@@ -2175,6 +2222,91 @@ mod tests {
         let e = errors(&tree);
         assert_eq!(e.len(), 1, "{e:?}");
         assert!(e[0].contains("{nothing}"), "{e:?}");
+    }
+
+    #[test]
+    fn results_have_shapes_and_guards_check_values_that_exist() {
+        let catalog = Catalog {
+            tools: BTreeMap::from([("search".to_string(), CatalogTool::default())]),
+            servers: BTreeMap::new(),
+        };
+        let load = |guards: &str, shown: &str| {
+            let task = format!("tools = [\"search\"]\n{guards}");
+            let files = [
+                ("root.toml", "tools = [\"search\"]"),
+                (
+                    "root.fsm",
+                    "fsm App {\n[*] --> idle\nidle --> find : said\nfind --> idle\n}",
+                ),
+                ("find/task.toml", task.as_str()),
+                (
+                    "find/task.fsm",
+                    "fsm Find {\n[*] --> look\nlook --> sort\nsort --> none : done [nothing]\n\
+                     sort --> shown : done [else]\nnone --> [*] : said\nshown --> [*] : said\n}",
+                ),
+                (
+                    "find/look/tool.toml",
+                    "tool = \"search\"\noutput = \"none\"",
+                ),
+                (
+                    "find/sort/generate.toml",
+                    "output = \"none\"\n[schema]\nkind = \"web | news\"\ncount = \"integer\"",
+                ),
+                ("find/shown/generate.toml", shown),
+            ];
+            let tree = FlowTree::load(&Memory::new("test", files), &catalog);
+            errors(&tree)
+        };
+        let guard = |rule: &str| format!("[guards.nothing]\nwhen = {{ {rule} }}");
+        // A tool's result has whatever fields came back; a structured generation has its
+        // schema's; a plain one is text.
+        let fine = load(
+            &guard("value = \"{look.body.items}\", empty = true"),
+            "output = \"bubble\"\nprompt = \"{look.status} {sort.kind} {sort.count} {sort}\"",
+        );
+        assert!(fine.is_empty(), "{fine:?}");
+        let e = load(
+            &guard("value = \"{sort.kind}\", equals = \"news\""),
+            "output = \"bubble\"\nprompt = \"{sort.other} {shown.field}\"",
+        );
+        assert_eq!(e.len(), 2, "{e:?}");
+        assert!(e[0].contains("{shown.field}: shown has no field"), "{e:?}");
+        assert!(e[1].contains("{sort.other}: sort has no field"), "{e:?}");
+        // A guard's value is one the machine can read: a state's result or a value declared
+        // above, and a field its shape has.
+        let e = load(&guard("value = \"{nowhere.x}\", empty = true"), "");
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert!(
+            e[0].starts_with("find/task.toml: guards.nothing.when.value: {nowhere.x}: no built-in"),
+            "{e:?}"
+        );
+        let e = load(&guard("value = \"{sort.missing}\", empty = true"), "");
+        assert!(
+            e[0].contains("guards.nothing.when.value: {sort.missing}: sort has no field"),
+            "{e:?}"
+        );
+        let e = load(&guard("value = \"{sort.kind}\""), "");
+        assert!(
+            e[0].contains("guards.nothing.when.value: say what the value must be"),
+            "{e:?}"
+        );
+        // A state's own `[when]` is checked the same way, and so is a schema.
+        let e = load(
+            &guard("value = \"{look}\", empty = true"),
+            "[when]\nvalue = \"{later}\"\nempty = false",
+        );
+        assert!(
+            e[0].contains("find/shown/generate.toml: when.value: {later}: no built-in"),
+            "{e:?}"
+        );
+        let e = load(
+            &guard("value = \"{look}\", empty = true"),
+            "schema = \"text\"",
+        );
+        assert!(
+            e[0].contains("find/shown/generate.toml: schema: \"text\" is not a type"),
+            "{e:?}"
+        );
     }
 
     #[test]

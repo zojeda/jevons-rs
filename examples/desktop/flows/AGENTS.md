@@ -80,6 +80,25 @@ Every rule that is set must pass; a node without rules always applies.
 | `text = true` | the focused field holds text |
 | `editable = true` | the focused element accepts typing |
 | `transcript = "(?i)^translate"` | the regular expression is found in what the user said |
+| `value = "{searching.body.total}"` with one or more of the rules below | the named value passes them all |
+
+A value rule checks one named value, with no model: what an earlier state of a task wrote
+(`{state}`, or `{state.field}` for a field of a tool's result or of a structured answer), an
+extract or an investigation. A value not read yet, or missing, is empty and equals nothing.
+
+| With `value` | Passes when the value |
+|---|---|
+| `empty = true` | is missing, null, a blank text, or an empty list or object (`false`: is not) |
+| `equals = 200` | equals this text, number or boolean (a number written as text counts) |
+| `matches = "^2\\d\\d$"` | holds the regular expression, as text |
+| `above = 0`, `below = 10`, `at_least = 1`, `at_most = 5` | is a number that compares so |
+
+```toml
+# task.toml: "the search found nothing" is a rule, not a question for the model.
+[guards.nothing]
+when = { value = "{searching.body.total}", equals = 0 }
+prefer = { value = "{searching.body.total}", equals = 0 }
+```
 
 The inspector's Context tab shows every value these rules compare, for the window in front.
 
@@ -148,7 +167,10 @@ fsm Search {
 - **Choice points:** `choice next { [it worked] -> a  [else] -> b }`, entered as `<<next>>`,
   choose at once, the same way; `[else]` is required.
 - **Memory:** a task's states read what earlier states wrote as `{state}` (`{searching}` is the
-  search's result) until the task ends. The root remembers nothing between takes.
+  search's result) until the task ends. A result with fields keeps them: `{searching.status}` for
+  a tool's, `{state.field}` for a generation with a `[schema]`. Guards read them too (a value
+  rule, above), so a transition can depend on a result with no model call. The root remembers
+  nothing between takes.
 - **Not in the diagram:** actions. Oxidate's `entry /`, `exit /` and `/ action()` are errors: the
   work is in the folders, so what a machine can do is exactly what its states' node files say.
 
@@ -193,6 +215,7 @@ both in one request.
 | `output` | `target` (default): into the application the take started in. `bubble`: shown by the tray icon, with Copy and Insert. `clipboard`. `none`. |
 | `action` | With `target`: `insert` at the cursor (default), `replace` the selection, or `rewrite` the selection or whole field following what the user said. A transcript cannot rewrite. |
 | `prompt` | `generate.toml` only: the model's input. By default: the context, the investigations and what the user said. |
+| `[schema]` | `generate.toml` only: the answer's shape, written as an investigation's `schema`. The model answers in JSON, and later states read its fields: `{state.field}`. |
 
 Text goes into the target only if the same window is still in front once the user lets go of the
 keys; otherwise it waits on the clipboard.

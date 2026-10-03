@@ -1,6 +1,10 @@
 //! Guards: the `[when]` rules of a node, checked against the context and the transcript with no
 //! model call. Every rule that is set must match; a node without rules always applies.
 //!
+//! A guard may also check one named value, such as what an earlier state of a task wrote:
+//! `value = "{searching.body.total}"` with `empty`, `equals`, `matches` or a number comparison
+//! (`above`, `below`, `at_least`, `at_most`). So "the search found nothing" costs no model call.
+//!
 //! [`Guard::check`] returns each rule it checked with the value it compared, which the inspector
 //! shows so a guard can be written against what the platform actually reports.
 
@@ -9,6 +13,7 @@ use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use regex::{Regex, RegexBuilder};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// A node's `[when]` table as written.
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Serialize)]
@@ -41,6 +46,32 @@ pub struct When {
     /// A regular expression searched in what the user said.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transcript: Option<String>,
+    /// A value to check with the rules below, as one placeholder: `{searching.body.total}` for
+    /// a field of what the state `searching` wrote, or an extract's or investigation's name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    /// Whether `value` is missing, null, or a blank text, an empty list or an empty object.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub empty: Option<bool>,
+    /// What `value` equals: a text, a number or a boolean.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<serde_json::Value>")]
+    pub equals: Option<toml::Value>,
+    /// A regular expression searched in `value`'s text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matches: Option<String>,
+    /// The number `value` is above.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub above: Option<f64>,
+    /// The number `value` is below.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub below: Option<f64>,
+    /// The number `value` is at least.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at_least: Option<f64>,
+    /// The number `value` is at most.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at_most: Option<f64>,
 }
 
 /// One rule check, for the inspector and the trace.
@@ -53,6 +84,13 @@ pub struct Check {
     pub passed: bool,
 }
 
+/// The check of one named value: its path, and what it must be.
+#[derive(Clone, Debug)]
+struct ValueRule {
+    path: Vec<String>,
+    matches: Option<Regex>,
+}
+
 /// Compiled `[when]` rules.
 #[derive(Clone, Debug, Default)]
 pub struct Guard {
@@ -62,7 +100,52 @@ pub struct Guard {
     role: Vec<String>,
     element_name: Option<Regex>,
     transcript: Option<Regex>,
+    value: Option<ValueRule>,
     spec: When,
+}
+
+/// The path a `value` names: one placeholder, such as `{searching.body.total}`.
+fn value_path(text: &str) -> Result<Vec<String>, String> {
+    let wrong = || format!("when.value: {text:?} is not one placeholder, such as {{state.field}}");
+    let inner = text
+        .trim()
+        .strip_prefix('{')
+        .and_then(|t| t.strip_suffix('}'))
+        .ok_or_else(wrong)?;
+    let path: Vec<String> = inner.trim().split('.').map(String::from).collect();
+    if path.iter().any(|p| !super::shape::is_identifier(p)) {
+        return Err(wrong());
+    }
+    Ok(path)
+}
+
+/// A value's text, for a rule that compares text.
+fn text_of(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// A value read as a number: a number, or a text that is one.
+fn number_of(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(n) => n.as_f64(),
+        Value::String(text) => text.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+/// Whether there is nothing in a value: it is missing, null, a blank text, or an empty list or
+/// object.
+fn is_empty(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) => true,
+        Some(Value::String(text)) => text.trim().is_empty(),
+        Some(Value::Array(items)) => items.is_empty(),
+        Some(Value::Object(fields)) => fields.is_empty(),
+        Some(_) => false,
+    }
 }
 
 impl Guard {
@@ -78,7 +161,42 @@ impl Guard {
                 })
                 .transpose()
         };
+        let compares = spec.empty.is_some()
+            || spec.equals.is_some()
+            || spec.matches.is_some()
+            || spec.above.is_some()
+            || spec.below.is_some()
+            || spec.at_least.is_some()
+            || spec.at_most.is_some();
+        let value = match &spec.value {
+            Some(_) if !compares => {
+                return Err(
+                    "when.value: say what the value must be: empty, equals, matches, above, \
+                     below, at_least or at_most"
+                        .into(),
+                );
+            }
+            Some(text) => Some(ValueRule {
+                path: value_path(text)?,
+                matches: regex(&spec.matches, "matches")?,
+            }),
+            None if compares => {
+                return Err(
+                    "when: empty, equals, matches and the number comparisons need `value`, the \
+                     placeholder they check"
+                        .into(),
+                );
+            }
+            None => None,
+        };
+        if matches!(
+            spec.equals,
+            Some(toml::Value::Array(_) | toml::Value::Table(_) | toml::Value::Datetime(_))
+        ) {
+            return Err("when.equals: a text, a number or a boolean".into());
+        }
         Ok(Self {
+            value,
             app: globs(&spec.app).map_err(|e| format!("when.app: {e}"))?,
             window_title: regex(&spec.window_title, "window_title")?,
             url: globs(&spec.url).map_err(|e| format!("when.url: {e}"))?,
@@ -111,14 +229,32 @@ impl Guard {
             s.text.is_some(),
             s.editable.is_some(),
             self.transcript.is_some(),
+            self.value.is_some(),
         ]
         .into_iter()
         .filter(|set| *set)
         .count()
     }
 
-    /// Checks every rule that is set against the context and the transcript.
+    /// The path of the value this guard checks, if it checks one.
+    pub fn value_path(&self) -> Option<&[String]> {
+        self.value.as_ref().map(|rule| rule.path.as_slice())
+    }
+
+    /// Checks every rule that is set against the context and the transcript. A value rule
+    /// finds no value: use [`Guard::check_with`] where there are values to read.
     pub fn check(&self, snapshot: &ContextSnapshot, transcript: &str) -> Vec<Check> {
+        self.check_with(snapshot, transcript, &|_| None)
+    }
+
+    /// Checks every rule that is set against the context, the transcript and the named values
+    /// `values` reads by path.
+    pub fn check_with(
+        &self,
+        snapshot: &ContextSnapshot,
+        transcript: &str,
+        values: &dyn Fn(&[String]) -> Option<Value>,
+    ) -> Vec<Check> {
         let mut checks = Vec::new();
         let element = snapshot.focused.as_ref();
         if let Some(set) = &self.app {
@@ -195,6 +331,60 @@ impl Guard {
                 value: Some(transcript.into()),
                 passed: regex.is_match(transcript),
             });
+        }
+        if let Some(rule) = &self.value {
+            let found = values(&rule.path).filter(|v| !v.is_null());
+            let name = format!("{{{}}}", rule.path.join("."));
+            let shown = found.as_ref().map(text_of);
+            let mut check = |what: String, passed: bool| {
+                checks.push(Check {
+                    rule: "value",
+                    pattern: format!("{name} {what}"),
+                    value: shown.clone(),
+                    passed,
+                });
+            };
+            if let Some(wanted) = self.spec.empty {
+                let what = if wanted { "is empty" } else { "is not empty" };
+                check(what.into(), is_empty(found.as_ref()) == wanted);
+            }
+            if let Some(wanted) = &self.spec.equals {
+                let passed = found.as_ref().is_some_and(|value| match wanted {
+                    toml::Value::String(text) => text_of(value) == *text,
+                    toml::Value::Integer(n) => number_of(value) == Some(*n as f64),
+                    toml::Value::Float(n) => number_of(value) == Some(*n),
+                    toml::Value::Boolean(b) => match value {
+                        Value::Bool(actual) => actual == b,
+                        other => text_of(other).trim().eq_ignore_ascii_case(&b.to_string()),
+                    },
+                    _ => false,
+                });
+                let wanted = match wanted {
+                    toml::Value::String(text) => format!("{text:?}"),
+                    other => other.to_string(),
+                };
+                check(format!("equals {wanted}"), passed);
+            }
+            if let Some(regex) = &rule.matches {
+                let passed = found.as_ref().is_some_and(|v| regex.is_match(&text_of(v)));
+                check(format!("matches {}", regex.as_str()), passed);
+            }
+            let number = found.as_ref().and_then(number_of);
+            let above: fn(f64, f64) -> bool = |n, limit| n > limit;
+            let compare = [
+                ("above", self.spec.above, above),
+                ("below", self.spec.below, |n, limit| n < limit),
+                ("at least", self.spec.at_least, |n, limit| n >= limit),
+                ("at most", self.spec.at_most, |n, limit| n <= limit),
+            ];
+            for (what, limit, holds) in compare {
+                if let Some(limit) = limit {
+                    check(
+                        format!("is {what} {limit}"),
+                        number.is_some_and(|n| holds(n, limit)),
+                    );
+                }
+            }
         }
         checks
     }
@@ -325,6 +515,106 @@ transcript = "(?i)^translate""#,
         let error = Guard::new(&toml::from_str(r#"window_title = "(""#).unwrap()).unwrap_err();
         assert!(error.starts_with("when.window_title"), "{error}");
         assert!(toml::from_str::<When>("apps = []").is_err());
+    }
+
+    /// A guard from its lines.
+    fn rule(lines: &[&str]) -> Guard {
+        guard(&lines.join("\n"))
+    }
+
+    #[test]
+    fn a_value_rule_checks_a_named_value_with_no_model() {
+        use serde_json::json;
+        let result = json!({"status": 200, "body": {"total": "3", "items": [], "note": " "}});
+        let values = |path: &[String]| {
+            let (name, fields) = path.split_first()?;
+            if name != "searching" {
+                return None;
+            }
+            let mut value = &result;
+            for field in fields {
+                value = value.get(field)?;
+            }
+            Some(value.clone())
+        };
+        let passes = |lines: &[&str]| {
+            let checks = rule(lines).check_with(&ContextSnapshot::default(), "", &values);
+            assert!(
+                !checks.is_empty() && checks.iter().all(|c| c.rule == "value"),
+                "{lines:?}"
+            );
+            checks.iter().all(|c| c.passed)
+        };
+        // Empty: missing, null, blank, or nothing in a list or an object.
+        assert!(passes(&[
+            "value = '{searching.body.items}'",
+            "empty = true"
+        ]));
+        assert!(passes(&["value = '{searching.body.note}'", "empty = true"]));
+        assert!(passes(&[
+            "value = '{searching.body.missing}'",
+            "empty = true"
+        ]));
+        assert!(passes(&["value = '{other}'", "empty = true"]));
+        assert!(passes(&["value = '{searching.body}'", "empty = false"]));
+        assert!(!passes(&[
+            "value = '{searching.body.items}'",
+            "empty = false"
+        ]));
+        // Equals: a text, a number or a boolean; a number in text counts as one.
+        assert!(passes(&["value = '{searching.status}'", "equals = 200"]));
+        assert!(passes(&["value = '{searching.body.total}'", "equals = 3"]));
+        assert!(passes(&[
+            "value = '{searching.body.total}'",
+            "equals = '3'"
+        ]));
+        assert!(!passes(&["value = '{searching.status}'", "equals = 404"]));
+        assert!(!passes(&[
+            "value = '{searching.body.missing}'",
+            "equals = ''"
+        ]));
+        // A regular expression on the value's text, and number comparisons, which all hold.
+        assert!(passes(&[
+            "value = '{searching.status}'",
+            "matches = '^2..$'"
+        ]));
+        assert!(passes(&[
+            "value = '{searching.status}'",
+            "at_least = 200",
+            "below = 300"
+        ]));
+        assert!(!passes(&["value = '{searching.status}'", "above = 200"]));
+        assert!(passes(&["value = '{searching.body.total}'", "at_most = 3"]));
+        assert!(
+            !passes(&["value = '{searching.body.note}'", "above = 0"]),
+            "a text that is no number is above nothing"
+        );
+        // The check says what it compared, and counts as a rule.
+        let g = rule(&["value = '{searching.status}'", "equals = 200"]);
+        assert_eq!(g.specificity(), 1);
+        assert_eq!(
+            g.value_path(),
+            Some(&["searching".to_string(), "status".to_string()][..])
+        );
+        let check = &g.check_with(&ContextSnapshot::default(), "", &values)[0];
+        assert_eq!(check.pattern, "{searching.status} equals 200");
+        assert_eq!(check.value.as_deref(), Some("200"));
+        // With no values to read, as before any take, there is no value.
+        assert!(!g.passes(&ContextSnapshot::default(), ""));
+    }
+
+    #[test]
+    fn a_value_rule_needs_one_placeholder_and_something_to_compare() {
+        let error =
+            |lines: &[&str]| Guard::new(&toml::from_str(&lines.join("\n")).unwrap()).unwrap_err();
+        assert!(error(&["value = '{a.b}'"]).starts_with("when.value: say what the value must be"));
+        assert!(error(&["empty = true"]).starts_with("when: empty, equals, matches"));
+        assert!(error(&["value = 'a.b'", "empty = true"]).contains("is not one placeholder"));
+        assert!(
+            error(&["value = '{a} and {b}'", "empty = true"]).contains("is not one placeholder")
+        );
+        assert!(error(&["value = '{a}'", "matches = '('"]).starts_with("when.matches"));
+        assert!(error(&["value = '{a}'", "equals = [1]"]).starts_with("when.equals"));
     }
 
     #[test]

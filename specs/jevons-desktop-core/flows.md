@@ -148,6 +148,37 @@ it passed.
 
 Tests: `every_rule_that_is_set_must_match_ignoring_case_for_apps_and_roles`, `predicates_check_the_selection_the_field_text_and_the_transcript`, `a_guard_without_rules_always_applies`
 
+### R48 A guard checks one named value
+
+`value` names one placeholder, such as `{searching.body.total}`, and is checked with one or more
+of: `empty` (the value is missing, null, a blank text, or an empty list or object; `false` for
+the opposite), `equals` (a text, a number or a boolean; a number in text counts as one),
+`matches` (a regular expression found in the value's text), and `above`, `below`, `at_least` and
+`at_most` (the value is a number that compares so). All that are set must hold. A value that is
+missing, or where there are no values to read (the inspector's preview), is empty and passes
+nothing else. `value` without a comparison, a comparison without `value`, and a `value` that is
+not one placeholder are load errors. A value rule counts as one rule, and its checks report
+`value` as their rule.
+
+Tests: `a_value_rule_checks_a_named_value_with_no_model`, `a_value_rule_needs_one_placeholder_and_something_to_compare`
+
+### R49 A guard's value is one declared above it
+
+The placeholder of a node's `[when]` or `[prefer]` value rule must resolve where the node is
+weighed: a built-in, or an investigation, an extract or a state's result declared above the node,
+with a field its shape has. Otherwise it is a load error, as for a placeholder in text.
+
+Tests: `results_have_shapes_and_guards_check_values_that_exist`
+
+### R50 A generation may answer in a shape
+
+A `generate.toml` with a `[schema]`, written as an investigation's, asks the model for JSON in
+that shape. The answer is made to fit it: unknown fields are dropped, numbers and labels in text
+are read, and what does not fit is null. The leaf's text is the answer as written; what reads the
+result later reads its fields. A `schema` that is not a shape is a load error.
+
+Tests: `a_generation_with_a_schema_answers_in_fields_later_states_read`, `results_have_shapes_and_guards_check_values_that_exist`
+
 ### R15 A rule that does not compile names the rule
 
 An unknown rule, or a pattern or glob that does not compile, is a load error naming the rule, such

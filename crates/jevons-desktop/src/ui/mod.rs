@@ -488,6 +488,7 @@ mod tests {
             entry: "/".into(),
             flow: walk::preview(flows, context, flows.root()),
             leaf: Some(Leaf {
+                value: None,
                 node: "_actions/insert".into(),
                 text: "Hello world.".into(),
                 output: Output::Target,

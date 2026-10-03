@@ -108,6 +108,20 @@ impl Frame {
         }
     }
 
+    /// The value at a placeholder path as data, for a guard's value rule: a named value's
+    /// field with its type, a built-in as text. `None` when there is none.
+    pub fn json(&self, path: &[String]) -> Option<Value> {
+        let (name, fields) = path.split_first()?;
+        if super::template::is_builtin(name) {
+            return self.value(path).map(Value::String);
+        }
+        let mut value = self.values.get(name)?;
+        for field in fields {
+            value = value.get(field)?;
+        }
+        (!value.is_null()).then(|| value.clone())
+    }
+
     /// The named values as prompt text, one per line.
     pub fn describe_values(&self) -> String {
         self.values
@@ -175,6 +189,15 @@ mod tests {
         assert!(get("chat.people").unwrap().contains("\"Ana\""));
         assert_eq!(get("chat.topic"), None);
         assert_eq!(get("url"), None);
+        // As data, a field keeps its type and a built-in is text.
+        let data = |path: &str| {
+            let path: Vec<String> = path.split('.').map(String::from).collect();
+            frame.json(&path)
+        };
+        assert_eq!(data("chat.people"), Some(json!(["Ana", "Bo"])));
+        assert_eq!(data("app"), Some(json!("slack.exe")));
+        assert_eq!(data("chat.topic"), None);
+        assert_eq!(data("nothing"), None);
         assert!(frame.state().contains("Found in the context:\nchat: "));
     }
 }

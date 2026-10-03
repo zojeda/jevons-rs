@@ -460,16 +460,20 @@ impl Facts for Rules<'_> {
         if let Condition::Named(name) = &candidate.condition
             && let Some(guard) = self.loaded.guards.get(name)
         {
-            let checks: Vec<Check> = guard
-                .when
-                .check(&self.frame.snapshot, &self.frame.transcript);
+            // A guard may check what the task's earlier states wrote.
+            let values = |path: &[String]| self.frame.json(path);
+            let checks: Vec<Check> =
+                guard
+                    .when
+                    .check_with(&self.frame.snapshot, &self.frame.transcript, &values);
             branch.passed &= checks.iter().all(|c| c.passed);
             branch.specificity += guard.when.specificity();
             branch.checks.extend(checks);
             if branch.passed && !guard.prefer.is_empty() {
-                let prefer = guard
-                    .prefer
-                    .check(&self.frame.snapshot, &self.frame.transcript);
+                let prefer =
+                    guard
+                        .prefer
+                        .check_with(&self.frame.snapshot, &self.frame.transcript, &values);
                 branch.preferred |= prefer.iter().all(|c| c.passed);
                 branch.prefer.extend(prefer);
             }
@@ -864,12 +868,15 @@ impl<'a> Turn<'a> {
         match walked {
             Ok((Walked::Leaf(leaf), _)) => {
                 let text = leaf.text.clone();
+                // A result with fields keeps them: later states and guards read them by name.
+                let wrote = leaf
+                    .value
+                    .clone()
+                    .unwrap_or_else(|| Value::String(text.clone()));
                 crate::pipeline::deliver_leaf(self.env, &self.start, leaf, self.trace).await;
                 let instance = &mut self.stack.instances[level];
                 if level > 0 {
-                    instance
-                        .values
-                        .insert(state.to_string(), Value::String(text.clone()));
+                    instance.values.insert(state.to_string(), wrote);
                 }
                 instance.last = Some(text);
                 finished(Outcome::Done)

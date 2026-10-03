@@ -2016,6 +2016,134 @@ confirm = false
     }
 
     #[tokio::test]
+    async fn a_guard_on_a_state_s_result_takes_a_transition_with_no_model() {
+        let files = [
+            ("root.toml", "tools = [\"search\"]"),
+            (
+                "root.fsm",
+                "fsm App {\n[*] --> idle\nidle --> find : said\nfind --> idle\n}",
+            ),
+            (
+                "find/task.toml",
+                "description = \"Search\"\ntools = [\"search\"]\n[guards.nothing]\n\
+                 when = { value = \"{look.arguments.query}\", matches = \"(?i)nothing\" }\n\
+                 prefer = { value = \"{look.arguments.query}\", matches = \"(?i)nothing\" }",
+            ),
+            (
+                "find/task.fsm",
+                "fsm Find {\n[*] --> look\nlook --> none : done [nothing]\n\
+                 look --> shown : done [else]\nnone --> [*] : said\nshown --> wait\n\
+                 wait --> [*] : said\n}",
+            ),
+            (
+                "find/look/tool.toml",
+                "tool = \"search\"\noutput = \"none\"\n[args.query]\nvalue = \"{transcript}\"",
+            ),
+            (
+                "find/shown/generate.toml",
+                "output = \"bubble\"\nprompt = \"Asked {look.arguments.query} of {look.would_call}\"",
+            ),
+        ];
+        // The tool's result keeps its fields: the guard reads one, and so does the next state.
+        let (client, seen) = server(prefer(&[]), "Here they are.").await;
+        let env = Env {
+            flows: tree_of(&files),
+            tools: Some(tool_host()),
+            machines: Arc::new(Runtime::new()),
+            ..env(client, None)
+        };
+        let found = say(&env, 1, "state machine crates").await;
+        assert_eq!(found.error, None, "{:?}", found.notes);
+        assert_eq!(
+            moves(&found),
+            [
+                "idle said → find",
+                "[*] start → look",
+                "look done → shown",
+                "shown done → wait"
+            ]
+        );
+        assert_eq!(found.machine[2].how, "the only transition that applies");
+        let prompt = seen.generations.lock().unwrap()[0]["input"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(prompt, "Asked state machine crates of search");
+        // Another search, whose result the guard's rule matches: rules take it there.
+        let env = Env {
+            machines: Arc::new(Runtime::new()),
+            ..env
+        };
+        let none = say(&env, 2, "Nothing at all").await;
+        assert_eq!(
+            moves(&none),
+            ["idle said → find", "[*] start → look", "look done → none"]
+        );
+        assert_eq!(none.machine[2].how, "preferred: its value rule passed");
+        assert!(seen.decisions.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_generation_with_a_schema_answers_in_fields_later_states_read() {
+        let files = [
+            ("root.toml", ""),
+            (
+                "root.fsm",
+                "fsm App {\n[*] --> idle\nidle --> sort : said\nsort --> idle\n}",
+            ),
+            ("sort/task.toml", "description = \"Sorts a request\""),
+            (
+                "sort/task.fsm",
+                "fsm Sort {\n[*] --> kind\nkind --> urgent : done [urgent]\n\
+                 kind --> told : done [else]\nurgent --> [*] : said\ntold --> wait\n\
+                 wait --> [*] : said\n}\n",
+            ),
+            (
+                "sort/kind/generate.toml",
+                "output = \"none\"\n[schema]\nkind = \"news | web\"\ncount = \"integer\"",
+            ),
+            (
+                "sort/told/generate.toml",
+                "output = \"bubble\"\nprompt = \"It is {kind.kind}, {kind.count} of them\"",
+            ),
+        ];
+        let guards = "\n[guards.urgent]\nwhen = { value = \"{kind.count}\", above = 5 }\n\
+                      prefer = { value = \"{kind.count}\", above = 5 }";
+        let task = format!("{}{guards}", files[2].1);
+        let mut files = files.to_vec();
+        files[2].1 = &task;
+        // The model answers in JSON; what does not fit the schema is dropped or made to fit.
+        let answer = r#"{"kind": "News", "count": "3", "extra": true}"#;
+        let (client, seen) = server(prefer(&[]), answer).await;
+        let env = Env {
+            flows: tree_of(&files),
+            machines: Arc::new(Runtime::new()),
+            ..env(client, None)
+        };
+        let trace = say(&env, 1, "the latest on Rust").await;
+        assert_eq!(trace.error, None, "{:?}", trace.notes);
+        assert_eq!(
+            moves(&trace),
+            [
+                "idle said → sort",
+                "[*] start → kind",
+                "kind done → told",
+                "told done → wait"
+            ]
+        );
+        let generations = seen.generations.lock().unwrap();
+        assert_eq!(generations[0]["text"]["format"]["type"], "json_schema");
+        assert_eq!(
+            generations[0]["text"]["format"]["schema"]["properties"]["count"]["type"],
+            json!(["integer", "null"])
+        );
+        // The next state reads the fields, typed; and the guard compared the number.
+        assert_eq!(generations[1]["input"], "It is news, 3 of them");
+        assert!(generations[1].get("text").is_none());
+        assert!(seen.decisions.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn a_task_keeps_the_extracts_read_on_the_way_to_it() {
         let tree = FlowTree::load(
             &Memory::new(

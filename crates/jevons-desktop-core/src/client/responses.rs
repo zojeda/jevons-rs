@@ -14,6 +14,19 @@ pub struct ResponseRequest {
     pub max_output_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<Reasoning>,
+    /// `{"format": {"type": "json_schema", "name", "schema"}}` for a structured answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<serde_json::Value>,
+}
+
+impl ResponseRequest {
+    /// Asks for the answer as JSON in `schema`.
+    pub fn answer_schema(mut self, schema: serde_json::Value) -> Self {
+        self.text = Some(serde_json::json!({
+            "format": {"type": "json_schema", "name": "answer", "schema": schema},
+        }));
+        self
+    }
 }
 
 /// `reasoning.effort`: the server thinks up to 64 (minimal), 256 (low), 1024 (medium) or 4096
