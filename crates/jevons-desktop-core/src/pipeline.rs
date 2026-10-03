@@ -2180,8 +2180,20 @@ allow = ["search/*"]
         assert_eq!(first.delivery, Some(DeliveryOutcome::Shown));
         assert_eq!(machines.view().path(), "search › results");
         assert!(seen.decisions.lock().unwrap().is_empty());
+        // The words that start the task search again from the results, with no decision either.
+        let again = say(&env, 2, "Búscame las asíncronas").await;
+        assert_eq!(again.error, None, "{:?}", again.notes);
+        assert_eq!(
+            moves(&again),
+            [
+                "results said → searching",
+                "searching done → answering",
+                "answering done → results"
+            ]
+        );
+        assert!(seen.decisions.lock().unwrap().is_empty());
         // A follow-up opens a result, once the user approves it in the bubble.
-        let second = say(&env, 2, "open the first one").await;
+        let second = say(&env, 3, "open the first one").await;
         assert_eq!(second.error, None, "{:?}", second.notes);
         assert_eq!(
             moves(&second),
@@ -2192,7 +2204,7 @@ allow = ["search/*"]
         // Done: the task ends and the root waits again.
         let (client, _) = server(prefer(&["end"]), "unused").await;
         let env = Env { client, ..env };
-        let third = say(&env, 3, "thanks, that's all").await;
+        let third = say(&env, 4, "thanks, that's all").await;
         assert_eq!(moves(&third), ["results said → [*]", "search done → idle"]);
         assert_eq!(machines.view().path(), "idle");
     }

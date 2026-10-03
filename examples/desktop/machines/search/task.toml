@@ -5,3 +5,9 @@ description = "The user asks to search the web for something."
 min_probability = 0.7
 # Everything this task may call: the search reads, opening a result asks first.
 tools = ["web_search", "open_url"]
+
+# From the results, another search: by rule when the words start with "Search", "Busca", "Buscar"
+# or "Búscame" (the words that start the task), otherwise when the model reads it so.
+[guards.again]
+prefer = { transcript = "(?i)^\\W*(search|b[uú]sca(r|me|lo|la|los|las|nos)?)\\b" }
+criterion = "The user asks to search for something else"

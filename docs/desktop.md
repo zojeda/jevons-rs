@@ -113,7 +113,7 @@ fsm Search {
     searching --> answering
     answering --> results
     results --> opening : said [the user wants one of the results opened]
-    results --> searching : said [the user asks to search for something else]
+    results --> searching : said [again]
     results --> [*] : said [the user is done with these results, or talks about something else]
     results --> [*] : quiet
     opening --> results
