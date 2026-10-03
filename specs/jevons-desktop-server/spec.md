@@ -110,3 +110,13 @@ next client. The machines stay as they are: a task that waited still waits, and 
 is told where they are as it connects, and can follow the task up.
 
 Tests: `a_client_that_leaves_is_refused_and_finds_its_tasks_when_it_returns`
+
+### R7 The machines outlive the server
+
+A session given a file keeps its machines there ([machines](machines.md) R53) and brings them
+back when asked, which is for once a provider answers: a timer that runs out before one does is
+dropped. A host brings them back when a client says hello and a provider answers: after it
+welcomes that client, which is asked whatever they do on the way, and before it tells it where
+the machines are, so the first client after a restart finds its tasks.
+
+Tests: `a_session_brings_its_tasks_back_and_their_timers_start_over`, `a_client_finds_its_tasks_when_the_server_has_restarted`

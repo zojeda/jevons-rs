@@ -20,10 +20,18 @@ pub enum History {
     Trees,
     /// The recorded demonstrations that automations are written from.
     Recordings,
+    /// `machines/`: the tasks that run, kept so that they are there after a restart.
+    Machines,
 }
 
 impl History {
-    pub const ALL: [History; 4] = [Self::Logs, Self::Traces, Self::Trees, Self::Recordings];
+    pub const ALL: [History; 5] = [
+        Self::Logs,
+        Self::Traces,
+        Self::Trees,
+        Self::Recordings,
+        Self::Machines,
+    ];
 
     /// What it is called in sentences.
     pub fn label(self) -> &'static str {
@@ -32,6 +40,7 @@ impl History {
             Self::Traces => "the take traces",
             Self::Trees => "the recorded interfaces",
             Self::Recordings => "the recordings",
+            Self::Machines => "the tasks that run",
         }
     }
 
@@ -42,6 +51,7 @@ impl History {
             Self::Traces => user_dir().join("traces"),
             Self::Trees => user_dir().join("trees"),
             Self::Recordings => config.recordings_dir(),
+            Self::Machines => user_dir().join("machines"),
         }
     }
 
@@ -51,9 +61,16 @@ impl History {
         match self {
             Self::Logs => extension("log"),
             Self::Traces | Self::Trees => extension("json"),
+            // The file, and one a write was cut short on.
+            Self::Machines => extension("json") || extension("tmp"),
             Self::Recordings => path.join("recording.json").is_file(),
         }
     }
+}
+
+/// Where the machines are kept: what the server writes its tasks to, in the data folder.
+pub fn machines_file() -> PathBuf {
+    user_dir().join("machines").join("machines.json")
 }
 
 /// What [`clear`] did.
@@ -186,6 +203,24 @@ mod tests {
             "logs: 2 removed, 1 emptied (kept notes.txt, not jevons')"
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn clearing_the_tasks_removes_what_was_kept_of_them() {
+        let dir = folder("machines");
+        std::fs::write(dir.join("machines.json"), "{}").unwrap();
+        std::fs::write(dir.join("machines.tmp"), "{").unwrap();
+        std::fs::write(dir.join("notes.txt"), "mine").unwrap();
+        let cleared = clear_in(History::Machines, &dir);
+        assert_eq!(cleared.removed, 2, "{cleared}");
+        assert_eq!(cleared.kept, ["notes.txt"]);
+        assert_eq!(
+            cleared.to_string(),
+            "tasks that run: 2 removed (kept notes.txt, not jevons')"
+        );
+        assert!(History::ALL.contains(&History::Machines));
+        assert!(machines_file().ends_with("machines/machines.json"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

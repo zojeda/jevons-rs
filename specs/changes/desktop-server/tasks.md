@@ -522,12 +522,46 @@ Done when: the search example runs with `web_search` on the server and `open_url
 
 Scope: tasks survive an app restart.
 
-- [ ] Serialize instances after each transition, into the data folder (not the settings
+- [x] Serialize instances after each transition, into the data folder (not the settings
       repository). **Clear history** covers them.
-- [ ] Restore them on start: a waiting state waits again; a state whose work was running takes
+- [x] Restore them on start: a waiting state waits again; a state whose work was running takes
       `failed` and is never re-run.
-- [ ] Record a hash of the machine's files with the instance. When they changed, end the instance
+- [x] Record a hash of the machine's files with the instance. When they changed, end the instance
       with a note instead of resuming it.
+
+What phase 7 decided on the way:
+
+- **Timers start over.** A restored state's timers run their whole time again. Keeping the time
+  left would end a search the moment the app starts after a long stop, which is the opposite of
+  "still there after a restart".
+- **A decision that was out is dropped,** and its machine waits in its state: a decision read
+  acts on nothing. Only work that ran is a failure.
+- **The engine keeps and restores an instance; the host answers the failure.** `restore` leaves
+  a machine whose work ran waiting for how it ended, and the host feeds `failed` through the
+  path every failure takes, so the rules and the trace are those of any take.
+- **The hash is over what the machine runs,** as the loader read it: its node file, diagram and
+  instructions, and those of its states' folders, not the machines below. An agent's change does
+  not end its tasks.
+- **A changed task ends unseen by its agent,** like a cancelled one. A changed root or agent
+  starts over in its first state and keeps its tasks.
+- **The file is written at every publish,** so before a state's work runs, and removed when
+  nothing is worth keeping. It is `~/jevons/machines/machines.json`; the app gives the server
+  the path, as it does for the API log.
+- **When they come back:** in the app, once a provider answers; under `--serve`, once a client
+  has said hello too, since the flow tree is checked against the client's tools. The first take
+  does it otherwise.
+- **Clearing the tasks' history ends them** in the running app. `--clear machines` from a
+  terminal only removes the file.
+- **Checked across two processes** with a fake provider: a search started through
+  `--server … --transcript`, the server killed and started again, and the follow-up opened a
+  result of that search, with one search in all. It found what the tests had not: a headless
+  client of a server listed no tools, so the server's flows that name a client's tool never
+  loaded. It lists them now, and runs none.
+- **A write is skipped when nothing changed,** so after `--clear machines` beside a running app
+  the file is back at the tasks' next change, not before.
+- **Not kept:** the bubble's conversation. Not done: showing in the bubble what a `failed`
+  transition taken at start delivers; it goes to the desk as a timer's work does, with no trace
+  of its own.
 
 Crates: `jevons-machine` (serde on instances), the server.
 Tested by: save and restore round trips; a running state restored as failed; a changed machine

@@ -393,6 +393,62 @@ the failure as the take's error.
 
 Tests: `a_task_s_end_reaches_its_agent_as_an_event_with_what_it_wrote`, `a_timer_ends_a_task_that_waits_and_stale_timers_do_nothing`
 
+### R53 The machines are kept in a file
+
+Given a file, the host writes the machines there at every change: each one's folder, the hash of
+its files (R56), its state and whether its work runs, what its states wrote, and for a task its
+agent, its number, the frame it started with and the take it started in; and the task the bubble
+follows. A state's work is kept as running before it runs. The file is written whole or not at
+all. With no task running and the root and the agents in their first states there is nothing to
+keep, and the file is removed.
+
+The file holds what the user said and what the screen showed. It belongs in the data folder,
+never in the settings folder, and clearing the tasks' history removes it
+([settings](../jevons-desktop/settings.md) R16).
+
+Tests: `a_search_that_waits_is_still_there_after_a_restart`, `work_cut_short_by_a_restart_fails_and_is_not_run_again`
+
+### R54 A machine that waited waits again
+
+Brought back, a machine that waited is in its state again, with what its states wrote, its
+number and the frame it started with; the lazy values not read before are declared again from
+the flow tree. The bubble follows the task it followed. Its state's timers start over, for
+their whole time. What the user says next reaches it as before the restart.
+
+Tests: `a_search_that_waits_is_still_there_after_a_restart`, `a_session_brings_its_tasks_back_and_their_timers_start_over`, `a_client_finds_its_tasks_when_the_server_has_restarted`
+
+### R55 Work cut short is never run again
+
+A machine whose state's work ran when the server stopped takes `failed`, as when its work fails
+(R29), in the window its task started in: by its `failed` transition, else it ends failed, and
+its agent takes `task_failed`. The work itself does not run again. A note says which machine,
+its state and why.
+
+Tests: `work_cut_short_by_a_restart_fails_and_is_not_run_again`
+
+### R56 A machine whose files changed is not resumed
+
+A machine's hash is over what it runs: its node file, its diagram, its `instructions.md`, and
+the node file and `instructions.md` of each folder of its states' work, down to the machines
+below it, which have their own. Line endings do not count.
+
+A task whose hash differs from the one it was kept with, whose folder is gone or is no task, or
+whose agent is gone, is ended instead of brought back: a note says why, the Machines tab shows a
+`changed` step to `[*]`, and its agent is not told. The root or an agent whose hash differs
+waits in its first state again, with a note when it had left it; its tasks go on. A change in
+another machine's files ends nothing.
+
+Tests: `a_machine_s_hash_covers_what_it_runs_and_no_other_machine`, `a_task_whose_files_changed_is_ended_instead_of_resumed`
+
+### R57 The machines are brought back once
+
+`restore` brings the kept machines back on the flow tree takes walk, once, and returns its
+notes. The first take does it when nothing did before, and its trace gets the notes. A cancel
+before either drops what was kept. A file that cannot be read is removed, with a note. Without
+a file nothing is kept and nothing comes back.
+
+Tests: `work_cut_short_by_a_restart_fails_and_is_not_run_again`, `a_task_whose_files_changed_is_ended_instead_of_resumed`
+
 ## Layout
 
 ### R41 Rows follow the longest path

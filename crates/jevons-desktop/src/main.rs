@@ -34,7 +34,7 @@ use jevons_desktop_core::history::{self, History};
 use jevons_desktop_core::platform::AudioSource;
 use jevons_desktop_server::flow::{FlowTree, defaults};
 use jevons_desktop_server::pipeline::{self, TakeStart};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 
@@ -129,8 +129,8 @@ struct Args {
     #[arg(long, value_name = "KEY", requires = "server")]
     key: Option<String>,
     /// Clear history and exit: `logs`, `traces` (of takes and automation runs), `trees`
-    /// (recorded interfaces), `recordings` (demonstrations) or `all`; several separated by
-    /// commas.
+    /// (recorded interfaces), `recordings` (demonstrations), `machines` (the tasks kept across
+    /// restarts) or `all`; several separated by commas.
     #[arg(long, value_name = "WHAT", value_enum, value_delimiter = ',')]
     clear: Vec<Clear>,
 }
@@ -142,6 +142,7 @@ enum Clear {
     Traces,
     Trees,
     Recordings,
+    Machines,
     All,
 }
 
@@ -152,6 +153,7 @@ impl Clear {
             Self::Traces => &[History::Traces],
             Self::Trees => &[History::Trees],
             Self::Recordings => &[History::Recordings],
+            Self::Machines => &[History::Machines],
             Self::All => &History::ALL,
         }
     }
@@ -258,7 +260,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if args.replay.is_some() || !args.transcript.is_empty() {
         return match &args.server {
-            Some(url) => replay_on(&args, url, &config),
+            Some(url) => replay_on(&args, url, &config, &config_file),
             None => replay(&args, config, config_file),
         };
     }
@@ -673,14 +675,7 @@ fn replay(
     let tokio = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    // Headless runs list the MCP servers' tools and the automations, but never run one.
-    let automations = Arc::new(jevons_desktop_core::automation::host::AutomationHost::new(
-        &config.automations_dir(&config_file),
-        config.automation.clone(),
-        Arc::new(jevons_desktop_core::platform::Unsupported),
-        Arc::new(jevons_desktop_core::platform::Unsupported),
-    ));
-    let desk = headless_desk(args, &config, Some(automations))?;
+    let desk = headless_desk(args, &config, &config_file)?;
     let tools = Arc::new(
         jevons_desktop_server::flow::tools::ToolHost::new(&config.tools, &config.mcp)
             .with_desk(desk.clone())
@@ -770,13 +765,19 @@ fn replay(
 
 /// The client's side of a headless take: the interface is read within the privacy settings
 /// (from `--tree` when given), the text is typed only with --deliver, there is no one to
-/// confirm a tool, and no tool runs. With the automations library, its automations and the
-/// client's own tools are listed, so flows that name them load.
+/// confirm a tool, and no tool runs. The library's automations and the client's own tools are
+/// listed all the same, so flows that name them load.
 fn headless_desk(
     args: &Args,
     config: &DesktopConfig,
-    automations: Option<Arc<jevons_desktop_core::automation::host::AutomationHost>>,
+    config_file: &Path,
 ) -> Result<Arc<dyn jevons_desktop_protocol::desk::Desk>, Box<dyn std::error::Error>> {
+    let automations = Arc::new(jevons_desktop_core::automation::host::AutomationHost::new(
+        &config.automations_dir(config_file),
+        config.automation.clone(),
+        Arc::new(jevons_desktop_core::platform::Unsupported),
+        Arc::new(jevons_desktop_core::platform::Unsupported),
+    ));
     let inspector: Arc<dyn jevons_desktop_core::platform::ContextInspector> = match &args.tree {
         Some(file) => Arc::new(jevons_desktop_core::recorded::RecordedInspector::load(
             file,
@@ -790,12 +791,12 @@ fn headless_desk(
     let mut desk = jevons_desktop_core::desk::LocalDesk::default()
         .with_reader(Arc::new(reader))
         .with_looks(Arc::new(looks))
+        .with_automations(automations)
+        .with_tools(Arc::new(jevons_desktop_tools::ToolSet::new(
+            &config.desk_tools,
+            &config.desk_mcp,
+        )))
         .dry_run();
-    if let Some(automations) = automations {
-        desk = desk.with_automations(automations).with_tools(Arc::new(
-            jevons_desktop_tools::ToolSet::new(&config.desk_tools, &config.desk_mcp),
-        ));
-    }
     if args.deliver {
         desk = desk.with_sink(Arc::new(Mutex::new(platform::text_sink())));
     }
@@ -829,6 +830,7 @@ fn replay_on(
     args: &Args,
     url: &str,
     config: &DesktopConfig,
+    config_file: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use jevons_desktop_protocol::delivery::AudioEvent;
     use jevons_desktop_protocol::take::TakeSettings;
@@ -837,8 +839,8 @@ fn replay_on(
         Some(file) => serde_json::from_str(&std::fs::read_to_string(file)?)?,
         None => ContextSnapshot::default(),
     };
-    // A client of a server offers no tools: nothing runs here but reading and typing.
-    let desk = headless_desk(args, config, None)?;
+    // The client's tools are listed for the server's flows, and none runs.
+    let desk = headless_desk(args, config, config_file)?;
     let key = args
         .key
         .clone()
@@ -963,6 +965,7 @@ fn serve(config: DesktopConfig, config_file: PathBuf) -> Result<(), Box<dyn std:
     let tokio = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
+    let met = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let session = tokio.block_on(async {
         // Nobody is at the desk until a client connects.
         let builtin = FlowTree::load(
@@ -1007,8 +1010,16 @@ fn serve(config: DesktopConfig, config_file: PathBuf) -> Result<(), Box<dyn std:
         };
         load();
         session.set_tools(Some(tools));
+        // The tasks that run are kept in the data folder. They come back once a client has
+        // said hello (the host does it: the flow tree is checked against the client's tools
+        // by then) and a provider answers.
+        session.keep_machines_in(history::machines_file());
         let host = Host::new(session.clone(), events, config.exposed_key());
-        host.when_greeted(Arc::new(load));
+        let greeted = met.clone();
+        host.when_greeted(Arc::new(move || {
+            load();
+            greeted.store(true, std::sync::atomic::Ordering::Relaxed);
+        }));
         runtime.serve(host);
         session
     });
@@ -1020,6 +1031,12 @@ fn serve(config: DesktopConfig, config_file: PathBuf) -> Result<(), Box<dyn std:
         let status = runtime.status();
         eprintln!("{}", status.describe());
         session.set_routes(runtime.routes());
+        // A client came before a provider answered: its tasks come back now.
+        if session.ready() && met.load(std::sync::atomic::Ordering::Relaxed) {
+            for note in tokio.block_on(session.restore()) {
+                eprintln!("note: {note}");
+            }
+        }
     }
     runtime.shutdown();
     Ok(())
@@ -1124,6 +1141,8 @@ mod tests {
         assert!(some.headless());
         let all = Args::try_parse_from(["jevons-desktop", "--clear", "all"]).unwrap();
         assert_eq!(all.clear[0].kinds(), History::ALL);
+        let tasks = Args::try_parse_from(["jevons-desktop", "--clear", "machines"]).unwrap();
+        assert_eq!(tasks.clear[0].kinds(), [History::Machines]);
         assert!(Args::try_parse_from(["jevons-desktop", "--clear", "models"]).is_err());
         let reset = Args::try_parse_from(["jevons-desktop", "--reset-settings"]).unwrap();
         assert!(reset.headless());

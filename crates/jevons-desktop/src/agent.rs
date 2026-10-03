@@ -746,6 +746,9 @@ impl Agent {
         let (session, mut events) =
             ServerSession::open(desk, flows.clone(), take_settings(&config));
         session.set_tools(Some(tools.clone()));
+        // The tasks that run are kept in the data folder, and come back once a provider
+        // answers.
+        session.keep_machines_in(history::machines_file());
         let forward = commands.clone();
         tokio::spawn(async move {
             while let Some(event) = events.recv().await {
@@ -1168,6 +1171,18 @@ impl Agent {
             Command::RuntimeChanged => {
                 let status = self.runtime.status();
                 self.session.set_routes(self.runtime.routes());
+                if self.session.ready() {
+                    // The tasks kept the last time jevons ran: the first time, and nothing
+                    // after it.
+                    let session = self.session.clone();
+                    let repaint = self.repaint.clone();
+                    tokio::spawn(async move {
+                        for note in session.restore().await {
+                            tracing::info!(%note, "Brought the machines back");
+                        }
+                        repaint();
+                    });
+                }
                 if self.active.is_none() {
                     let state = match status {
                         Status::Ready { .. } | Status::Remote { .. } => TrayState::Idle,
@@ -2370,6 +2385,18 @@ impl Agent {
             .collect();
         if kinds.contains(&History::Traces) {
             self.view().traces.clear();
+        }
+        // What is kept of the tasks goes with the tasks: they end, as when cancelled.
+        if kinds.contains(&History::Machines) {
+            self.end_conversation();
+            let session = self.session.clone();
+            let repaint = self.repaint.clone();
+            tokio::spawn(async move {
+                if let Some(ended) = session.cancel().await {
+                    tracing::info!(%ended, "Ended the tasks with their history");
+                }
+                repaint();
+            });
         }
         self.message(&format!("Cleared {}", cleared.join("; ")), 8);
     }

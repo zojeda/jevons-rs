@@ -130,8 +130,9 @@ Tests: none yet
 
 ### R14 `--clear` clears kinds of history
 
-`--clear <what>` takes `logs`, `traces`, `trees`, `recordings` or `all`, several separated by
-commas, and clears each kind once. It prints what each clear did and where. Any other kind, such
+`--clear <what>` takes `logs`, `traces`, `trees`, `recordings`, `machines` (the tasks kept
+across restarts) or `all`, several separated by commas, and clears each kind once. A running
+app's tasks go on, and are written again at their next change. It prints what each clear did and where. Any other kind, such
 as `models`, is refused. It fails when a file could not be removed.
 
 Tests: `clearing_takes_kinds_of_history_or_all_of_it`
@@ -147,14 +148,21 @@ it runs: until then a flow that names a client's tool has a problem. A flow tree
 prints them, and the tree before it (the built-in one at first) runs until it is fixed. The API for other clients is served on the same address only when the
 settings expose it.
 
+The tasks that run are kept in `machines/machines.json` of the server's data folder, and come
+back once a client has said hello and a provider answers
+([server](../jevons-desktop-server/spec.md) R7): the flow tree is checked against that client's
+tools by then. What does not go on is printed as a note. Headless takes (`--transcript`,
+`--replay`) keep nothing.
+
 Tests: none yet
 
 ### R16 `--server <url>` runs headless takes on a running server
 
 With `--server`, `--replay` and `--transcript` send their takes to the jevons server at that
 address in place of running them in this process. This side reads the screen (or `--tree`),
-types with `--deliver`, confirms nothing and offers no tools; the key is `--key`, else
-`TYPESAFE_API_KEY`. What each take is doing is printed as in R5, and the traces the server sends
+types with `--deliver` and confirms nothing. It lists its settings' tools and the library's
+automations, so the server's flows that name them load, and runs none: each call answers with
+what it would have done. The key is `--key`, else `TYPESAFE_API_KEY`. What each take is doing is printed as in R5, and the traces the server sends
 back are printed as R4 prints them: the same traces as in one process. A server that refuses
 the client fails the command with its reason.
 

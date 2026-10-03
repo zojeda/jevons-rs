@@ -188,8 +188,8 @@ Tests: none yet
 **Reset settings to the defaults…** asks in the bubble, naming the folder and what it holds. Yes
 cancels the take, resets the folder, runs with the defaults without a restart, and names the
 commit that keeps the earlier settings. **Clear history** asks, naming each folder; yes clears
-them and reports what was removed, and clearing the traces also empties the Takes tab. No changes
-nothing.
+them and reports what was removed. Clearing the traces also empties the Takes tab, and clearing
+the tasks that run ends them, as **Cancel all tasks** does. No changes nothing.
 
 Tests: none yet
 
@@ -250,3 +250,15 @@ conversation stays as it was for the next take that reaches the task. A take tha
 task starts that task's conversation.
 
 Tests: `a_waiting_task_s_turns_stay_in_the_bubble_for_the_next_take`, `menu_ids_map_to_commands`
+
+### R26 Tasks are there after a restart
+
+The app keeps the tasks that run in `machines/machines.json` of the data folder (`~/jevons`), and
+brings them back once a provider answers after it starts
+([machines](../jevons-desktop-server/machines.md) R53 to R57): a search that waited for what
+the user says next waits again, and the Machines tab shows it. What does not go on (work that
+ran when the app stopped, a machine whose files changed) is logged, by machine and state alone,
+and shows in the Machines tab's transitions. The conversation in the bubble is not kept: the
+next take that reaches the task starts one.
+
+Tests: none yet

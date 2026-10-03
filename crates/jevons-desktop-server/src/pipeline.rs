@@ -19,7 +19,7 @@ use jevons_desktop_protocol::delivery::{
 };
 use jevons_desktop_protocol::desk::{Delivery, Desk};
 pub use jevons_desktop_protocol::take::{Stage, StageKind, Update};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -142,6 +142,7 @@ impl Default for Settings {
 }
 
 /// What the pipeline needs from the app.
+#[derive(Clone)]
 pub struct Env {
     /// Each capability's provider and model: speech (Realtime first, uploads as the
     /// fallback), decisions and generation.
@@ -162,7 +163,7 @@ pub struct Env {
 }
 
 /// A take as it starts.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct TakeStart {
     pub id: u64,
     pub context: ContextSnapshot,
@@ -2234,6 +2235,347 @@ confirm = false
         assert!(session.view().at_rest());
     }
 
+    /// The search task's tree, read again, with a search that ends after `ms` of quiet.
+    fn search_quiet_after(ms: u64) -> Arc<FlowTree> {
+        let files: Vec<(&str, String)> = SEARCH_TASK
+            .iter()
+            .map(|(path, text)| {
+                let text = text.replace("timer idle = 40", &format!("timer idle = {ms}"));
+                (*path, text)
+            })
+            .collect();
+        let files = files.iter().map(|(p, t)| (*p, t.as_str()));
+        Arc::new(FlowTree::load(
+            &Memory::new("test", files),
+            &tool_host().catalog(),
+        ))
+    }
+
+    /// A file to keep the machines in, in a folder of this test's own.
+    fn kept_in(test: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("jevons-kept-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir.join("machines.json")
+    }
+
+    #[tokio::test]
+    async fn a_search_that_waits_is_still_there_after_a_restart() {
+        let (confirm, mut asked) =
+            mpsc::unbounded_channel::<jevons_desktop_core::confirm::Confirmation>();
+        let (flows, tools, desk, searched) = with_search_example(confirm).await;
+        let (client, seen) =
+            server(prefer(&["research", "search-1", "opening", "end"]), "1.").await;
+        tokio::spawn(async move {
+            while let Some(call) = asked.recv().await {
+                let _ = call.reply.send(true);
+            }
+        });
+        let file = kept_in("search");
+        let machines = Arc::new(Runtime::new());
+        machines.keep_in(file.clone());
+        let env = Env {
+            flows,
+            tools: Some(tools),
+            desk,
+            machines: machines.clone(),
+            ..env(client, None)
+        };
+        // Nothing is kept while nothing runs.
+        assert_eq!(machines.restore(&env).await, Vec::<String>::new());
+        assert!(!file.exists());
+        let first = say(&env, 1, "Buscar crates de máquinas de estado para Rust").await;
+        assert_eq!(first.error, None, "{:?}", first.notes);
+        assert_eq!(machines.view().path(), "research › search › results");
+        let kept = std::fs::read_to_string(&file).unwrap();
+        assert!(kept.contains("\"state\":\"results\""), "{kept}");
+
+        // The server stops and starts: other machines, the same file, the flows read again.
+        let again = Arc::new(Runtime::new());
+        again.keep_in(file.clone());
+        let env = Env {
+            machines: again.clone(),
+            ..env
+        };
+        assert_eq!(again.restore(&env).await, Vec::<String>::new());
+        let view = again.view();
+        assert_eq!(view.path(), "research › search › results");
+        let task = view.stack.last().unwrap();
+        assert_eq!((task.folder.as_str(), task.number), ("research/search", 1));
+        assert!(
+            task.waiting.contains(&"said".to_string()),
+            "{:?}",
+            task.waiting
+        );
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            kept,
+            "kept as it was"
+        );
+        // It goes on where it was: what its search found is still there to open a result
+        // from, and nothing searched again.
+        let second = say(&env, 2, "open the first one").await;
+        assert_eq!(second.error, None, "{:?}", second.notes);
+        assert_eq!(
+            inner(&second),
+            [
+                "idle said → task search-1",
+                "results said → opening",
+                "opening done → results"
+            ]
+        );
+        assert_eq!(second.calls[0].tool, "open_url");
+        let asked_for = seen.generations.lock().unwrap().last().unwrap().to_string();
+        assert!(asked_for.contains("https://x/1"), "{asked_for}");
+        assert_eq!(searched.lock().unwrap().len(), 1);
+        // Its end leaves nothing to keep.
+        let (client, _) = server(prefer(&["research", "search-1", "end"]), "unused").await;
+        let env = Env {
+            routes: routes(client),
+            ..env
+        };
+        let third = say(&env, 3, "thanks, that's all").await;
+        assert_eq!(
+            inner(&third),
+            ["idle said → task search-1", "results said → [*]"]
+        );
+        assert!(!file.exists());
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn work_cut_short_by_a_restart_fails_and_is_not_run_again() {
+        // A search whose tool asks first: while the question is out, its state's work runs.
+        let (confirm, mut asked) =
+            mpsc::unbounded_channel::<jevons_desktop_core::confirm::Confirmation>();
+        let (tools, desk, hits) = two_sides("", Some(confirm)).await;
+        let files: Vec<(&str, String)> = SEARCH_TASK
+            .iter()
+            .map(|(path, text)| (*path, text.replace("\"search\"", "\"lookup\"")))
+            .collect();
+        let tree = FlowTree::load(
+            &Memory::new("test", files.iter().map(|(p, t)| (*p, t.as_str()))),
+            &tools.catalog(),
+        );
+        assert!(tree.is_valid(), "{:?}", tree.errors);
+        let file = kept_in("cut-short");
+        // What is kept at that moment is what a server that stops then leaves behind.
+        let (left, at) = (file.with_file_name("left.json"), file.clone());
+        let behind = left.clone();
+        tokio::spawn(async move {
+            while let Some(call) = asked.recv().await {
+                std::fs::copy(&at, &behind).unwrap();
+                let _ = call.reply.send(true);
+            }
+        });
+        let (client, _) = server(prefer(&["research"]), "Results.").await;
+        let machines = Arc::new(Runtime::new());
+        machines.keep_in(file.clone());
+        let env = Env {
+            flows: Arc::new(tree),
+            tools: Some(tools),
+            desk,
+            machines,
+            ..env(client, None)
+        };
+        let first = say(&env, 1, "search for crates").await;
+        assert_eq!(first.error, None, "{:?}", first.notes);
+        assert_eq!(*hits.lock().unwrap(), 1);
+        let kept = std::fs::read_to_string(&left).unwrap();
+        assert!(
+            kept.contains(r#""engine":{"state":"searching","generation":1,"working":true}"#),
+            "{kept}"
+        );
+
+        // The server starts again from what was left: the search does not run again. Its
+        // machine takes `failed`, which ends it.
+        let again = Arc::new(Runtime::new());
+        again.keep_in(left.clone());
+        let env = Env {
+            machines: again.clone(),
+            ..env
+        };
+        let notes = again.restore(&env).await;
+        assert!(
+            notes.contains(
+                &"find-1 was at searching, and jevons stopped while it ran: that is not run \
+                  again, and it failed"
+                    .to_string()
+            ),
+            "{notes:?}"
+        );
+        assert_eq!(*hits.lock().unwrap(), 1, "not run again");
+        let view = again.view();
+        assert!(view.at_rest(), "{}", view.path());
+        let took: Vec<String> = view
+            .history
+            .iter()
+            .filter(|s| s.machine != "/" && s.machine != "research")
+            .map(|s| format!("{} {} → {}", s.from, s.event, s.to))
+            .collect();
+        assert_eq!(took, ["searching failed → [*]"]);
+        assert!(!left.exists(), "nothing runs: nothing is kept");
+        // Bringing back happens once.
+        assert_eq!(again.restore(&env).await, Vec::<String>::new());
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_task_whose_files_changed_is_ended_instead_of_resumed() {
+        let (client, _) = server(prefer(&["research"]), "Results.").await;
+        let file = kept_in("changed");
+        let machines = Arc::new(Runtime::new());
+        machines.keep_in(file.clone());
+        let env = task_env(client, machines);
+        let first = say(&env, 1, "search for crates").await;
+        assert_eq!(first.error, None, "{:?}", first.notes);
+        let kept = std::fs::read_to_string(&file).unwrap();
+        let changed = |path: &str, text: &str| {
+            let files: Vec<(&str, &str)> = SEARCH_TASK
+                .iter()
+                .map(|(p, t)| if *p == path { (*p, text) } else { (*p, *t) })
+                .collect();
+            tree_of(&files)
+        };
+        let restart = |flows: Arc<FlowTree>| {
+            std::fs::write(&file, &kept).unwrap();
+            let machines = Arc::new(Runtime::new());
+            machines.keep_in(file.clone());
+            Env {
+                flows,
+                machines,
+                ..env.clone()
+            }
+        };
+        // Another machine's files changed: the search is not touched by it.
+        let other = restart(changed(
+            "typing/type/transcript.toml",
+            "output = \"clipboard\"",
+        ));
+        assert_eq!(other.machines.restore(&other).await, Vec::<String>::new());
+        assert_eq!(other.machines.view().path(), "research › find › answering");
+        // One of its own states' files changed: it is ended, and the Machines tab says why.
+        let own = restart(changed(
+            "research/find/answering/generate.toml",
+            "output = \"bubble\"\nprompt = \"Answer from: {searching}\"",
+        ));
+        assert_eq!(
+            own.machines.restore(&own).await,
+            ["find-1 was at answering: its files changed while jevons did not run: it ended"]
+        );
+        let view = own.machines.view();
+        assert!(view.at_rest(), "{}", view.path());
+        let last = view.history.back().unwrap();
+        assert_eq!(
+            (last.machine.as_str(), last.event.as_str(), last.to.as_str()),
+            ("research/find", "changed", "[*]")
+        );
+        assert!(!file.exists());
+        // Its folder gone: ended too.
+        let files: Vec<(&str, &str)> = SEARCH_TASK
+            .iter()
+            .filter(|(p, _)| !p.starts_with("research/find/"))
+            .map(|(p, t)| {
+                if *p == "research/agent.fsm" {
+                    (*p, "fsm Research {\n[*] --> idle\n}")
+                } else {
+                    (*p, *t)
+                }
+            })
+            .collect();
+        let gone =
+            restart(FlowTree::load(&Memory::new("test", files), &tool_host().catalog()).into());
+        assert_eq!(
+            gone.machines.restore(&gone).await,
+            ["find-1 was at answering: its machine is not in the flows folder any more: it ended"]
+        );
+        // A file that cannot be read is dropped, and the first take says so.
+        std::fs::write(&file, "{").unwrap();
+        let machines = Arc::new(Runtime::new());
+        machines.keep_in(file.clone());
+        let broken = Env {
+            machines,
+            ..env.clone()
+        };
+        let take = say(&broken, 2, "search for crates").await;
+        assert!(
+            take.notes[0].starts_with("The tasks kept when jevons stopped could not be read"),
+            "{:?}",
+            take.notes
+        );
+        assert_eq!(broken.machines.view().path(), "research › find › answering");
+        // A cancel before anything was brought back ends what was kept, unseen.
+        std::fs::write(&file, &kept).unwrap();
+        let machines = Runtime::new();
+        machines.keep_in(file.clone());
+        assert_eq!(machines.cancel().await, None);
+        assert!(!file.exists());
+        let cancelled = Env {
+            machines: Arc::new(machines),
+            ..env.clone()
+        };
+        assert_eq!(
+            cancelled.machines.restore(&cancelled).await,
+            Vec::<String>::new()
+        );
+        assert!(cancelled.machines.view().at_rest());
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_session_brings_its_tasks_back_and_their_timers_start_over() {
+        use crate::session::{Event, Session};
+        let (client, _) = server(prefer(&["research"]), "Results.").await;
+        let file = kept_in("session");
+        // A long timer, so that the search waits when the session goes.
+        let open = || {
+            let sink = RecordingSink::new(Some(7));
+            let (session, events) = Session::open(
+                desk(Some(&sink)),
+                search_quiet_after(400),
+                Settings::default(),
+            );
+            session.keep_machines_in(file.clone());
+            session.set_routes(Some(routes(client.clone())));
+            session.set_tools(Some(tool_host()));
+            (session, events)
+        };
+        let (session, events) = open();
+        let (updates, _) = mpsc::unbounded_channel();
+        let start = TakeStart {
+            id: 1,
+            context: context(None),
+            entry: None,
+        };
+        let first = session
+            .transcript(start, "search for crates", &updates)
+            .await;
+        assert_eq!(first.error, None, "{:?}", first.notes);
+        assert!(session.view().in_task());
+        drop((session, events));
+
+        // Another session, as after a restart: the search is there, and its timer runs its
+        // whole time again before it ends the search.
+        let (session, mut events) = open();
+        assert!(session.view().at_rest(), "nothing until it is brought back");
+        let before = Instant::now();
+        assert_eq!(session.restore().await, Vec::<String>::new());
+        assert_eq!(session.view().path(), "research › find › answering");
+        let trace = loop {
+            let event = tokio::time::timeout(Duration::from_secs(5), events.recv());
+            match event.await.expect("the timer runs out").unwrap() {
+                Event::Finished(trace) => break trace,
+                Event::Timer { due, .. } => assert_eq!(due.event, "quiet"),
+                Event::Update { .. } => {}
+                other => panic!("{other:?}"),
+            }
+        };
+        assert!(before.elapsed() >= Duration::from_millis(400));
+        assert_eq!(moves(&trace), ["answering quiet → [*]"]);
+        assert!(session.view().at_rest());
+        assert!(!file.exists());
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
     /// A client of a host over a stream: its desk attends to the server's effects.
     struct Connected {
         say: mpsc::UnboundedSender<ToServer>,
@@ -2364,6 +2706,61 @@ confirm = false
             assert_eq!(sink.requests()[0].action, Action::Rewrite);
             assert_eq!(machines["focus"], Value::Null);
         }
+    }
+
+    #[tokio::test]
+    async fn a_client_finds_its_tasks_when_the_server_has_restarted() {
+        let labels = &["research", "find-1", "opening"];
+        let (client, _) = server(prefer(labels), "Two crates fit.").await;
+        let file = kept_in("host");
+        let serve = || {
+            let (session, events) = Session::open(
+                Arc::new(Nobody),
+                search_quiet_after(600_000),
+                Settings::default(),
+            );
+            session.keep_machines_in(file.clone());
+            session.set_routes(Some(routes(client.clone())));
+            session.set_tools(Some(tool_host()));
+            Host::new(session, events, None)
+        };
+        let desk = || Arc::new(LocalDesk::default()) as Arc<dyn Desk>;
+        let host = serve();
+        let mut first = connected(&host, desk(), false).await;
+        first.welcomed().await;
+        let (trace, view) = first.say(1, context(None), "search for crates").await;
+        assert_eq!(trace["error"], Value::Null, "{trace}");
+        let task = view["focus"].clone();
+        assert!(task.is_u64(), "{view}");
+        drop((first, host));
+
+        // Another server on the same file. Its first client is told where the machines are
+        // once they are back: its search, waiting where it was.
+        let host = serve();
+        assert!(host.session().view().at_rest());
+        let mut back = connected(&host, desk(), false).await;
+        let view = back.welcomed().await;
+        assert_eq!(view["focus"], task, "{view}");
+        let running = view["stack"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == task)
+            .unwrap();
+        assert_eq!(
+            (running["state"].as_str(), running["number"].as_u64()),
+            (Some("answering"), Some(1))
+        );
+        // And the follow-up goes to it.
+        let (trace, _) = back.say(2, context(None), "open the first one").await;
+        let took: Vec<&str> = trace["machine"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["to"].as_str().unwrap())
+            .collect();
+        assert_eq!(took[2..], ["task find-1", "opening", "[*]"], "{took:?}");
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
     }
 
     #[tokio::test]

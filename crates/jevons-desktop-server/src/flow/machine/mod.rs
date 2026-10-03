@@ -99,4 +99,8 @@ pub struct NamedGuard {
 pub struct Loaded {
     pub diagram: Definition,
     pub guards: BTreeMap<String, NamedGuard>,
+    /// What the machine runs, as a hash of its files: its node file, its diagram, and the
+    /// files of its states' work down to the machines below it, which have their own. A
+    /// machine kept across a restart goes on only when it is the same.
+    pub hash: String,
 }

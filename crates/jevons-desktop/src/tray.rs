@@ -363,6 +363,7 @@ fn build_menu(model: &MenuModel) -> Menu {
         &MenuItem::with_id("clear:traces", "Take traces…", true, None),
         &MenuItem::with_id("clear:trees", "Recorded interfaces…", true, None),
         &MenuItem::with_id("clear:recordings", "Recordings…", true, None),
+        &MenuItem::with_id("clear:machines", "Tasks that run…", true, None),
         &PredefinedMenuItem::separator(),
         &MenuItem::with_id("clear:all", "All of it…", true, None),
     ]);
@@ -447,6 +448,7 @@ fn menu_command(id: &str) -> Option<MenuCommand> {
         "clear:traces" => MenuCommand::ClearHistory(vec![History::Traces]),
         "clear:trees" => MenuCommand::ClearHistory(vec![History::Trees]),
         "clear:recordings" => MenuCommand::ClearHistory(vec![History::Recordings]),
+        "clear:machines" => MenuCommand::ClearHistory(vec![History::Machines]),
         "quit" => MenuCommand::Quit,
         other => {
             let branch = other.strip_prefix("start:")?;
@@ -473,6 +475,10 @@ mod tests {
             Some(MenuCommand::ShowConversation)
         );
         assert_eq!(menu_command("feedback"), Some(MenuCommand::ToggleFeedback));
+        assert_eq!(
+            menu_command("clear:machines"),
+            Some(MenuCommand::ClearHistory(vec![History::Machines]))
+        );
         assert_eq!(menu_command("record"), Some(MenuCommand::ToggleRecording));
         assert_eq!(
             menu_command("run:slack-post"),

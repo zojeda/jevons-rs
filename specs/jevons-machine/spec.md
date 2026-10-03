@@ -285,3 +285,17 @@ Tests: `a_candidate_from_outside_may_take_the_event_instead_of_a_transition`
 when a task the machine started ends. A state with no transition on it ignores it.
 
 Tests: `a_task_s_end_is_an_event_for_the_machine_that_started_it`
+
+### R31 An instance is kept and brought back
+
+`saved` gives what a host keeps of an instance while it does not run: its state, which entry of
+it this is, and whether the state's work ran. It serializes. A decision the oracle was asked
+for is not kept.
+
+`restore` brings one back, entering nothing. An instance that waited waits again, and the
+effects are its state's timers, armed anew for their whole time. One whose work ran waits for
+how that work ended, with nothing to run: its host answers that it failed, so work cut short is
+never run again, and the machine takes `failed` as it does for any failed work (R23). A state
+the machine no longer has brings nothing back.
+
+Tests: `a_kept_instance_waits_again_and_work_cut_short_fails_without_running_again`

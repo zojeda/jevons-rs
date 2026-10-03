@@ -24,6 +24,11 @@
 //! The root and the agents remember nothing between takes; a task remembers what each of its
 //! states wrote (as `{state}`) until it ends. Timers fire through the channel the app gives, and
 //! their work delivers to the window the task started in, or to the clipboard when it changed.
+//!
+//! The machines outlive the server: given a file ([`Runtime::keep_in`]), the host writes them
+//! there at every change and brings them back when it next runs ([`Runtime::restore`]). A
+//! machine that waited waits again. One whose work ran takes `failed`: work cut short is never
+//! run again. One whose files changed meanwhile is ended.
 
 use super::{Condition, Event, Level, Loaded, Target};
 use crate::client::{
@@ -34,14 +39,16 @@ use crate::flow::guard::Check;
 use crate::flow::tree::{FlowTree, Kind, Node, NodeId, NodeSpec};
 use crate::flow::walk::{self, BranchCheck, FlowStep, Walked};
 use crate::pipeline::{DecisionTrace, Env, Stage, StageKind, TakeStart, Trace, Update};
+use jevons_desktop_protocol::delivery::DeliveryMethod;
 use jevons_machine::engine::{
     self, By, Candidate, Chosen, Decision, Effect, Facts, Input, MAX_STEPS, Outcome, Outside,
     Verdict, Weighed,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::UnboundedSender;
@@ -234,9 +241,146 @@ struct Instance {
     last: Option<String>,
 }
 
+/// The machines as they are kept while the server does not run.
+#[derive(Serialize, Deserialize)]
+struct Kept {
+    /// The machines that had run.
+    started: u64,
+    /// The task the latest take reached.
+    focus: Option<u64>,
+    instances: Vec<KeptInstance>,
+}
+
+/// One machine as it is kept. It holds what the user said and what the screen showed.
+#[derive(Serialize, Deserialize)]
+struct KeptInstance {
+    id: u64,
+    /// The machine's folder in the flows folder.
+    machine: String,
+    /// The machine's files when it was kept ([`Loaded::hash`]).
+    hash: String,
+    engine: engine::Saved,
+    parent: Option<u64>,
+    number: usize,
+    values: BTreeMap<String, Value>,
+    base: KeptFrame,
+    since_ms: u64,
+    origin: TakeStart,
+    last: Option<String>,
+}
+
+/// What a task keeps of the frame it started with. The take's own parts (its context and
+/// words) come with each take, and the lazy values not read yet are declared again from the
+/// tree.
+#[derive(Default, Serialize, Deserialize)]
+struct KeptFrame {
+    route: Vec<String>,
+    instructions: Vec<String>,
+    values: BTreeMap<String, Value>,
+    delivery: Option<DeliveryMethod>,
+    max_output_tokens: Option<u32>,
+    think: Option<u32>,
+}
+
+impl KeptFrame {
+    fn of(frame: &Frame) -> Self {
+        Self {
+            route: frame.route.clone(),
+            instructions: frame.instructions.clone(),
+            values: frame.values.clone(),
+            delivery: frame.delivery,
+            max_output_tokens: frame.max_output_tokens,
+            think: frame.think,
+        }
+    }
+
+    /// The frame again, for the machine in the folder `path` of `tree`.
+    fn frame(self, tree: &FlowTree, path: &str) -> Frame {
+        let mut frame = Frame {
+            values: self.values,
+            ..Frame::default()
+        };
+        // The folders from the root down declare their lazy values again, those with no
+        // value yet.
+        let mut folder = String::new();
+        let below = path.split('/').filter(|name| !name.is_empty());
+        for name in std::iter::once("").chain(below) {
+            if !name.is_empty() {
+                folder = if folder.is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{folder}/{name}")
+                };
+            }
+            if let Some(node) = tree.find(&folder) {
+                frame.enter(tree.node(node));
+            }
+        }
+        Frame {
+            route: self.route,
+            instructions: self.instructions,
+            delivery: self.delivery,
+            max_output_tokens: self.max_output_tokens,
+            think: self.think,
+            ..frame
+        }
+    }
+}
+
+/// Where the machines are kept, and what was last written there.
+#[derive(Default)]
+struct Keeping {
+    file: Option<PathBuf>,
+    written: Option<String>,
+}
+
+/// Why work that ran when the server stopped failed.
+const CUT_SHORT: &str = "jevons stopped while it ran";
+
+/// The root and each agent of `tree`, with the frame each starts from.
+fn standing(tree: &FlowTree) -> Vec<(NodeId, Arc<Loaded>, Frame)> {
+    let root = tree.root();
+    let Some(loaded) = tree.node(root).machine.clone() else {
+        return Vec::new();
+    };
+    let mut base = Frame::default();
+    base.enter(tree.node(root));
+    let mut standing = vec![(root, loaded, base.clone())];
+    for agent in tree.children(root) {
+        if agent.level() == Some(Level::Agent)
+            && let Some(loaded) = agent.machine.clone()
+        {
+            let mut base = base.clone();
+            base.enter(agent);
+            standing.push((agent.id, loaded, base));
+        }
+    }
+    standing
+}
+
+impl Instance {
+    /// The root or an agent, waiting in its first state.
+    fn waiting(id: u64, machine: NodeId, loaded: &Loaded, base: Frame, origin: &TakeStart) -> Self {
+        Self {
+            id,
+            machine,
+            engine: engine::Instance::resting(&loaded.diagram),
+            parent: None,
+            number: 0,
+            values: BTreeMap::new(),
+            base,
+            since_ms: now_ms(),
+            origin: origin.clone(),
+            last: None,
+        }
+    }
+}
+
 /// The machines that run: the root, one instance per agent, and each agent's tasks.
 #[derive(Default)]
 struct Forest {
+    /// What was kept the last time the server ran has been brought back, or there was nothing.
+    restored: bool,
     tree: Option<Arc<FlowTree>>,
     /// By id, so in the order they started: the root, the agents, then the tasks.
     instances: BTreeMap<u64, Instance>,
@@ -267,38 +411,10 @@ impl Forest {
     fn reset(&mut self, tree: Arc<FlowTree>, origin: &TakeStart) {
         self.instances.clear();
         self.focus = None;
-        let root = tree.root();
-        if let Some(loaded) = &tree.node(root).machine {
-            let mut base = Frame::default();
-            base.enter(tree.node(root));
-            let mut waiting = |machine: NodeId, loaded: &Loaded, base: Frame| {
-                self.started += 1;
-                self.instances.insert(
-                    self.started,
-                    Instance {
-                        id: self.started,
-                        machine,
-                        engine: engine::Instance::resting(&loaded.diagram),
-                        parent: None,
-                        number: 0,
-                        values: BTreeMap::new(),
-                        base,
-                        since_ms: now_ms(),
-                        origin: origin.clone(),
-                        last: None,
-                    },
-                );
-            };
-            waiting(root, loaded, base.clone());
-            for agent in tree.children(root) {
-                if agent.level() == Some(Level::Agent)
-                    && let Some(loaded) = &agent.machine
-                {
-                    let mut base = base.clone();
-                    base.enter(agent);
-                    waiting(agent.id, loaded, base);
-                }
-            }
+        for (machine, loaded, base) in standing(&tree) {
+            self.started += 1;
+            let waiting = Instance::waiting(self.started, machine, &loaded, base, origin);
+            self.instances.insert(self.started, waiting);
         }
         self.tree = Some(tree);
     }
@@ -333,6 +449,7 @@ pub struct Runtime {
     forest: tokio::sync::Mutex<Forest>,
     view: Mutex<View>,
     timers: Mutex<Option<UnboundedSender<Due>>>,
+    keeping: Mutex<Keeping>,
 }
 
 impl Runtime {
@@ -345,8 +462,311 @@ impl Runtime {
         *self.timers.lock().expect("the timers lock") = Some(sender);
     }
 
+    /// Keeps the machines in `file` from now on: written at every change, removed when no
+    /// task runs and the root and the agents wait in their first states. The file holds what
+    /// the user said and what the screen showed, so it belongs in the data folder.
+    pub fn keep_in(&self, file: PathBuf) {
+        self.keeping.lock().expect("the keeping lock").file = Some(file);
+    }
+
     pub fn view(&self) -> View {
         self.view.lock().expect("the view lock").clone()
+    }
+
+    /// Brings back the machines kept the last time the server ran, on `env`'s flow tree, and
+    /// says what became of those that do not go on. It does so once; the first take does it
+    /// when nothing did before.
+    ///
+    /// A machine that waited waits again, its timers starting over. One whose work ran takes
+    /// `failed`, as it does when its work fails: that work is not run again. A task whose
+    /// machine is gone or whose files changed is ended, and the root or an agent whose files
+    /// changed starts over.
+    pub async fn restore(&self, env: &Env) -> Vec<String> {
+        let mut forest = self.forest.lock().await;
+        if forest.restored {
+            return Vec::new();
+        }
+        self.bring_back(&mut forest, env).await
+    }
+
+    async fn bring_back(&self, forest: &mut Forest, env: &Env) -> Vec<String> {
+        forest.restored = true;
+        let file = self.keeping.lock().expect("the keeping lock").file.clone();
+        let Some(file) = file else {
+            return Vec::new();
+        };
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            return Vec::new();
+        };
+        let kept: Kept = match serde_json::from_str(&text) {
+            Ok(kept) => kept,
+            Err(e) => {
+                let _ = std::fs::remove_file(&file);
+                return vec![format!(
+                    "The tasks kept when jevons stopped could not be read, and are gone: {e}"
+                )];
+            }
+        };
+        let tree = env.flows.clone();
+        let mut notes = Vec::new();
+        let mut ended = Vec::new();
+        // A machine that does not go on: the note says so, and so does the Machines tab.
+        let mut end =
+            |notes: &mut Vec<String>, label: String, k: &KeptInstance, to: &str, how: &str| {
+                notes.push(format!("{label} was at {}: {how}", k.engine.state));
+                ended.push(Step {
+                    machine: if k.machine.is_empty() {
+                        "/".into()
+                    } else {
+                        k.machine.clone()
+                    },
+                    instance: k.id,
+                    from: k.engine.state.clone(),
+                    event: "changed".into(),
+                    to: to.into(),
+                    transition: None,
+                    through: Vec::new(),
+                    how: how.into(),
+                    probabilities: BTreeMap::new(),
+                    take: None,
+                    at_ms: now_ms(),
+                });
+            };
+        forest.instances.clear();
+        forest.focus = None;
+        forest.started = forest.started.max(kept.started);
+        // Each timer to start again, and each machine whose work ran.
+        let mut timers = Vec::new();
+        let mut cut_short = Vec::new();
+        let mut back = |instance: &mut Instance, loaded: &Loaded, k: &KeptInstance| {
+            let Some((engine, effects)) = engine::Instance::restore(&loaded.diagram, &k.engine)
+            else {
+                return false;
+            };
+            if engine.busy() {
+                cut_short.push(k.id);
+            }
+            timers.extend(effects.into_iter().map(|effect| (k.id, effect)));
+            instance.engine = engine;
+            instance.values = k.values.clone();
+            instance.since_ms = k.since_ms;
+            instance.last = k.last.clone();
+            true
+        };
+        // The root and the agents of the tree: as they were kept, or waiting in their first
+        // states when they are new or their files changed.
+        let nobody = TakeStart::default();
+        for (machine, loaded, base) in standing(&tree) {
+            let node = tree.node(machine);
+            let was = kept
+                .instances
+                .iter()
+                .find(|k| k.parent.is_none() && k.machine == node.path);
+            let mut instance = Instance::waiting(0, machine, &loaded, base, &nobody);
+            match was {
+                Some(k) => {
+                    instance.id = k.id;
+                    instance.origin = k.origin.clone();
+                    let same = k.hash == loaded.hash && back(&mut instance, &loaded, k);
+                    let moved = k.engine.working || k.engine.state != loaded.diagram.initial;
+                    if !same && moved {
+                        end(
+                            &mut notes,
+                            node.label().to_string(),
+                            k,
+                            &loaded.diagram.initial,
+                            "its files changed while jevons did not run: it starts over",
+                        );
+                    }
+                }
+                None => {
+                    forest.started += 1;
+                    instance.id = forest.started;
+                }
+            }
+            forest.instances.insert(instance.id, instance);
+        }
+        // The tasks, each under the agent that started it.
+        for k in kept.instances.iter().filter(|k| k.parent.is_some()) {
+            let name = k.machine.rsplit('/').next().unwrap_or(&k.machine);
+            let label = format!("{name}-{}", k.number);
+            let found = tree.find(&k.machine).and_then(|id| {
+                let loaded = tree.node(id).machine.clone()?;
+                (tree.node(id).level() == Some(Level::Task)).then_some((id, loaded))
+            });
+            let agent = k
+                .parent
+                .filter(|agent| forest.instances.contains_key(agent));
+            let gone = match (&found, agent) {
+                (None, _) => Some("its machine is not in the flows folder any more: it ended"),
+                (_, None) => Some("its agent is not in the flows folder any more: it ended"),
+                (Some((_, loaded)), _) if loaded.hash != k.hash => {
+                    Some("its files changed while jevons did not run: it ended")
+                }
+                _ => None,
+            };
+            let instance = match (gone, found) {
+                (None, Some((machine, loaded))) => {
+                    let base = KeptFrame::default().frame(&tree, &k.machine);
+                    let mut instance = Instance::waiting(k.id, machine, &loaded, base, &k.origin);
+                    instance.parent = agent;
+                    instance.number = k.number;
+                    back(&mut instance, &loaded, k).then_some(instance)
+                }
+                _ => None,
+            };
+            match instance {
+                Some(instance) => {
+                    forest.instances.insert(instance.id, instance);
+                }
+                None => end(
+                    &mut notes,
+                    label,
+                    k,
+                    "[*]",
+                    gone.unwrap_or("its files changed while jevons did not run: it ended"),
+                ),
+            }
+        }
+        // A task's frame, once every lazy value its folders declare is known.
+        let focus = kept.focus;
+        for k in kept.instances {
+            if let Some(instance) = forest.instances.get_mut(&k.id)
+                && instance.parent.is_some()
+            {
+                instance.base = k.base.frame(&tree, &k.machine);
+            }
+        }
+        forest.tree = Some(tree.clone());
+        // The bubble follows the task it followed, when that is back.
+        forest.focus = focus.filter(|task| forest.instances.contains_key(task));
+        {
+            let mut view = self.view.lock().expect("the view lock");
+            for step in ended {
+                push_history(&mut view.history, step);
+            }
+        }
+        for (instance, effect) in timers {
+            if let Effect::Arm {
+                event,
+                after,
+                generation,
+            } = effect
+            {
+                self.arm(
+                    Due {
+                        instance,
+                        generation,
+                        event,
+                    },
+                    after,
+                );
+            }
+        }
+        // Work that ran when the server stopped failed, and its machine takes it from there:
+        // each in a turn of its own, in the window its task started in.
+        let (updates, _unheard) = tokio::sync::mpsc::unbounded_channel();
+        for id in cut_short {
+            let Some(instance) = forest.instances.get(&id).filter(|i| i.engine.busy()) else {
+                continue;
+            };
+            let start = TakeStart {
+                id: 0,
+                context: instance.origin.context.clone(),
+                entry: None,
+            };
+            let state = instance.engine.state().to_string();
+            let node = tree.node(instance.machine);
+            let label = match instance.parent {
+                Some(_) => format!("{}-{}", node.name, instance.number),
+                None => node.label().to_string(),
+            };
+            let mut trace = Trace::new(&start);
+            self.publish(forest, true, None);
+            let mut turn = Turn::new(self, env, tree.clone(), forest, start, &updates, &mut trace);
+            turn.failure = Some(CUT_SHORT.into());
+            turn.drive(Next::Input(id, Input::Finished(Outcome::Failed)))
+                .await;
+            drop(turn);
+            notes.push(format!(
+                "{label} was at {state}, and {CUT_SHORT}: that is not run again, and it failed"
+            ));
+        }
+        self.publish(forest, false, None);
+        notes
+    }
+
+    /// Starts a timer: its event is due after `after`.
+    fn arm(&self, due: Due, after: std::time::Duration) {
+        let timers = self.timers.lock().expect("the timers lock").clone();
+        let Some(sender) = timers else {
+            return;
+        };
+        tokio::spawn(async move {
+            tokio::time::sleep(after).await;
+            let _ = sender.send(due);
+        });
+    }
+
+    /// Writes the machines where they are kept, when they changed; with nothing worth
+    /// keeping, the file goes.
+    fn keep(&self, forest: &Forest) {
+        let mut keeping = self.keeping.lock().expect("the keeping lock");
+        let (Some(file), Some(tree), true) = (keeping.file.clone(), &forest.tree, forest.restored)
+        else {
+            return;
+        };
+        let text = if forest.at_rest() {
+            String::new()
+        } else {
+            let instances = forest
+                .instances
+                .values()
+                .filter_map(|i| {
+                    let node = tree.node(i.machine);
+                    Some(KeptInstance {
+                        id: i.id,
+                        machine: node.path.clone(),
+                        hash: node.machine.as_ref()?.hash.clone(),
+                        engine: i.engine.saved(),
+                        parent: i.parent,
+                        number: i.number,
+                        values: i.values.clone(),
+                        // The root's and the agents' are made from the tree.
+                        base: i.parent.map(|_| KeptFrame::of(&i.base)).unwrap_or_default(),
+                        since_ms: i.since_ms,
+                        origin: i.origin.clone(),
+                        last: i.last.clone(),
+                    })
+                })
+                .collect();
+            let kept = Kept {
+                started: forest.started,
+                focus: forest.focus,
+                instances,
+            };
+            serde_json::to_string(&kept).unwrap_or_default()
+        };
+        if keeping.written.as_deref() == Some(text.as_str()) {
+            return;
+        }
+        let wrote = if text.is_empty() {
+            match std::fs::remove_file(&file) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+                _ => Ok(()),
+            }
+        } else {
+            // Whole or not at all: a file half written would lose every task.
+            let partial = file.with_extension("tmp");
+            file.parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::write(&partial, &text))
+                .and_then(|()| std::fs::rename(&partial, &file))
+        };
+        match wrote {
+            Ok(()) => keeping.written = Some(text),
+            Err(e) => tracing::warn!(error = %e, "Could not keep the machines"),
+        }
     }
 
     /// A take, under a machine root: the root decides which agent it is for, and the agent what
@@ -362,6 +782,10 @@ impl Runtime {
         trace: &mut Trace,
     ) {
         let mut forest = self.forest.lock().await;
+        if !forest.restored {
+            let notes = self.bring_back(&mut forest, env).await;
+            trace.notes.extend(notes);
+        }
         let fresh = forest
             .tree
             .as_ref()
@@ -468,6 +892,14 @@ impl Runtime {
     /// work. What it ended, or `None` when no task ran and they all waited there.
     pub async fn cancel(&self) -> Option<String> {
         let mut forest = self.forest.lock().await;
+        if !forest.restored {
+            // What was kept and not brought back yet ends too, unseen.
+            forest.restored = true;
+            let file = self.keeping.lock().expect("the keeping lock").file.clone();
+            if let Some(file) = file {
+                let _ = std::fs::remove_file(file);
+            }
+        }
         if forest.at_rest() {
             return None;
         }
@@ -559,6 +991,8 @@ impl Runtime {
         if let Some(step) = step {
             push_history(&mut view.history, step);
         }
+        drop(view);
+        self.keep(forest);
     }
 }
 
@@ -1152,19 +1586,12 @@ impl<'a> Turn<'a> {
 
     /// Starts a timer of the state entry the machine `id` is in.
     fn arm(&mut self, id: u64, event: String, after: std::time::Duration, generation: u64) {
-        let timers = self.runtime.timers.lock().expect("the timers lock").clone();
-        let Some(sender) = timers else {
-            return;
-        };
         let due = Due {
             instance: id,
             generation,
             event,
         };
-        tokio::spawn(async move {
-            tokio::time::sleep(after).await;
-            let _ = sender.send(due);
-        });
+        self.runtime.arm(due, after);
     }
 
     /// A machine is over. A task tells its agent, which takes `task_done` or `task_failed`; the

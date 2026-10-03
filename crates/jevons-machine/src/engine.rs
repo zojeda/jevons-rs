@@ -26,7 +26,7 @@
 //! the timers; the engine moves one instance at a time.
 
 use crate::{Choice, Condition, Event, Machine, Target};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Deref;
 use std::time::Duration;
@@ -677,6 +677,17 @@ struct Turn<'a> {
     outside: Vec<Outside>,
 }
 
+/// What is kept of an instance while its host does not run: enough to bring it back with
+/// [`Instance::restore`]. A decision the oracle was asked for is not kept: nothing waits for
+/// its answer any more.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Saved {
+    pub state: String,
+    pub generation: u64,
+    /// Its state's work ran.
+    pub working: bool,
+}
+
 /// One machine, in a state.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Instance {
@@ -707,6 +718,50 @@ impl Instance {
         let initial = def.initial.clone();
         let effects = instance.jump(def, &initial, "start", "the task starts", facts);
         (instance, effects)
+    }
+
+    /// What to keep of it, for [`restore`](Self::restore).
+    pub fn saved(&self) -> Saved {
+        Saved {
+            state: self.state.clone(),
+            generation: self.generation,
+            working: match &self.pending {
+                Some(Pending::Work) => true,
+                Some(Pending::Decision(asking)) => asking.working,
+                None => false,
+            },
+        }
+    }
+
+    /// Brings back an instance as it was kept, entering nothing. `None` when the machine has
+    /// no such state.
+    ///
+    /// One that waited waits again, and its state's timers start over: the [`Effect::Arm`]s to
+    /// carry out. One whose state's work ran waits for how that work ended
+    /// ([`busy`](Self::busy)): work cut short is never run again, so its host answers
+    /// [`Input::Finished`] with [`Outcome::Failed`].
+    pub fn restore(def: &Definition, saved: &Saved) -> Option<(Self, Vec<Effect>)> {
+        if !def.machine.states.iter().any(|s| s.name == saved.state) {
+            return None;
+        }
+        let instance = Self {
+            state: saved.state.clone(),
+            generation: saved.generation,
+            pending: saved.working.then_some(Pending::Work),
+        };
+        let effects = if saved.working {
+            Vec::new()
+        } else {
+            def.timers_in(&instance.state)
+                .into_iter()
+                .map(|timer| Effect::Arm {
+                    event: timer.event.clone(),
+                    after: timer.after,
+                    generation: instance.generation,
+                })
+                .collect()
+        };
+        Some((instance, effects))
     }
 
     /// Enters `state` from where it is, by something no transition of the diagram stands for
@@ -1536,6 +1591,74 @@ mod tests {
         let effects = task.handle(&def, Input::Finished(Outcome::Done), &prefer);
         assert!(!asks(&effects));
         assert_eq!(task.state(), "shown");
+    }
+
+    #[test]
+    fn a_kept_instance_waits_again_and_work_cut_short_fails_without_running_again() {
+        let def = def(SEARCH, &["searching", "answering", "opening"]);
+        // A task that waits: it comes back in its state, and its timer starts over.
+        let task = waiting(&def);
+        let kept = task.saved();
+        assert_eq!(
+            kept,
+            Saved {
+                state: "results".into(),
+                generation: task.generation(),
+                working: false
+            }
+        );
+        let (mut back, effects) = Instance::restore(&def, &kept).unwrap();
+        assert_eq!(back, task);
+        assert_eq!(
+            effects,
+            [Effect::Arm {
+                event: "quiet".into(),
+                after: Duration::from_secs(120),
+                generation: task.generation(),
+            }]
+        );
+        assert!(back.awaits(&def, kept.generation, "quiet"));
+        // It goes on as the one that was kept would.
+        back.handle(&def, Input::Event(Event::Said), &none());
+        assert!(back.busy(), "the oracle is asked");
+        // A decision that was out is not kept: the machine waits in its state again.
+        let (again, _) = Instance::restore(&def, &back.saved()).unwrap();
+        assert_eq!((again.state(), again.busy()), ("results", false));
+
+        // A task whose work ran: it waits for how the work ended, with nothing to run, and
+        // the failure its host answers with takes `failed`.
+        let (task, _) = Instance::start(&def, &none());
+        let kept = task.saved();
+        assert!(kept.working);
+        let (mut back, effects) = Instance::restore(&def, &kept).unwrap();
+        assert_eq!(effects, []);
+        assert!(back.busy());
+        let effects = back.handle(&def, Input::Finished(Outcome::Failed), &none());
+        assert_eq!(
+            steps(&effects),
+            ["searching failed → [*]: the only transition that applies"]
+        );
+        assert!(!effects.iter().any(|e| matches!(e, Effect::Run { .. })));
+        // A state with no `failed` transition: the machine is over, failed.
+        let (mut task, _) = Instance::start(&def, &none());
+        task.handle(&def, Input::Finished(Outcome::Done), &none());
+        let (mut back, _) = Instance::restore(&def, &task.saved()).unwrap();
+        assert_eq!(back.state(), "answering");
+        let effects = back.handle(&def, Input::Finished(Outcome::Failed), &none());
+        assert_eq!(effects, [Effect::Ended(Outcome::Failed)]);
+
+        // It travels as JSON, and a state the machine no longer has brings nothing back.
+        let json = serde_json::to_string(&kept).unwrap();
+        assert_eq!(
+            json,
+            r#"{"state":"searching","generation":1,"working":true}"#
+        );
+        assert_eq!(serde_json::from_str::<Saved>(&json).unwrap(), kept);
+        let gone = Saved {
+            state: "elsewhere".into(),
+            ..kept
+        };
+        assert_eq!(Instance::restore(&def, &gone), None);
     }
 
     #[test]

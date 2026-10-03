@@ -159,6 +159,14 @@ impl Host {
         self.greeted();
         *self.client.lock().expect("the client lock") = Some(tx.clone());
         let _ = tx.send(ToClient::Welcome { version: VERSION });
+        // The tasks kept the last time the server ran come back with the first client, whose
+        // tools the flow tree is checked against by now: after the welcome, since what they
+        // do on the way is asked of this client. Without a provider they wait for one.
+        if self.session.ready() {
+            for note in self.session.restore().await {
+                tracing::info!(%note, "Brought the machines back");
+            }
+        }
         // Where the machines are: a client that comes back finds its tasks as they were.
         let machines = || ToClient::Machines {
             view: view_json(&self.session.view()),

@@ -5,6 +5,9 @@
 //! flow tree, the tools) change under the session as the settings and the flows folder do. A
 //! take is then one call. A machine's timer is the session's too: when one runs out, the
 //! session runs its take by itself and tells the client through its events.
+//!
+//! Given a file, the session keeps its machines there, and brings them back the next time the
+//! server runs: a task that waited for the user is still there.
 
 use crate::client::Routes;
 use crate::flow::FlowTree;
@@ -136,6 +139,20 @@ impl Session {
     /// the tool host with.
     pub fn desk(&self) -> Arc<dyn Desk> {
         self.seat.clone()
+    }
+
+    /// Keeps the machines in `file` from now on, so that the tasks that run are there when the
+    /// server next runs. It holds what the user said and what the screen showed: it belongs
+    /// in the data folder, never in the settings folder.
+    pub fn keep_machines_in(&self, file: std::path::PathBuf) {
+        self.machines.keep_in(file);
+    }
+
+    /// Brings back the machines kept the last time the server ran, and says what became of
+    /// those that do not go on. Call it once a provider answers: a timer that runs out before
+    /// one does is dropped. It does something once, and the first take does it otherwise.
+    pub async fn restore(&self) -> Vec<String> {
+        self.machines.restore(&self.env(None)).await
     }
 
     /// Where the machines are.

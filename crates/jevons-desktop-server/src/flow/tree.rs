@@ -820,6 +820,7 @@ impl Loader<'_> {
                     loaded.diagram.ruled.states.insert(work.name.clone());
                 }
             }
+            loaded.hash = self.hash(id, &children);
             self.nodes[id.0].machine = Some(Arc::new(loaded));
         }
         self.nodes[id.0].children = children;
@@ -981,7 +982,53 @@ impl Loader<'_> {
             min_probability: spec.min_probability,
             ..diagram
         };
-        Some(Arc::new(Loaded { diagram, guards }))
+        Some(Arc::new(Loaded {
+            diagram,
+            guards,
+            // Once the subfolders are loaded.
+            hash: String::new(),
+        }))
+    }
+
+    /// The hash of what the machine at `id` runs, whose states' work is `children`.
+    fn hash(&self, id: NodeId, children: &[NodeId]) -> String {
+        use sha2::{Digest, Sha256};
+        let read = |file: &str| self.files.read(file).unwrap_or_default();
+        let mut files = BTreeMap::new();
+        let machine = &self.nodes[id.0];
+        files.insert(machine.file.clone(), read(&machine.file));
+        let fsm = machine::diagram_file(&machine.file);
+        files.insert(fsm.clone(), read(&fsm));
+        let instructions = |node: &Node| {
+            let text = node.instructions_md.clone()?;
+            Some((join(&node.path, "instructions.md"), text))
+        };
+        files.extend(instructions(machine));
+        let mut below = children.to_vec();
+        while let Some(next) = below.pop() {
+            let node = &self.nodes[next.0];
+            // A machine below is its own.
+            if node.kind() == Kind::Machine || files.contains_key(&node.file) {
+                continue;
+            }
+            files.insert(node.file.clone(), read(&node.file));
+            files.extend(instructions(node));
+            below.extend(&node.children);
+        }
+        let mut hasher = Sha256::new();
+        for (file, text) in files {
+            hasher.update(file.as_bytes());
+            hasher.update([0]);
+            // Line endings are not a change.
+            hasher.update(text.replace("\r\n", "\n").as_bytes());
+            hasher.update([0]);
+        }
+        let hex: String = hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        format!("sha256:{hex}")
     }
 
     /// The tools the nodes below `id` call, with the node file that calls each.
@@ -2238,6 +2285,71 @@ mod tests {
             ),
             catalog,
         )
+    }
+
+    #[test]
+    fn a_machine_s_hash_covers_what_it_runs_and_no_other_machine() {
+        const FILES: &[(&str, &str)] = &[
+            ("root.toml", ""),
+            (
+                "root.fsm",
+                "fsm App {\n[*] --> idle\nidle --> main : said\nmain --> idle\n}",
+            ),
+            ("main/agent.toml", "description = \"Main\""),
+            (
+                "main/agent.fsm",
+                "fsm Main {\n[*] --> idle\nidle --> note : said\nnote --> idle\n}",
+            ),
+            ("main/note/task.toml", "description = \"Takes a note\""),
+            (
+                "main/note/task.fsm",
+                "fsm Note {\n[*] --> typing\ntyping --> [*]\n}",
+            ),
+            ("main/note/typing/transcript.toml", "output = \"clipboard\""),
+        ];
+        // The hashes of the root, the agent and the task, with one file changed or added.
+        let hashes = |file: &str, text: &str| {
+            let mut files: Vec<(&str, &str)> =
+                FILES.iter().filter(|(p, _)| *p != file).copied().collect();
+            files.push((file, text));
+            let tree = tree(&files);
+            assert!(tree.is_valid(), "{:?}", tree.errors);
+            ["", "main", "main/note"].map(|path| {
+                let machine = tree.node(tree.find(path).unwrap()).machine.clone();
+                machine.unwrap().hash.clone()
+            })
+        };
+        let [root, agent, task] = hashes("root.toml", "");
+        assert!(task.starts_with("sha256:") && task.len() == 71, "{task}");
+        assert!(root != agent && agent != task);
+        // The same files give the same hashes, whatever their line endings.
+        assert_eq!(
+            hashes("root.toml", ""),
+            [root.clone(), agent.clone(), task.clone()]
+        );
+        let crlf = "fsm Note {\r\n[*] --> typing\r\ntyping --> [*]\r\n}";
+        assert_eq!(hashes("main/note/task.fsm", crlf)[2], task);
+        // A state's file, the diagram, the node file and the instructions are the task's own.
+        let changed = [
+            ("main/note/typing/transcript.toml", "output = \"bubble\""),
+            (
+                "main/note/task.fsm",
+                "fsm Note {\n[*] --> typing\ntyping --> [*] : said\n}",
+            ),
+            ("main/note/task.toml", "description = \"Takes a note down\""),
+            ("main/note/instructions.md", "Write it as said."),
+            ("main/note/typing/instructions.md", "Write it as said."),
+        ];
+        for (file, text) in changed {
+            let [r, a, t] = hashes(file, text);
+            assert_ne!(t, task, "{file}");
+            // The machines above it are not it.
+            assert_eq!((r, a), (root.clone(), agent.clone()), "{file}");
+        }
+        // And the agent's files are not the task's.
+        let [r, a, t] = hashes("main/agent.toml", "description = \"The main agent\"");
+        assert_ne!(a, agent);
+        assert_eq!((r, t), (root, task));
     }
 
     #[test]
