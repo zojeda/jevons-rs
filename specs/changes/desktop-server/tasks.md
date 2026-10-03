@@ -26,7 +26,8 @@ or weakening a safety guarantee.
 
 ## Where the spike stands
 
-Branch `spike/desktop-machines`, cut from `dev`; committed (a903986, 2dd7e37) and not yet pushed.
+Branch `spike/desktop-machines`, cut from `dev`: the spike (a903986, 2dd7e37), the machine files'
+names (c476be6) and the search example's Spanish trigger (9c135f2).
 
 - **The root is a machine.**
   - `examples/desktop/flows/root.toml` and `root.fsm` replace the root `decide.toml`.
@@ -125,7 +126,9 @@ Scope: the spike as it is, reviewed and running on Windows.
 - [ ] Dictate for a day: routing as before (Pregunta, terminals, Slack ask), one decision call per
       take in the API log.
 - [ ] Register `web_search` and `open_url`, copy `search/` in, and run the task live: follow-ups,
-      the confirmation, `denied`, the quiet timer, Cancel task.
+      the confirmation, `denied`, the quiet timer, Cancel task. Done so far, with Spanish
+      Wikipedia as `web_search`: "Buscar …" starts it with no model call, it answers and waits in
+      `results`, and the quiet timer ends it.
 - [ ] Squash-merge into `dev` and then `main` (`gh`, as for the earlier desktop PRs).
 
 Crates: none new. Tested by the existing suites, plus the manual checks above.
@@ -401,6 +404,9 @@ Done when: a search waiting in `results` is still there after a restart.
 
 ## Deferred
 
+- **Committing headless writes:** `--transcript` and `--check-flows` write the generated flow
+  files (`AGENTS.md`, `_schemas/`, `.taplo.toml`) into the settings folder without committing them;
+  only the app commits its writes.
 - **Upgrading an edited flows folder:** today only an unedited earlier tree is brought up to date.
   A three-way merge against the recorded earlier tree (its files are in `flow/earlier.rs` by hash,
   so the texts would need recording too) would carry the user's edits onto the new tree, and stop
