@@ -1,8 +1,9 @@
 //! Machines: a task laid out as states, and how it moves. A diagram in
 //! [Oxidate](https://crates.io/crates/oxidate-fsm)'s Mermaid-like language names the states, the
 //! events that move between them, the guards on those moves, choice points and timers. This crate
-//! reads and checks one, lays it out for drawing, and knows nothing of what a state's work is:
-//! whoever hosts the machines runs it.
+//! reads and checks one, lays it out for drawing, and moves it ([`engine`]): an input in, what the
+//! host must do next out. It knows nothing of what a state's work is: whoever hosts the machines
+//! runs it.
 //!
 //! ```text
 //! fsm Search {
@@ -25,7 +26,13 @@
 //! a tool call it asked about; without a `denied` transition it counts as `failed`) and the
 //! events of the `timer`s, which run while the task is in a state with a transition on them.
 
+pub mod engine;
 pub mod layout;
+
+pub use engine::{
+    Asked, Candidate, Chosen, Decision, Definition, Effect, Facts, Input, Instance, Outcome,
+    Question, Step, Verdict, Weighed,
+};
 
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};

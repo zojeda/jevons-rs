@@ -2,28 +2,31 @@
 
 ## Purpose
 
-jevons-machine knows what a machine is: a task laid out as states, the events that move it between
-them, the guards on those moves, choice points and timers. It reads a diagram written in
-[Oxidate](https://crates.io/crates/oxidate-fsm)'s language into its own model, checks it, and lays
-it out for drawing. It does nothing itself: what a state's work is, and who runs it, belongs to
-whoever hosts the machines.
+jevons-machine knows what a machine is and how it moves: a task laid out as states, the events
+that move it between them, the guards on those moves, choice points and timers. It reads a diagram
+written in [Oxidate](https://crates.io/crates/oxidate-fsm)'s language into its own model, checks
+it, lays it out for drawing, and moves it: an input in, what the host must do next out. It does
+nothing itself. What a state's work is, who decides when rules do not, and when a timer runs out
+belong to whoever hosts the machines.
 
 ## Scope
 
 jevons-machine owns `Machine` with its `State`, `Transition`, `Event`, `Condition`, `Target`,
-`Choice` and `Timer`, `Machine::parse` and its checks, and `layout`.
+`Choice` and `Timer`, `Machine::parse` and its checks, `layout`, and the engine: `Definition`,
+`Instance`, its `Input` and `Effect`, and the `Facts` it asks.
 
 It leaves to other crates:
 
-- Machine folders, named guards' rules, the states' work, the runtime across takes and timers:
-  `jevons-desktop-core` ([machines](../jevons-desktop-core/machines.md)).
+- Machine folders, named guards' rules, the states' work, the decision model, the timers' clock,
+  and tasks nested in states: `jevons-desktop-core`
+  ([machines](../jevons-desktop-core/machines.md)).
 - Drawing the layout: `jevons-desktop`.
 
 It has no async code, no HTTP and no JSON: serde derives only.
 
 ## Requirements
 
-The diagram is R1 to R10; the layout, R11 to R13.
+The diagram is R1 to R10; the layout, R11 to R13; the engine, R14 on.
 
 ### R1 A diagram is one `fsm` block
 
@@ -122,3 +125,108 @@ Transitions between the same two nodes share one edge, with a label each (`said 
 and their indices in the diagram. A choice point's branches are labelled by their guards.
 
 Tests: `parallel_transitions_share_an_edge_and_choices_label_their_branches`
+
+### R14 An instance moves on inputs and answers with effects
+
+An instance is one machine in a state. `handle` takes an input (an event from outside, the answer
+to a decision, or how the state's work ended) and returns the effects its host carries out, in
+order: ask the oracle, run a state's work, arm a timer; and what happened: a decision made, a step
+taken, a state entered, the machine ended, or stopped. An input the instance does not wait for (an
+event while its work runs, an answer nothing asked for, an event with no transition) changes
+nothing. `release` drops what the host was asked and leaves the machine in its state.
+
+Tests: `a_machine_starts_in_its_first_state_and_runs_each_state_s_work`, `inputs_the_machine_does_not_wait_for_change_nothing`
+
+### R15 A machine starts, rests and jumps
+
+`start` enters the first state, as a step from `[*]` on `start` ("the task starts"). `resting` is a
+machine in its first state that entered nothing: no timer armed, no work run. `rest` puts a
+machine back there. `jump` enters a state no transition leads to, as a step with the event and
+reason given.
+
+Tests: `a_machine_starts_in_its_first_state_and_runs_each_state_s_work`, `a_jump_enters_a_state_no_transition_leads_to`, `inputs_the_machine_does_not_wait_for_change_nothing`
+
+### R16 Rules drop candidates and prefer one, with no oracle
+
+An event's candidates are the state's transitions on it, in the order written, each labelled by
+its target's name, made unique (`end` for `[*]`, then `name-2`). `Facts` says of each whether its
+rules pass and whether they prefer it. A candidate whose rules fail drops out. When some are
+preferred the choice is among those alone, and a single one is taken ("preferred: its <rules> rule
+passed").
+
+Tests: `rules_drop_candidates_and_prefer_one_before_the_oracle_is_asked`
+
+### R17 A single candidate with nothing to judge is taken
+
+A single candidate left is taken with no oracle ("the only transition that applies") when it has
+no guard, is the `[else]`, or has a named guard with no criterion. One with a criterion is asked
+about, yes or no.
+
+Tests: `a_single_candidate_is_taken_unless_it_has_a_criterion_to_judge`, `a_machine_starts_in_its_first_state_and_runs_each_state_s_work`
+
+### R18 The oracle reads each candidate's criterion
+
+Otherwise the oracle is asked, with the place (the state, or `<<choice point>>`), the event and the
+candidates left. Each reads its guard's sentence, its named guard's criterion, else its target's
+description (the definition's own for that state first, then the diagram's, then the state's
+name); `[*]` reads "The task is over: end it." The `[else]` candidate is asked about like the
+others.
+
+Tests: `the_oracle_reads_each_candidate_s_criterion_and_its_sure_choice_is_taken`, `below_min_probability_the_else_transition_is_taken`
+
+### R19 The oracle's choice is taken from `min_probability` up
+
+A choice among the candidates asked, at the definition's `min_probability` (0.7 unless set) or
+above, is taken ("model 0.90"). Below it ("unsure (<label> 0.58)"), for a label that was not asked
+about, with no answer (the host's reason, such as "no decision model"), and with no candidate
+left ("no transition applies"), the `[else]` candidate is taken ("…: the fallback").
+
+Tests: `below_min_probability_the_else_transition_is_taken`, `the_oracle_reads_each_candidate_s_criterion_and_its_sure_choice_is_taken`
+
+### R20 Without an `[else]`, an unsure event leaves the machine where it was
+
+When the `[else]` would be taken and the state has none on that event, the machine stays in its
+state ("…: stayed"): a step from the state to itself, marked as a stay, with no state entered and
+no work run. It then waits for the next event.
+
+Tests: `an_unsure_answer_never_moves_the_machine_on`, `rules_drop_candidates_and_prefer_one_before_the_oracle_is_asked`
+
+### R21 Choice points choose at once
+
+A transition into a choice point decides among its branches the same way, with the `[else]`
+branch as the fallback, and on through further choice points. The step taken names the transition
+that led in, how it was chosen, and the choice points passed.
+
+Tests: `choice_points_choose_at_once_and_fall_to_their_else`
+
+### R22 Entering a state arms its timers and asks for its work
+
+Entering a state starts a new entry of it, arms each timer some transition of the state waits for,
+and asks the host to run the state's work when the definition says it has some. A state with no
+work leaves at once on `done` when a transition does, and waits otherwise. Reaching `[*]` ends the
+machine, done.
+
+Tests: `a_machine_starts_in_its_first_state_and_runs_each_state_s_work`, `a_timer_belongs_to_the_state_entry_it_was_armed_in`
+
+### R23 A failure no transition handles ends the machine
+
+Work that ends `denied` in a state with no transition on it counts as `failed`. Work that failed
+in a state with no transition on `failed` ends the machine, failed, with no step of its own: the
+host says what that means for a task and for the root.
+
+Tests: `a_failure_no_transition_handles_ends_the_machine_and_denied_counts_as_failed`
+
+### R24 A timer belongs to the state entry it was armed in
+
+An armed timer carries its entry. `awaits` says whether it is still waited for: the machine is in
+that entry, in a state with a transition on the timer's event. Leaving the state and coming back
+is a new entry, with a new timer.
+
+Tests: `a_timer_belongs_to_the_state_entry_it_was_armed_in`
+
+### R25 An input causes at most 32 transitions
+
+Past 32 transitions with more to follow, the machine stops where it is and says so. A state whose
+work the host runs ends the count: the host bounds what one take causes across machines.
+
+Tests: `states_that_never_wait_stop_after_32_transitions`
