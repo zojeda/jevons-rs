@@ -758,8 +758,9 @@ impl Turn<'_> {
                 });
             }
         }
-        let _ = self.updates.send(Update::State(self.path()));
+        // The view first: the update repaints the window, which reads it.
         self.runtime.publish(self.stack, true, None);
+        let _ = self.updates.send(Update::State(self.path()));
         let Some(work) = self.work(level, state) else {
             // A state with no work is done at once when it has somewhere to go on `done`.
             let waits = loaded.diagram.leaving(state, &Event::Done).next().is_none();

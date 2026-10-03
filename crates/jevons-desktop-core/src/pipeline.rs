@@ -2105,7 +2105,7 @@ confirm = false
             if path == "root.toml" {
                 *text = text.replace(
                     "tools = [\"script:*\"]",
-                    "tools = [\"script:*\", \"web_search\", \"open_url\"]\n\n[guards.search]\nwhen = { transcript = \"(?i)^\\\\W*(search|busca)\\\\b\" }\nprefer = { transcript = \"(?i)^\\\\W*(search|busca)\\\\b\" }",
+                    "tools = [\"script:*\", \"web_search\", \"open_url\"]\n\n[guards.search]\nwhen = { transcript = \"(?i)^\\\\W*(search|b[uú]sca(r|me|lo|la|los|las|nos)?)\\\\b\" }\nprefer = { transcript = \"(?i)^\\\\W*(search|b[uú]sca(r|me|lo|la|los|las|nos)?)\\\\b\" }",
                 );
             }
         }
@@ -2160,8 +2160,8 @@ allow = ["search/*"]
             machines: machines.clone(),
             ..env(client, None)
         };
-        // "Search" starts the task with no root decision.
-        let first = say(&env, 1, "Search state machine crates for Rust").await;
+        // "Buscar" (like "Search", "Busca" or "Búscame") starts the task with no root decision.
+        let first = say(&env, 1, "Buscar crates de máquinas de estado para Rust").await;
         assert_eq!(first.error, None, "{:?}", first.notes);
         assert_eq!(
             first.flow[0].how.as_deref(),

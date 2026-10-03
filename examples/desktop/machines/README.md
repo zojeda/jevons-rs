@@ -43,14 +43,14 @@ takes; an unsure follow-up stays there, and two quiet minutes end it. Opening a 
    ```
 
    and in `root.toml`, list the tools and say when a take starts a search: only when the
-   words start with "Search" or "Busca", chosen with no model:
+   words start with "Search", "Busca", "Buscar" or "Búscame", chosen with no model:
 
    ```toml
    tools = ["script:*", "web_search", "open_url"]
 
    [guards.search]
-   when = { transcript = "(?i)^\\W*(search|busca)\\b" }
-   prefer = { transcript = "(?i)^\\W*(search|busca)\\b" }
+   when = { transcript = "(?i)^\\W*(search|b[uú]sca(r|me|lo|la|los|las|nos)?)\\b" }
+   prefer = { transcript = "(?i)^\\W*(search|b[uú]sca(r|me|lo|la|los|las|nos)?)\\b" }
    ```
 
 `jevons-desktop --check-flows` checks the folder, and the inspector's **Machines** tab shows the
