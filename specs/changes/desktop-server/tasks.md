@@ -440,20 +440,39 @@ Left by phase 4 for this one:
 - **Traces and the take's stream** (`Trace`, `Update`) are still the server crate's types. They
   move to the protocol when they travel.
 
-- [ ] New crate `jevons-desktop-protocol`, holding:
-      - events (takes, effect results, control) and effects (deliver, show, confirm, read, open,
-        run a client tool);
-      - the streams (path and history, stages, output, traces);
+- [x] New crate `jevons-desktop-protocol`, holding:
+      - events (takes, effect results, control) and effects (deliver, confirm, read, an
+        investigation's steps, run a client tool);
+      - the streams (the machines' view, stages, output, traces);
       - versioned serde shapes, and an effect id that each result answers.
-- [ ] An in-process transport (channels carrying the Rust values) for the all-in-one app.
-- [ ] A WebSocket transport (axum on the server, `tokio-tungstenite` on the client), with a key.
-- [ ] Disconnection: pending confirmations are denied, a take in flight fails, the machines keep
+- [x] An in-process transport (channels carrying the Rust values).
+- [x] A WebSocket transport (axum on the server, `tokio-tungstenite` on the client), with a key.
+- [x] Disconnection: pending confirmations are denied, a take in flight fails, the machines keep
       their state on the server, and the client gets the path again when it reconnects.
-- [ ] A headless client mode (`--server <url>` with `--transcript`) for scripted checks against a
-      running server.
+- [x] A headless client mode (`--server <url>` with `--transcript` or `--replay`) for scripted
+      checks against a running server.
 - [ ] A server-only mode of the binary (no tray, no window) that the app connects to over
       loopback, started at login, with the app falling back to its in-process server when none
-      answers.
+      answers. Done: the server-only mode (`--serve`). Not done: the tray app as a client of it.
+
+What phase 5 found on the way:
+
+- **The version is one number in the hello,** not on every message, and a message one end does
+  not know is skipped.
+- **The client's tools travel in the hello,** so the server's desk answers `tools()` without an
+  effect, as the design said ("open a session with what the client can do").
+- **Traces and the machines' view travel as JSON,** which the client prints or parses with the
+  server crate's types; only what a take is doing while it runs (`Update`, `Stage`) moved to
+  the protocol.
+- **The desktop endpoint is `/desktop` on the settings' `bind:port`,** the address the exposed
+  API has. `--serve` always listens there, and serves `/v1/*` on it only when the settings
+  expose the API. One address and one key, in place of a second port to configure.
+- **Checked across two processes on loopback,** with a fake provider: `--serve` in one, `--server`
+  with `--transcript` in another, and the trace equal to the one process's.
+- **The tray app is not a client of a separate server yet.** It runs its session in its own
+  process, behind the same `Session` the host serves. Making it a client needs the trace and the
+  machines' view parsed back into the app's types, the Machines tab drawn from a view that
+  arrives, and the app starting no runtime when a server answers. Left unticked.
 
 Crates: `jevons-desktop-protocol` (new), the server, the client, `jevons-desktop`.
 Tested by: the pipeline suite run over both transports; serde round trips of every message; a

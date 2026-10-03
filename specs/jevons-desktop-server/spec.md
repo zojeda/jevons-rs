@@ -44,6 +44,7 @@ runs against the client core's desk over fakes.
 | [investigator](investigator.md) | The context investigator: the model loop, its tools as steps asked of the desk, its answer |
 | [tools](tools.md) | The tool host: built-in tools, MCP servers, the client's tools, confirmations and tool loops |
 | [pipeline](pipeline.md) | One take from its audio to delivery, live dictation |
+| this file | The session a client's takes run in, its timers, and the host that serves it over a stream |
 | [client](client.md) | Typed requests to the jevons API and other providers, each capability's route and its provider's profile, forwarding for other clients, the API log |
 
 ## Requirements
@@ -85,3 +86,27 @@ from the client's own), what it is doing, and its trace. A timer whose state the
 does nothing and reports nothing; one that goes stale while it runs reports that.
 
 Tests: `a_session_runs_a_timer_s_take_by_itself_and_tells_the_client`, `a_timer_ends_a_task_that_waits_and_stale_timers_do_nothing`
+
+### R5 A host serves the session to a client over a stream
+
+The client opens with its hello. One of another version, or without the server's key when it has
+one, is told why and turned away, and so is one that says anything else first. The server
+answers `welcome`, then `machines` with where the machines are. After that each take the client
+sends runs on the session with the client's desk in the seat: `take`, with its `audio` and
+`finish`; `transcript`; and a transcription alone. What a take is doing goes back as `update`s
+under its number, then its `trace` (or `transcribed`), then `machines`. `cancel` and
+`cancel_task` answer with `machines`. A timer's take, which the session runs by itself, goes to
+the client connected then as `timer`, its updates, and its `trace` or `stale`.
+
+`GET /desktop`, upgraded to a WebSocket, is where a client connects.
+
+Tests: `a_take_over_a_stream_is_the_take_run_directly`, `a_client_that_leaves_is_refused_and_finds_its_tasks_when_it_returns`
+
+### R6 The machines outlive the client
+
+When a client's stream ends, what waited on it is refused (a take in flight ends with its tool
+declined or its delivery failed, as its machine handles it), and nobody is at the desk until the
+next client. The machines stay as they are: a task that waited still waits, and the next client
+is told where they are as it connects, and can follow the task up.
+
+Tests: `a_client_that_leaves_is_refused_and_finds_its_tasks_when_it_returns`

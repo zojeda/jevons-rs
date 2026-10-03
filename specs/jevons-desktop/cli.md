@@ -135,3 +135,26 @@ commas, and clears each kind once. It prints what each clear did and where. Any 
 as `models`, is refused. It fails when a file could not be removed.
 
 Tests: `clearing_takes_kinds_of_history_or_all_of_it`
+
+### R15 `--serve` is the server alone
+
+`--serve` starts no tray and no window. It fills in what the settings folder lacks, loads the
+models routed to the app and the flows folder, and listens on the settings' `bind:port` for
+desktop clients (`ws://<bind>:<port>/desktop`), with the key the exposed API has, until the process
+is stopped. Nobody is at the desk until a client connects; `script:` tools are taken as the
+client's, listed once one connects. A flow tree with problems prints them, and the built-in tree
+runs until it is fixed. The API for other clients is served on the same address only when the
+settings expose it.
+
+Tests: none yet
+
+### R16 `--server <url>` runs headless takes on a running server
+
+With `--server`, `--replay` and `--transcript` send their takes to the jevons server at that
+address in place of running them in this process. This side reads the screen (or `--tree`),
+types with `--deliver`, confirms nothing and offers no tools; the key is `--key`, else
+`TYPESAFE_API_KEY`. What each take is doing is printed as in R5, and the traces the server sends
+back are printed as R4 prints them: the same traces as in one process. A server that refuses
+the client fails the command with its reason.
+
+Tests: `a_take_over_a_stream_is_the_take_run_directly`

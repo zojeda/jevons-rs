@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 pub const SAMPLE_RATE: u32 = 24_000;
 
 /// What an audio source reports while capturing.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AudioEvent {
     /// Mono PCM16 at [`SAMPLE_RATE`], about 100 ms each.
     Chunk(Vec<i16>),
@@ -47,7 +48,7 @@ pub enum DeliveryMethod {
     Clipboard,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct DeliveryRequest {
     pub action: Action,
     pub text: String,
@@ -58,7 +59,7 @@ pub struct DeliveryRequest {
     pub erase: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum DeliveryOutcome {
     Delivered {

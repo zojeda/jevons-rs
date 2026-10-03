@@ -10,11 +10,12 @@ use crate::context::ContextSnapshot;
 use crate::delivery::{DeliveryOutcome, DeliveryRequest};
 use crate::extract::{Extract, ExtractSpec, Extracted};
 use futures_util::future::BoxFuture;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
 /// Text for the window a take started in.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Delivery {
     pub take: u64,
     /// The handle of the window the take started in: the text goes nowhere else.
@@ -23,7 +24,7 @@ pub struct Delivery {
 }
 
 /// A tool call the user must approve before it runs.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Ask {
     /// The tool as flow files name it.
     pub tool: String,
@@ -31,7 +32,7 @@ pub struct Ask {
 }
 
 /// An `[extract]` to read from the interface, for a take that started in `snapshot`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Read {
     pub name: String,
     pub spec: ExtractSpec,
@@ -41,7 +42,7 @@ pub struct Read {
 }
 
 /// The start of an investigation: which windows it may look at.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Look {
     pub snapshot: ContextSnapshot,
     /// Application globs it may read besides the take's own.
@@ -52,7 +53,7 @@ pub struct Look {
 }
 
 /// What one look at the screen showed.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Looked {
     /// What the model reads.
     pub text: String,
@@ -67,7 +68,7 @@ pub struct Looked {
 }
 
 /// An investigation as the client opened it.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Opened {
     /// The investigation, for its steps; `None` when there is nothing it may read.
     pub session: Option<u64>,
@@ -80,7 +81,7 @@ pub struct Opened {
 }
 
 /// A tool the client runs, as it offers it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ClientTool {
     /// How flow files name it: `script:<name>`.
     pub reference: String,
@@ -96,7 +97,7 @@ pub struct ClientTool {
 }
 
 /// The tools the client runs.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct ClientTools {
     /// The kinds it serves, by the prefix flow files name them with (`script`), whether or not
     /// it has any yet: "none in the library" is not "not available here".
@@ -192,5 +193,73 @@ impl Desk for Nobody {
 
     fn run_tool(&self, reference: String, _: Value) -> BoxFuture<'_, Result<Value, String>> {
         Box::pin(async move { Err(format!("no tool {reference:?} is registered")) })
+    }
+}
+
+/// The desk a session reaches, whoever is at it now: the client that is connected, or nobody.
+/// What holds it (a take's environment, the tool host) need not know when a client comes or
+/// goes.
+pub struct Seat(std::sync::RwLock<std::sync::Arc<dyn Desk>>);
+
+impl Seat {
+    pub fn new(desk: std::sync::Arc<dyn Desk>) -> Self {
+        Self(std::sync::RwLock::new(desk))
+    }
+
+    /// Another desk takes the seat.
+    pub fn set(&self, desk: std::sync::Arc<dyn Desk>) {
+        *self.0.write().expect("the seat lock") = desk;
+    }
+
+    fn now(&self) -> std::sync::Arc<dyn Desk> {
+        self.0.read().expect("the seat lock").clone()
+    }
+}
+
+impl Desk for Seat {
+    fn deliver(
+        &self,
+        delivery: Delivery,
+    ) -> BoxFuture<'_, Result<Option<DeliveryOutcome>, String>> {
+        let desk = self.now();
+        Box::pin(async move { desk.deliver(delivery).await })
+    }
+
+    fn confirm(&self, ask: Ask) -> BoxFuture<'_, bool> {
+        let desk = self.now();
+        Box::pin(async move { desk.confirm(ask).await })
+    }
+
+    fn read(&self, read: Read) -> BoxFuture<'_, Extracted> {
+        let desk = self.now();
+        Box::pin(async move { desk.read(read).await })
+    }
+
+    fn look(&self, look: Look) -> BoxFuture<'_, Opened> {
+        let desk = self.now();
+        Box::pin(async move { desk.look(look).await })
+    }
+
+    fn look_step(&self, session: u64, tool: String, arguments: Value) -> BoxFuture<'_, Looked> {
+        let desk = self.now();
+        Box::pin(async move { desk.look_step(session, tool, arguments).await })
+    }
+
+    fn look_end(&self, session: u64, remember: bool) -> BoxFuture<'_, Option<String>> {
+        let desk = self.now();
+        Box::pin(async move { desk.look_end(session, remember).await })
+    }
+
+    fn tools(&self) -> ClientTools {
+        self.now().tools()
+    }
+
+    fn run_tool(
+        &self,
+        reference: String,
+        arguments: Value,
+    ) -> BoxFuture<'_, Result<Value, String>> {
+        let desk = self.now();
+        Box::pin(async move { desk.run_tool(reference, arguments).await })
     }
 }

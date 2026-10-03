@@ -56,7 +56,8 @@ With `expose` on and anything served, the forwarder
 open. Other clients get what the routes serve, whichever provider serves it. The status reads
 "Serving the API on <address>", or "Using <providers>; serving the API on <address>" with no
 embedded model loaded. An address that cannot be bound fails the status with "Cannot listen on
-<address>", and the app's own takes still run.
+<address>", and the app's own takes still run. Run with `--serve`, the same listener serves
+desktop clients on `/desktop` whether or not the API is exposed ([cli](cli.md) R15).
 
 Tests: `exposing_the_api_serves_what_the_routes_serve_until_it_is_turned_off`
 

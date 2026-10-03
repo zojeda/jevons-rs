@@ -18,6 +18,7 @@ use jevons_desktop_protocol::delivery::{
     Action, AudioEvent, DeliveryMethod, DeliveryOutcome, DeliveryRequest, SAMPLE_RATE,
 };
 use jevons_desktop_protocol::desk::{Delivery, Desk};
+pub use jevons_desktop_protocol::take::{Stage, StageKind, Update};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -167,69 +168,6 @@ pub struct TakeStart {
     pub context: ContextSnapshot,
     /// The branch of the flow tree to start at, such as `ask`; `None` starts at the root.
     pub entry: Option<String>,
-}
-
-/// Live updates for the tray and inspector.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Update {
-    Level([u8; 5]),
-    /// Words recognized so far in the phrase being spoken.
-    Delta(String),
-    /// Live dictation: every phrase finished so far; the phrase being spoken starts over.
-    Heard(String),
-    Transcribing,
-    Thinking,
-    /// A stage of processing started: a decision, an investigation, a generation, a tool call.
-    /// It runs until a [`Update::StageDone`]; stages nest (an agent's tool calls), so a done
-    /// closes the latest stage still open.
-    Stage(Stage),
-    /// What the running stage is doing now, such as the element an investigation reads.
-    Progress(String),
-    /// The latest open stage ended: what it chose or produced, and whether it worked.
-    StageDone {
-        detail: String,
-        /// The branch a decision took.
-        chosen: Option<String>,
-        ok: bool,
-    },
-    /// Generated text.
-    Output(String),
-    /// The text being generated is an answer for the bubble, not text for the application.
-    Answering,
-    /// The machines moved: where they are now, such as `search › answering`.
-    State(String),
-}
-
-/// What a stage does, for the bubble's icon and animation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StageKind {
-    Deciding,
-    Investigating,
-    Writing,
-    Answering,
-    Calling,
-    Loop,
-}
-
-/// A stage as it starts.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Stage {
-    pub kind: StageKind,
-    /// A few words, such as `dictate` or `conversation`.
-    pub label: String,
-    /// A decision's branches, before it chooses.
-    pub choices: Vec<String>,
-}
-
-impl Stage {
-    pub fn new(kind: StageKind, label: impl Into<String>) -> Self {
-        Self {
-            kind,
-            label: label.into(),
-            choices: Vec::new(),
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -853,10 +791,15 @@ mod tests {
     use crate::client::{Client, Profile, Route};
     use crate::context::{AppInfo, Element, WindowInfo};
     use crate::flow::{Catalog, Memory};
+    use crate::serve::Host;
+    use crate::session::Session;
     use axum::Json;
     use axum::routing::{get, post};
     use jevons_desktop_core::desk::LocalDesk;
     use jevons_desktop_core::fake::RecordingSink;
+    use jevons_desktop_protocol::desk::Nobody;
+    use jevons_desktop_protocol::take::TakeSettings;
+    use jevons_desktop_protocol::wire::{ToClient, ToServer, VERSION, attend, in_process};
     use serde_json::{Value, json};
     use std::sync::Mutex;
 
@@ -2289,6 +2232,276 @@ confirm = false
         assert_eq!(trace.take, take);
         assert_eq!(moves(&trace), ["answering quiet → [*]"]);
         assert!(session.view().at_rest());
+    }
+
+    /// A client of a host over a stream: its desk attends to the server's effects.
+    struct Connected {
+        say: mpsc::UnboundedSender<ToServer>,
+        hear: mpsc::UnboundedReceiver<ToClient>,
+    }
+
+    /// Connects a client at `desk` to `host`, in this process or over a WebSocket.
+    async fn connected(host: &Arc<Host>, desk: Arc<dyn Desk>, websocket: bool) -> Connected {
+        let link = if websocket {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let app = crate::serve::router(host.clone());
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            jevons_desktop_protocol::socket::connect(&format!("ws://{address}/desktop"))
+                .await
+                .unwrap()
+        } else {
+            let (client, server) = in_process();
+            let host = host.clone();
+            tokio::spawn(async move { host.serve(server).await });
+            client
+        };
+        let tools = desk.tools();
+        let (say, hear) = attend(desk, link);
+        say.send(ToServer::Hello {
+            version: VERSION,
+            key: None,
+            tools,
+            settings: TakeSettings::default(),
+        })
+        .unwrap();
+        Connected { say, hear }
+    }
+
+    impl Connected {
+        /// The next thing the server says that is not a take's update.
+        async fn next(&mut self) -> ToClient {
+            loop {
+                let heard = tokio::time::timeout(Duration::from_secs(5), self.hear.recv());
+                match heard.await.expect("the server says something") {
+                    Some(ToClient::Update { .. }) => continue,
+                    Some(other) => return other,
+                    None => panic!("the stream ended"),
+                }
+            }
+        }
+
+        /// The session opens: a welcome, then where the machines are.
+        async fn welcomed(&mut self) -> Value {
+            assert_eq!(self.next().await, ToClient::Welcome { version: VERSION });
+            match self.next().await {
+                ToClient::Machines { view } => view,
+                other => panic!("{other:?}"),
+            }
+        }
+
+        /// Says `text` as take `take` from `context`; its trace and the machines after it.
+        async fn say(&mut self, take: u64, context: ContextSnapshot, text: &str) -> (Value, Value) {
+            self.say
+                .send(ToServer::Transcript {
+                    take,
+                    context,
+                    entry: None,
+                    text: text.into(),
+                })
+                .unwrap();
+            let ToClient::Trace { take: of, trace } = self.next().await else {
+                panic!("the take's trace comes first");
+            };
+            assert_eq!(of, take);
+            let ToClient::Machines { view } = self.next().await else {
+                panic!("then where the machines are");
+            };
+            (trace, view)
+        }
+    }
+
+    /// A trace without what differs between two runs of the same take: when, and how long.
+    fn comparable(mut trace: Value) -> Value {
+        fn strip(value: &mut Value) {
+            match value {
+                Value::Object(map) => {
+                    for key in ["ms", "at_ms", "started_at_ms", "timings", "since_ms"] {
+                        map.remove(key);
+                    }
+                    map.values_mut().for_each(strip);
+                }
+                Value::Array(items) => items.iter_mut().for_each(strip),
+                _ => {}
+            }
+        }
+        strip(&mut trace);
+        trace
+    }
+
+    #[tokio::test]
+    async fn a_take_over_a_stream_is_the_take_run_directly() {
+        // A rewrite of the selection through the built-in tree: decisions, a generation and
+        // a delivery. First with the client's desk in the take's own environment.
+        let decide = || prefer(&["dictation", "rewrite"]);
+        let (client, _) = server(decide(), "Dear team, hello world.").await;
+        let sink = RecordingSink::new(Some(7));
+        let (updates, _) = mpsc::unbounded_channel();
+        let start = TakeStart {
+            id: 1,
+            context: context(Some("hi all")),
+            entry: None,
+        };
+        let direct =
+            run_transcript(&env(client, Some(&sink)), start, "hello world", &updates).await;
+        assert_eq!(direct.error, None, "{:?}", direct.notes);
+        assert_eq!(sink.requests().len(), 1);
+        let direct = comparable(serde_json::to_value(&direct).unwrap());
+        // Then with the server and the client each at an end of a stream, in this process and
+        // over a WebSocket: the same trace, and the same text delivered.
+        for websocket in [false, true] {
+            let (client, _) = server(decide(), "Dear team, hello world.").await;
+            let (session, events) = Session::open(Arc::new(Nobody), builtin(), Settings::default());
+            session.set_routes(Some(routes(client)));
+            let host = Host::new(session, events, None);
+            let sink = RecordingSink::new(Some(7));
+            let mut client = connected(&host, desk(Some(&sink)), websocket).await;
+            let machines = client.welcomed().await;
+            assert_eq!(machines["busy"], false);
+            let (trace, machines) = client.say(1, context(Some("hi all")), "hello world").await;
+            assert_eq!(comparable(trace), direct, "websocket: {websocket}");
+            assert_eq!(sink.requests()[0].text, "Dear team, hello world.");
+            assert_eq!(sink.requests()[0].action, Action::Rewrite);
+            assert_eq!(machines["focus"], Value::Null);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_client_that_leaves_is_refused_and_finds_its_tasks_when_it_returns() {
+        // A client whose user never answers is asked to confirm a tool, and leaves.
+        let (client, _) = server(prefer(&[]), "unused").await;
+        let tree = agent_tree(&[
+            ("root.toml", "tools = [\"note\"]"),
+            (
+                "root.fsm",
+                "fsm App {\n[*] --> idle\nidle --> saving : said\nsaving --> idle\nsaving --> told : denied\nstate told\ntold --> idle\n}",
+            ),
+            (
+                "saving/tool.toml",
+                "description = \"Saves a note\"\ntool = \"note\"\n[args.title]\nvalue = \"x\"\n[args.folder]\nvalue = \"y\"\n[args.body]\nvalue = \"{transcript}\"",
+            ),
+            ("told/transcript.toml", "output = \"clipboard\""),
+        ]);
+        let (session, events) = Session::open(Arc::new(Nobody), tree, Settings::default());
+        session.set_routes(Some(routes(client)));
+        session.set_tools(Some(tool_host()));
+        let host = Host::new(session.clone(), events, None);
+        let (confirm, mut asked) =
+            mpsc::unbounded_channel::<jevons_desktop_core::confirm::Confirmation>();
+        let silent: Arc<dyn Desk> = Arc::new(LocalDesk::default().with_confirmer(Arc::new(
+            jevons_desktop_core::confirm::ChannelConfirmer::new(confirm),
+        )));
+        let mut client = connected(&host, silent, false).await;
+        client.welcomed().await;
+        let take = {
+            let session = session.clone();
+            tokio::spawn(async move {
+                let (updates, _) = mpsc::unbounded_channel();
+                let start = TakeStart {
+                    id: 1,
+                    context: context(None),
+                    entry: None,
+                };
+                session
+                    .transcript(start, "note that the build is green", &updates)
+                    .await
+            })
+        };
+        // The question reached the client's desk. Then the client goes away.
+        let question = tokio::time::timeout(Duration::from_secs(5), asked.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(question.tool, "note");
+        drop(client);
+        // The take in flight ends with the call declined, which the machine handles.
+        let trace = take.await.unwrap();
+        assert_eq!(trace.calls[0].confirmed, Some(false));
+        assert_eq!(
+            inner(&trace),
+            [
+                "idle said → saving",
+                "saving denied → told",
+                "told done → idle"
+            ]
+        );
+        drop(question);
+
+        // A search that waits, and a client that leaves: the task stays where it was, and the
+        // next client finds it and follows it up.
+        let labels = &["research", "find-1", "opening"];
+        let (client, _) = server(prefer(labels), "Two crates fit.").await;
+        let (session, events) =
+            Session::open(Arc::new(Nobody), tree_of(SEARCH_TASK), Settings::default());
+        session.set_routes(Some(routes(client)));
+        session.set_tools(Some(tool_host()));
+        let host = Host::new(session, events, Some("the-key".into()));
+        let hello = |key: Option<&str>, version: u32| ToServer::Hello {
+            version,
+            key: key.map(String::from),
+            tools: Default::default(),
+            settings: TakeSettings::default(),
+        };
+        // A client with another key, or of another version, is told why and turned away.
+        for (key, version, why) in [
+            (Some("another"), VERSION, "the key is not the server's"),
+            (
+                Some("the-key"),
+                VERSION + 1,
+                "the client speaks version 2, the server 1",
+            ),
+        ] {
+            let (mut client, server) = in_process();
+            let serving = host.clone();
+            tokio::spawn(async move { serving.serve(server).await });
+            client.tx.send(hello(key, version)).unwrap();
+            assert_eq!(
+                client.rx.recv().await,
+                Some(ToClient::Closed { why: why.into() })
+            );
+        }
+        let join = |host: &Arc<Host>| {
+            let (client, server) = in_process();
+            let serving = host.clone();
+            tokio::spawn(async move { serving.serve(server).await });
+            let (say, hear) = attend(desk(None), client);
+            say.send(hello(Some("the-key"), VERSION)).unwrap();
+            Connected { say, hear }
+        };
+        let mut first = join(&host);
+        assert_eq!(first.welcomed().await["busy"], false);
+        let (trace, machines) = first.say(1, context(None), "search for crates").await;
+        assert_eq!(trace["error"], Value::Null, "{trace}");
+        let waiting = |machines: &Value| {
+            let stack = machines["stack"].as_array().unwrap();
+            let task = stack.last().unwrap();
+            (stack.len(), task["folder"].clone(), task["state"].clone())
+        };
+        assert_eq!(
+            waiting(&machines),
+            (4, json!("research/find"), json!("answering"))
+        );
+        drop(first);
+        // The second client is told where the machines are as it connects.
+        let mut second = join(&host);
+        let machines = second.welcomed().await;
+        assert_eq!(
+            waiting(&machines),
+            (4, json!("research/find"), json!("answering"))
+        );
+        let (trace, machines) = second.say(2, context(None), "open the first one").await;
+        let moves: Vec<&str> = trace["machine"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|step| step["to"].as_str().unwrap())
+            .collect();
+        assert!(moves.contains(&"opening"), "{moves:?}");
+        assert_eq!(
+            machines["stack"].as_array().unwrap().len(),
+            3,
+            "the search ended"
+        );
     }
 
     #[tokio::test]

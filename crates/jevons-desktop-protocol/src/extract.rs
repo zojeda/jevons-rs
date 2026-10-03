@@ -213,7 +213,7 @@ impl Extract {
 }
 
 /// An extract's answer.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Extracted {
     /// In the extract's shape; `null` (or empty) when nothing matched.
     pub value: Json,

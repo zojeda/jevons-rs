@@ -14,7 +14,7 @@ use crate::flow::machine::runtime::{Due, Runtime, View};
 use crate::flow::tools::ToolHost;
 use crate::pipeline::{self, Env, Settings, TakeStart, Trace, Update};
 use jevons_desktop_protocol::delivery::AudioEvent;
-use jevons_desktop_protocol::desk::Desk;
+use jevons_desktop_protocol::desk::{Desk, Seat};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use tokio::sync::{mpsc, oneshot};
@@ -38,7 +38,6 @@ pub enum Event {
 
 /// What changes under a session while it lives.
 struct Parts {
-    desk: Arc<dyn Desk>,
     /// Each capability's route; `None` until a provider answers.
     routes: Option<Routes>,
     flows: Arc<FlowTree>,
@@ -48,6 +47,9 @@ struct Parts {
 
 /// One client's session.
 pub struct Session {
+    /// The client's desk, whoever is at it now: what a take and the tool host hold stays the
+    /// same when the client changes.
+    seat: Arc<Seat>,
     parts: RwLock<Parts>,
     machines: Arc<Runtime>,
     events: mpsc::UnboundedSender<Event>,
@@ -68,8 +70,8 @@ impl Session {
         let (due, mut timers) = mpsc::unbounded_channel();
         machines.set_timers(due);
         let session = Arc::new(Self {
+            seat: Arc::new(Seat::new(desk)),
             parts: RwLock::new(Parts {
-                desk,
                 routes: None,
                 flows,
                 tools: None,
@@ -100,9 +102,9 @@ impl Session {
         change(&mut self.parts.write().expect("the session lock"));
     }
 
-    /// The client's desk, as its settings are now.
+    /// The client's desk, as it is now: another client, or the same with other settings.
     pub fn set_desk(&self, desk: Arc<dyn Desk>) {
-        self.change(|parts| parts.desk = desk);
+        self.seat.set(desk);
     }
 
     /// Each capability's route, as the providers answer now.
@@ -130,9 +132,10 @@ impl Session {
         self.parts().routes.is_some()
     }
 
-    /// The desk the session reaches the client through.
+    /// The desk the session reaches the client through, whoever is at it: the one to build
+    /// the tool host with.
     pub fn desk(&self) -> Arc<dyn Desk> {
-        self.parts().desk.clone()
+        self.seat.clone()
     }
 
     /// Where the machines are.
@@ -150,18 +153,19 @@ impl Session {
     fn env(&self, flows: Option<Arc<FlowTree>>) -> Env {
         let parts = self.parts();
         let routes = parts.routes.clone().unwrap_or_default();
+        let desk = self.desk();
         let investigator = routes.generation.as_ref().map(|route| {
             Arc::new(Investigator::new(
                 route.client.clone(),
                 route.model.clone(),
-                parts.desk.clone(),
+                desk.clone(),
             )) as Arc<dyn Investigate>
         });
         Env {
             routes,
             flows: flows.unwrap_or_else(|| parts.flows.clone()),
             settings: parts.settings.clone(),
-            desk: parts.desk.clone(),
+            desk,
             investigator,
             tools: parts.tools.clone(),
             machines: self.machines.clone(),

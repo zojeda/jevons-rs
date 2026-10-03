@@ -422,6 +422,24 @@ For the automations library (the settings' one, or `--library <dir>`):
 
 `--reset-settings` puts the defaults back in the settings folder, and `--clear <what>` clears history (see [The settings folder and its history](#the-settings-folder-and-its-history) and [Logs and traces](#logs-and-traces)).
 
+### The server alone, and a client of it
+
+The part of the app that decides what to do with a take can run by itself, and a headless take
+can run on it from another process:
+
+```bash
+jevons-desktop --serve                         # no tray, no window: listens on [server] bind:port
+jevons-desktop --server ws://127.0.0.1:8080/desktop --transcript "hello world"
+```
+
+`--serve` loads the settings, the models routed to the app and the flows folder, and serves
+desktop clients on `ws://<bind>:<port>/desktop`, with the key the exposed API has. With `--server`,
+`--replay` and `--transcript` send the take there: the server transcribes, routes and decides, and
+asks this side to read the screen and, with `--deliver`, to type. The trace printed is the one
+the take would print in one process. A task that waits stays on the server between clients.
+The tray app itself still runs its own server in its process.
+
+
 ## Platform status
 
 Every platform layer is a trait in `jevons-desktop-core::platform`, the client. The pipeline, the flow tree and the machines are in `jevons-desktop-server`, which asks the client for delivery, confirmations, screen reads and automations through the `Desk` trait of `jevons-desktop-protocol`; paste safety and tray states are the client's. Each OS implements the layers:

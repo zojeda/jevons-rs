@@ -115,6 +115,19 @@ struct Args {
     /// its menu instead.
     #[arg(long)]
     reset_settings: bool,
+    /// Serve desktop clients and nothing else: no tray and no window. It loads the settings,
+    /// the models routed to it and the flows folder, and listens on the settings' address
+    /// (`ws://<bind>:<port>/desktop`) until it is stopped.
+    #[arg(long, conflicts_with_all = ["replay", "transcript", "server"])]
+    serve: bool,
+    /// With --replay or --transcript: run the take on the jevons server at this address, such
+    /// as `ws://127.0.0.1:8080/desktop`, instead of in this process. This side still reads
+    /// the screen and, with --deliver, types.
+    #[arg(long, value_name = "URL")]
+    server: Option<String>,
+    /// The key the server at --server asks for; `TYPESAFE_API_KEY` when left out.
+    #[arg(long, value_name = "KEY", requires = "server")]
+    key: Option<String>,
     /// Clear history and exit: `logs`, `traces` (of takes and automation runs), `trees`
     /// (recorded interfaces), `recordings` (demonstrations) or `all`; several separated by
     /// commas.
@@ -157,6 +170,7 @@ impl Args {
             || self.author.is_some()
             || self.reset_settings
             || !self.clear.is_empty()
+            || self.serve
     }
 }
 
@@ -243,7 +257,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return author_automation(&args, recording, &config, &config_file);
     }
     if args.replay.is_some() || !args.transcript.is_empty() {
-        return replay(&args, config, config_file);
+        return match &args.server {
+            Some(url) => replay_on(&args, url, &config),
+            None => replay(&args, config, config_file),
+        };
+    }
+    if args.serve {
+        return serve(config, config_file);
     }
     desktop(config, config_file)
 }
@@ -671,25 +691,7 @@ fn replay(
         }
         return Err("the flow tree has problems; see above".into());
     }
-    let inspector: Arc<dyn jevons_desktop_core::platform::ContextInspector> = match &args.tree {
-        Some(file) => Arc::new(jevons_desktop_core::recorded::RecordedInspector::load(
-            file,
-        )?),
-        None => platform::context_inspector(),
-    };
-    // The client's side: the interface is read within the privacy settings, the text is
-    // typed only with --deliver, and there is no one to confirm a tool.
-    let reader =
-        jevons_desktop_core::reader::Reader::new(inspector.clone(), config.privacy.clone());
-    let looks =
-        jevons_desktop_core::look::Looks::new(inspector, config.privacy.clone(), Arc::default());
-    let mut desk = jevons_desktop_core::desk::LocalDesk::default()
-        .with_reader(Arc::new(reader))
-        .with_looks(Arc::new(looks));
-    if args.deliver {
-        desk = desk.with_sink(Arc::new(Mutex::new(platform::text_sink())));
-    }
-    let desk: Arc<dyn jevons_desktop_protocol::desk::Desk> = Arc::new(desk);
+    let desk = headless_desk(args, &config)?;
     let dictation = &config.dictation;
     let settings = pipeline::Settings {
         language: dictation.language.clone(),
@@ -708,25 +710,7 @@ fn replay(
         let (updates, mut live) = mpsc::unbounded_channel();
         let printer = tokio::spawn(async move {
             while let Some(update) = live.recv().await {
-                match update {
-                    pipeline::Update::Delta(text) | pipeline::Update::Output(text) => {
-                        eprint!("{text}")
-                    }
-                    pipeline::Update::Stage(stage) => {
-                        let choices = if stage.choices.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" ({})", stage.choices.join(", "))
-                        };
-                        eprintln!("\n· {:?} {}{choices}", stage.kind, stage.label);
-                    }
-                    pipeline::Update::StageDone { detail, chosen, ok } => {
-                        let chosen = chosen.map_or(String::new(), |c| format!("{c} "));
-                        eprintln!("  {} {chosen}{detail}", if ok { "✓" } else { "✗" });
-                    }
-                    pipeline::Update::State(path) => eprintln!("\n▸ {path}"),
-                    _ => {}
-                }
+                print_update(&update);
             }
             eprintln!();
         });
@@ -775,6 +759,240 @@ fn replay(
         Some(e) => Err(e.into()),
         None => Ok(()),
     }
+}
+
+/// The client's side of a headless take: the interface is read within the privacy settings
+/// (from `--tree` when given), the text is typed only with --deliver, and there is no one to
+/// confirm a tool.
+fn headless_desk(
+    args: &Args,
+    config: &DesktopConfig,
+) -> Result<Arc<dyn jevons_desktop_protocol::desk::Desk>, Box<dyn std::error::Error>> {
+    let inspector: Arc<dyn jevons_desktop_core::platform::ContextInspector> = match &args.tree {
+        Some(file) => Arc::new(jevons_desktop_core::recorded::RecordedInspector::load(
+            file,
+        )?),
+        None => platform::context_inspector(),
+    };
+    let reader =
+        jevons_desktop_core::reader::Reader::new(inspector.clone(), config.privacy.clone());
+    let looks =
+        jevons_desktop_core::look::Looks::new(inspector, config.privacy.clone(), Arc::default());
+    let mut desk = jevons_desktop_core::desk::LocalDesk::default()
+        .with_reader(Arc::new(reader))
+        .with_looks(Arc::new(looks));
+    if args.deliver {
+        desk = desk.with_sink(Arc::new(Mutex::new(platform::text_sink())));
+    }
+    Ok(Arc::new(desk))
+}
+
+/// Says on stderr what a headless take is doing.
+fn print_update(update: &pipeline::Update) {
+    match update {
+        pipeline::Update::Delta(text) | pipeline::Update::Output(text) => eprint!("{text}"),
+        pipeline::Update::Stage(stage) => {
+            let choices = if stage.choices.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", stage.choices.join(", "))
+            };
+            eprintln!("\n· {:?} {}{choices}", stage.kind, stage.label);
+        }
+        pipeline::Update::StageDone { detail, chosen, ok } => {
+            let chosen = chosen.as_ref().map_or(String::new(), |c| format!("{c} "));
+            eprintln!("  {} {chosen}{detail}", if *ok { "✓" } else { "✗" });
+        }
+        pipeline::Update::State(path) => eprintln!("\n▸ {path}"),
+        _ => {}
+    }
+}
+
+/// Runs headless takes on the server at `url`: this side sends each take and attends to what
+/// the server asks of the desk, and prints the traces the server sends back.
+fn replay_on(
+    args: &Args,
+    url: &str,
+    config: &DesktopConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use jevons_desktop_protocol::delivery::AudioEvent;
+    use jevons_desktop_protocol::take::TakeSettings;
+    use jevons_desktop_protocol::wire::{Said, ToClient, ToServer, VERSION, attend};
+    let context: ContextSnapshot = match &args.context {
+        Some(file) => serde_json::from_str(&std::fs::read_to_string(file)?)?,
+        None => ContextSnapshot::default(),
+    };
+    let desk = headless_desk(args, config)?;
+    let key = args
+        .key
+        .clone()
+        .or_else(|| std::env::var("TYPESAFE_API_KEY").ok());
+    let dictation = &config.dictation;
+    let settings = TakeSettings {
+        language: dictation.language.clone(),
+        decide: dictation.decide,
+        max_output_tokens: dictation.max_output_tokens,
+    };
+    let tokio = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let traces = tokio.block_on(async {
+        let link = jevons_desktop_protocol::socket::connect(url).await?;
+        let tools = desk.tools();
+        let (say, mut hear) = attend(desk, link);
+        say.send(ToServer::Hello {
+            version: VERSION,
+            key,
+            tools,
+            settings,
+        })?;
+        match hear.recv().await {
+            Some(ToClient::Welcome { .. }) => {}
+            Some(ToClient::Closed { why }) => return Err(why.into()),
+            _ => return Err(format!("{url} did not answer as a jevons server").into()),
+        }
+        // Each take's trace, once the server sends it; what it says on the way is printed.
+        let mut traces: Vec<serde_json::Value> = Vec::new();
+        let mut takes = Vec::new();
+        match &args.replay {
+            Some(audio) => {
+                say.send(ToServer::Take {
+                    take: 1,
+                    context,
+                    entry: args.flow.clone(),
+                    said: Said::Take,
+                })?;
+                let (events, mut captured) = mpsc::unbounded_channel();
+                let mut source = FileAudioSource {
+                    file: audio.to_path_buf(),
+                    paced: true,
+                };
+                let capture = source.start(None, events)?;
+                let sending = say.clone();
+                tokio::spawn(async move {
+                    while let Some(event) = captured.recv().await {
+                        // The meter is this side's; the server needs the sound.
+                        if matches!(event, AudioEvent::Level(_)) {
+                            continue;
+                        }
+                        let _ = sending.send(ToServer::Audio { take: 1, event });
+                    }
+                    capture.stop();
+                });
+                takes.push(1);
+            }
+            None => {
+                for (take, text) in (1..).zip(&args.transcript) {
+                    takes.push(take);
+                    // One after the other: a task waits between them.
+                    say.send(ToServer::Transcript {
+                        take,
+                        context: context.clone(),
+                        entry: args.flow.clone(),
+                        text: text.clone(),
+                    })?;
+                    traces.push(trace_of(&mut hear, take).await?);
+                }
+            }
+        }
+        for take in takes.into_iter().skip(traces.len()) {
+            traces.push(trace_of(&mut hear, take).await?);
+        }
+        eprintln!();
+        Ok::<_, Box<dyn std::error::Error>>(traces)
+    })?;
+    match traces.as_slice() {
+        [trace] => println!("{}", serde_json::to_string_pretty(trace)?),
+        all => println!("{}", serde_json::to_string_pretty(all)?),
+    }
+    match traces.iter().find_map(|t| t["error"].as_str()) {
+        Some(e) => Err(e.into()),
+        None => Ok(()),
+    }
+}
+
+/// Waits for take `take`'s trace from the server, printing what the take does meanwhile.
+async fn trace_of(
+    hear: &mut mpsc::UnboundedReceiver<jevons_desktop_protocol::wire::ToClient>,
+    take: u64,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    use jevons_desktop_protocol::wire::ToClient;
+    loop {
+        match hear.recv().await {
+            Some(ToClient::Update { update, .. }) => print_update(&update),
+            Some(ToClient::Trace { take: of, trace }) if of == take => return Ok(trace),
+            Some(ToClient::Closed { why }) => return Err(why.into()),
+            Some(_) => {}
+            None => return Err("the server closed the connection".into()),
+        }
+    }
+}
+
+/// The server alone: no tray and no window. It serves desktop clients on the settings'
+/// address until the process is stopped.
+fn serve(config: DesktopConfig, config_file: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    use jevons_desktop_protocol::desk::Nobody;
+    use jevons_desktop_server::flow::tools::ToolHost;
+    use jevons_desktop_server::serve::Host;
+    use jevons_desktop_server::session::Session;
+    crate::config::log_api(config.log_api);
+    // The defaults the folder lacks: the flows folder is the server's to read.
+    for note in settings::prepare(&config_file, &config).notes {
+        eprintln!("note: {note}");
+    }
+    let (ready, changed) = std::sync::mpsc::channel();
+    let runtime = runtime::Runtime::start(move || {
+        let _ = ready.send(());
+    });
+    let tokio = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let session = tokio.block_on(async {
+        // Nobody is at the desk until a client connects.
+        let builtin = FlowTree::load(
+            &defaults::builtin(),
+            &jevons_desktop_server::flow::Catalog::default(),
+        );
+        let (session, events) = Session::open(
+            Arc::new(Nobody),
+            Arc::new(builtin),
+            pipeline::Settings::default(),
+        );
+        let tools = Arc::new(ToolHost::new(&config.tools, &config.mcp).with_desk(session.desk()));
+        for problem in tools.start().await {
+            eprintln!("note: {problem}");
+        }
+        // The automations are the client's, and none is connected yet: `script:` tools are
+        // taken as there, to be listed when one is.
+        let mut catalog = tools.catalog();
+        catalog.servers.entry("script".into()).or_insert(false);
+        let (flows, report) = defaults::open(&config.flows_dir(&config_file), &catalog);
+        for note in report.notes {
+            eprintln!("note: {note}");
+        }
+        if flows.is_valid() {
+            session.set_flows(Arc::new(flows));
+        } else {
+            for error in &flows.errors {
+                eprintln!("{error}");
+            }
+            eprintln!("note: the flow tree has problems: the built-in tree runs until it is fixed");
+        }
+        session.set_tools(Some(tools));
+        runtime.serve(Host::new(session.clone(), events, config.exposed_key()));
+        session
+    });
+    runtime.apply(&config, &config_file);
+    let address = std::net::SocketAddr::new(config.server.bind, config.server.port);
+    eprintln!("Serving desktop clients on ws://{address}/desktop");
+    // The routes follow the providers for as long as the server runs.
+    while changed.recv().is_ok() {
+        let status = runtime.status();
+        eprintln!("{}", status.describe());
+        session.set_routes(runtime.routes());
+    }
+    runtime.shutdown();
+    Ok(())
 }
 
 /// The tray, the agent and the inspector window.
