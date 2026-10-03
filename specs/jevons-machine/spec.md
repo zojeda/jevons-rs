@@ -132,10 +132,18 @@ An instance is one machine in a state. `handle` takes an input (an event from ou
 to a decision, or how the state's work ended) and returns the effects its host carries out, in
 order: ask the oracle, run a state's work, arm a timer; and what happened: a decision made, a step
 taken, a state entered, the machine ended, or stopped. An input the instance does not wait for (an
-event while its work runs, an answer nothing asked for, an event with no transition) changes
+answer nothing asked for, an event with no transition, an event while a decision is out) changes
 nothing. `release` drops what the host was asked and leaves the machine in its state.
 
 Tests: `a_machine_starts_in_its_first_state_and_runs_each_state_s_work`, `inputs_the_machine_does_not_wait_for_change_nothing`
+
+### R26 An event may interrupt a state's work
+
+An event from outside that comes while the state's work runs is weighed like any other. A
+transition taken on it leaves the state, and the work's outcome is no longer waited for. A machine
+that stays goes on waiting for its work.
+
+Tests: `an_event_may_interrupt_a_state_s_work_and_staying_goes_on_waiting_for_it`, `a_machine_that_leaves_its_state_leaves_the_task_running_there`
 
 ### R15 A machine starts, rests and jumps
 
@@ -162,7 +170,7 @@ A single candidate left is taken with no oracle ("the only transition that appli
 no guard, is the `[else]`, or has a named guard with no criterion. One with a criterion is asked
 about, yes or no.
 
-Tests: `a_single_candidate_is_taken_unless_it_has_a_criterion_to_judge`, `a_machine_starts_in_its_first_state_and_runs_each_state_s_work`
+Tests: `a_single_candidate_is_taken_unless_it_has_a_criterion_to_judge`, `a_machine_starts_in_its_first_state_and_runs_each_state_s_work`, `a_task_waits_across_takes_and_the_model_takes_its_transitions`
 
 ### R18 The oracle reads each candidate's criterion
 
@@ -181,7 +189,7 @@ above, is taken ("model 0.90"). Below it ("unsure (<label> 0.58)"), for a label 
 about, with no answer (the host's reason, such as "no decision model"), and with no candidate
 left ("no transition applies"), the `[else]` candidate is taken ("…: the fallback").
 
-Tests: `below_min_probability_the_else_transition_is_taken`, `the_oracle_reads_each_candidate_s_criterion_and_its_sure_choice_is_taken`
+Tests: `below_min_probability_the_else_transition_is_taken`, `the_oracle_reads_each_candidate_s_criterion_and_its_sure_choice_is_taken`, `the_root_takes_the_model_s_choice_from_seventy_percent_and_dictates_below`, `an_unsure_root_decision_takes_the_fallback`
 
 ### R20 Without an `[else]`, an unsure event leaves the machine where it was
 
@@ -189,7 +197,7 @@ When the `[else]` would be taken and the state has none on that event, the machi
 state ("…: stayed"): a step from the state to itself, marked as a stay, with no state entered and
 no work run. It then waits for the next event.
 
-Tests: `an_unsure_answer_never_moves_the_machine_on`, `rules_drop_candidates_and_prefer_one_before_the_oracle_is_asked`
+Tests: `an_unsure_answer_never_moves_the_machine_on`, `rules_drop_candidates_and_prefer_one_before_the_oracle_is_asked`, `an_unsure_take_leaves_a_waiting_task_where_it_was`
 
 ### R21 Choice points choose at once
 

@@ -144,14 +144,15 @@ Done when: the spike is on `main` and live use shows no routing regression.
 Scope: create `jevons-machine` and move the semantics behind the sans-IO interface. The runtime
 in desktop-core becomes the host.
 
-- [ ] New crate `crates/jevons-machine` with no tokio, HTTP or `serde_json` dependency. Serde
+- [x] New crate `crates/jevons-machine` with no tokio, HTTP or `serde_json` dependency. Serde
       derives are allowed, for instances.
-- [ ] Move the definition (today's `Machine`, `Event`, `Condition`, `Target`, `Choice`, `Timer`),
+- [x] Move the definition (today's `Machine`, `Event`, `Condition`, `Target`, `Choice`, `Timer`),
       the parser front end (`oxidate-fsm`) and the checks.
-- [ ] Move `layout`: it depends only on the definition.
-- [ ] Write `Instance::handle(def, input, facts) -> Vec<Effect>` with
+- [x] Move `layout`: it depends only on the definition.
+- [x] Write `Instance::handle(def, input, facts) -> Vec<Effect>` with
       `Input { Event, Decided, Finished }` and
-      `Effect { Decide, Run, Arm, Entered, Ended }`. It covers:
+      `Effect { Decide, Run, Arm, Entered, Ended }` (and `Chose`, `Step` and `Stopped`, which say
+      what happened). It covers:
       - candidates;
       - rules, then `[prefer]`, then the oracle, then `[else]` or staying put;
       - choice points;
@@ -159,9 +160,9 @@ in desktop-core becomes the host.
       - ending into the parent;
       - unhandled failures;
       - generations for timers.
-- [ ] Add a `Facts` trait for named guards and targets' `[when]` and `[prefer]`. The host
-      implements it over the frame and the target folders, as `Turn::check` does now.
-- [ ] Keep `Decide` as data (the candidates with their labels and criteria) and `Decided` as a
+- [x] Add a `Facts` trait for named guards and targets' `[when]` and `[prefer]`. The host
+      implements it over the frame and the target folders, as `Turn::check` did.
+- [x] Keep `Decide` as data (the candidates with their labels and criteria) and `Decided` as a
       label and probability, or nothing.
 - [ ] Value checks in guards: `when = { value = "{state.field}", … }` with `empty`, `equals`,
       `matches` and number comparisons, answered by `Facts` from the instance's values. The loader
@@ -171,10 +172,11 @@ in desktop-core becomes the host.
       checks and `{state.field}` placeholders can read them.
 - [ ] Decided-by: the loader reports, for each state and event, whether the event alone, rules or
       the model decides its transitions; `--check-flows` prints it.
-- [ ] Turn `flow/machine/runtime.rs` into a host that carries out the effects: walks, delivery,
+- [x] Turn `flow/machine/runtime.rs` into a host that carries out the effects: walks, delivery,
       tokio timers, and System One with the lookahead batching.
-- [ ] Engine tests with a scripted oracle and scripted facts: every rule of the selection order,
-      stays, choice points, nesting, timers and stale generations, the step bound.
+- [x] Engine tests with a scripted oracle and scripted facts: every rule of the selection order,
+      stays, choice points, timers and stale generations, the step bound, and an event that
+      interrupts a state's work. Nesting is the host's and is tested there.
 
 Crates: `jevons-machine` (new), `jevons-desktop-core`, `jevons-desktop` (imports).
 Tested by: the new engine tests (value checks included: a search with no results taking

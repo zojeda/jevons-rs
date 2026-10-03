@@ -12,12 +12,14 @@ it on. Nothing a machine does is off its diagram.
 
 ## Scope
 
-This file covers the loader's checks on machine folders and the runtime that moves the machines
-on takes, work and timers.
+This file covers the loader's checks on machine folders and the runtime that hosts the machines:
+it answers the engine's rules, asks the decision model, runs the states' work, keeps the tasks
+nested in states, and runs the timers.
 
 Elsewhere:
 
-- Reading and checking a diagram, and the layout the inspector draws:
+- Reading and checking a diagram, the layout the inspector draws, and how one machine moves (the
+  order of rules, `[prefer]`, the decision, `[else]` and staying; choice points):
   [jevons-machine](../jevons-machine/spec.md).
 - The walk of a state's folder, guards and `[prefer]` rules, and the built-in root's routing:
   [flows.md](flows.md).
@@ -149,9 +151,9 @@ Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`
 
 ### R20 Rules drop transitions before the model
 
-The candidates on an event are the state's transitions on it, in the order written. A transition
-drops out when its target folder's `[when]` fails, when its target is a run state with no approved
-automation, or when its named guard's `when` fails.
+The runtime answers the engine's rules ([jevons-machine](../jevons-machine/spec.md) R16) against
+the take's context and words. A transition drops out when its target folder's `[when]` fails, when
+its target is a run state with no approved automation, or when its named guard's `when` fails.
 
 Tests: `without_approved_automations_the_run_branch_is_no_candidate`
 
@@ -165,37 +167,27 @@ Tests: `words_starting_with_pregunta_are_a_question_with_no_root_decision`, `in_
 
 ### R22 A sure transition needs no model
 
-A single candidate with no criterion (no guard, `[else]`, or a named guard without `criterion`) is
-taken with no model call.
-
-Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`
+Removed: now [jevons-machine](../jevons-machine/spec.md) R17.
 
 ### R23 The model chooses by each transition's criterion
 
-Otherwise the decision model chooses. Each candidate is labelled by its target's name, made unique
-(`end` for `[*]`, then `name-2`). The model reads the guard's sentence or the named guard's
-`criterion`, else the target folder's `description`, else the diagram's state description; `[*]`
-reads "The task is over: end it." With one such candidate the model answers yes or no. The
-question is the machine's node file's `question`; by default the root's `said` asks which fits what the
-user wants, and a task names itself, its state and the event.
+When the engine asks for a decision ([jevons-machine](../jevons-machine/spec.md) R18), the decision
+model answers it. A named guard's criterion is its `criterion`, and a state's own description is
+its folder's `description`. With one candidate the model answers yes or no. The question is the
+machine's node file's `question`; by default the root's `said` asks which fits what the user
+wants, and a task names itself, its state and the event. With no decision model, when the request
+fails or times out, and when the model gives no answer, the engine is told so, and takes its
+`[else]` or stays (R19 and R20 there). `min_probability` is the node file's, 0.7 by default.
 
 Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`
 
 ### R24 Below `min_probability` the `[else]` transition is taken
 
-The model's choice is taken at or above `min_probability` (0.7 by default). Below it, and when no
-decision model is set, the request fails, no answer comes or the model names no candidate, the
-machine takes the `[else]` transition, whatever its target's rules say.
-
-Tests: `the_root_takes_the_model_s_choice_from_seventy_percent_and_dictates_below`, `an_unsure_root_decision_takes_the_fallback`
+Removed: now [jevons-machine](../jevons-machine/spec.md) R19.
 
 ### R25 An unsure take stays
 
-When the decision model's probability for a `said` transition is below `min_probability`, or no
-candidate applies, or the model cannot answer, and the state has no `[else]` on `said`, the
-machine stays in its state and runs no work. The trace records the stay.
-
-Tests: `an_unsure_take_leaves_a_waiting_task_where_it_was`
+Removed: now [jevons-machine](../jevons-machine/spec.md) R20.
 
 ### R26 A machine's question carries its candidates' first decisions
 
@@ -225,18 +217,15 @@ Tests: `a_declined_tool_call_takes_the_denied_transition`
 
 ### R29 A failure nothing handles ends the task
 
-A `failed` with no transition on it ends a task, and its parent's state then takes `failed`. At the
-root it puts the root back in its first state.
+A machine that ends failed ([jevons-machine](../jevons-machine/spec.md) R23) is a task that ends
+("nothing handles it: the task ends"), and its parent's state then takes `failed`. At the root it
+puts the root back in its first state ("nothing handles it: back to the start").
 
 Tests: none yet
 
 ### R30 Choice points choose at once
 
-A transition into `<<name>>` chooses among the choice point's branches as the machine chooses among
-transitions, and takes `[else]` when none applies or the model is unsure. The step lists the
-choice points it went through.
-
-Tests: none yet
+Removed: now [jevons-machine](../jevons-machine/spec.md) R21.
 
 ### R31 A state's machine is a task
 
@@ -271,8 +260,9 @@ Tests: `a_task_keeps_the_extracts_read_on_the_way_to_it`
 
 ### R34 A take or timer causes at most 32 transitions
 
-One take or timer moves the machines through at most 32 transitions. Past that, the trace notes
-where the machines stopped.
+One take or timer moves the machines through at most 32 of their diagrams' transitions, counted
+across machines. Past that, the trace notes where the machines stopped, and the machine that was
+next keeps its state.
 
 Tests: none yet
 
@@ -327,6 +317,14 @@ is also a flow step with its branches' checks and its System One request, and a 
 bubble.
 
 Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`, `an_unsure_take_leaves_a_waiting_task_where_it_was`
+
+### R46 A machine that leaves its state leaves the task running there
+
+When a machine takes a transition while a task runs in its state (its own timer, or what the user
+said when no task listens), the task ends with it, running nothing more
+([jevons-machine](../jevons-machine/spec.md) R26). A machine that stays keeps its task.
+
+Tests: `a_machine_that_leaves_its_state_leaves_the_task_running_there`
 
 ## Layout
 

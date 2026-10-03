@@ -1960,6 +1960,62 @@ confirm = false
     }
 
     #[tokio::test]
+    async fn a_machine_that_leaves_its_state_leaves_the_task_running_there() {
+        let tree = FlowTree::load(
+            &Memory::new(
+                "test",
+                [
+                    ("root.toml", ""),
+                    (
+                        "root.fsm",
+                        "fsm App {\ntimer limit = 50 -> limit\n[*] --> idle\nidle --> job : said\n\
+                         job --> idle\njob --> idle : limit\n}",
+                    ),
+                    ("job/task.toml", "description = \"A job\""),
+                    (
+                        "job/task.fsm",
+                        "fsm Job {\n[*] --> waiting\n\
+                         waiting --> [*] : said [the user says it is finished]\n}",
+                    ),
+                ],
+            ),
+            &Catalog::default(),
+        );
+        assert!(tree.is_valid(), "{:?}", tree.errors);
+        let machines = Arc::new(Runtime::new());
+        let (due, mut timers) = mpsc::unbounded_channel();
+        machines.set_timers(due);
+        let (client, seen) = server(prefer(&[]), "unused").await;
+        let env = Env {
+            flows: Arc::new(tree),
+            machines: machines.clone(),
+            ..env(client, None)
+        };
+        let first = say(&env, 1, "start the job").await;
+        assert_eq!(moves(&first), ["idle said → job", "[*] start → waiting"]);
+        assert_eq!(machines.view().path(), "job › waiting");
+        // The root's timer runs out while the task waits in its state: the root moves on, and
+        // the task goes with the state.
+        let fired = tokio::time::timeout(Duration::from_secs(5), timers.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(fired.event, "limit");
+        let (updates, _) = mpsc::unbounded_channel();
+        let trace = machines
+            .timer(&env, fired, 9, &updates)
+            .await
+            .expect("the root still waited in job");
+        assert_eq!(moves(&trace), ["job limit → idle"]);
+        assert_eq!(machines.view().path(), "idle");
+        assert!(!machines.view().in_task());
+        assert!(seen.decisions.lock().unwrap().is_empty());
+        // The next take is the root's again.
+        let next = say(&env, 2, "start it again").await;
+        assert_eq!(moves(&next), ["idle said → job", "[*] start → waiting"]);
+    }
+
+    #[tokio::test]
     async fn a_task_keeps_the_extracts_read_on_the_way_to_it() {
         let tree = FlowTree::load(
             &Memory::new(

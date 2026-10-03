@@ -738,6 +738,21 @@ impl Loader<'_> {
                 }
             }
         }
+        // A machine's states with a folder have work, described by its node file.
+        if let Some(loaded) = self.nodes[id.0].machine.take() {
+            let mut loaded = Arc::unwrap_or_clone(loaded);
+            for child in &children {
+                let work = &self.nodes[child.0];
+                loaded.diagram.working.insert(work.name.clone());
+                if let Some(description) = work.description() {
+                    loaded
+                        .diagram
+                        .described
+                        .insert(work.name.clone(), description.to_string());
+                }
+            }
+            self.nodes[id.0].machine = Some(Arc::new(loaded));
+        }
         self.nodes[id.0].children = children;
         self.check_node(id);
         Some(id)
@@ -880,6 +895,18 @@ impl Loader<'_> {
                  runs for as long as the app)",
             );
         }
+        // What the engine needs beyond the diagram; its states' work is added once the
+        // subfolders are loaded.
+        let diagram = machine::Definition {
+            criteria: guards
+                .iter()
+                .filter_map(|(name, g)| Some((name.clone(), g.criterion.clone()?)))
+                .collect(),
+            min_probability: spec
+                .min_probability
+                .unwrap_or(machine::runtime::DEFAULT_MIN_PROBABILITY),
+            ..machine::Definition::from(diagram)
+        };
         Some(Arc::new(Loaded { diagram, guards }))
     }
 

@@ -35,7 +35,8 @@
 pub mod runtime;
 
 pub use jevons_machine::{
-    Branch, Choice, Condition, Event, MAX_TIMER, Machine, State, Target, Timer, Transition, layout,
+    Branch, Choice, Condition, Definition, Event, MAX_TIMER, Machine, State, Target, Timer,
+    Transition, layout,
 };
 
 use super::guard::Guard;
@@ -64,9 +65,10 @@ pub struct NamedGuard {
     pub criterion: Option<String>,
 }
 
-/// A machine as the flow tree loads it: the diagram and the guards of its node file.
+/// A machine as the flow tree loads it: its definition (the diagram, and what its folder says of
+/// its states and guards) and the guards of its node file.
 #[derive(Clone, Debug)]
 pub struct Loaded {
-    pub diagram: Machine,
+    pub diagram: Definition,
     pub guards: BTreeMap<String, NamedGuard>,
 }

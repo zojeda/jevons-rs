@@ -14,7 +14,9 @@
 //!
 //! A transition leads through choice points, each decided the same way, to a state or the end.
 //! Entering a state arms its timers and runs its work ([`Effect::Run`], answered with
-//! [`Input::Finished`]); a state with no work that can leave on `done` leaves at once. The host
+//! [`Input::Finished`]); a state with no work that can leave on `done` leaves at once. An event
+//! from outside may come while the work runs: a transition taken on it leaves the state and the
+//! work behind, and a machine that stays goes on waiting for its work. The host
 //! keeps the instances (a task in a state of another), runs the work, asks the oracle and keeps
 //! the timers; the engine moves one instance at a time.
 
@@ -339,7 +341,8 @@ pub enum Effect {
     Decide(Question),
     /// A decision was made. One follows every decision, whoever made it.
     Chose(Chosen),
-    /// A transition was taken, or the machine stayed.
+    /// A transition was taken, or the machine stayed. A transition taken while the state's work
+    /// ran leaves that work behind: its outcome is no longer waited for.
     Step(Step),
     /// The machine is in `state`, in a new entry of it.
     Entered { state: String, generation: u64 },
@@ -386,6 +389,8 @@ enum At {
 #[derive(Clone, Debug, PartialEq)]
 struct Asking {
     event: Event,
+    /// The state's work ran when the event came.
+    working: bool,
     at: At,
     options: Vec<Candidate>,
     pool: Vec<usize>,
@@ -433,6 +438,9 @@ struct Turn<'a> {
     out: Vec<Effect>,
     /// Transitions taken so far.
     steps: usize,
+    /// The state's work ran when the input came, and still does: staying goes on waiting for
+    /// it.
+    working: bool,
 }
 
 /// One machine, in a state.
@@ -482,6 +490,7 @@ impl Instance {
             facts,
             out: Vec::new(),
             steps: 0,
+            working: false,
         };
         turn.out.push(Effect::Step(Step {
             from: self.state.clone(),
@@ -537,28 +546,36 @@ impl Instance {
         self.pending = None;
     }
 
-    /// Moves the machine on `input`. An input it does not wait for (an event while its work
-    /// runs, an answer nothing asked for) changes nothing.
+    /// Moves the machine on `input`. An input it does not wait for (an answer nothing asked
+    /// for, an event while a decision is out) changes nothing.
     pub fn handle(&mut self, def: &Definition, input: Input, facts: &dyn Facts) -> Vec<Effect> {
         let mut turn = Turn {
             def,
             facts,
             out: Vec::new(),
             steps: 0,
+            working: false,
         };
         match (input, self.pending.take()) {
             (Input::Event(event), None) => self.fire(&mut turn, event),
+            // The event may interrupt the state's work.
+            (Input::Event(event), Some(Pending::Work)) => {
+                turn.working = true;
+                self.fire(&mut turn, event);
+            }
             (Input::Finished(outcome), Some(Pending::Work)) => {
                 self.fire(&mut turn, outcome.event());
             }
             (Input::Decided(decision), Some(Pending::Decision(asking))) => {
                 let Asking {
                     event,
+                    working,
                     at,
                     options,
                     pool,
                     fallback,
                 } = *asking;
+                turn.working = working;
                 let pick = by_oracle(def, &options, &pool, fallback, decision);
                 turn.out
                     .push(chose(self, &at, &event, &options, &pool, &pick, true));
@@ -586,8 +603,13 @@ impl Instance {
                         turn.out.push(Effect::Ended(Outcome::Failed));
                         return;
                     }
-                    // It waits for what comes next.
-                    _ => return,
+                    // It waits for what comes next, and for its work if that runs.
+                    _ => {
+                        if turn.working {
+                            self.pending = Some(Pending::Work);
+                        }
+                        return;
+                    }
                 }
             }
             match self.decide(turn, &event, At::State, options) {
@@ -641,6 +663,7 @@ impl Instance {
             }));
             self.pending = Some(Pending::Decision(Box::new(Asking {
                 event: event.clone(),
+                working: turn.working,
                 at,
                 options,
                 pool,
@@ -687,6 +710,9 @@ impl Instance {
                     probabilities,
                     stayed: true,
                 }));
+                if turn.working {
+                    self.pending = Some(Pending::Work);
+                }
                 None
             }
             (
@@ -761,6 +787,7 @@ impl Instance {
             stayed: false,
         }));
         turn.steps += 1;
+        turn.working = false;
         let Some(state) = state else {
             turn.out.push(Effect::Ended(Outcome::Done));
             return None;
@@ -1357,7 +1384,8 @@ mod tests {
         let def = def(SEARCH, &["searching", "answering", "opening"]);
         let (mut task, _) = Instance::start(&def, &none());
         let before = task.clone();
-        // Its work runs: an event from outside and an answer nothing asked for are dropped.
+        // Its work runs: an answer nothing asked for is dropped, and so is an event its state
+        // has no transition on.
         assert!(
             task.handle(&def, Input::Event(Event::Said), &none())
                 .is_empty()
@@ -1383,6 +1411,51 @@ mod tests {
         // A root goes back to its first state, entering nothing.
         task.rest(&def);
         assert_eq!((task.state(), task.busy()), ("searching", false));
+    }
+
+    #[test]
+    fn an_event_may_interrupt_a_state_s_work_and_staying_goes_on_waiting_for_it() {
+        let body = "
+            timer limit = 60000 -> limit
+            [*] --> working
+            working --> shown
+            working --> [*] : limit
+            working --> shown : said [the user wants what there is so far]
+            shown --> [*] : said";
+        let def = def(body, &["working"]);
+        // A timer the state waits for leaves it while its work runs: the work's end is no
+        // longer waited for.
+        let (mut task, _) = Instance::start(&def, &none());
+        assert!(task.busy());
+        let effects = task.handle(&def, Input::Event(Event::Timer("limit".into())), &none());
+        assert_eq!(
+            steps(&effects),
+            ["working limit → [*]: the only transition that applies"]
+        );
+        assert!(!task.busy());
+        assert!(
+            task.handle(&def, Input::Finished(Outcome::Done), &none())
+                .is_empty()
+        );
+        // Unsure of what was said, the machine stays, and its work is still waited for.
+        let (mut task, _) = Instance::start(&def, &none());
+        task.handle(&def, Input::Event(Event::Said), &none());
+        let effects = task.handle(&def, chose("shown", 0.3), &none());
+        assert_eq!(
+            steps(&effects),
+            ["working said → working: unsure (shown 0.30): stayed"]
+        );
+        assert!(task.busy());
+        let effects = task.handle(&def, Input::Finished(Outcome::Done), &none());
+        assert_eq!(
+            steps(&effects),
+            ["working done → shown: the only transition that applies"]
+        );
+        // Sure of it, the machine moves on.
+        let (mut task, _) = Instance::start(&def, &none());
+        task.handle(&def, Input::Event(Event::Said), &none());
+        task.handle(&def, chose("shown", 0.9), &none());
+        assert_eq!((task.state(), task.busy()), ("shown", false));
     }
 
     #[test]

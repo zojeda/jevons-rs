@@ -254,9 +254,10 @@ The engine knows what a machine is and how it moves, and does nothing itself:
 - **Definition:** states, events, transitions, guards by reference, choice points, timers and
   nesting, checked once. The `.fsm` diagrams (Oxidate's language, read by `oxidate-fsm`) are one front
   end; the engine's model is its own, so the language can change without touching the semantics.
-- **Instance:** one machine's state, what its states wrote, and the generation that tells live
-  timers from stale ones. It is plain data. The host keeps the forest of instances (the root, the
-  agents, their tasks); the engine moves one instance at a time.
+- **Instance:** one machine's state, what it waits for from its host, and the generation that
+  tells live timers from stale ones. It is plain data. The host keeps the forest of instances (the
+  root, the agents, their tasks) and what each one's states wrote, whose type is the host's; the
+  engine moves one instance at a time.
 - **Semantics:**
   - which transitions an event makes candidates;
   - the order of rules, then `[prefer]`, then the oracle, then `[else]`, or staying on `said`;
@@ -266,13 +267,28 @@ The engine knows what a machine is and how it moves, and does nothing itself:
 The host drives it:
 
 ```rust
-enum Input  { Event(Event), Decided(Choice), Finished(Outcome) }
-enum Effect { Decide { at, candidates }, Run { state }, Arm { timer, after, generation }, Entered { path }, Ended(outcome) }
+enum Input  { Event(Event), Decided(Decision), Finished(Outcome) }
+enum Effect {
+    // What the host must do.
+    Decide(Question), Run { state }, Arm { event, after, generation },
+    // What happened.
+    Chose(Chosen), Step(Step), Entered { state, generation }, Ended(Outcome), Stopped,
+}
 fn handle(&mut self, def: &Definition, input: Input, facts: &dyn Facts) -> Vec<Effect>
 ```
 
-- **Guards** are evaluated through `Facts`: the engine asks whether `[guards.search]` or a target's
-  `[when]` holds, and never learns that `app = …` is about a window.
+`Definition` is the checked diagram plus what the host knows that it does not say: which states
+have work, how a state's work describes itself, the named guards' criteria, and `min_probability`.
+The host builds it when it loads the machine's folder.
+
+- **Guards** are evaluated through `Facts`: the engine asks how each candidate fares against its
+  rules (its named guard's and its target's), and never learns that `app = …` is about a window.
+- **Every decision is reported** (`Chose`), whoever made it, and every transition or stay
+  (`Step`), with the words the trace shows. The host adds what only it knows: the rules checked,
+  the request sent, the time taken.
+- **An event may interrupt a state's work.** A timer or what the user said, arriving while a
+  state's work runs (a task in it, for one), is weighed like any other. A transition taken leaves
+  the work behind; a machine that stays goes on waiting for it.
 - **The decision model is an oracle.** `Decide` lists the candidates with their criteria, and the
   host answers with `Decided` (a choice and its probability), or with no answer. The host may be
   the System One router, a scripted test, or you, clicking a transition in the Machines tab.
