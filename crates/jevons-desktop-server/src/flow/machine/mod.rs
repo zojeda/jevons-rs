@@ -36,7 +36,7 @@ pub mod runtime;
 
 pub use jevons_machine::{
     Branch, By, Choice, Condition, DecidedBy, Decides, Definition, Event, MAX_TIMER, Machine,
-    State, Target, Timer, Transition, layout,
+    State, Target, Timer, Transition, add_state, layout,
 };
 
 use super::guard::Guard;

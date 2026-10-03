@@ -26,7 +26,7 @@ It has no async code, no HTTP and no JSON: serde derives only.
 
 ## Requirements
 
-The diagram is R1 to R10; the layout, R11 to R13 and R32 to R34; the engine, R14 to R31.
+The diagram is R1 to R10 and R35; the layout, R11 to R13 and R32 to R34; the engine, R14 to R31.
 
 ### R1 A diagram is one `fsm` block
 
@@ -327,3 +327,14 @@ holds several transitions shows the most demanding of them. A choice point's bra
 at the choice point. Nothing decides the start's edge.
 
 Tests: `an_edge_says_what_decides_it`
+
+### R35 A state is added where the machine waits
+
+`add_state` gives a diagram's text with a state added, as two transitions before its closing
+brace, indented as the line before them: the machine enters the state on `said` from the state
+it waits in, and goes back there when the state's work is done. The state it waits in is the
+first, in the order written, with a transition on `said`, or its first state when none has. A
+name that is already a state or a choice point, and a diagram that is not valid before or after,
+are errors, and the text is not changed.
+
+Tests: `a_state_is_added_where_the_machine_waits`

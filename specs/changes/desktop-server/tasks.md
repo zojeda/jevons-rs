@@ -581,9 +581,11 @@ Done when: a search waiting in `results` is still there after a restart.
       runs) is still waited for. Over the wire the host no longer stops reading while a cancel
       waits, which held a client's answer back until its question timed out; declining the
       question there is the client's to do.
-- [ ] **Draft states under a machine** in the Flows tab: write the state's folder and append its
+- [x] **Draft states under a machine** in the Flows tab: write the state's folder and append its
       transitions (`idle --> x : said`, `x --> idle`) to the parent's `.fsm`. Today only decision
-      parents are offered.
+      parents are offered. Done for agents and tasks; the transitions hang from the state the
+      machine waits in (`idle` for an agent, `results` for the search). The root machine is not
+      offered: its states are agents, and drafting a whole agent is another thing.
 - [x] **Edge routing:** fewer crossings (more ordering sweeps, transposition), and orthogonal or
       spline edges instead of straight segments. Done as: the order with the fewest crossings is
       kept, then neighbours swap while that helps; edges down the rows are curves that leave and

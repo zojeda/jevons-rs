@@ -158,14 +158,18 @@ Tests: none yet
 
 ### R17 A new branch drafts its guard from the context
 
-**New branch from the current context** writes a folder under the decision chosen, named in
-lowercase letters, digits, `-` and `_`. Its node file has the window's title as its description
-and a guard that matches the application, page and field the Context tab shows, with the exact
-window title as a commented-out rule. Over a tree with shared actions it is a `decide.toml` that
-uses them; otherwise a `generate.toml` for the application. An existing folder is refused. The
-tree then reloads, and the folder opens.
+**New branch from the current context** writes a folder under the parent chosen, named in
+lowercase letters, digits, `-` and `_`. The parent is a decision, or an agent or a task, whose
+state the branch becomes; shared folders and the root machine, whose states are agents, are not
+offered. Its node file has the window's title as its description and a guard that matches the
+application, page and field the Context tab shows, with the exact window title as a
+commented-out rule. Over a tree with shared actions it is a `decide.toml` that uses them;
+otherwise a `generate.toml` for the application. Under a machine, the machine's diagram also
+gets the state's two transitions ([jevons-machine](../jevons-machine/spec.md) R35): the diagram
+is changed first, so one that cannot take the state leaves nothing written. An existing folder
+is refused. The tree then reloads, and the folder opens.
 
-Tests: `a_drafted_guard_matches_the_context_it_came_from`
+Tests: `a_drafted_guard_matches_the_context_it_came_from`, `a_branch_is_created_under_a_decision_or_as_a_state_of_a_machine`
 
 ### R18 The Machines tab draws each machine and where it is
 

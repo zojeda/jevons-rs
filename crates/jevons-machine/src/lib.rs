@@ -673,6 +673,42 @@ fn snake_case(name: &str) -> String {
     out
 }
 
+/// The diagram `text` with a state `name` added, as two transitions before its closing brace:
+/// the machine enters it on `said` from the state it waits in, and goes back there when the
+/// state's work is done. The state it waits in is the first, in the order written, with a
+/// transition on `said`, or its first state when none has. Fails when `name` is taken, or when
+/// the diagram, before or after, is not a valid one.
+pub fn add_state(text: &str, name: &str) -> Result<String, Vec<String>> {
+    let machine = Machine::parse(text)?;
+    if machine.state(name).is_some() || machine.choice(name).is_some() {
+        return Err(vec![format!(
+            "{name} is already a state of {}",
+            machine.name
+        )]);
+    }
+    let waits = machine
+        .states
+        .iter()
+        .find(|s| machine.leaving(&s.name, &Event::Said).next().is_some())
+        .map_or(machine.initial.as_str(), |s| s.name.as_str());
+    let Some(close) = text.rfind('}') else {
+        return Err(vec!["the diagram has no closing brace".into()]);
+    };
+    let body = text[..close].trim_end();
+    // Indented as the line before them.
+    let last = body.lines().next_back().unwrap_or_default();
+    let indent: String = last
+        .chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .collect();
+    let added = format!(
+        "{body}\n{indent}{waits} --> {name} : said\n{indent}{name} --> {waits}\n{}",
+        &text[close..]
+    );
+    Machine::parse(&added)?;
+    Ok(added)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -706,6 +742,41 @@ fsm Search {
 
     fn errors(text: &str) -> Vec<String> {
         Machine::parse(text).unwrap_err()
+    }
+
+    #[test]
+    fn a_state_is_added_where_the_machine_waits() {
+        // An agent waits in its first state.
+        let agent =
+            "fsm Research {\n    [*] --> idle\n    idle --> find : said\n    find --> idle\n}\n";
+        let added = add_state(agent, "reply").unwrap();
+        assert_eq!(
+            added,
+            "fsm Research {\n    [*] --> idle\n    idle --> find : said\n    find --> idle\n    idle --> reply : said\n    reply --> idle\n}\n"
+        );
+        let machine = Machine::parse(&added).unwrap();
+        assert_eq!(machine.leaving("idle", &Event::Said).count(), 2);
+        // A task waits further on: the state is added where it listens.
+        let added = add_state(SEARCH, "summarize").unwrap();
+        assert!(
+            added.contains("\n    answering --> summarize : said\n    summarize --> answering\n}"),
+            "{added}"
+        );
+        assert!(Machine::parse(&added).is_ok());
+        // A machine that listens nowhere gets it at its first state.
+        let silent = "fsm A {\n[*] --> a\na --> [*]\n}";
+        assert!(
+            add_state(silent, "b")
+                .unwrap()
+                .contains("\na --> b : said\nb --> a\n}")
+        );
+        // A name that is taken, or one that is no state's name, changes nothing.
+        assert_eq!(
+            add_state(agent, "find"),
+            Err(vec!["find is already a state of Research".to_string()])
+        );
+        assert!(add_state(agent, "Not A Name").is_err());
+        assert!(add_state("fsm Broken {", "x").is_err());
     }
 
     #[test]
