@@ -35,17 +35,17 @@ pub fn default_file() -> PathBuf {
 }
 
 /// One call on its way: its request, if the log is on.
-pub(super) struct Call {
-    api: &'static str,
+pub(crate) struct Call {
+    api: String,
     began: Instant,
     at_ms: u128,
     request: Option<Value>,
 }
 
 impl Call {
-    pub(super) fn start(api: &'static str, request: &impl Serialize) -> Self {
+    pub(crate) fn start(api: impl Into<String>, request: &impl Serialize) -> Self {
         Self {
-            api,
+            api: api.into(),
             began: Instant::now(),
             at_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -55,8 +55,13 @@ impl Call {
     }
 
     /// Records the call with what came back, and the error that ended it if one did.
-    pub(super) fn end(mut self, response: Value, error: Option<&super::ClientError>) {
-        self.write(response, error.map(|e| e.to_string()));
+    pub(super) fn end(self, response: Value, error: Option<&super::ClientError>) {
+        self.finish(response, error.map(|e| e.to_string()));
+    }
+
+    /// The same, with the error as text.
+    pub(crate) fn finish(mut self, response: Value, error: Option<String>) {
+        self.write(response, error);
     }
 
     fn write(&mut self, response: Value, error: Option<String>) {

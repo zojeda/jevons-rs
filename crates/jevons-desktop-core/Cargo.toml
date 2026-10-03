@@ -18,6 +18,8 @@ adk-core.workspace = true
 adk-runner.workspace = true
 adk-session.workspace = true
 adk-tool.workspace = true
+# The forwarder: the API the app serves to other clients.
+axum = { workspace = true, features = ["ws"] }
 base64.workspace = true
 directories.workspace = true
 futures-util = { workspace = true, features = ["sink", "std"] }
@@ -37,7 +39,6 @@ toml_edit.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-axum = { workspace = true, features = ["ws"] }
 # The render_icons example.
 image.workspace = true
 

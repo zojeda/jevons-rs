@@ -77,6 +77,11 @@ impl Client {
         &self.base
     }
 
+    /// The key requests carry, for the forwarder that sends other clients' requests on.
+    pub fn key(&self) -> Option<&str> {
+        self.key.as_deref()
+    }
+
     fn url(&self, path: &str) -> String {
         format!("{}{path}", self.base)
     }

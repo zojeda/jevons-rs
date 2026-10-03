@@ -287,8 +287,9 @@ their flows folder did; keep `[providers]` and `[routes]` a short diff from `[se
       - split requests that ask more questions than the provider takes, noting the extra calls.
 - [x] Let the decision model's profile set `min_probability`. Remove `min_probability = 0.7` from
       the built-in root; a node or machine that sets it still overrides the profile.
-- [ ] Forward `/v1/*`: a pass-through by model name, with the provider's key added and `log_api`
-      applied. It listens where the exposed API listens now.
+- [x] Forward `/v1/*`: a pass-through by model name, with the provider's key added and `log_api`
+      applied. It listens where the exposed API listens now. The embedded API is always private
+      to the app, and `/v1/realtime` is relayed too.
 
 Crates: `jevons-desktop-core` (client, config, pipeline), `jevons-desktop` (settings UI, runtime).
 Tested by:
@@ -315,6 +316,14 @@ What phase 3 decided on the way:
   what starts `enrich` and the fallback, a different contract from a machine's "unsure".
 - **Split requests go one after the other,** so a split take is slower by a request each; they
   are rare at 8 a request (a take asks 2 to 6).
+- **A model no route names goes by the path's capability** (`/v1/systemone` to the decision
+  route), so `jev-latest` and a provider's other models still work through the forwarder.
+  `GET /health` and `GET /v1/models` are the forwarder's own, from the routes.
+- **The forwarder lives in jevons-desktop-core** (`forward.rs`) with the routes, ready to move to
+  the server crate in phase 4; jevons-desktop's runtime thread only binds it.
+- **Not run: the manual headless take against OpenRouter.** It needs an OpenRouter key, which
+  this work did not have. Before relying on Jev: run `--transcript` with `[routes] decision` on
+  OpenRouter and read the trace's notes and the API log.
 - **A provider that fails leaves the others running:** the status says what failed, and the
   capabilities on providers that answer are served.
 

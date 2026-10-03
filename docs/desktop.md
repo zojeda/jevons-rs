@@ -309,6 +309,7 @@ The **Settings** tab edits the runtime, dictation and privacy settings. A change
 - **Runtime.**
   - By default the API is private: it listens on an ephemeral loopback port with a random key that only the app knows.
   - *Expose the API* serves it on the address and port you choose, so the OpenAI SDK, Open WebUI or `scripts/smoke-test.py` can use it. It takes the key from `TYPESAFE_API_KEY` or the settings; without a key the API is open.
+  - Each request goes to the provider that serves its model (see [Providers and routes](#providers-and-routes)), with that provider's key added, and the answer comes back unchanged. Other clients send the app's key and never hold a provider's. `GET /health` and `GET /v1/models` list what the routes serve.
   - Turning exposure on or off, or changing the port, rebinds the listener without reloading the models.
 - **Providers and routes.** Where each capability runs; see [below](#providers-and-routes).
 - **Dictation.** The hotkeys (push-to-talk, live dictation, inspector, and one per top-level branch), live feedback, the microphone, language (detected when empty), whether to ask the decision model (when off, decisions take their fallback), and the most tokens a generation may write unless a node sets its own.

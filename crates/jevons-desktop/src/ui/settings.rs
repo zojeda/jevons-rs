@@ -373,8 +373,8 @@ pub fn SettingsPage(rev: u64) -> Element {
                         {status.as_ref().map_or_else(|| "Starting…".to_string(), Status::describe)}
                     }
                 }
-                if let Some(Status::Ready { base_url, exposed: true }) = status.clone() {
-                    CopyButton { text: format!("{base_url}/v1"), label: "Copy base URL".to_string() }
+                if let Some(api) = status.as_ref().and_then(Status::api) {
+                    CopyButton { text: format!("{api}/v1"), label: "Copy base URL".to_string() }
                 }
             }
             div { class: "dx-card-content",

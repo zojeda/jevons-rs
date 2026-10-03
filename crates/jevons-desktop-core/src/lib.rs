@@ -8,8 +8,9 @@
 //! - [`flow`]: the flow tree, folders of TOML files that route each take through guards and
 //!   decisions to a leaf that writes, answers or calls a tool; its loader explains every error.
 //! - [`pipeline`]: one take, from the microphone and transcript through the flow tree to delivery.
-//! - [`client`]: typed requests to the jevons API (Realtime, transcriptions, System One,
-//!   Responses).
+//! - [`client`]: typed requests to the jevons API and other providers (Realtime,
+//!   transcriptions, System One, Responses), and each capability's route to its provider.
+//! - [`forward`]: the API the app serves to other clients, forwarded to those providers.
 //! - [`delivery`], [`levels`], [`icons`]: paste safety, the microphone meter and the tray
 //!   frames.
 //! - [`catalog`] and [`download`]: the model catalog and resumable, verified downloads.
@@ -32,6 +33,7 @@ pub mod download;
 #[cfg(any(test, feature = "testing"))]
 pub mod fake;
 pub mod flow;
+pub mod forward;
 pub mod git;
 pub mod history;
 pub mod icons;

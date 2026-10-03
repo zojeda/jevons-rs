@@ -1,16 +1,18 @@
 //! Where inference runs: each capability goes to the provider its route names. The embedded
-//! provider is the models loaded in this process (served over HTTP on loopback, and to other
-//! clients when exposed); the others are servers elsewhere.
+//! provider is the models loaded in this process, served over HTTP on loopback to this app
+//! alone; the others are servers elsewhere. When the API is exposed, a forwarder serves other
+//! clients what the routes serve.
 //!
-//! The runtime thread owns a Tokio runtime and the loaded models. Applying new settings only
-//! rebinds the listener when the models did not change, so exposing the API or changing its
-//! port keeps the models in memory.
+//! The runtime thread owns a Tokio runtime, the loaded models and the forwarder. Exposing the
+//! API or changing its port only rebinds the forwarder, so the models stay in memory.
 
 use jevons_desktop_core::client::{Client, Profile, Route, Routes};
 use jevons_desktop_core::config::{
     Capability, DesktopConfig, ModelRef, Models, Provider, ProviderKind,
 };
+use jevons_desktop_core::forward::{self, Forwarder};
 use std::collections::BTreeMap;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 
@@ -19,15 +21,15 @@ pub enum Status {
     /// Nothing serves any capability: no models are selected, and no route goes elsewhere.
     NoModels,
     Loading,
-    /// The embedded API is serving on `base_url`; `exposed` when other clients may use it.
-    #[cfg_attr(not(feature = "embedded"), allow(dead_code))]
+    /// The app's models are loaded. `api` is where other clients reach the API, when it is
+    /// exposed.
     Ready {
-        base_url: String,
-        exposed: bool,
+        api: Option<String>,
     },
     /// Every capability served is on a provider elsewhere.
     Remote {
         providers: Vec<String>,
+        api: Option<String>,
     },
     Failed(String),
 }
@@ -38,7 +40,7 @@ impl Status {
         match self {
             Self::NoModels => "No models",
             Self::Loading => "Loading models",
-            Self::Ready { exposed: true, .. } => "Serving the API",
+            Self::Ready { api: Some(_) } | Self::Remote { api: Some(_), .. } => "Serving the API",
             Self::Ready { .. } => "Ready",
             Self::Remote { .. } => "Remote providers",
             Self::Failed(_) => "Failed",
@@ -49,13 +51,22 @@ impl Status {
         match self {
             Self::NoModels => "No models yet: download them in the Models tab".into(),
             Self::Loading => "Loading models…".into(),
-            Self::Ready {
-                base_url,
-                exposed: true,
-            } => format!("Serving the API on {base_url}"),
-            Self::Ready { .. } => "Models loaded (API private to this app)".into(),
-            Self::Remote { providers } => format!("Using {}", providers.join(", ")),
+            Self::Ready { api: Some(api) } => format!("Serving the API on {api}"),
+            Self::Ready { api: None } => "Models loaded (API private to this app)".into(),
+            Self::Remote {
+                providers,
+                api: Some(api),
+            } => format!("Using {}; serving the API on {api}", providers.join(", ")),
+            Self::Remote { providers, .. } => format!("Using {}", providers.join(", ")),
             Self::Failed(e) => format!("Failed: {e}"),
+        }
+    }
+
+    /// Where other clients reach the API, while it is exposed.
+    pub fn api(&self) -> Option<&str> {
+        match self {
+            Self::Ready { api } | Self::Remote { api, .. } => api.as_deref(),
+            _ => None,
         }
     }
 }
@@ -159,6 +170,61 @@ impl Local {
     }
 }
 
+/// The API other clients use, while exposed: the forwarder on `bind:port`.
+struct Exposed {
+    address: SocketAddr,
+    key: Option<String>,
+    forwarder: Forwarder,
+    stop: tokio::sync::oneshot::Sender<()>,
+    task: tokio::task::JoinHandle<std::io::Result<()>>,
+}
+
+/// Serves `routes` to other clients when the settings expose the API, and stops serving when
+/// they do not. A listener with the same address and key is kept, with the routes as they
+/// are now. Returns where the API is.
+fn expose(
+    tokio: &tokio::runtime::Runtime,
+    exposed: &mut Option<Exposed>,
+    config: &DesktopConfig,
+    routes: Option<&Routes>,
+) -> Result<Option<String>, String> {
+    let address = SocketAddr::new(config.server.bind, config.server.port);
+    let key = config.exposed_key();
+    let routes = routes.filter(|_| config.server.expose);
+    let keep = exposed
+        .as_ref()
+        .is_some_and(|e| routes.is_some() && e.address == address && e.key == key);
+    if !keep && let Some(old) = exposed.take() {
+        let _ = old.stop.send(());
+        let _ = tokio.block_on(old.task);
+    }
+    let Some(routes) = routes else {
+        return Ok(None);
+    };
+    if exposed.is_none() {
+        let listener = tokio
+            .block_on(tokio::net::TcpListener::bind(address))
+            .map_err(|e| format!("Cannot listen on {address}: {e}"))?;
+        // Without a key the exposed API is open, as jevons-rs is without one.
+        let forwarder = Forwarder::new(key.clone());
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio.spawn(forwarder.clone().serve(listener, async {
+            let _ = stopped.await;
+        }));
+        tracing::info!(%address, "Serving the API to other clients");
+        *exposed = Some(Exposed {
+            address,
+            key,
+            forwarder,
+            stop,
+            task,
+        });
+    }
+    let serving = exposed.as_ref().expect("the forwarder listens");
+    serving.forwarder.route(forward::targets(routes));
+    Ok(Some(format!("http://{address}")))
+}
+
 struct Shared {
     status: Status,
     routes: Option<Routes>,
@@ -233,6 +299,7 @@ fn run(
         changed();
     };
     let mut embedded = embedded::Embedded::default();
+    let mut exposed: Option<Exposed> = None;
     while let Ok(Some((config, file))) = requests.recv() {
         // Only the latest settings matter.
         let (config, file) = std::iter::from_fn(|| requests.try_recv().ok())
@@ -241,6 +308,7 @@ fn run(
             .unwrap_or((config, file));
         if let Err(e) = config.check_routes() {
             tokio.block_on(embedded.unload());
+            let _ = expose(&tokio, &mut exposed, &config, None);
             set(Status::Failed(e), None);
             continue;
         }
@@ -248,7 +316,7 @@ fn run(
         // run.
         let mut failures: Vec<String> = Vec::new();
         let mut served: BTreeMap<String, Served> = BTreeMap::new();
-        let mut local: Option<Status> = None;
+        let mut local = false;
         let providers = used(&config);
         // The models in this app: only those of the capabilities routed here are loaded.
         let wanted = Local::of(&config);
@@ -269,9 +337,9 @@ fn run(
                 if embedded.needs_load(&settings) {
                     set(Status::Loading, None);
                 }
-                match embedded.apply(&tokio, &settings, &file, &config) {
-                    Ok((status, server)) => {
-                        local = Some(status);
+                match embedded.apply(&tokio, &settings, &file) {
+                    Ok(server) => {
+                        local = true;
                         for (name, provider) in &providers {
                             if provider.kind == ProviderKind::Embedded {
                                 served.insert(name.clone(), server.clone());
@@ -314,17 +382,27 @@ fn run(
             || routes.realtime.is_some()
             || routes.decision.is_some()
             || routes.generation.is_some();
+        let routes = any.then_some(routes);
+        // Other clients get what the routes serve, on the address the settings expose.
+        let api = expose(&tokio, &mut exposed, &config, routes.as_ref()).unwrap_or_else(|e| {
+            failures.push(e);
+            None
+        });
         let status = if !failures.is_empty() {
             Status::Failed(failures.join("; "))
         } else if !any {
             Status::NoModels
+        } else if local {
+            Status::Ready { api }
         } else {
-            local.unwrap_or(Status::Remote {
+            Status::Remote {
                 providers: elsewhere,
-            })
+                api,
+            }
         };
-        set(status, any.then_some(routes));
+        set(status, routes);
     }
+    let _ = expose(&tokio, &mut exposed, &DesktopConfig::default(), None);
     tokio.block_on(embedded.unload());
 }
 
@@ -409,12 +487,11 @@ pub fn runtime_settings(
 
 #[cfg(feature = "embedded")]
 mod embedded {
-    use super::{Served, Status};
+    use super::Served;
     use jevons_api::config::Settings;
     use jevons_api::{AppState, Workers};
     use jevons_desktop_core::client::Client;
-    use jevons_desktop_core::config::DesktopConfig;
-    use std::net::{IpAddr, SocketAddr};
+    use std::net::SocketAddr;
     use std::path::Path;
     use std::sync::Arc;
     use tokio::sync::oneshot;
@@ -426,10 +503,10 @@ mod embedded {
         workers: Workers,
     }
 
+    /// The embedded API's listener: a loopback port and a key only this app knows.
     struct Listener {
         address: SocketAddr,
-        exposed: bool,
-        key: Option<String>,
+        key: String,
         stop: oneshot::Sender<()>,
         task: JoinHandle<std::io::Result<()>>,
     }
@@ -462,13 +539,14 @@ mod embedded {
             }
         }
 
+        /// Loads the models of `settings` unless they are loaded, and serves them to this
+        /// app alone. The listener keeps its port and key while the models stay.
         pub fn apply(
             &mut self,
             tokio: &tokio::runtime::Runtime,
             settings: &str,
             file: &Path,
-            config: &DesktopConfig,
-        ) -> Result<(Status, Served), String> {
+        ) -> Result<Served, String> {
             if self.needs_load(settings) {
                 tokio.block_on(self.unload());
                 let parsed = Settings::parse(settings, file).map_err(|e| e.to_string())?;
@@ -481,89 +559,53 @@ mod embedded {
                     workers,
                 });
             }
-            let server = &config.server;
-            let exposed_address = SocketAddr::new(server.bind, server.port);
-            let exposed_key = config.exposed_key();
-            let keep = self.listener.as_ref().is_some_and(|l| {
-                if server.expose {
-                    l.exposed && l.address == exposed_address && l.key == exposed_key
-                } else {
-                    // A private listener keeps its port and key while it runs.
-                    !l.exposed
-                }
-            });
-            if !keep {
-                tokio.block_on(self.stop_listener());
-                let (address, key) = if server.expose {
-                    // Without a key the exposed API is open, as jevons-rs is without one.
-                    (exposed_address, exposed_key)
-                } else {
-                    let key = format!(
-                        "{}{}",
-                        uuid::Uuid::new_v4().simple(),
-                        uuid::Uuid::new_v4().simple()
-                    );
-                    (SocketAddr::from(([127, 0, 0, 1], 0)), Some(key))
-                };
-                let loaded = self.loaded.as_ref().expect("the models are loaded");
+            let loaded = self.loaded.as_ref().expect("the models are loaded");
+            if self.listener.is_none() {
+                let key = format!(
+                    "{}{}",
+                    uuid::Uuid::new_v4().simple(),
+                    uuid::Uuid::new_v4().simple()
+                );
+                let address = SocketAddr::from(([127, 0, 0, 1], 0));
                 let listener = tokio
                     .block_on(tokio::net::TcpListener::bind(address))
                     .map_err(|e| format!("Cannot listen on {address}: {e}"))?;
                 let address = listener.local_addr().map_err(|e| e.to_string())?;
                 let state = AppState {
-                    api_key: key.as_deref().map(Arc::from),
+                    api_key: Some(Arc::from(key.as_str())),
                     ..loaded.state.clone()
                 };
                 let (stop, stopped) = oneshot::channel::<()>();
                 let task = tokio.spawn(jevons_api::serve(listener, state, async {
                     let _ = stopped.await;
                 }));
-                tracing::info!(%address, exposed = server.expose, "Serving the embedded API");
+                tracing::info!(%address, "Serving the embedded API to this app");
                 self.listener = Some(Listener {
                     address,
-                    exposed: server.expose,
                     key,
                     stop,
                     task,
                 });
             }
-            Ok(self.served())
-        }
-
-        fn served(&self) -> (Status, Served) {
             let listener = self.listener.as_ref().expect("the listener runs");
-            let state = &self.loaded.as_ref().expect("the models are loaded").state;
-            let host = match listener.address.ip() {
-                IpAddr::V4(ip) if ip.is_unspecified() => IpAddr::from([127, 0, 0, 1]),
-                IpAddr::V6(ip) if ip.is_unspecified() => IpAddr::from([127, 0, 0, 1]),
-                ip => ip,
-            };
-            let base_url = format!("http://{}", SocketAddr::new(host, listener.address.port()));
-            let served = Served {
-                client: Client::new(&base_url, listener.key.clone()),
+            let state = &loaded.state;
+            Ok(Served {
+                client: Client::new(
+                    &format!("http://{}", listener.address),
+                    Some(listener.key.clone()),
+                ),
                 speech: state.speech.as_ref().map(|s| s.model_id.clone()),
                 decision: state.decision.as_ref().map(|s| s.model_id.clone()),
                 generation: state.generative.as_ref().map(|s| s.model_id.clone()),
                 realtime: state.speech.as_ref().is_some_and(|s| s.realtime),
-            };
-            let exposed_url = format!("http://{}", listener.address);
-            let status = Status::Ready {
-                base_url: if listener.exposed {
-                    exposed_url
-                } else {
-                    base_url
-                },
-                exposed: listener.exposed,
-            };
-            (status, served)
+            })
         }
     }
 }
 
 #[cfg(not(feature = "embedded"))]
 mod embedded {
-    use super::{Served, Status};
-    use jevons_desktop_core::config::DesktopConfig;
+    use super::Served;
     use std::path::Path;
 
     #[derive(Default)]
@@ -581,8 +623,7 @@ mod embedded {
             _: &tokio::runtime::Runtime,
             _: &str,
             _: &Path,
-            _: &DesktopConfig,
-        ) -> Result<(Status, Served), String> {
+        ) -> Result<Served, String> {
             Err(
                 "this build has no embedded runtime: route every capability to another provider"
                     .into(),
@@ -702,6 +743,69 @@ generation = { provider = "box" }
         assert_eq!(runtime_settings(&models, file, none).unwrap(), None);
         // By default all of them are here.
         assert_eq!(Local::of(&DesktopConfig::default()), ALL);
+    }
+
+    #[test]
+    fn exposing_the_api_serves_what_the_routes_serve_until_it_is_turned_off() {
+        let tokio = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let free = || {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let mut config = DesktopConfig::default();
+        config.server.expose = true;
+        config.server.port = free();
+        let route = |model: &str| Routes {
+            decision: Some(Route::ours(
+                Client::new("http://127.0.0.1:1", None),
+                "box",
+                model,
+            )),
+            ..Routes::default()
+        };
+        let health = |api: &str| tokio.block_on(Client::new(api, None).health());
+        let mut exposed = None;
+        // Private: nothing listens, and there is no address to give.
+        config.server.expose = false;
+        let api = expose(&tokio, &mut exposed, &config, Some(&route("jev"))).unwrap();
+        assert!(api.is_none() && exposed.is_none());
+        // Exposed: other clients see what the routes serve.
+        config.server.expose = true;
+        let api = expose(&tokio, &mut exposed, &config, Some(&route("jev")))
+            .unwrap()
+            .unwrap();
+        assert_eq!(api, format!("http://127.0.0.1:{}", config.server.port));
+        assert_eq!(
+            health(&api).unwrap().services.decision.as_deref(),
+            Some("jev")
+        );
+        // New routes are served by the same listener.
+        expose(&tokio, &mut exposed, &config, Some(&route("gemma"))).unwrap();
+        assert_eq!(
+            health(&api).unwrap().services.decision.as_deref(),
+            Some("gemma")
+        );
+        // Another port moves it.
+        let old = api;
+        config.server.port = free();
+        let api = expose(&tokio, &mut exposed, &config, Some(&route("gemma")))
+            .unwrap()
+            .unwrap();
+        assert!(health(&old).is_err());
+        assert!(health(&api).is_ok());
+        // An address that is taken says so.
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut elsewhere = config.clone();
+        elsewhere.server.port = taken.local_addr().unwrap().port();
+        let mut second = None;
+        let error = expose(&tokio, &mut second, &elsewhere, Some(&route("jev"))).unwrap_err();
+        assert!(error.starts_with("Cannot listen on 127.0.0.1:"), "{error}");
+        // With nothing served, or turned off, it stops.
+        assert_eq!(expose(&tokio, &mut exposed, &config, None), Ok(None));
+        assert!(exposed.is_none() && health(&api).is_err());
     }
 
     #[test]

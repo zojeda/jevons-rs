@@ -228,3 +228,65 @@ response with the usage summed, and the trace notes it: "12 questions asked in 3
 openrouter/typesafe/jev-1.13 takes 5 in one". A request that fails fails the decision.
 
 Tests: `questions_over_a_provider_s_limit_go_in_several_requests`, `questions_over_the_provider_s_limit_are_asked_in_several_requests`
+
+### R23 Other clients' requests go to the provider of their model
+
+The forwarder is the API the app serves to other clients. A `/v1/*` request goes to the provider
+of the route that asks for the request's model: the `model` of a JSON body, the `model` field of a
+multipart form, or `model` in the query. A model no route names goes to the route of the path's
+capability: `/v1/audio/transcriptions` to speech, `/v1/realtime` to Realtime, `/v1/systemone` to
+decisions, and `/v1/responses`, `/v1/chat/completions` and `/v1/completions` to generation. So a
+provider's other names for its models (`jev-latest`) still reach it. With neither, the answer is
+404 "No route serves <path> for the model <model>", and no provider is asked.
+
+Tests: `a_request_goes_to_the_provider_of_its_model_with_that_provider_s_key`, `an_upload_goes_to_the_speech_provider_as_it_was_sent`, `the_routes_are_the_forwarder_s_targets`
+
+### R24 Forwarded requests carry the provider's key, never the client's
+
+The forwarder asks for the app's own key as jevons-api does: `Authorization: Bearer <key>`, or for
+a WebSocket the subprotocol `openai-insecure-api-key.<key>`. Without one the answer is 403 "No API
+key provided", with a wrong one 401 "Invalid API key", and with no key configured the API is
+open. `/health` needs no key. The request goes on with the provider's key in place of the
+client's, so other clients never hold a provider's key, and a provider's key does not open the
+app's API.
+
+Tests: `the_app_s_key_is_asked_for_and_the_providers_keys_stay_with_the_app`
+
+### R25 A forwarded request and its answer pass unchanged
+
+The method, path, query, body and headers go to the provider as they came, but for the headers of
+one connection (`Host`, `Content-Length`, `Connection`, `Transfer-Encoding`, `Upgrade`, `TE`,
+`Trailer`) and `Authorization`. The answer's status, headers and body come back the same way, the
+body as it arrives, so a stream of events streams. A request body over 64 MiB is refused with
+413, and a provider that cannot be reached is a 502 "Cannot reach <provider>: …".
+
+Tests: `an_answer_comes_back_as_the_provider_gave_it`, `a_request_goes_to_the_provider_of_its_model_with_that_provider_s_key`, `an_upload_goes_to_the_speech_provider_as_it_was_sent`
+
+### R26 Health and the model listing are the forwarder's own
+
+`GET /health` answers `{"status": "ok", "services": {...}}` with the model of the generation,
+decision and speech routes, in jevons-api's shape, so another jevons app can use this one as a
+`jevons` provider. `GET /v1/models` lists the models the routes ask for, each once, in System
+One's shape (`models`) and OpenAI's (`object`, `data`), with the provider's name as the owner. No
+provider is asked for either, and neither holds a key.
+
+Tests: `the_app_s_key_is_asked_for_and_the_providers_keys_stay_with_the_app`
+
+### R27 A Realtime session passes both ways
+
+`GET /v1/realtime` opens the session with the Realtime route's provider first, with its key and
+the `realtime` subprotocol, so a provider that refuses it answers the client with its own status
+(a 404 still reads as "not served"). Then the client's upgrade is accepted and text, binary, ping,
+pong and close messages pass both ways until either side closes.
+
+Tests: `a_realtime_session_passes_both_ways_through_the_forwarder`
+
+### R28 The API log covers forwarded decisions and generations
+
+With `privacy.log_api` on, a forwarded request with a JSON body appends one record: the API as
+"POST /v1/systemone → <provider>", the request body, and the answer's status with its body (as
+JSON when it is, as text for a stream of events, cut at 1 MiB and marked `truncated`). A provider
+that cannot be reached records its error, and an answer the client stopped reading records that.
+Uploads and Realtime sessions are not logged, and no key is.
+
+Tests: `the_api_log_holds_forwarded_calls_and_never_a_key_or_audio`

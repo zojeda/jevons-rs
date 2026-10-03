@@ -20,7 +20,8 @@ It owns:
   recorded interfaces (`recorded`);
 - automations (`automation/`) and recorded demonstrations (`recording/`);
 - the settings folder, its git repository and history clears (`settings`, `git`, `history`);
-- the take pipeline (`pipeline`), paste safety (`delivery`) and the typed API client (`client`);
+- the take pipeline (`pipeline`), paste safety (`delivery`), the typed API client with its routes
+  (`client`) and the forwarder that serves other clients (`forward`);
 - the model catalog and downloads (`catalog`, `download`), the microphone meter (`levels`) and
   the tray icon frames (`icons`).
 
@@ -45,4 +46,4 @@ It leaves:
 | [recording](recording.md) | Recording a demonstration of a task, and recorded interfaces |
 | [settings](settings.md) | The settings folder, its defaults, its git repository, the reset and history clears |
 | [pipeline](pipeline.md) | One take from the microphone to delivery, live dictation and paste safety |
-| [client](client.md) | Typed requests to the jevons API, the API log, the model catalog and downloads, tray icon frames |
+| [client](client.md) | Typed requests to the jevons API and other providers, each capability's route and its provider's profile, forwarding for other clients, the API log, the model catalog and downloads, tray icon frames |

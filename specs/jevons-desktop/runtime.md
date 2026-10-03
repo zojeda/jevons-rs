@@ -5,8 +5,8 @@
 The runtime is where inference runs. Each capability goes to the provider its route names
 ([settings](../jevons-desktop-core/settings.md) R19 to R21): the embedded provider is the models
 loaded in this process, served over HTTP by the embedded jevons-api, and the others are servers
-elsewhere. The runtime thread owns the loaded models and the listener, so the API can move to
-another address without reloading the models. Takes reach their providers through
+elsewhere. The runtime thread owns the loaded models and the forwarder that serves other
+clients, so the API can move to another address without reloading the models. Takes reach their providers through
 jevons-desktop-core's [client](../jevons-desktop-core/client.md), and the catalog that fills
 unselected services is described there too.
 
@@ -42,27 +42,31 @@ Tests: `hip_failures_say_how_to_check_the_driver`
 
 ### R4 The API is private by default
 
-Unexposed, the embedded API listens on an ephemeral loopback port with a random key only the app
-knows, and keeps that port and key while it runs. The status reads "Models loaded (API private to
-this app)".
+The embedded API always listens on an ephemeral loopback port with a random key only the app
+knows, and keeps that port and key while the models stay loaded. Unexposed, nothing else listens,
+and the status reads "Models loaded (API private to this app)".
 
-Tests: none yet
+Tests: `exposing_the_api_serves_what_the_routes_serve_until_it_is_turned_off`
 
 ### R5 Exposing the API serves other clients
 
-With `expose` on, the embedded API listens on `bind:port` with the key from `TYPESAFE_API_KEY`,
-else `api_key`; an empty key counts as none, and without a key the API is open. The status reads
-"Serving the API on <address>". An address that cannot be bound fails with "Cannot listen on
-<address>".
+With `expose` on and anything served, the forwarder
+([client](../jevons-desktop-core/client.md) R23 to R28) listens on `bind:port` with the key from
+`TYPESAFE_API_KEY`, else `api_key`; an empty key counts as none, and without a key the API is
+open. Other clients get what the routes serve, whichever provider serves it. The status reads
+"Serving the API on <address>", or "Using <providers>; serving the API on <address>" with no
+embedded model loaded. An address that cannot be bound fails the status with "Cannot listen on
+<address>", and the app's own takes still run.
 
-Tests: none yet
+Tests: `exposing_the_api_serves_what_the_routes_serve_until_it_is_turned_off`
 
 ### R6 Moving the listener keeps the models
 
-Turning exposure on or off, or changing the address, port or key, rebinds the listener without
-reloading the models. Changing the models reloads them.
+Turning exposure on or off, or changing the address, port or key, rebinds the forwarder without
+reloading the models. Routes that change are served by the same listener. Changing the models
+routed to the app reloads them.
 
-Tests: none yet
+Tests: `exposing_the_api_serves_what_the_routes_serve_until_it_is_turned_off`
 
 ### R7 Remote mode uses a jevons server
 
