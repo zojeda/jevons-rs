@@ -191,9 +191,9 @@ Scope: the three routing levels of the [design](design.md#agents-and-tasks):
 the root dispatches to agents, an agent runs several tasks at once, and a take for an agent may go
 to one of its running tasks.
 
-- [ ] Rename the tool-loop node `agent.toml` to `loop.toml` (`Kind::Loop`), so "agent" names only
-      the new level. Update the schemas, `AGENTS.md`, the docs and the tests; an unedited built-in
-      folder is brought up to date through `flow/earlier.rs`.
+- [x] Rename the tool-loop node `agent.toml` to `loop.toml` (`Kind::Loop`), so "agent" names only
+      the new level. Update the schemas, `AGENTS.md`, the docs and the tests. The built-in tree
+      has no such node, so `flow/earlier.rs` needs nothing for it.
 - [ ] Node files per level: an agent is `agent.toml` and `agent.fsm` (the root's `root.toml` and
       `root.fsm` and a task's `task.toml` and `task.fsm` landed in phase 0). The loader checks
       that agents sit under the root and tasks under agents, and that each agent's scope covers its

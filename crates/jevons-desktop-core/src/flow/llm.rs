@@ -1,5 +1,5 @@
 //! The jevons runtime as an adk-rust model: agents built with adk (the context investigator,
-//! `agent.toml` nodes) run their tool-calling loop over the API's Chat Completions tools, where
+//! `loop.toml` nodes) run their tool-calling loop over the API's Chat Completions tools, where
 //! the next step and the labelled arguments are restricted reads.
 
 use crate::client::{ChatMessage, ChatReply, ChatRequest, Client, Reasoning};

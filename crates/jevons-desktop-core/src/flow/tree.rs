@@ -14,7 +14,7 @@ use super::guard::Guard;
 use super::machine::{self, Loaded, Machine, NamedGuard};
 use super::shape::{Shape, is_identifier};
 use super::spec::{
-    AgentSpec, Common, DecideSpec, GenerateSpec, InvestigateSpec, MachineSpec, Output, RunSpec,
+    Common, DecideSpec, GenerateSpec, InvestigateSpec, LoopSpec, MachineSpec, Output, RunSpec,
     Select, ToolSpec, TranscriptSpec,
 };
 use super::template::{Template, is_builtin};
@@ -40,7 +40,7 @@ pub const NODE_FILES: [(&str, Kind); 8] = [
     ("generate.toml", Kind::Generate),
     ("transcript.toml", Kind::Transcript),
     ("tool.toml", Kind::Tool),
-    ("agent.toml", Kind::Agent),
+    ("loop.toml", Kind::Loop),
     ("run.toml", Kind::Run),
 ];
 
@@ -52,7 +52,8 @@ pub enum Kind {
     Generate,
     Transcript,
     Tool,
-    Agent,
+    /// A tool-calling loop (`loop.toml`).
+    Loop,
     Run,
 }
 
@@ -66,7 +67,7 @@ pub enum NodeSpec {
     Generate(GenerateSpec),
     Transcript(TranscriptSpec),
     Tool(ToolSpec),
-    Agent(AgentSpec),
+    Loop(LoopSpec),
     Run(RunSpec),
 }
 
@@ -78,7 +79,7 @@ impl NodeSpec {
             Self::Generate(s) => s.common(),
             Self::Transcript(s) => s.common(),
             Self::Tool(s) => s.common(),
-            Self::Agent(s) => s.common(),
+            Self::Loop(s) => s.common(),
             Self::Run(s) => s.common(),
         }
     }
@@ -90,7 +91,7 @@ impl NodeSpec {
             Self::Generate(_) => Kind::Generate,
             Self::Transcript(_) => Kind::Transcript,
             Self::Tool(_) => Kind::Tool,
-            Self::Agent(_) => Kind::Agent,
+            Self::Loop(_) => Kind::Loop,
             Self::Run(_) => Kind::Run,
         }
     }
@@ -102,7 +103,7 @@ impl NodeSpec {
             Self::Generate(s) => Some(s.output.unwrap_or(Output::Target)),
             Self::Transcript(s) => Some(s.output.unwrap_or(Output::Target)),
             Self::Tool(s) => Some(s.output.unwrap_or(Output::Bubble)),
-            Self::Agent(s) => Some(s.output.unwrap_or(Output::Bubble)),
+            Self::Loop(s) => Some(s.output.unwrap_or(Output::Bubble)),
             Self::Run(s) => Some(s.output.unwrap_or(Output::Bubble)),
         }
     }
@@ -114,7 +115,7 @@ impl NodeSpec {
             Kind::Generate => Self::Generate(toml::from_str(text)?),
             Kind::Transcript => Self::Transcript(toml::from_str(text)?),
             Kind::Tool => Self::Tool(toml::from_str(text)?),
-            Kind::Agent => Self::Agent(toml::from_str(text)?),
+            Kind::Loop => Self::Loop(toml::from_str(text)?),
             Kind::Run => Self::Run(toml::from_str(text)?),
         })
     }
@@ -596,7 +597,7 @@ impl Loader<'_> {
                             &join(dir, &file),
                             "unknown node file; a folder holds one of root.toml (the flows \
                              root's machine), task.toml (a machine below it), decide.toml, \
-                             generate.toml, transcript.toml, tool.toml, agent.toml or run.toml",
+                             generate.toml, transcript.toml, tool.toml, loop.toml or run.toml",
                         );
                     }
                 }
@@ -614,7 +615,7 @@ impl Loader<'_> {
                 self.error(
                     dir,
                     "no node file: add root.toml (at the flows root) or task.toml (a \
-                     machine), decide.toml, generate.toml, transcript.toml, tool.toml, agent.toml \
+                     machine), decide.toml, generate.toml, transcript.toml, tool.toml, loop.toml \
                      or run.toml (or start the folder name with _ to keep it out of routing)",
                 );
                 return None;
@@ -962,7 +963,7 @@ impl Loader<'_> {
             let file = node.file.clone();
             match &node.spec {
                 NodeSpec::Tool(t) => out.push((file, t.tool.clone())),
-                NodeSpec::Agent(a) => out.extend(a.tools.iter().map(|t| (file.clone(), t.clone()))),
+                NodeSpec::Loop(a) => out.extend(a.tools.iter().map(|t| (file.clone(), t.clone()))),
                 NodeSpec::Run(r)
                     if r.automations.is_empty() || r.automations.iter().any(|n| n == "*") =>
                 {
@@ -1002,7 +1003,7 @@ impl Loader<'_> {
             NodeSpec::Generate(g) => {
                 fields.extend(g.prompt.as_deref().map(|p| ("prompt".into(), p)))
             }
-            NodeSpec::Agent(a) => fields.extend(a.prompt.as_deref().map(|p| ("prompt".into(), p))),
+            NodeSpec::Loop(a) => fields.extend(a.prompt.as_deref().map(|p| ("prompt".into(), p))),
             NodeSpec::Tool(t) => {
                 for (arg, source) in &t.args {
                     for (kind, text) in [
@@ -1306,7 +1307,7 @@ impl Loader<'_> {
                 }
                 self.check_next(file, output, &children);
             }
-            NodeSpec::Agent(a) => {
+            NodeSpec::Loop(a) => {
                 for tool in &a.tools {
                     if let Some(why) = self.catalog.unknown(tool) {
                         self.error(file, format!("tools: {why}"));
@@ -1497,7 +1498,7 @@ impl Loader<'_> {
         }
         let passes_result = matches!(
             node.spec,
-            NodeSpec::Tool(_) | NodeSpec::Agent(_) | NodeSpec::Run(_)
+            NodeSpec::Tool(_) | NodeSpec::Loop(_) | NodeSpec::Run(_)
         ) && node.spec.output() == Some(Output::Next);
         let mut next = scope.clone();
         if passes_result {
@@ -1898,7 +1899,7 @@ mod tests {
             &Memory::new(
                 "t",
                 [(
-                    "agent.toml",
+                    "loop.toml",
                     "tools = [\"slack:*\", \"mail:send\", \"nope\"]",
                 )],
             ),

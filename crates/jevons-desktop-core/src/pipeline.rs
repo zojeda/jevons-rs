@@ -222,7 +222,7 @@ pub enum StageKind {
     Writing,
     Answering,
     Calling,
-    Agent,
+    Loop,
 }
 
 /// A stage as it starts.
@@ -2409,7 +2409,7 @@ allow = ["search/*"]
         )
         .await;
         let env = Env {
-            flows: tree_of(&[("agent.toml", "tools = [\"search\"]\nmax_steps = 3")]),
+            flows: tree_of(&[("loop.toml", "tools = [\"search\"]\nmax_steps = 3")]),
             tools: Some(tool_host()),
             ..env(client, None)
         };

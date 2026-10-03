@@ -488,7 +488,7 @@ p { margin: 0; }
 }
 .flow-kind[data-kind="decide"] { color: var(--accent); background: var(--accent-soft); }
 .flow-kind[data-kind="generate"] { color: var(--success); background: var(--success-bg); }
-.flow-kind[data-kind="tool"], .flow-kind[data-kind="agent"] { color: var(--warning); background: var(--warning-bg); }
+.flow-kind[data-kind="tool"], .flow-kind[data-kind="loop"] { color: var(--warning); background: var(--warning-bg); }
 .flow-kind[data-kind="run"] { color: var(--error); background: var(--error-bg); }
 .flow-name { flex-shrink: 0; font-weight: 600; color: var(--secondary-color-1); }
 .flow-shared { flex-shrink: 0; font-size: 11px; color: var(--secondary-color-6); }

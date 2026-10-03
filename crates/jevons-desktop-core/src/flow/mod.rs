@@ -11,7 +11,6 @@
 //! - [`investigate`]: the contract of the built-in context investigator.
 //! - [`extract`]: XPath expressions read from the interface with no model.
 
-pub mod agent;
 pub mod confirm;
 pub mod defaults;
 mod earlier;
@@ -25,6 +24,7 @@ pub mod machine;
 pub mod shape;
 pub mod spec;
 pub mod template;
+pub mod tool_loop;
 pub mod tools;
 pub mod tree;
 pub mod walk;

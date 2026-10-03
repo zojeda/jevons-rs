@@ -32,7 +32,7 @@ Elsewhere:
 
 Every folder under the flows root is a node, except folders whose name starts with `_` or `.`. A
 node folder holds one of `root.toml`, `task.toml`, `decide.toml`, `generate.toml`,
-`transcript.toml`, `tool.toml`, `agent.toml` and `run.toml`. A folder with none or with two is an
+`transcript.toml`, `tool.toml`, `loop.toml` and `run.toml`. A folder with none or with two is an
 error that names the folder, and so is a root with none. Any other `.toml` file whose name does
 not start with `.` is an error as an unknown node file.
 
@@ -111,8 +111,8 @@ Tests: `shared_branches_load_once_and_filter_with_only`, `shared_branch_mistakes
 ### R11 Outputs and actions fit their node
 
 `generate.toml` and `transcript.toml` are leaves, with no branch folders, and send their text to
-`target` unless `output` says `bubble`, `clipboard` or `none`. Tools, agents and runs send theirs
-to `bubble` by default. `output = "next"` is only for tools, agents and runs, which then continue
+`target` unless `output` says `bubble`, `clipboard` or `none`. Tools, loops and runs send theirs
+to `bubble` by default. `output = "next"` is only for tools, loops and runs, which then continue
 into one branch folder, and only one; with any other output they have none. An `action` other than
 `insert` needs `output = "target"`, and a transcript cannot `rewrite`.
 
@@ -121,7 +121,7 @@ Tests: `leaves_have_no_branches_and_actions_fit_their_output`, `a_tool_with_next
 ### R12 Tool, agent and run nodes name what the settings register
 
 A `tool.toml` names one registered tool: a built-in tool's name or `server:tool`, never
-`server:*`. An `agent.toml` lists its tools, with `server:*` for every tool of a server, and sets
+`server:*`. A `loop.toml` lists its tools, with `server:*` for every tool of a server, and sets
 `max_steps` from 1 to 16. A `run.toml` names automations in the library, or none or `"*"` for all.
 A tool, server or automation the settings do not register is an error that says which.
 

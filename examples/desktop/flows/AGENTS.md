@@ -35,7 +35,7 @@ A node folder holds exactly one node file, whose name is its kind:
 | `generate.toml` | A leaf: the language model writes text, which goes to `output`. |
 | `transcript.toml` | A leaf: the words as recognized go to `output`, with no model. |
 | `tool.toml` | Calls one registered tool with arguments filled here. |
-| `agent.toml` | A tool-calling loop over registered tools, bounded by `max_steps`. |
+| `loop.toml` | A tool-calling loop over registered tools, bounded by `max_steps`. |
 | `run.toml` | Runs one of the user's approved automations, with its arguments filled from what they said. |
 
 A folder may also hold `instructions.md`: prose added to every model call at and below that
@@ -179,7 +179,7 @@ fsm Search {
 | `description` | For the machine above, which enters this one by it (as it would a state's work). |
 | `question` | What the model answers when it chooses a transition; by default, which one fits, given the task and its state. |
 | `min_probability` | Below this probability (0 to 1; 0.7 by default) the model's choice is not taken. |
-| `tools` | Every tool its states call (tool nodes, agents' tools, `script:<name>` or `script:*` for automations, `server:*`). A state that calls another is an error, so the list is all a task can do. |
+| `tools` | Every tool its states call (tool nodes, loops' tools, `script:<name>` or `script:*` for automations, `server:*`). A state that calls another is an error, so the list is all a task can do. |
 | `[guards.<name>]` | The named guards: `when`, `prefer`, `criterion`. |
 | `steps`, `samples` | System One refinement steps (1 to 8) and samples (1 to 32). |
 
@@ -249,7 +249,7 @@ bubble before running unless the settings say that tool may run unconfirmed; `co
 asks even then. With `output = "next"`, the node has exactly one branch folder, which receives the
 tool's result as `{result}`.
 
-## `agent.toml`
+## `loop.toml`
 
 ```toml
 description = "Questions that need looking something up before answering"
@@ -258,7 +258,7 @@ max_steps = 4                           # model turns before it must answer (1 t
 output = "bubble"
 ```
 
-The agent can always call `investigate` (below). Tool calls ask for confirmation as in
+The loop can always call `investigate` (below). Tool calls ask for confirmation as in
 `tool.toml`. `prompt` sets the task; by default it is the context and what the user said.
 
 ## Extracts
@@ -382,7 +382,7 @@ Reading windows other than the one in front also needs the user's permission in 
 | `{context}` | all of the above, described for a model |
 | `{route}` | the branches taken so far, such as `dictate/chat` |
 | `{name}`, `{name.field}` | an extract or investigation declared here or above |
-| `{result}`, `{result.field}` | below a tool or agent with `output = "next"` |
+| `{result}`, `{result.field}` | below a tool or loop with `output = "next"` |
 | `{state}` | in a machine's states: what that state's work wrote last |
 
 Write `{{` and `}}` for literal braces. `instructions.md` is plain prose: no placeholders.
@@ -392,7 +392,7 @@ Write `{{` and `}}` for literal braces. `instructions.md` is plain prose: no pla
 - One node file per folder; unknown fields are errors, reported with their line.
 - A decision has 1 to 128 branches, each with a `description`. `fallback` names one of them.
   If every branch has a guard, a `fallback` is required.
-- Leaves (`generate.toml`, `transcript.toml`) have no branch folders. Tools, agents and runs have
+- Leaves (`generate.toml`, `transcript.toml`) have no branch folders. Tools, loops and runs have
   one only with `output = "next"`.
 - A run node's `automations` name automations in the library.
 - `branches` names a `_` folder under this root; shared folders cannot lead back to themselves.
@@ -400,7 +400,7 @@ Write `{{` and `}}` for literal braces. `instructions.md` is plain prose: no pla
   investigations in scope. Every XPath expression parses; an error gives its column.
 - Folders nest at most 8 deep, and a path takes at most 4 model decisions: each costs a model
   call while the user waits.
-- Tool and agent nodes name registered tools, and tool arguments match the tool's schema.
+- Tool and loop nodes name registered tools, and tool arguments match the tool's schema.
 - A machine's diagram parses and checks: states lowercase, events known, every state reached and
   with a way out, at most one `[else]` per state and event, `[else]` on every event but `said`
   that may otherwise stay, choice points with `[else]`, timers waited for, and a way to `[*]`

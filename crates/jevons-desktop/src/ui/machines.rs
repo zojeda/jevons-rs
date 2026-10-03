@@ -41,10 +41,10 @@ fn work_badge(work: Option<&Node>) -> String {
     };
     match &node.spec {
         NodeSpec::Tool(t) => format!("tool · {}", t.tool),
-        NodeSpec::Agent(a) => match a.tools.as_slice() {
-            [] => "agent".into(),
-            [one] => format!("agent · {one}"),
-            many => format!("agent · {} tools", many.len()),
+        NodeSpec::Loop(a) => match a.tools.as_slice() {
+            [] => "loop".into(),
+            [one] => format!("loop · {one}"),
+            many => format!("loop · {} tools", many.len()),
         },
         NodeSpec::Run(_) => "run".into(),
         NodeSpec::Generate(_) => "generate".into(),

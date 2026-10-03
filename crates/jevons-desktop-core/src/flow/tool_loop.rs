@@ -1,6 +1,6 @@
 //! One bounded agent run on adk-rust: an [`LlmAgent`](adk_agent::LlmAgent) over the jevons model,
 //! with tools, an optional structured answer, and confirmation before the tools that need it.
-//! The context investigator and `agent.toml` nodes both run through [`run`].
+//! The context investigator and `loop.toml` nodes both run through [`run`].
 
 use adk_agent::LlmAgentBuilder;
 use adk_core::{

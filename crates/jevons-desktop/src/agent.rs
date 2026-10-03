@@ -306,7 +306,7 @@ impl Feedback {
                     StageKind::Writing => "Writing…".into(),
                     StageKind::Answering => "Answering…".into(),
                     StageKind::Calling => format!("Calling {}…", stage.label),
-                    StageKind::Agent => "Working with tools…".into(),
+                    StageKind::Loop => "Working with tools…".into(),
                 };
                 self.stages.push(StageView {
                     kind: stage.kind,

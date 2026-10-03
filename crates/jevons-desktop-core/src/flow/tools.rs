@@ -696,7 +696,7 @@ impl ToolHost {
         let mut md = String::from(
             "<!-- Written by jevons from the desktop settings; rewritten whenever they change. -->\n\
              # Tools\n\n\
-             Flow files call these tools from `tool.toml` (one call) and list them in `agent.toml`.\n\
+             Flow files call these tools from `tool.toml` (one call) and list them in `loop.toml`.\n\
              They are registered in the desktop settings (`[tools.<name>]`, `[mcp.<name>]`): a flow\n\
              can use them, never add them.\n",
         );

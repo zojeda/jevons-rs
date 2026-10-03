@@ -73,7 +73,7 @@ Each folder is a node, and the file in it names its kind:
 | `generate.toml` | writes text with the language model, for the application, the bubble or the clipboard |
 | `transcript.toml` | uses the words as recognized, with no model |
 | `tool.toml` | calls a tool registered in the settings |
-| `agent.toml` | runs a tool-calling agent over registered tools |
+| `loop.toml` | runs a tool-calling loop over registered tools |
 | `run.toml` | runs one of your approved automations, its arguments filled from what you said |
 
 A decision in the built-in tree:
@@ -181,9 +181,9 @@ Investigations read only the window the take started in. To let a question like 
 
 **Record tree** (in the Context tab's Interface card) saves the interface of the window in front to `~/jevons/trees` as JSON (it holds that window's text: it stays on your machine). `--tree <file>` replays a take against a recorded interface instead of the live one.
 
-### Tools and agents
+### Tools and tool loops
 
-A `tool.toml` node calls one tool; an `agent.toml` node runs a tool-calling agent over several (at most `max_steps` model turns). Tools are registered in the desktop settings, never in the flows folder, so a folder a coding agent edits can call only what you registered:
+A `tool.toml` node calls one tool; a `loop.toml` node runs a tool-calling loop over several (at most `max_steps` model turns). Tools are registered in the desktop settings, never in the flows folder, so a folder a coding agent edits can call only what you registered:
 
 ```toml
 # jevons-desktop.toml

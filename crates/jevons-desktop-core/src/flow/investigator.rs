@@ -13,10 +13,10 @@
 //! and the agent explores only when that fails. The trace shows the expression, which an
 //! `[extract]` can use to read the same element with no model at all.
 
-use super::agent::{self, Task};
 use super::investigate::{Found, Inquiry, Investigate, Progress};
 use super::llm::JevonsLlm;
 use super::shape::{Shape, has_content};
+use super::tool_loop::{self, Task};
 use crate::client::{ChatMessage, ChatReply, ChatRequest, Client};
 use crate::context::Privacy;
 use crate::platform::{ContextInspector, UiElement, WindowEntry};
@@ -927,7 +927,7 @@ impl Investigate for Investigator {
                 confirmer: None,
             };
             let model = Arc::new(JevonsLlm::new(self.client.clone(), self.model.clone()));
-            let outcome = agent::run(model, task).await;
+            let outcome = tool_loop::run(model, task).await;
             let (steps, last_read) = {
                 let nav = nav.lock().expect("the navigation lock");
                 (nav.steps.clone(), nav.last_read.clone())
@@ -964,7 +964,7 @@ impl Investigate for Investigator {
 mod tests {
     use super::*;
     use crate::context::{AppInfo, ContextSnapshot, WindowInfo};
-    use crate::flow::agent::tests::chat_server;
+    use crate::flow::tool_loop::tests::chat_server;
     use crate::recorded::{RecordedInspector, RecordedTree, RecordedWindow};
 
     fn el(role: &str, name: &str, children: Vec<RecordedElement>) -> RecordedElement {

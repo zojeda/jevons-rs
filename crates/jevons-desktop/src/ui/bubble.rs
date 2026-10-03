@@ -154,7 +154,7 @@ fn stage_row(index: usize, stage: &StageView, frame: u64) -> Element {
         StageKind::Writing => "write",
         StageKind::Answering => "answer",
         StageKind::Calling => "call",
-        StageKind::Agent => "agent",
+        StageKind::Loop => "loop",
     };
     let state = match stage.ok {
         None => "running",

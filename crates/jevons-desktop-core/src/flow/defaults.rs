@@ -7,7 +7,7 @@
 //! someone edits it.
 
 use super::spec::{
-    AgentSpec, DecideSpec, GenerateSpec, MachineSpec, RunSpec, ToolSpec, TranscriptSpec,
+    DecideSpec, GenerateSpec, LoopSpec, MachineSpec, RunSpec, ToolSpec, TranscriptSpec,
 };
 use super::tree::{Catalog, Disk, FlowTree, Memory, NODE_FILES};
 use sha2::{Digest, Sha256};
@@ -318,8 +318,8 @@ pub fn schemas_json() -> Vec<(String, String)> {
             pretty(schemars::schema_for!(ToolSpec)),
         ),
         (
-            "agent.schema.json".into(),
-            pretty(schemars::schema_for!(AgentSpec)),
+            "loop.schema.json".into(),
+            pretty(schemars::schema_for!(LoopSpec)),
         ),
         (
             "run.schema.json".into(),

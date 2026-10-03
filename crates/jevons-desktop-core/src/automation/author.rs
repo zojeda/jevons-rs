@@ -800,7 +800,7 @@ mod tests {
             },
         });
         let (client, seen) =
-            crate::flow::agent::tests::chat_server(vec![json!(plan.to_string())]).await;
+            crate::flow::tool_loop::tests::chat_server(vec![json!(plan.to_string())]).await;
         let dir = library("model");
         let authored = author(Some((&client, "jev")), &recording, "take", &dir, None)
             .await

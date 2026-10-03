@@ -7,7 +7,6 @@
 //! questions go in one System One request, so a typical take costs one decision call. Every step
 //! is recorded as a [`FlowStep`] with the guards it checked and the probabilities it read.
 
-use super::agent::{self as agents, Task};
 use super::extract::Extract;
 use super::frame::{Frame, Lazy};
 use super::guard::Check;
@@ -15,9 +14,10 @@ use super::investigate::{Inquiry, Investigate};
 use super::investigator::InvestigateTool;
 use super::llm::JevonsLlm;
 use super::spec::{
-    AgentSpec, ArgSpec, ArgType, DecideSpec, GenerateSpec, Output, RunSpec, Select, ToolSpec,
+    ArgSpec, ArgType, DecideSpec, GenerateSpec, LoopSpec, Output, RunSpec, Select, ToolSpec,
     TranscriptSpec,
 };
+use super::tool_loop::{self as loops, Task};
 use super::tools::result_text;
 use super::tree::{FlowTree, Investigation, Kind, Node, NodeId, NodeSpec};
 use crate::client::{Answer, ClientError, DecisionRequest, Question, Reasoning, ResponseRequest};
@@ -387,7 +387,7 @@ impl Walker<'_> {
                         node.children.first().copied()
                     }
                 },
-                NodeSpec::Agent(a) => match self.agent(node, a).await? {
+                NodeSpec::Loop(a) => match self.tool_loop(node, a).await? {
                     Ahead::Leaf(leaf) => {
                         self.step().ms = began.elapsed().as_millis() as u64;
                         return Ok(Walked::Leaf(leaf));
@@ -1385,7 +1385,7 @@ impl Walker<'_> {
     }
 
     /// Runs an agent over the node's tools (and the investigator) to its answer.
-    async fn agent(&mut self, node: &Node, a: &AgentSpec) -> Result<Ahead, ClientError> {
+    async fn tool_loop(&mut self, node: &Node, a: &LoopSpec) -> Result<Ahead, ClientError> {
         let Some(model) = self.env.settings.models.generative.clone() else {
             return Err(ClientError::NotServed("A language model for agents"));
         };
@@ -1440,7 +1440,7 @@ impl Walker<'_> {
         if output == Output::Bubble {
             let _ = self.updates.send(Update::Answering);
         }
-        self.stage(Stage::new(StageKind::Agent, node.name.clone()));
+        self.stage(Stage::new(StageKind::Loop, node.name.clone()));
         let updates = self.updates.clone();
         let llm = JevonsLlm::new(self.env.client.clone(), model)
             .with_think(self.frame.think.unwrap_or(0))
@@ -1448,7 +1448,7 @@ impl Walker<'_> {
                 let _ = updates.send(Update::Output(delta.to_string()));
             }));
         let task = Task {
-            name: "agent".into(),
+            name: "loop".into(),
             instruction: instructions.join("\n\n"),
             input,
             tools,
@@ -1463,10 +1463,10 @@ impl Walker<'_> {
                 .map(|c| c as Arc<dyn ToolConfirmationHandler>),
         };
         let began = Instant::now();
-        let outcome = agents::run(Arc::new(llm), task).await;
+        let outcome = loops::run(Arc::new(llm), task).await;
         self.trace
             .timings
-            .push(("agent".into(), began.elapsed().as_millis() as u64));
+            .push(("loop".into(), began.elapsed().as_millis() as u64));
         let outcome = match outcome {
             Ok(outcome) => outcome,
             Err(e) => {

@@ -2,11 +2,11 @@
 
 [Back to jevons-desktop-core](spec.md)
 
-The tool host runs what flow nodes and agents call: the built-in tools (`command`, `http`, `open`)
+The tool host runs what flow nodes and tool loops call: the built-in tools (`command`, `http`, `open`)
 and MCP servers registered in the desktop settings, and the library's automations as
 `script:<name>`. It asks before a call runs, keeps each tool to the nodes its `allow` names, and in
 a dry run records a call instead of making it. Agents run their tool-calling loop on adk-rust,
-over the jevons API, through `JevonsLlm`. The node files (`tool.toml`, `agent.toml`, `run.toml`)
+over the jevons API, through `JevonsLlm`. The node files (`tool.toml`, `loop.toml`, `run.toml`)
 and the checks made when they load are in [flows](flows.md). A machine's `tools` list is in
 [machines](machines.md).
 
@@ -169,7 +169,7 @@ Tests: `a_tool_node_fills_its_arguments_asks_and_answers_with_the_result`
 
 ### R18 Agents run a bounded tool-calling loop
 
-An `agent.toml` node runs an adk-rust agent over the tools it names, for at most `max_steps`
+A `loop.toml` node runs an adk-rust agent over the tools it names, for at most `max_steps`
 model turns (4 by default). When the take has a context investigator, the agent can also call
 `investigate`, which takes a `question` and answers from the screen. Its instruction is the
 instructions gathered from the root, plus one telling it to call tools one at a time and then

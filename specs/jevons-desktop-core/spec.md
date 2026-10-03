@@ -15,7 +15,7 @@ It owns:
 
 - the platform traits (`platform`) and the context snapshot with its privacy limits (`context`);
 - the flow tree in `flow/`: node files, the loader and its checks, guards, the walker, machines,
-  extracts, the context investigator, agents, tools and confirmations;
+  extracts, the context investigator, tool loops, tools and confirmations;
 - XPath over accessibility trees (`xpath/`), the inspector's interface browser (`interface`) and
   recorded interfaces (`recorded`);
 - automations (`automation/`) and recorded demonstrations (`recording/`);
@@ -40,7 +40,7 @@ It leaves:
 | [machines](machines.md) | Machine folders (`root.toml`, `task.toml`) and their checks, the runtime across takes and timers |
 | [extract](extract.md) | The XPath subset and its evaluation, `[extract]` reads, the workbench, selectors and the interface browser |
 | [investigator](investigator.md) | The context investigator, its navigation tools, its path cache and its limits |
-| [tools](tools.md) | The tool host: built-in tools, MCP servers, confirmations and agents |
+| [tools](tools.md) | The tool host: built-in tools, MCP servers, confirmations and tool loops |
 | [automations](automations.md) | The automations library, the sandboxed engine, checks, dry runs, approval and authoring |
 | [recording](recording.md) | Recording a demonstration of a task, and recorded interfaces |
 | [settings](settings.md) | The settings folder, its defaults, its git repository, the reset and history clears |

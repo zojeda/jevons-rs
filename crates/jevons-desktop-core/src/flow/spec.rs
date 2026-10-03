@@ -1,5 +1,5 @@
 //! The node files as written. A folder's node file names its kind: `root.toml` or `task.toml` (a
-//! machine), `decide.toml`, `generate.toml`, `transcript.toml`, `tool.toml`, `agent.toml` or
+//! machine), `decide.toml`, `generate.toml`, `transcript.toml`, `tool.toml`, `loop.toml` or
 //! `run.toml`. Every kind shares the fields in [`node_spec!`] (among them `[investigate.<name>]`
 //! and `[extract.<name>]`); unknown fields are errors with their line.
 
@@ -249,8 +249,8 @@ node_spec! {
 }
 
 node_spec! {
-    /// `agent.toml`: a tool-calling loop, bounded by `max_steps`.
-    pub struct AgentSpec {
+    /// `loop.toml`: a tool-calling loop, bounded by `max_steps`.
+    pub struct LoopSpec {
         /// Registered tools: `name`, `server:tool`, or `server:*` for every tool of a server. The
         /// context investigator is always available as `investigate`.
         #[serde(default)]
