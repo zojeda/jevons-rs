@@ -4,142 +4,17 @@
 //! window permissions as the context investigator. The inspector's workbench tries an edited
 //! one the same way ([`trial`]) and writes it back into its node file ([`save`]).
 
-use super::shape::{Shape, is_identifier};
 use super::spec::{ExtractAs, ExtractSpec};
 use crate::context::{ContextSnapshot, Privacy};
 use crate::platform::ContextInspector;
-use crate::xpath::{self, Document, Limits, Node, Value, Variables, XPath};
+use crate::xpath::{self, Document, Limits, Node, Value, Variables};
+pub use jevons_desktop_protocol::extract::{Extract, Extracted, MAX_LIMIT};
 use serde_json::{Map, Value as Json, json};
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// How long one extract may read before it gives up.
 const DEADLINE: Duration = Duration::from_secs(5);
-/// The most matches an extract keeps.
-pub const MAX_LIMIT: u32 = 500;
-const DEFAULT_LIMIT: u32 = 50;
-
-/// A checked `[extract]`.
-#[derive(Clone, Debug)]
-pub struct Extract {
-    pub name: String,
-    pub spec: ExtractSpec,
-    pub xpath: XPath,
-    /// A table's columns.
-    pub fields: BTreeMap<String, XPath>,
-    /// The answer's shape, for placeholders below.
-    pub shape: Shape,
-    pub limit: usize,
-    /// `app`: the only applications it is read in.
-    apps: Option<globset::GlobSet>,
-}
-
-impl Extract {
-    /// Checks a spec as written; each error names the field it is about.
-    pub fn compile(name: &str, spec: &ExtractSpec) -> Result<Self, Vec<String>> {
-        let at = format!("extract.{name}");
-        let mut errors = Vec::new();
-        let xpath = XPath::parse(&spec.xpath)
-            .map_err(|e| errors.push(format!("{at}.xpath: {e}")))
-            .ok();
-        let mut fields = BTreeMap::new();
-        for (field, text) in &spec.fields {
-            if !is_identifier(field) {
-                errors.push(format!(
-                    "{at}.fields.{field}: column names use lowercase letters, digits and _"
-                ));
-            }
-            match XPath::parse(text) {
-                Ok(parsed) => {
-                    fields.insert(field.clone(), parsed);
-                }
-                Err(e) => errors.push(format!("{at}.fields.{field}: {e}")),
-            }
-        }
-        match (spec.kind, spec.fields.is_empty()) {
-            (ExtractAs::Table, true) => errors.push(format!(
-                "{at}: as = \"table\" needs `fields`, an expression per column"
-            )),
-            (ExtractAs::Table, false) | (_, true) => {}
-            (_, false) => errors.push(format!("{at}.fields is only for as = \"table\"")),
-        }
-        let limit = spec.limit.unwrap_or(DEFAULT_LIMIT);
-        if !(1..=MAX_LIMIT).contains(&limit) {
-            errors.push(format!("{at}.limit must be 1 to {MAX_LIMIT}"));
-        }
-        for glob in &spec.scope {
-            if let Err(e) = globset::Glob::new(glob) {
-                errors.push(format!("{at}.scope: {e}"));
-            }
-        }
-        let mut apps = globset::GlobSetBuilder::new();
-        for glob in &spec.app {
-            match globset::GlobBuilder::new(glob)
-                .case_insensitive(true)
-                .build()
-            {
-                Ok(glob) => {
-                    apps.add(glob);
-                }
-                Err(e) => errors.push(format!("{at}.app: {e}")),
-            }
-        }
-        let apps = apps.build().ok();
-        let shape = match spec.kind {
-            ExtractAs::Text => Shape::String,
-            ExtractAs::List => Shape::List(Box::new(Shape::String)),
-            ExtractAs::Count => Shape::Integer,
-            ExtractAs::Exists => Shape::Boolean,
-            ExtractAs::Table => Shape::List(Box::new(Shape::Object(
-                spec.fields
-                    .keys()
-                    .map(|f| (f.clone(), Shape::String))
-                    .collect(),
-            ))),
-        };
-        match xpath {
-            Some(xpath) if errors.is_empty() => Ok(Self {
-                name: name.to_string(),
-                spec: spec.clone(),
-                xpath,
-                fields,
-                shape,
-                limit: limit as usize,
-                apps: if spec.app.is_empty() { None } else { apps },
-            }),
-            _ => Err(errors),
-        }
-    }
-
-    /// Whether it is read in a take in `app` (a process name).
-    pub fn applies(&self, app: &str) -> bool {
-        self.apps.as_ref().is_none_or(|apps| apps.is_match(app))
-    }
-
-    /// The `$variables` its expressions use, as placeholder paths (`chat.name` is
-    /// `["chat", "name"]`).
-    pub fn variables(&self) -> Vec<Vec<String>> {
-        let mut names = self.xpath.variables();
-        for field in self.fields.values() {
-            names.extend(field.variables());
-        }
-        names.sort();
-        names.dedup();
-        names
-            .into_iter()
-            .map(|name| name.split('.').map(String::from).collect())
-            .collect()
-    }
-
-    /// What distinguishes one reading from another within a take.
-    pub fn key(&self, variables: &Variables) -> String {
-        format!(
-            "{}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{variables:?}",
-            self.spec.xpath, self.spec.kind, self.spec.fields, self.spec.scope
-        )
-    }
-}
 
 /// The extracts the tree reads in `snapshot`'s context: those of every node whose guard, and
 /// its ancestors', passes (whatever the decisions choose), lazy ones included, and whose `app`
@@ -413,17 +288,6 @@ pub fn as_toml(name: &str, spec: &ExtractSpec) -> String {
     let mut document = toml_edit::DocumentMut::new();
     document.insert("extract", toml_edit::Item::Table(extract));
     document.to_string()
-}
-
-/// An extract's answer.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Extracted {
-    /// In the extract's shape; `null` (or empty) when nothing matched.
-    pub value: Json,
-    /// How many nodes the expression selected.
-    pub matches: usize,
-    /// Why the answer may be incomplete: a window it may not read, an error.
-    pub note: Option<String>,
 }
 
 /// Reads extracts from the platform's interface.

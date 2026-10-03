@@ -21,7 +21,7 @@ pub mod investigate;
 pub mod investigator;
 pub mod llm;
 pub mod machine;
-pub mod shape;
+pub use jevons_desktop_protocol::shape;
 pub mod spec;
 pub mod template;
 pub mod tool_loop;

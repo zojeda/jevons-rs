@@ -5,6 +5,7 @@
 
 use super::guard::When;
 use crate::platform::{Action, DeliveryMethod};
+pub use jevons_desktop_protocol::extract::{ExtractAs, ExtractSpec};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -350,56 +351,6 @@ pub struct InvestigateSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_steps: Option<u32>,
     /// Run only when a node below uses it (in a placeholder or `enrich`), not when this node runs.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub lazy: bool,
-}
-
-/// What an `[extract]` answer is made of the nodes its expression selects.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExtractAs {
-    /// The text of the first match (an element's text with its descendants', or an
-    /// attribute's value), or the expression's value when it is not elements.
-    #[default]
-    Text,
-    /// The text of every match, as a list.
-    List,
-    /// How many elements match.
-    Count,
-    /// Whether anything matches.
-    Exists,
-    /// One row per match, with a column per `fields` expression evaluated from the match.
-    Table,
-}
-
-/// `[extract.<name>]`: an XPath expression over the application's interface, read with no model.
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtractSpec {
-    /// The expression. Element names are roles (`ListItem`, `TreeItem`, `Edit`), attributes are
-    /// `@name`, `@value`, `@class`, `@automation_id` and the like, and `$name` variables take
-    /// placeholders' values, such as `//TreeItem[@name = $transcript]`. It starts at the window
-    /// the take started in; `/Window[@app='slack.exe']` starts at another (see `scope`).
-    pub xpath: String,
-    /// `text` (the default), `list`, `count`, `exists` or `table`.
-    #[serde(default, rename = "as")]
-    pub kind: ExtractAs,
-    /// With `as = "table"`: each column's expression, evaluated from each match, such as
-    /// `{ author = ".//Button[1]/@name", text = "string(.//Text[last()])" }`.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub fields: BTreeMap<String, String>,
-    /// The most matches kept (1 to 500; 50 by default).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub limit: Option<u32>,
-    /// Application globs it may read besides the one the take started in, such as
-    /// `["slack.exe"]`. Other windows also need `privacy.read_other_windows` in the settings.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub scope: Vec<String>,
-    /// Only when the take is in one of these applications (process-name globs, such as
-    /// `["slack.exe"]`); elsewhere it is not read and its answer is empty.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub app: Vec<String>,
-    /// Run only when a node at or below uses it (in a placeholder, a `$variable` or `enrich`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub lazy: bool,
 }

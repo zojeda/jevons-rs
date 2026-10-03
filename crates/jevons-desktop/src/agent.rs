@@ -683,7 +683,7 @@ impl Agent {
         repaint: Arc<dyn Fn() + Send + Sync>,
         commands: mpsc::UnboundedSender<Command>,
     ) -> Self {
-        config.privacy.apply_api_log();
+        jevons_desktop_core::client::log::apply(config.privacy.log_api);
         // The defaults the folder lacks, versioned: the loads below then write nothing.
         let prepared = settings::prepare(&config_file, &config);
         for note in &prepared.notes {
@@ -2183,7 +2183,7 @@ impl Agent {
             || config.automations_dir(&self.config_file)
                 != self.config.automations_dir(&self.config_file);
         self.config = config;
-        self.config.privacy.apply_api_log();
+        jevons_desktop_core::client::log::apply(self.config.privacy.log_api);
         self.automations
             .set_settings(self.config.automation.clone());
         if hotkeys_changed && let Some(tray) = &self.tray {

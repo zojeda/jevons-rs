@@ -24,6 +24,17 @@ pub fn set(file: Option<PathBuf>) {
     *current = file;
 }
 
+/// Starts or stops the API log in its default file, as `privacy.log_api` says.
+pub fn apply(on: bool) {
+    let file = on.then(default_file);
+    if let Some(file) = &file
+        && !enabled()
+    {
+        tracing::info!(file = %file.display(), "Writing the API log");
+    }
+    set(file);
+}
+
 /// Whether calls are being written.
 pub fn enabled() -> bool {
     ON.load(Ordering::Relaxed)

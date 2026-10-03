@@ -1,5 +1,5 @@
 //! What the user is dictating into: the focused application, window and element, captured by a
-//! [`ContextProvider`](crate::platform::ContextProvider) when the hotkey is pressed.
+//! the client's context provider when the hotkey is pressed.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -44,7 +44,7 @@ pub struct WindowInfo {
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(default)]
 pub struct Element {
-    /// The accessibility layer's id for it, as [`crate::platform::UiElement::id`] gives
+    /// The accessibility layer's id for it, as the client's interface reads gives
     /// elements: the inspector finds it in the window's tree by it while it exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -91,19 +91,6 @@ impl Default for Privacy {
             readable_apps: Vec::new(),
             log_api: false,
         }
-    }
-}
-
-impl Privacy {
-    /// Starts or stops the API log as `log_api` says.
-    pub fn apply_api_log(&self) {
-        let file = self.log_api.then(crate::client::log::default_file);
-        if let Some(file) = &file
-            && !crate::client::log::enabled()
-        {
-            tracing::info!(file = %file.display(), "Writing the API log");
-        }
-        crate::client::log::set(file);
     }
 }
 

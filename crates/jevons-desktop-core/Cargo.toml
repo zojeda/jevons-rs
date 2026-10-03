@@ -13,6 +13,7 @@ testing = []
 [dependencies]
 jevons-audio.workspace = true
 jevons-machine.workspace = true
+jevons-desktop-protocol.workspace = true
 adk-agent.workspace = true
 adk-core.workspace = true
 adk-runner.workspace = true

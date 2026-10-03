@@ -353,6 +353,32 @@ one process.
       automations; server: providers, routes, flows folder, server tools), in the same settings
       folder and git repository in the all-in-one mode.
 
+How phase 4 is cut (decided 2026-10-03, before carving):
+
+- **`jevons-desktop-protocol` starts now, not in phase 5,** with the types that cross and the
+  boundary trait, and no serde shapes or transports yet. With it the server and the client core
+  each depend on the protocol and neither on the other. Without it the client core would have
+  to depend on the server to implement its trait.
+- **What crosses:** the context snapshot and privacy limits, the delivery vocabulary (action,
+  method, request, outcome, audio events), `[extract]` specs with their checks and the XPath
+  grammar (the server checks an extract when the tree loads, the client when it reads), and
+  shapes. Traces and the take's stream stay in the server crate until phase 5 puts them on a
+  wire.
+- **The boundary is the `Desk` trait:** `deliver`, `confirm`, `read` (an extract), `look`,
+  `look_step` and `look_end` (an investigation: the server keeps the model loop, the client the
+  elements it has seen and the remembered paths), `tools` and `run_tool` (the client's tools).
+  "Show" is the take's stream today and becomes a message with the streams in phase 5. "Open"
+  is a client tool from phase 6 on; until then `open` and `command` tools run with the server,
+  on the same machine.
+- **Only automations (`script:<name>`) cross as client tools in this phase,** because the server
+  cannot link the automation engine. Where the other tools run is phase 6.
+- **Steps, each one green:** (A) the protocol crate with the moved types, the client core
+  re-exporting them at their old paths; (B) the trait, and the walker, the pipeline, the
+  investigator and the tool host going through it inside the core; (C) the server crate, as a
+  move of `client/`, `forward`, `flow/`, the pipeline's server half and the server's settings,
+  with the pipeline suite run against the client core's desk as a dev-dependency; (D) the
+  settings file in two.
+
 Crates: `jevons-desktop-server` (new), `jevons-desktop-core`, `jevons-desktop`.
 Tested by: the pipeline suite moved to the server crate and run against a client-core
 implementation of the boundary; the client-side safety tests (delivery, confirmation) in the

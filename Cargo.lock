@@ -6215,6 +6215,7 @@ dependencies = [
  "globset",
  "image",
  "jevons-audio",
+ "jevons-desktop-protocol",
  "jevons-machine",
  "regex",
  "reqwest",
@@ -6229,6 +6230,19 @@ dependencies = [
  "toml 1.1.6+spec-1.1.0",
  "toml_edit 0.25.15+spec-1.1.0",
  "tracing",
+]
+
+[[package]]
+name = "jevons-desktop-protocol"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "globset",
+ "regex",
+ "schemars",
+ "serde",
+ "serde_json",
+ "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]

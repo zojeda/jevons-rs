@@ -613,7 +613,7 @@ fn replay(
     config: DesktopConfig,
     config_file: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    config.privacy.apply_api_log();
+    jevons_desktop_core::client::log::apply(config.privacy.log_api);
     let context: ContextSnapshot = match &args.context {
         Some(file) => serde_json::from_str(&std::fs::read_to_string(file)?)?,
         None => ContextSnapshot::default(),

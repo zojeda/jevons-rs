@@ -27,7 +27,7 @@ pub mod automation;
 pub mod catalog;
 pub mod client;
 pub mod config;
-pub mod context;
+pub use jevons_desktop_protocol::context;
 pub mod delivery;
 pub mod download;
 #[cfg(any(test, feature = "testing"))]
