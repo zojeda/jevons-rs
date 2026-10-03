@@ -16,7 +16,11 @@
 //! Entering a state arms its timers and runs its work ([`Effect::Run`], answered with
 //! [`Input::Finished`]); a state with no work that can leave on `done` leaves at once. An event
 //! from outside may come while the work runs: a transition taken on it leaves the state and the
-//! work behind, and a machine that stays goes on waiting for its work. The host
+//! work behind, and a machine that stays goes on waiting for its work. The host may add
+//! candidates of its own to an event from outside ([`Outside`]): something that may take the
+//! event instead of a transition, such as a task the machine started that waits for it. They
+//! are weighed with the transitions, and one chosen is passed the event ([`Effect::Passed`])
+//! while the machine stays where it is. The host
 //! keeps the instances (a task in a state of another), runs the work, asks the oracle and keeps
 //! the timers; the engine moves one instance at a time.
 
@@ -92,14 +96,15 @@ impl Definition {
             Condition::Always | Condition::Else => {}
         }
         match &candidate.to {
-            Target::State(state) => self
+            Some(Target::State(state)) => self
                 .described
                 .get(state)
                 .cloned()
                 .or_else(|| self.state(state).and_then(|s| s.description.clone()))
                 .unwrap_or_else(|| state.clone()),
-            Target::Choice(name) => name.clone(),
-            Target::End => "The task is over: end it.".into(),
+            Some(Target::Choice(name)) => name.clone(),
+            Some(Target::End) => "The task is over: end it.".into(),
+            None => candidate.label.clone(),
         }
     }
 
@@ -115,8 +120,7 @@ impl Definition {
     /// Whether rules may drop or prefer a candidate.
     fn rules(&self, candidate: &Candidate) -> bool {
         let guard = matches!(&candidate.condition, Condition::Named(name) if self.ruled.guards.contains(name));
-        let target =
-            matches!(&candidate.to, Target::State(state) if self.ruled.states.contains(state));
+        let target = matches!(&candidate.to, Some(Target::State(state)) if self.ruled.states.contains(state));
         guard || target
     }
 
@@ -206,13 +210,15 @@ pub struct Decides {
     pub transitions: Vec<usize>,
 }
 
-/// A transition or choice branch the machine may take.
+/// A transition or choice branch the machine may take, or something outside it that may take
+/// the event instead.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Candidate {
     /// What the oracle answers with: the target's name, made unique among the candidates.
     pub label: String,
     pub condition: Condition,
-    pub to: Target,
+    /// Where it leads; `None` for a candidate from outside the machine.
+    pub to: Option<Target>,
     /// Its place among the diagram's transitions; `None` for a choice point's branch.
     pub transition: Option<usize>,
 }
@@ -223,7 +229,12 @@ fn unique(candidates: &[Candidate], to: &Target) -> String {
         Target::State(name) | Target::Choice(name) => name.clone(),
         Target::End => "end".into(),
     };
-    let mut label = base.clone();
+    distinct(candidates, &base)
+}
+
+/// `base`, or `base-2` and so on, so no candidate has it yet.
+fn distinct(candidates: &[Candidate], base: &str) -> String {
+    let mut label = base.to_string();
     let mut n = 2;
     while candidates.iter().any(|c| c.label == label) {
         label = format!("{base}-{n}");
@@ -240,12 +251,55 @@ pub fn candidates(machine: &Machine, state: &str, event: &Event) -> Vec<Candidat
             candidates.push(Candidate {
                 label: unique(&candidates, &t.to),
                 condition: t.condition.clone(),
-                to: t.to.clone(),
+                to: Some(t.to.clone()),
                 transition: Some(i),
             });
         }
     }
     candidates
+}
+
+/// The candidates of `event` in `state` with the host's `outside` ones after them, each under a
+/// label of its own.
+pub fn among(
+    machine: &Machine,
+    state: &str,
+    event: &Event,
+    outside: Vec<Outside>,
+) -> Vec<Candidate> {
+    let mut options = candidates(machine, state, event);
+    for outside in outside {
+        options.push(Candidate {
+            label: distinct(&options, &outside.label),
+            condition: Condition::Criterion(outside.criterion),
+            to: None,
+            transition: None,
+        });
+    }
+    options
+}
+
+/// What the oracle is asked about the candidates rules left standing.
+pub fn question(
+    def: &Definition,
+    at: &str,
+    event: &Event,
+    candidates: &[Candidate],
+    weighed: &Weighed,
+) -> Question {
+    Question {
+        at: at.into(),
+        event: event.clone(),
+        candidates: weighed
+            .pool
+            .iter()
+            .map(|&i| Asked {
+                label: candidates[i].label.clone(),
+                criterion: def.criterion(&candidates[i]),
+                to: candidates[i].to.clone(),
+            })
+            .collect(),
+    }
 }
 
 /// A choice point's branches as candidates, its `[else]` last.
@@ -255,17 +309,26 @@ pub fn branches(choice: &Choice) -> Vec<Candidate> {
         candidates.push(Candidate {
             label: unique(&candidates, &b.to),
             condition: b.condition.clone(),
-            to: b.to.clone(),
+            to: Some(b.to.clone()),
             transition: None,
         });
     }
     candidates.push(Candidate {
         label: unique(&candidates, &choice.otherwise),
         condition: Condition::Else,
-        to: choice.otherwise.clone(),
+        to: Some(choice.otherwise.clone()),
         transition: None,
     });
     candidates
+}
+
+/// Something outside the machine that may take an event instead of one of its transitions: a
+/// task it started that waits for the event, for one. The host names it and says what the
+/// oracle reads for it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Outside {
+    pub label: String,
+    pub criterion: String,
 }
 
 /// How a candidate fares against the rules that need no model.
@@ -391,7 +454,8 @@ pub enum Input {
 pub struct Asked {
     pub label: String,
     pub criterion: String,
-    pub to: Target,
+    /// Where it leads; `None` for a candidate from outside the machine.
+    pub to: Option<Target>,
 }
 
 /// A decision for the oracle: with one candidate, whether it holds; with several, which fits.
@@ -467,6 +531,14 @@ pub enum Effect {
     /// A transition was taken, or the machine stayed. A transition taken while the state's work
     /// ran leaves that work behind: its outcome is no longer waited for.
     Step(Step),
+    /// The event is for the candidate from outside named `label`, the host's `index`-th: the
+    /// host gives it the event, and the machine stays where it is.
+    Passed {
+        label: String,
+        index: usize,
+        how: String,
+        probabilities: BTreeMap<String, f64>,
+    },
     /// The machine is in `state`, in a new entry of it.
     Entered { state: String, generation: u64 },
     /// Send `event` after `after`, unless the machine has left this entry by then
@@ -593,6 +665,8 @@ struct Turn<'a> {
     /// The state's work ran when the input came, and still does: staying goes on waiting for
     /// it.
     working: bool,
+    /// The host's candidates for the event from outside, until it is weighed.
+    outside: Vec<Outside>,
 }
 
 /// One machine, in a state.
@@ -643,6 +717,7 @@ impl Instance {
             out: Vec::new(),
             steps: 0,
             working: false,
+            outside: Vec::new(),
         };
         turn.out.push(Effect::Step(Step {
             from: self.state.clone(),
@@ -701,12 +776,25 @@ impl Instance {
     /// Moves the machine on `input`. An input it does not wait for (an answer nothing asked
     /// for, an event while a decision is out) changes nothing.
     pub fn handle(&mut self, def: &Definition, input: Input, facts: &dyn Facts) -> Vec<Effect> {
+        self.handle_among(def, input, facts, Vec::new())
+    }
+
+    /// Moves the machine on `input`, an event from outside that the `outside` candidates may
+    /// take instead of one of the machine's transitions.
+    pub fn handle_among(
+        &mut self,
+        def: &Definition,
+        input: Input,
+        facts: &dyn Facts,
+        outside: Vec<Outside>,
+    ) -> Vec<Effect> {
         let mut turn = Turn {
             def,
             facts,
             out: Vec::new(),
             steps: 0,
             working: false,
+            outside,
         };
         match (input, self.pending.take()) {
             (Input::Event(event), None) => self.fire(&mut turn, event),
@@ -743,7 +831,9 @@ impl Instance {
     /// Takes transitions on `event`, and on what follows, until the machine waits.
     fn fire(&mut self, turn: &mut Turn, mut event: Event) {
         loop {
-            let options = candidates(turn.def, &self.state, &event);
+            // What the host adds takes part in the first decision only: the event from outside.
+            let outside = std::mem::take(&mut turn.outside);
+            let options = among(turn.def, &self.state, &event, outside);
             if options.is_empty() {
                 match event {
                     // No transition on `denied`: it counts as a failure.
@@ -782,19 +872,9 @@ impl Instance {
     ) -> Option<Event> {
         let weighed = weigh(&options, turn.facts);
         let Some(pick) = by_rules(turn.def, &options, &weighed) else {
+            let asked = question(turn.def, &self.place(&at), event, &options, &weighed);
+            turn.out.push(Effect::Decide(asked));
             let pool = weighed.pool;
-            turn.out.push(Effect::Decide(Question {
-                at: self.place(&at),
-                event: event.clone(),
-                candidates: pool
-                    .iter()
-                    .map(|&i| Asked {
-                        label: options[i].label.clone(),
-                        criterion: turn.def.criterion(&options[i]),
-                        to: options[i].to.clone(),
-                    })
-                    .collect(),
-            }));
             self.pending = Some(Pending::Decision(Box::new(Asking {
                 event: event.clone(),
                 working: turn.working,
@@ -828,7 +908,22 @@ impl Instance {
         options: &[Candidate],
         pick: Pick,
     ) -> Option<Event> {
-        let to = pick.index.map(|index| options[index].to.clone());
+        // A candidate from outside takes the event: the machine stays where it is.
+        if let Some(index) = pick.index
+            && options[index].to.is_none()
+        {
+            turn.out.push(Effect::Passed {
+                label: options[index].label.clone(),
+                index: options[..index].iter().filter(|o| o.to.is_none()).count(),
+                how: pick.how,
+                probabilities: pick.probabilities,
+            });
+            if turn.working {
+                self.pending = Some(Pending::Work);
+            }
+            return None;
+        }
+        let to = pick.index.and_then(|index| options[index].to.clone());
         match (at, to) {
             (At::State, None) => {
                 turn.out.push(Effect::Step(Step {
@@ -1685,6 +1780,115 @@ mod tests {
         let weighed = weigh(&candidates, &prefer);
         let pick = by_rules(&root, &candidates, &weighed).expect("rules settle it");
         assert_eq!((pick.index, pick.by), (Some(0), By::Preferred));
+    }
+
+    const AGENT: &str = "
+        [*] --> idle
+        idle --> search : said [the user asks to search for something]
+        idle --> telling : task_done
+        idle --> idle : task_failed
+        search --> idle
+        telling --> idle";
+
+    fn waits(label: &str, criterion: &str) -> Outside {
+        Outside {
+            label: label.into(),
+            criterion: criterion.into(),
+        }
+    }
+
+    #[test]
+    fn a_candidate_from_outside_may_take_the_event_instead_of_a_transition() {
+        let def = def(AGENT, &["search", "telling"]);
+        let running = || vec![waits("search", "The search waits with its results shown")];
+        // The task the host adds is weighed with the machine's own transitions, under a label
+        // of its own.
+        let mut agent = Instance::resting(&def);
+        let effects = agent.handle_among(&def, Input::Event(Event::Said), &none(), running());
+        let asked: Vec<(&str, &str, bool)> = question(&effects)
+            .candidates
+            .iter()
+            .map(|c| (c.label.as_str(), c.criterion.as_str(), c.to.is_some()))
+            .collect();
+        assert_eq!(
+            asked,
+            [
+                ("search", "the user asks to search for something", true),
+                ("search-2", "The search waits with its results shown", false),
+            ]
+        );
+        // Chosen, it is passed the event, and the machine stays where it is, waiting.
+        let effects = agent.handle(&def, chose("search-2", 0.9), &none());
+        assert_eq!(
+            effects[1],
+            Effect::Passed {
+                label: "search-2".into(),
+                index: 0,
+                how: "model 0.90".into(),
+                probabilities: BTreeMap::from([("search-2".to_string(), 0.9)]),
+            }
+        );
+        assert!(steps(&effects).is_empty());
+        assert_eq!((agent.state(), agent.busy()), ("idle", false));
+        // The machine's own transition is taken as ever.
+        agent.handle_among(&def, Input::Event(Event::Said), &none(), running());
+        let effects = agent.handle(&def, chose("search", 0.9), &none());
+        assert_eq!(steps(&effects), ["idle said → search: model 0.90"]);
+        // Unsure, nothing takes the event.
+        let mut agent = Instance::resting(&def);
+        agent.handle_among(&def, Input::Event(Event::Said), &none(), running());
+        let effects = agent.handle(&def, chose("search-2", 0.4), &none());
+        assert_eq!(
+            steps(&effects),
+            ["idle said → idle: unsure (search-2 0.40): stayed"]
+        );
+        // Rules may prefer it, with no oracle; alone, it is asked about, yes or no.
+        let mut agent = Instance::resting(&def);
+        let prefer = Rules {
+            prefer: vec!["search-2"],
+            ..Rules::default()
+        };
+        let effects = agent.handle_among(&def, Input::Event(Event::Said), &prefer, running());
+        assert!(!asks(&effects));
+        assert!(matches!(&effects[1], Effect::Passed { label, .. } if label == "search-2"));
+        let alone = super::tests::def("[*] --> busy\nbusy --> [*] : task_done", &[]);
+        let mut agent = Instance::resting(&alone);
+        let effects = agent.handle_among(&alone, Input::Event(Event::Said), &none(), running());
+        assert_eq!(question(&effects).candidates.len(), 1);
+        // With nothing from outside and no transition on the event, nothing happens.
+        let mut agent = Instance::resting(&alone);
+        assert!(
+            agent
+                .handle(&alone, Input::Event(Event::Said), &none())
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_task_s_end_is_an_event_for_the_machine_that_started_it() {
+        let def = def(AGENT, &["search", "telling"]);
+        let mut agent = Instance::resting(&def);
+        let effects = agent.handle(&def, Input::Event(Event::TaskDone), &none());
+        assert_eq!(
+            steps(&effects),
+            ["idle task_done → telling: the only transition that applies"]
+        );
+        let mut agent = Instance::resting(&def);
+        let effects = agent.handle(&def, Input::Event(Event::TaskFailed), &none());
+        assert_eq!(
+            steps(&effects),
+            ["idle task_failed → idle: the only transition that applies"]
+        );
+        // A state with no transition on it ignores it.
+        agent.jump(&def, "telling", "test", "for the test", &none());
+        agent.release();
+        assert!(
+            agent
+                .handle(&def, Input::Event(Event::TaskDone), &none())
+                .is_empty()
+        );
+        assert_eq!(Event::TaskDone.name(), "task_done");
+        assert_eq!(Event::TaskFailed.to_string(), "task_failed");
     }
 
     #[test]

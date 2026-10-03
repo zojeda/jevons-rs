@@ -194,29 +194,49 @@ to one of its running tasks.
 - [x] Rename the tool-loop node `agent.toml` to `loop.toml` (`Kind::Loop`), so "agent" names only
       the new level. Update the schemas, `AGENTS.md`, the docs and the tests. The built-in tree
       has no such node, so `flow/earlier.rs` needs nothing for it.
-- [ ] Node files per level: an agent is `agent.toml` and `agent.fsm` (the root's `root.toml` and
+- [x] Node files per level: an agent is `agent.toml` and `agent.fsm` (the root's `root.toml` and
       `root.fsm` and a task's `task.toml` and `task.fsm` landed in phase 0). The loader checks
       that agents sit under the root and tasks under agents, and that each agent's scope covers its
-      tasks' `tools`.
-- [ ] The instance forest in the host: the root, one instance per agent (created when the tree
-      loads, kept across takes, rebuilt when the tree changes and the agent is at rest), and each
-      agent's tasks. Every step, effect, timer and trace record carries its instance.
-- [ ] Spawning: entering an agent's state whose folder is a task machine starts the task and is
+      tasks' `tools`. Every state folder of the root is an agent, and a task cannot hold a task.
+- [x] The instance forest in the host: the root, one instance per agent (created when the tree
+      loads, kept across takes, rebuilt when the tree changes and everything is at rest), and
+      each agent's tasks. Every step, effect, timer and trace record carries its instance.
+- [x] Spawning: entering an agent's state whose folder is a task machine starts the task and is
       `done` at once. Entering the root's state for an agent hands it the take and returns the root
       to `idle`.
-- [ ] Dispatch to running tasks: when an agent gets `said`, add each of its running tasks that
+- [x] Dispatch to running tasks: when an agent gets `said`, add each of its running tasks that
       waits for `said` to the candidates, described by the task's current state. A chosen task
-      gets the take as its own `said`.
-- [ ] Task results: `task_done` and `task_failed` events for the agent, with the task's name and
+      gets the take as its own `said`. In the engine these are candidates from outside
+      (`handle_among`), weighed with the transitions.
+- [x] Task results: `task_done` and `task_failed` events for the agent, with the task's name and
       last result as values (`{task.name}`, `{task.result}`).
-- [ ] One request per take: batch the root's question, the agent's (with its running tasks) and
-      the chosen work's first decision, within the question limit.
-- [ ] The built-in tree becomes three agents with inline work: `dictation` (today's `dictate`),
+- [x] One request per take: batch the root's question, the agent's (with its running tasks) and
+      the chosen work's first decision, within the question limit. The task's question rides
+      too, so a follow-up through all three levels is one call.
+- [x] The built-in tree becomes three agents with inline work: `dictation` (today's `dictate`),
       `assistant` (today's `ask`) and `automations` (today's `run`). The search example becomes a
       task of a `research` agent. Record the spike's tree in `flow/earlier.rs` so an unedited
       folder is brought up to date.
-- [ ] The Machines tab: the agents, each with its running tasks; any instance's diagram; Cancel
+- [x] The Machines tab: the agents, each with its running tasks; any instance's diagram; Cancel
       per task and for all.
+
+What phase 2 decided on the way:
+
+- **An agent is a choice only when it has something to do with the take:** a transition its rules
+  allow, or a task that waits. So `research`, whose one transition needs "Search …", takes no
+  ordinary dictation, and gets follow-ups only while a search waits. The root also prefers an
+  agent whose own rules choose what it would do.
+- **A task runs beside its agent within the take that moves it.** It is "in the background" for
+  the agent, which is free at once; its work still runs before the take ends. Work that outlives
+  a take is not built.
+- **A take always starts at the root.** A follow-up reaches a waiting task through the root and
+  its agent, in the same request. Dictation while a search waits is therefore typed, where the
+  spike gave every take to the waiting task.
+- **The bubble follows one task:** the one the latest take reached.
+- **Before the next Windows install, the user's flows folder needs moving by hand again:** it is
+  an edited tree with inline root states and `search/` under the root, which no longer loads
+  (the app then runs the built-in tree). Its states go under agents, and `search/` under a
+  `research` agent, as `examples/desktop/machines/research` shows.
 
 Crates: `jevons-machine` (candidates separate from taking a transition), `jevons-desktop-core`
 (loader, host), `jevons-desktop` (Machines tab, bubble).

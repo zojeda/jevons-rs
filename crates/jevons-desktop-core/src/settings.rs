@@ -347,7 +347,11 @@ mod tests {
         let mut mine = DesktopConfig::default();
         mine.dictation.language = Some("es".into());
         mine.save(&file).unwrap();
-        std::fs::write(dir.join("flows/ask/instructions.md"), "Answer briefly.").unwrap();
+        std::fs::write(
+            dir.join("flows/assistant/ask/instructions.md"),
+            "Answer briefly.",
+        )
+        .unwrap();
         std::fs::create_dir_all(dir.join("automations/mine")).unwrap();
         std::fs::write(dir.join("automations/mine/script.rhai"), "1").unwrap();
         let report = reset(&file).unwrap();
@@ -362,7 +366,7 @@ mod tests {
         );
         assert!(!dir.join("automations/mine").exists());
         assert_ne!(
-            std::fs::read_to_string(dir.join("flows/ask/instructions.md")).unwrap(),
+            std::fs::read_to_string(dir.join("flows/assistant/ask/instructions.md")).unwrap(),
             "Answer briefly."
         );
         let log = test_run(&dir, &["log", "--format=%s"]);

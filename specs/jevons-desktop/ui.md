@@ -169,15 +169,18 @@ Tests: `a_drafted_guard_matches_the_context_it_came_from`
 
 ### R18 The Machines tab draws each machine and where it is
 
-The Machines tab shows where the machines are (`task › state`, or "not started") and **Cancel
-task**, disabled while the root rests in its first state. It draws a machine's diagram, the
-innermost running one unless another is picked: states as boxes where the layout puts them,
-start and end dots, choice diamonds, and an arrowhead and label per edge. The current state is
-marked and the latest transition's label lit. Each state shows its work in a few words (such as
-`tool · web_search`, `agent`, `run`, `decide`) or `waits`. A tree whose root is a decision says
-it has no machines.
+The Machines tab shows where the app is (`agent › task › state`, or the root's state) and
+**Cancel all tasks**, disabled while everything is at rest. A **Running** card lists the root,
+each agent and, under it, the tasks it runs (`search-1`), each with its state and the events it
+waits for; a task has its own **Cancel**. Selecting a row shows that machine's diagram, and the
+task the latest take reached shows otherwise; a machine can also be picked by folder. The diagram
+draws states as boxes where the layout puts them, start and end dots, choice diamonds, and an
+arrowhead and label per edge. The current state of the machine shown is marked and its latest
+transition's label lit. Each state shows its work in a few words (such as `tool · web_search`,
+`loop`, `run`, `decide`, `machine`) or `waits`. A tree whose root is a decision says it has no
+machines.
 
-Tests: `the_machines_page_draws_the_built_in_root_machine`, `a_nested_task_shows_its_current_state_and_a_state_in_full`
+Tests: `the_machines_page_draws_the_built_in_root_machine`, `a_running_task_shows_under_its_agent_with_its_state_and_can_be_cancelled`
 
 ### R19 A state in full and the latest transitions
 
@@ -185,7 +188,7 @@ Selecting a state shows it in full: its description, its folder (or that it has 
 for an event), its transitions with their guards, and whether the machine is there now. The
 Transitions card lists the latest 40 moves first, each with what moved it.
 
-Tests: `a_nested_task_shows_its_current_state_and_a_state_in_full`
+Tests: `a_running_task_shows_under_its_agent_with_its_state_and_can_be_cancelled`
 
 ### R20 Settings are edited, then applied together
 

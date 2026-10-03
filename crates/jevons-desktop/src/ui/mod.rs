@@ -582,7 +582,7 @@ mod tests {
                 f.stages.push(crate::agent::StageView {
                     kind: jevons_desktop_core::pipeline::StageKind::Deciding,
                     label: "what to do".into(),
-                    choices: vec!["ask".into(), "dictate".into()],
+                    choices: vec!["assistant".into(), "dictation".into()],
                     detail: String::new(),
                     chosen: None,
                     ok: None,
@@ -591,7 +591,7 @@ mod tests {
             Box::new(|f| f.frame += 5),
             Box::new(|f| {
                 let stage = f.stages.last_mut().unwrap();
-                stage.chosen = Some("dictate".into());
+                stage.chosen = Some("dictation".into());
                 stage.detail = "0.92".into();
                 stage.ok = Some(true);
                 f.stages.push(crate::agent::StageView {
@@ -618,7 +618,7 @@ mod tests {
         let text = doc.root_element().text_content();
         assert!(text.contains("Hello there."), "{text}");
         assert!(
-            text.contains("what to do") && text.contains("dictate") && text.contains("0.92"),
+            text.contains("what to do") && text.contains("dictation") && text.contains("0.92"),
             "{text}"
         );
         assert!(text.contains("Inserted"), "{text}");
@@ -715,7 +715,7 @@ mod tests {
                 let mut view = view.lock().unwrap();
                 let mut context = view.context.clone().unwrap();
                 context.app.process_name = app.into();
-                let dictate = flows.find("dictate").unwrap();
+                let dictate = flows.find("dictation/dictate").unwrap();
                 view.route = walk::preview(&flows, &context, dictate);
                 view.context = Some(context);
             }
@@ -784,7 +784,7 @@ mod tests {
     /// The workbench with ask's `slack_messages` chosen, as the "Edit" of a reading picks it.
     fn workbench_root() -> Element {
         let rev = REV.fetch_add(1, Ordering::Relaxed);
-        let chosen = use_signal(|| Some(workbench::key("ask", "slack_messages")));
+        let chosen = use_signal(|| Some(workbench::key("assistant/ask", "slack_messages")));
         rsx! { workbench::Workbench { rev, chosen } }
     }
 
@@ -808,7 +808,7 @@ mod tests {
             html.contains("message-list_"),
             "the expression loads: {html}"
         );
-        assert!(html.contains("Save to ask/decide.toml"), "{html}");
+        assert!(html.contains("Save to assistant/ask/decide.toml"), "{html}");
         view.lock().unwrap().trial = Some(crate::agent::TrialView {
             name: "slack_messages".into(),
             xpath: "//ListItem".into(),
@@ -1336,7 +1336,7 @@ mod tests {
         // Selecting dictate showed it in full.
         let text = doc.root_element().text_content();
         assert!(
-            text.contains("Applies when") && text.contains("dictate/decide.toml"),
+            text.contains("Applies when") && text.contains("dictation/dictate/decide.toml"),
             "{text}"
         );
     }
@@ -1347,8 +1347,18 @@ mod tests {
 
     /// The Machines page over `view`, laid out on a wide dark viewport.
     fn machines_doc(view: View) -> DioxusDocument {
+        machines_doc_with(view).0
+    }
+
+    /// The Machines tab over `view`, and what its buttons ask the agent for.
+    fn machines_doc_with(
+        view: View,
+    ) -> (
+        DioxusDocument,
+        tokio::sync::mpsc::UnboundedReceiver<crate::agent::Command>,
+    ) {
         use blitz_traits::shell::{ColorScheme, Viewport};
-        let (commands, _received) = tokio::sync::mpsc::unbounded_channel();
+        let (commands, received) = tokio::sync::mpsc::unbounded_channel();
         let mut vdom = VirtualDom::new(machines_root);
         vdom.insert_any_root_context(Box::new(Ctx {
             view: Arc::new(Mutex::new(view)),
@@ -1360,7 +1370,7 @@ mod tests {
         doc.initial_build();
         doc.poll(None);
         doc.resolve(0.0);
-        doc
+        (doc, received)
     }
 
     fn texts(doc: &DioxusDocument, selector: &str) -> Vec<String> {
@@ -1377,11 +1387,11 @@ mod tests {
         let doc = machines_doc(view(&folder));
         let mut names = texts(&doc, ".fsm-state .fsm-name");
         names.sort();
-        assert_eq!(names, ["ask", "dictate", "idle", "run"]);
-        // idle has no folder: it waits; the others' work is their node file.
+        assert_eq!(names, ["assistant", "automations", "dictation", "idle"]);
+        // idle has no folder: it waits; the others' work is an agent, a machine of its own.
         let works = texts(&doc, ".fsm-state .fsm-work");
         assert!(works.contains(&"waits".to_string()), "{works:?}");
-        assert!(works.contains(&"run".to_string()), "{works:?}");
+        assert!(works.contains(&"machine".to_string()), "{works:?}");
         // The start dot, an arrowhead per edge, and the [else] label.
         assert!(doc.query_selector(".fsm-lines circle").unwrap().is_some());
         assert!(doc.query_selector_all(".fsm-lines polygon").unwrap().len() >= 7);
@@ -1401,7 +1411,8 @@ mod tests {
     }
 
     #[test]
-    fn a_nested_task_shows_its_current_state_and_a_state_in_full() {
+    fn a_running_task_shows_under_its_agent_with_its_state_and_can_be_cancelled() {
+        use crate::agent::Command;
         use jevons_desktop_core::flow::Memory;
         use jevons_desktop_core::flow::machine::runtime::Runtime as Machines;
         use jevons_desktop_core::pipeline::{Env, Settings, TakeStart};
@@ -1412,11 +1423,16 @@ mod tests {
                     ("root.toml", ""),
                     (
                         "root.fsm",
-                        "fsm App {\n[*] --> idle\nidle --> task : said\ntask --> idle\n}",
+                        "fsm App {\n[*] --> idle\nidle --> helper : said\nhelper --> idle\n}",
                     ),
-                    ("task/task.toml", "description = \"A task\""),
+                    ("helper/agent.toml", "description = \"Helps\""),
                     (
-                        "task/task.fsm",
+                        "helper/agent.fsm",
+                        "fsm Helper {\n[*] --> idle\nidle --> task : said\ntask --> idle\n}",
+                    ),
+                    ("helper/task/task.toml", "description = \"A task\""),
+                    (
+                        "helper/task/task.fsm",
                         "fsm Task {\n[*] --> waiting\nstate waiting: \"Waiting for the go\"\nwaiting --> [*] : said [the user says go]\n}",
                     ),
                 ],
@@ -1424,7 +1440,8 @@ mod tests {
             &Catalog::default(),
         ));
         assert!(tree.is_valid(), "{:?}", tree.errors);
-        // One take moves the root into the task, which waits: no model is asked.
+        // One take goes from the root to the agent, which starts the task; the task waits. No
+        // model is asked.
         let machines = Arc::new(Machines::new());
         let env = Env {
             client: jevons_desktop_core::client::Client::new("http://127.0.0.1:9", None),
@@ -1452,7 +1469,7 @@ mod tests {
             .block_on(machines.take(&env, &start, None, &updates, &mut trace));
         assert_eq!(
             machines.view().path(),
-            "task › waiting",
+            "helper › task › waiting",
             "{:?}",
             trace.notes
         );
@@ -1460,20 +1477,31 @@ mod tests {
         let folder = std::env::temp_dir().join(format!("jevons-ui-task-{}", std::process::id()));
         let mut state = view(&folder);
         state.flows = tree;
-        state.machines = machines;
-        let mut doc = machines_doc(state);
-        // The innermost machine shows first, at its current state.
+        state.machines = machines.clone();
+        let (mut doc, mut commands) = machines_doc_with(state);
+        // What runs: the root, the agent, and the agent's task under it.
+        assert_eq!(texts(&doc, ".fsm-run-name"), ["/", "helper", "task-1"]);
+        assert_eq!(
+            texts(&doc, ".fsm-run[data-level=\"task\"] .fsm-path"),
+            ["waiting"]
+        );
+        // The task the take reached shows first, at its current state.
+        assert_eq!(
+            texts(&doc, ".fsm-run[data-showing=\"true\"] .fsm-run-name"),
+            ["task-1"]
+        );
         assert_eq!(
             texts(&doc, ".fsm-state[data-current=\"true\"] .fsm-name"),
             ["waiting"]
         );
         let text = doc.root_element().text_content();
         assert!(
-            text.contains("task › waiting") && text.contains("waiting for said"),
+            text.contains("helper › task › waiting") && text.contains("waiting for said"),
             "{text}"
         );
-        // The history: the root's move into the task, then the task's start.
+        // The history: the root's hand-off, the agent's move, then the task's start.
         let steps = texts(&doc, ".fsm-step-move");
+        assert!(steps.contains(&"idle → helper".to_string()), "{steps:?}");
         assert!(steps.contains(&"idle → task".to_string()), "{steps:?}");
         assert!(steps.contains(&"[*] → waiting".to_string()), "{steps:?}");
         // Its latest transition has no edge (a start), so no label is lit.
@@ -1492,6 +1520,23 @@ mod tests {
                 && card.contains("Here now"),
             "{card}"
         );
+        // Selecting the agent shows its diagram, at the state it waits in.
+        click_text(&mut doc, ".fsm-run", "helper");
+        assert_eq!(
+            texts(&doc, ".fsm-state[data-current=\"true\"] .fsm-name"),
+            ["idle"]
+        );
+        // A task has its own Cancel; the root and the agent have none.
+        assert_eq!(texts(&doc, ".fsm-run button"), ["Cancel"]);
+        click(&mut doc, ".fsm-run button");
+        let task = machines.view().focus.unwrap();
+        let mut asked = Vec::new();
+        while let Ok(command) = commands.try_recv() {
+            if let Command::CancelOneTask(id) = command {
+                asked.push(id);
+            }
+        }
+        assert_eq!(asked, [task]);
     }
 
     /// The route of a Slack reply through the built-in dictate branch, three decisions deep.
@@ -1511,7 +1556,7 @@ mod tests {
             }),
             ..ContextSnapshot::default()
         };
-        let route = walk::preview(&tree, &context, tree.find("dictate").unwrap());
+        let route = walk::preview(&tree, &context, tree.find("dictation/dictate").unwrap());
         rsx! { {context::route_card(&route, "A take's route")} }
     }
 
@@ -1532,7 +1577,11 @@ mod tests {
         };
         // dictate → chat → thread, each a level deeper, on the chosen rows.
         let chosen = names(&doc, ".flow-row[data-route=\"true\"] .flow-name");
-        assert_eq!(chosen, ["dictate", "chat", "thread"], "{chosen:?}");
+        assert_eq!(
+            chosen,
+            ["dictation/dictate", "chat", "thread"],
+            "{chosen:?}"
+        );
         let deep = names(
             &doc,
             ".flow-children .flow-children > .flow-node > .flow-row .flow-name",

@@ -53,7 +53,8 @@ Tests: `actions_belong_in_state_folders_and_names_are_lowercase`
 
 ### R4 Events are known
 
-A transition's event is `said`, `done`, `failed`, `denied` or a timer's event. A transition with no
+A transition's event is `said`, `done`, `failed`, `denied`, `task_done`, `task_failed` or a
+timer's event. A transition with no
 event is `done`. Any other event is an error that lists the events the diagram knows.
 
 Tests: `unknown_events_missing_fallbacks_and_dead_ends_are_errors`, `a_diagram_reads_into_states_transitions_choices_and_timers`
@@ -143,7 +144,7 @@ An event from outside that comes while the state's work runs is weighed like any
 transition taken on it leaves the state, and the work's outcome is no longer waited for. A machine
 that stays goes on waiting for its work.
 
-Tests: `an_event_may_interrupt_a_state_s_work_and_staying_goes_on_waiting_for_it`, `a_machine_that_leaves_its_state_leaves_the_task_running_there`
+Tests: `an_event_may_interrupt_a_state_s_work_and_staying_goes_on_waiting_for_it`
 
 ### R15 A machine starts, rests and jumps
 
@@ -263,3 +264,22 @@ A named guard's criterion and a sentence are for the model to judge. The definit
 named guards and which states carry rules.
 
 Tests: `a_definition_says_what_decides_each_place_whatever_the_take`
+
+### R29 The host may add candidates from outside the machine
+
+`handle_among` weighs an event from outside among the machine's own transitions and the
+candidates its host adds: something that may take the event instead, such as a task the machine
+started that waits for it. Each has a label, made unique among the candidates, and what the
+oracle reads for it. They are weighed with the transitions: `Facts` may drop or prefer one, and a
+single one left is asked about, yes or no. One chosen is passed the event, by its label and its
+place among those the host gave, and the machine stays where it is. `among` and `question` give
+the candidates and the oracle's question ahead of any take.
+
+Tests: `a_candidate_from_outside_may_take_the_event_instead_of_a_transition`
+
+### R30 A task's end is an event
+
+`task_done` and `task_failed` are events a diagram may wait for, like `said`: the host sends one
+when a task the machine started ends. A state with no transition on it ignores it.
+
+Tests: `a_task_s_end_is_an_event_for_the_machine_that_started_it`

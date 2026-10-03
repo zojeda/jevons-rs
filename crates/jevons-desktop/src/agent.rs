@@ -146,6 +146,8 @@ pub enum Command {
     MachineTimer(Due),
     /// Ends every task, putting the flows root's machine back in its first state.
     CancelTask,
+    /// Ends one running task, by the id the Machines tab shows it under.
+    CancelOneTask(u64),
     /// The user's answer: run the tool or not.
     Confirmed(bool),
     /// A button of the bubble's answer.
@@ -1090,6 +1092,20 @@ impl Agent {
             }
             Command::AutomationFinished(trace) => self.automation_finished(*trace),
             Command::MachineTimer(due) => self.machine_timer(due),
+            Command::CancelOneTask(id) => {
+                // The bubble follows the task the latest take reached.
+                if self.machines.view().focus == Some(id) {
+                    self.end_conversation();
+                }
+                let machines = self.machines.clone();
+                let repaint = self.repaint.clone();
+                tokio::spawn(async move {
+                    if let Some(ended) = machines.cancel_task(id).await {
+                        tracing::info!(%ended, "Cancelled a task");
+                    }
+                    repaint();
+                });
+            }
             Command::CancelTask => {
                 self.end_conversation();
                 let machines = self.machines.clone();

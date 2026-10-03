@@ -4,11 +4,16 @@
 
 ## Purpose
 
-A machine lays a task out as states. Its folder holds a node file, a state diagram beside it, and
-a subfolder per state whose node file is that state's work. The flows root's machine, the app's,
-is `root.toml` with `root.fsm` and runs for as long as the app does. A machine in a state's folder
-is a task, `task.toml` with `task.fsm`: it waits between takes, so what the user says next moves
-it on. Nothing a machine does is off its diagram.
+A machine lays work out as states. Its folder holds a node file, a state diagram beside it, and a
+subfolder per state whose node file is that state's work. There are three levels:
+
+- **The root** (`root.toml`, `root.fsm`) decides which agent a take is for, and nothing else.
+- **An agent** (`agent.toml`, `agent.fsm`), a folder of the root, runs for as long as the app. It
+  routes what it gets among its own states and the tasks it started.
+- **A task** (`task.toml`, `task.fsm`), below an agent, does one job and ends. It waits between
+  takes, so what the user says next moves it on, and several run side by side.
+
+Nothing a machine does is off its diagram.
 
 ## Scope
 
@@ -73,25 +78,30 @@ Removed: now [jevons-machine](../jevons-machine/spec.md) R10.
 ### R11 A machine folder holds its diagram
 
 A machine's folder holds its diagram beside its node file: `root.fsm` beside `root.toml`,
-`task.fsm` beside `task.toml`. A missing diagram is an error, and the diagram's own problems are
-reported against the diagram's file.
+`agent.fsm` beside `agent.toml`, `task.fsm` beside `task.toml`. A missing diagram is an error, and
+the diagram's own problems are reported against the diagram's file.
 
 Tests: `machine_folders_are_checked_against_their_diagram`
 
-### R45 The root's machine is `root.toml`, a task's is `task.toml`
+### R45 Each machine is at its level
 
-`root.toml` is a node file only in the flows folder itself, and `task.toml` only below it; either
-one elsewhere is an error that names the file to use instead. `machine.toml` is an unknown node
-file.
+A machine's node file says its level, and each level has its place:
 
-Tests: `the_root_machine_is_root_toml_and_a_machine_below_it_is_task_toml`
+- `root.toml` only in the flows folder itself;
+- `agent.toml` only in a folder directly under it, and only under a root machine;
+- `task.toml` only below an agent, and never inside another task.
+
+Every state folder of the root is an agent. Each break of these is a load error that says where
+the file belongs. `machine.toml` is an unknown node file.
+
+Tests: `each_machine_s_file_says_its_level_and_each_level_has_its_place`
 
 ### R12 Subfolders are states
 
 A machine's subfolders are its states' work, each named after a state. A subfolder that names no
 state is an error that lists the states. A state with no folder does no work.
 
-Tests: `machine_folders_are_checked_against_their_diagram`, `the_built_in_root_is_a_machine_whose_states_are_the_old_branches`
+Tests: `machine_folders_are_checked_against_their_diagram`, `the_built_in_root_is_a_machine_whose_states_are_the_three_agents`
 
 ### R13 Named guards are declared and used
 
@@ -111,44 +121,47 @@ Tests: `machine_folders_are_checked_against_their_diagram`
 
 ### R15 A task must end
 
-Every machine below the flows root has a transition to `[*]`. Only the root's machine may run for
-as long as the app.
+A task's diagram has a transition to `[*]`. The root and the agents run for as long as the app
+and need none.
 
 Tests: `a_nested_machine_must_end_and_list_every_tool_its_states_call`
 
 ### R16 A machine lists every tool its states call
 
-A machine's `tools` lists every tool the nodes below it call: a tool node's `tool`, an agent's
-`tools`, and a run node's automations as `script:<name>`, or `script:*` when it may run any.
-`server:*` in the list covers every tool of that server. A node that calls a tool missing from the
-list of any machine above it is an error naming that machine.
+`tools` names every tool the machine's states may call, at any depth below it: tool nodes' `tool`,
+loops' `tools`, and `script:<name>` for automations. An entry is a name, or `server:*` or
+`script:*` for all of a kind. A state that calls an unlisted tool is an error. So a task's list is
+all it can do, its agent's covers it, and the root's covers everything.
 
 Tests: `a_nested_machine_must_end_and_list_every_tool_its_states_call`
 
 ### R17 States read what earlier states wrote
 
 Below a machine, each state's name is a placeholder, `{state}`, that holds what that state's work
-wrote last. A result with fields keeps them, and `{state.field}` reads one: a tool's, an agent's
-or an automation's result may have any field, a generation with a `schema` has its schema's, and
-a generation without one and the words as heard are text, with no fields. A field the shape
-lacks is a load error. Each state's work counts its model decisions anew.
+wrote last. A result with fields keeps them, and `{state.field}` reads one: a tool's, a loop's or
+an automation's result may have any field, a generation with a `schema` has its schema's, and a
+generation without one and the words as heard are text, with no fields. A field the shape lacks is
+a load error. Below an agent, `{task.name}` and `{task.result}` are the task that last ended and
+what it last wrote. Each state's work counts its model decisions anew.
 
-Tests: `states_read_what_earlier_states_wrote`, `results_have_shapes_and_guards_check_values_that_exist`, `a_generation_with_a_schema_answers_in_fields_later_states_read`
+Tests: `states_read_what_earlier_states_wrote`, `results_have_shapes_and_guards_check_values_that_exist`, `a_generation_with_a_schema_answers_in_fields_later_states_read`, `a_task_s_end_reaches_its_agent_as_an_event_with_what_it_wrote`
 
 ## The runtime
 
-### R18 The root waits in its first state
+### R18 The root and the agents wait in their first states
 
-The runtime starts the root machine in its first state. When the tree reloads, the runtime takes
-the new tree once only the root runs, in its first state; a task that runs keeps the tree it
-started with.
+The runtime starts the root machine and one instance of each agent, each waiting in its first
+state with nothing entered. When the tree reloads, the runtime takes the new tree once no task
+runs and they all wait there; while a task runs, every machine keeps the tree it started with.
 
 Tests: none yet
 
-### R19 A take is `said` for the innermost machine waiting for it
+### R19 A take is `said` for the root, which hands it to an agent
 
-A take is `said` for the innermost running machine whose state has a transition on `said`. When
-none has, the trace notes that nothing waits for what the user said.
+A take is `said` for the root. Entering the state of an agent hands that agent the take as its own
+`said`, and the root is back in its first state at once: the trace shows the root's two steps,
+then the agent's. When the root's state has no transition on `said`, the trace notes that nothing
+waits for what the user said.
 
 Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`
 
@@ -156,15 +169,20 @@ Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`
 
 The runtime answers the engine's rules ([jevons-machine](../jevons-machine/spec.md) R16) against
 the take's context and words. A transition drops out when its target folder's `[when]` fails, when
-its target is a run state with no approved automation, or when its named guard's `when` fails.
+its target is a run state with no approved automation, or when its named guard's `when` fails. A
+transition of the root into an agent also drops out when the agent has nothing it may do with the
+take: none of its own transitions on `said` passes its rules, it has no `[else]`, and none of its
+tasks waits for `said` with something it may do.
 
-Tests: `without_approved_automations_the_run_branch_is_no_candidate`
+Tests: `without_approved_automations_the_run_branch_is_no_candidate`, `the_search_example_searches_answers_and_opens_a_result_once_approved`
 
 ### R21 `[prefer]` chooses a transition with no model
 
 A candidate is preferred when its target folder's `[prefer]` or its named guard's `prefer` passes.
 When some are, the machine chooses among those alone, and one is taken with no model call
-(`preferred: its transcript rule passed`).
+(`preferred: its transcript rule passed`). A transition of the root into an agent is also
+preferred when the agent's own rules choose what it would do with the take, and a waiting task
+when its rules choose its transition.
 
 Tests: `words_starting_with_pregunta_are_a_question_with_no_root_decision`, `in_a_terminal_the_words_are_dictated_and_never_rewritten`, `the_search_example_searches_answers_and_opens_a_result_once_approved`
 
@@ -192,21 +210,22 @@ Removed: now [jevons-machine](../jevons-machine/spec.md) R19.
 
 Removed: now [jevons-machine](../jevons-machine/spec.md) R20.
 
-### R26 A machine's question carries its candidates' first decisions
+### R26 A take costs one decision call
 
-When the machine asks the model, the first model decision of each candidate's work rides in the
-same System One request, as long as rules alone lead to it and it needs no new reads; a request
-asks at most 12 questions. The state's walk takes that answer with no call of its own, so the root
-costs one decision call per take.
+When a machine asks the model, the same System One request carries the questions of where its
+candidates lead, as far as rules alone reach: an agent's own question, a waiting task's, and the
+first model decision of a state's work, as long as it needs no new reads. A request asks at most
+12 questions. The machines and the walk then take those answers with no call of their own, so the
+root, the agent, the task and the work cost one decision call per take.
 
-Tests: `words_needing_no_edits_are_typed_after_one_merged_decision`, `every_decision_and_the_generation_report_their_stages_in_order`
+Tests: `words_needing_no_edits_are_typed_after_one_merged_decision`, `every_decision_and_the_generation_report_their_stages_in_order`, `a_task_waits_across_takes_and_the_model_takes_its_transitions`, `two_tasks_of_one_agent_run_side_by_side_and_each_gets_its_own_follow_ups`
 
 ### R27 Entering a state runs its work
 
-Entering a state walks its folder from its node file, with the instructions, route and settings
-from the root down to its machine, and delivers the leaf as a take would. The work's end is
-`done`. A state with no folder is `done` at once when it has a transition on `done`, and waits
-otherwise.
+Entering an agent's or a task's state walks its folder from its node file, with the instructions,
+route and settings from the root down to its machine, and delivers the leaf as a take would. The
+work's end is `done`. A state with no folder is `done` at once when it has a transition on `done`,
+and waits otherwise.
 
 Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`, `the_search_example_searches_answers_and_opens_a_result_once_approved`
 
@@ -221,34 +240,36 @@ Tests: `a_declined_tool_call_takes_the_denied_transition`
 ### R29 A failure nothing handles ends the task
 
 A machine that ends failed ([jevons-machine](../jevons-machine/spec.md) R23) is a task that ends
-("nothing handles it: the task ends"), and its parent's state then takes `failed`. At the root it
-puts the root back in its first state ("nothing handles it: back to the start").
+("nothing handles it: the task ends"); its agent then takes `task_failed` (R52). The root or an
+agent goes back to its first state ("nothing handles it: back to the start"). A failure no
+machine handles is the take's error.
 
-Tests: none yet
+Tests: `a_task_s_end_reaches_its_agent_as_an_event_with_what_it_wrote`
 
 ### R30 Choice points choose at once
 
 Removed: now [jevons-machine](../jevons-machine/spec.md) R21.
 
-### R31 A state's machine is a task
+### R31 An agent starts a task beside itself
 
-A state whose folder is a machine, or whose walk reaches one, starts that machine as a task in its
-first state. Machines nest at most 8 deep; deeper, the state fails.
+An agent's state whose folder is a task, or whose walk reaches one, starts that task in its first
+state, and the agent's state is `done` at once: the agent goes on, and the task runs beside it.
+An agent may run several tasks at once, of one folder or of several; each is numbered among those
+of its folder that run (`search-1`, `search-2`). A task cannot start a task: its state then fails.
 
-Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`
+Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`, `two_tasks_of_one_agent_run_side_by_side_and_each_gets_its_own_follow_ups`
 
-### R32 A task that ends finishes its parent's state
+### R32 A machine that reaches its end
 
-A task that reaches `[*]` ends, and its parent's state takes `done`. The root reaching `[*]`
-starts over in its first state and forgets its values.
+A task that reaches `[*]` ends, and its agent is told (R52). The root or an agent that reaches
+`[*]` starts over in its first state.
 
 Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`, `the_search_example_searches_answers_and_opens_a_result_once_approved`
 
 ### R33 A task remembers its states' results until it ends
 
-Within a task, each state's leaf text is `{state}` for the states after it, and its last text
-becomes its parent's state value when the parent is a task too. The root keeps no values between
-takes.
+Within a task, each state's result is `{state}` for the states after it, until the task ends. An
+agent keeps its states' results only for the take that wrote them, and the root keeps none.
 
 Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`
 
@@ -278,21 +299,23 @@ number of its own.
 
 Tests: `a_timer_ends_a_task_that_waits_and_stale_timers_do_nothing`
 
-### R36 A hotkey enters a root state with no decision
+### R36 A hotkey enters an agent with no decision
 
-A take that starts at a hotkey's branch moves the root straight into that state, with no decision,
-when the branch is one of the root's states and the root waits in its first state with no task
-running. Otherwise the branch is walked alone, as under a decision root, and a machine reached that
-way is an error.
+A take that starts at a hotkey's branch hands the take straight to that agent, with no root
+decision, when the branch is one of the root's states and the root waits in its first state.
+Otherwise the branch is walked alone, as under a decision root, and a machine reached that way is
+an error.
 
 Tests: `a_hotkey_entry_starts_below_the_root_without_its_decision`
 
-### R37 Cancel ends every task
+### R37 Cancel ends tasks and runs nothing
 
-`cancel` ends every task and puts the root back in its first state, running no work. It returns
-the path it ended, or nothing when only the root ran, waiting in its first state.
+`cancel` ends every task and puts the root and the agents back in their first states, running no
+work. It returns where the app was, or nothing when no task ran and they all waited there.
+`cancel_task` ends one task the same way, by its id, and does not tell its agent; the others go
+on.
 
-Tests: `an_unsure_take_leaves_a_waiting_task_where_it_was`
+Tests: `an_unsure_take_leaves_a_waiting_task_where_it_was`, `one_task_can_be_cancelled_and_the_others_go_on`
 
 ### R38 A machine needs a machine root
 
@@ -301,33 +324,33 @@ machine runs only below a machine at the flows root".
 
 Tests: none yet
 
-### R39 The view shows where the machines are
+### R39 The view shows what runs
 
-The view gives the path of running states (`search › answering`), each machine's folder, name,
-state, entry time and the events it waits for, whether a take or timer is moving them, and the
-last 200 transitions. It says whether a task runs, and whether a timer that ran out is still
-waited for (its machine is in the state entry it was armed in). Each state entry updates the view
-and then sends the new path to the app.
+The view lists the machines that run: the root, the agents, then the tasks in the order they
+started, each with its folder, name, level, state, entry time, the events it waits for, its id and
+state entry, and for a task its agent and its number. It gives the task the latest take reached
+while it runs, and where the app is by it (`research › search › results`, or the root's state
+when none runs). It says whether a take or timer is moving the machines, whether everything is at
+rest, and whether a timer that ran out is still waited for (its machine is in the state entry it
+was armed in), and keeps the last 200 transitions. Each state entry updates the view, and a
+task's then sends its new place to the app.
 
-Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`, `an_unsure_take_leaves_a_waiting_task_where_it_was`, `a_timer_ends_a_task_that_waits_and_stale_timers_do_nothing`
+Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`, `an_unsure_take_leaves_a_waiting_task_where_it_was`, `a_timer_ends_a_task_that_waits_and_stale_timers_do_nothing`, `two_tasks_of_one_agent_run_side_by_side_and_each_gets_its_own_follow_ups`
 
 ### R40 Every transition and stay is traced
 
-Each transition, start, cancel and stay is a step in the take's trace with its machine, from,
-event, to, how (`model 0.90`, `preferred: …`, `unsure (opening 0.40): stayed`), the
-probabilities and the choice points passed. A decision on `said`, or among several candidates,
-is also a flow step with its branches' checks and its System One request, and a stage in the
-bubble.
+Each transition, start, cancel and stay is a step in the take's trace with its machine's folder,
+which of the running machines it is, from, event, to, how (`model 0.90`, `preferred: …`, `unsure
+(opening 0.40): stayed`), the probabilities and the choice points passed. A take an agent passes
+to a task is a step to `task <label>`. The root's decision on `said`, any decision among several
+candidates and any the model was asked is also a flow step with its branches' checks and its
+System One request, and a stage in the bubble.
 
-Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`, `an_unsure_take_leaves_a_waiting_task_where_it_was`
+Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`, `an_unsure_take_leaves_a_waiting_task_where_it_was`, `two_tasks_of_one_agent_run_side_by_side_and_each_gets_its_own_follow_ups`
 
 ### R46 A machine that leaves its state leaves the task running there
 
-When a machine takes a transition while a task runs in its state (its own timer, or what the user
-said when no task listens), the task ends with it, running nothing more
-([jevons-machine](../jevons-machine/spec.md) R26). A machine that stays keeps its task.
-
-Tests: `a_machine_that_leaves_its_state_leaves_the_task_running_there`
+Removed: a task runs beside its agent, not in its state (R31).
 
 ### R47 The tree says what decides each transition
 
@@ -347,6 +370,25 @@ a field the result's shape has, or it is a load error. The runtime checks it aga
 values, so a transition can depend on a result with no model call.
 
 Tests: `a_guard_on_a_state_s_result_takes_a_transition_with_no_model`, `results_have_shapes_and_guards_check_values_that_exist`
+
+### R49 An agent's candidates include its waiting tasks
+
+When an agent gets `said`, each task of its own that is not busy and whose state has a transition
+on `said` is a candidate beside the agent's own transitions, labelled by its folder and number
+(`search-1`). The model reads it as the running task, its diagram's name, its state and that
+state's description. A task chosen gets the take as its own `said`, and the agent stays where it
+is; the bubble then follows that task.
+
+Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`, `two_tasks_of_one_agent_run_side_by_side_and_each_gets_its_own_follow_ups`
+
+### R52 A task's end is an event for its agent
+
+When a task ends, its agent takes `task_done`, or `task_failed` when it ended failed, with
+`{task.name}` (its folder's name) and `{task.result}` (what it last wrote). An agent whose state
+has no transition on the event stays where it is; a `task_failed` no transition handles leaves
+the failure as the take's error.
+
+Tests: `a_task_s_end_reaches_its_agent_as_an_event_with_what_it_wrote`, `a_timer_ends_a_task_that_waits_and_stale_timers_do_nothing`
 
 ## Layout
 

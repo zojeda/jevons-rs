@@ -24,23 +24,29 @@ pub const TREE: &[(&str, &str)] = tree_files![
     "root.toml",
     "root.fsm",
     "instructions.md",
-    "dictate/decide.toml",
-    "dictate/instructions.md",
-    "dictate/code/decide.toml",
-    "dictate/terminal/decide.toml",
-    "dictate/chat/decide.toml",
-    "dictate/chat/thread/decide.toml",
-    "dictate/chat/any/decide.toml",
-    "dictate/web-mail/decide.toml",
-    "dictate/notes/decide.toml",
-    "dictate/any/decide.toml",
-    "ask/decide.toml",
-    "ask/instructions.md",
-    "ask/chat/generate.toml",
-    "ask/slack/generate.toml",
-    "ask/web-chat/generate.toml",
-    "ask/any/generate.toml",
-    "run/run.toml",
+    "dictation/agent.toml",
+    "dictation/agent.fsm",
+    "dictation/dictate/decide.toml",
+    "dictation/dictate/instructions.md",
+    "dictation/dictate/code/decide.toml",
+    "dictation/dictate/terminal/decide.toml",
+    "dictation/dictate/chat/decide.toml",
+    "dictation/dictate/chat/thread/decide.toml",
+    "dictation/dictate/chat/any/decide.toml",
+    "dictation/dictate/web-mail/decide.toml",
+    "dictation/dictate/notes/decide.toml",
+    "dictation/dictate/any/decide.toml",
+    "assistant/agent.toml",
+    "assistant/agent.fsm",
+    "assistant/ask/decide.toml",
+    "assistant/ask/instructions.md",
+    "assistant/ask/chat/generate.toml",
+    "assistant/ask/slack/generate.toml",
+    "assistant/ask/web-chat/generate.toml",
+    "assistant/ask/any/generate.toml",
+    "automations/agent.toml",
+    "automations/agent.fsm",
+    "automations/run/run.toml",
     "_actions/insert/generate.toml",
     "_actions/replace/generate.toml",
     "_actions/rewrite/generate.toml",
@@ -168,6 +174,9 @@ pub fn init(dir: &Path) -> std::io::Result<InitReport> {
             if !TREE.iter().any(|(p, _)| p == path) {
                 std::fs::remove_file(dir.join(path))?;
                 report.removed.push((*path).into());
+                // A folder left empty would be a node with no node file.
+                let mut folder = dir.join(path);
+                while folder.pop() && folder != dir && std::fs::remove_dir(&folder).is_ok() {}
             }
         }
         for (path, text) in TREE {
@@ -302,6 +311,10 @@ pub fn schemas_json() -> Vec<(String, String)> {
             pretty(schemars::schema_for!(MachineSpec)),
         ),
         (
+            "agent.schema.json".into(),
+            pretty(schemars::schema_for!(MachineSpec)),
+        ),
+        (
             "task.schema.json".into(),
             pretty(schemars::schema_for!(MachineSpec)),
         ),
@@ -380,7 +393,7 @@ mod tests {
         let insert = tree.find("_actions/insert").unwrap();
         assert_eq!(tree.node(insert).kind(), Kind::Generate);
         let entries: Vec<String> = tree.entries().into_iter().map(|(p, _)| p).collect();
-        assert_eq!(entries, ["ask", "dictate", "run"]);
+        assert_eq!(entries, ["assistant", "automations", "dictation"]);
     }
 
     #[test]
@@ -437,14 +450,21 @@ mod tests {
         std::fs::write(dir.join("TOOLS.md"), "generated").unwrap();
         let report = init(&dir).unwrap();
         assert!(report.notes[0].contains("earlier version"), "{report:?}");
-        assert!(report.written.contains(&"run/run.toml".to_string()));
-        // The decision root became the root machine: its node file is gone.
+        assert!(
+            report
+                .written
+                .contains(&"automations/run/run.toml".to_string())
+        );
+        // The decision root became the root machine and its branches moved under agents: the
+        // earlier files are gone, and so are the folders they leave empty.
         assert!(report.written.contains(&"root.toml".to_string()));
-        assert_eq!(report.removed, ["decide.toml"]);
+        assert!(report.removed.contains(&"decide.toml".to_string()));
+        assert!(report.removed.contains(&"ask/decide.toml".to_string()));
         assert!(!dir.join("decide.toml").exists());
+        assert!(!dir.join("ask").exists() && !dir.join("dictate").exists());
         let tree = FlowTree::load(&Disk::new(&dir), &Catalog::default());
         assert!(tree.is_valid(), "{:?}", tree.errors);
-        assert!(tree.find("ask/slack").is_some());
+        assert!(tree.find("assistant/ask/slack").is_some());
         // Up to date now: nothing more to do.
         assert!(init(&dir).unwrap().notes.is_empty());
         // An edited earlier tree is the user's: left as it is.
@@ -459,7 +479,7 @@ mod tests {
         let report = init(&edited).unwrap();
         let flows = |w: &String| TREE.iter().any(|(path, _)| path == w);
         assert!(!report.written.iter().any(flows), "{report:?}");
-        assert!(!edited.join("run").exists());
+        assert!(!edited.join("automations").exists());
         std::fs::remove_dir_all(dir).unwrap();
         std::fs::remove_dir_all(edited).unwrap();
     }
@@ -469,7 +489,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("jevons-flows-init-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let first = init(&dir).unwrap();
-        assert!(first.written.contains(&"dictate/decide.toml".to_string()));
+        assert!(
+            first
+                .written
+                .contains(&"dictation/dictate/decide.toml".to_string())
+        );
         assert!(first.written.contains(&"AGENTS.md".to_string()));
         assert!(
             first
@@ -479,10 +503,10 @@ mod tests {
         let tree = FlowTree::load(&crate::flow::tree::Disk::new(&dir), &Catalog::default());
         assert!(tree.is_valid(), "{:?}", tree.errors);
         // A removed branch stays removed, and nothing is rewritten.
-        std::fs::remove_dir_all(dir.join("ask")).unwrap();
+        std::fs::remove_dir_all(dir.join("assistant")).unwrap();
         let second = init(&dir).unwrap();
         assert!(second.written.is_empty(), "{:?}", second.written);
-        assert!(!dir.join("ask").exists());
+        assert!(!dir.join("assistant").exists());
         // An outdated guide jevons wrote is updated; an edited one is left alone.
         let stale = format!("{AGENTS_HEADER}{}; x) -->\nold guide", digest("old guide"));
         std::fs::write(dir.join("AGENTS.md"), &stale).unwrap();

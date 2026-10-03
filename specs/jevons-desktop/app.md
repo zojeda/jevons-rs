@@ -215,8 +215,9 @@ Tests: none yet
 
 When a task's timer runs out, its event moves the machines as a take of its own, whose work
 delivers into the window the task started in. With no take running, the bubble shows the timer.
-A timer whose state the machine has left does nothing and shows nothing. **Cancel task** in the
-Machines tab ends every task.
+A timer whose state the machine has left does nothing and shows nothing. In the Machines tab,
+**Cancel all tasks** ends every task and a task's own **Cancel** ends that one; when it is the
+task the bubble follows, its conversation goes with it.
 
 Tests: `a_timer_ends_a_task_that_waits_and_stale_timers_do_nothing`
 
@@ -237,8 +238,8 @@ Tests: none yet
 
 ### R25 A waiting task's bubble is its conversation
 
-While a task waits for what the user says next, its bubble stays after each take and timer, with
-no time limit, and the next take joins it: the earlier turns stay above the one being said, each
+While the task the latest take reached waits for what the user says next, its bubble stays after
+each take and timer, with no time limit, and the next take joins it: the earlier turns stay above the one being said, each
 with what was said and what the task answered or how the turn ended. **Copy** and **Insert** take
 the latest text the conversation holds. **Close** hides it, and **Show the task's conversation**
 in the tray menu brings it back while the task waits and no take runs. When the task ends, the

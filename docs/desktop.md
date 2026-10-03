@@ -32,7 +32,7 @@ Each commit holds only the files jevons wrote, so your own edits to flows and au
 - **Hold or toggle:** each dictation hotkey either listens while held (the default) or starts on a press and stops on the next one. Push-to-talk and the branch hotkeys share one setting (`hotkey_mode`), and live dictation has its own (`live_hotkey_mode`). Both are `hold` or `toggle`, and Settings has a switch under each hotkey.
 - **Live dictation:** hold its hotkey (default `F9`) while speaking, or press it to start and again to stop in toggle mode; the tray menu's **Start live dictation** toggles it too. While you speak, the feedback bubble shows the words as they are recognized. Nothing is typed until you stop: then the whole transcript goes through the flow tree, like a push-to-talk take. The app ends a phrase at each pause (0.7 s of quiet at the microphone, or every 20 s of nonstop speech) and keeps all the audio. While push-to-talk runs from a held hotkey, a keyboard hook drops that key's auto-repeats, which Windows would otherwise send to the focused application (a held F10 toggles most applications' menu bar).
 - **Live feedback:** a bubble above the tray icon follows each take: the words as they are recognized, then each stage as it runs. A decision's branches light up in turn until it chooses, and then the chosen one stays lit with its probability. An investigation shows what it reads, generation shows the words written, and tool calls and agents show each call. A running stage has moving dots, and a finished one has a check or a cross. At the end the bubble says whether the text was inserted or left on the clipboard. It never takes the focus, lets clicks through, and closes a few seconds after the take ends. Turn it off with the tray menu's **Live feedback** or in Settings.
-- **Answers:** a branch whose output is `bubble` (such as `ask/`) streams its answer into a larger bubble instead of typing it, even with live feedback off. The answer renders as Markdown (headings, **bold** and *italics*, lists and task lists, quotes, inline code and code blocks, tables), and scrolls with the mouse wheel while it streams and after. It stays until you close it or start another take. Once it is complete the bubble takes clicks: **Copy** puts the answer on the clipboard as plain text and **Copy raw** as the Markdown written, both leaving the bubble open; **Select text** shows the answer's Markdown in a text field, where you can select any part (drag, or Ctrl+A) and copy it with Ctrl+C, and **Done selecting** goes back to the formatted answer; **Insert** types it into the window the take started in (with the usual checks), and **Close** dismisses it.
+- **Answers:** a branch whose output is `bubble` (such as the assistant's `ask/`) streams its answer into a larger bubble instead of typing it, even with live feedback off. The answer renders as Markdown (headings, **bold** and *italics*, lists and task lists, quotes, inline code and code blocks, tables), and scrolls with the mouse wheel while it streams and after. It stays until you close it or start another take. Once it is complete the bubble takes clicks: **Copy** puts the answer on the clipboard as plain text and **Copy raw** as the Markdown written, both leaving the bubble open; **Select text** shows the answer's Markdown in a text field, where you can select any part (drag, or Ctrl+A) and copy it with Ctrl+C, and **Done selecting** goes back to the formatted answer; **Insert** types it into the window the take started in (with the usual checks), and **Close** dismisses it.
 - **Confirmations:** before a tool runs, the bubble shows the tool and its arguments and waits: **Run** or Enter runs it, **Cancel** or Esc does not. Enter and Esc are taken only while a call waits, and a call nobody answers within a minute is cancelled. The bubble asks even when live feedback is off. Headless runs never run a tool that asks first.
 - **Left-click** the tray icon to toggle dictation.
 - **Other hotkeys** (set in Settings, by clicking a field and pressing the combination): one to show the inspector, and one per top-level branch of the flow tree to start the take there instead of at the root (such as a hotkey that always asks).
@@ -67,8 +67,9 @@ Each folder is a node, and the file in it names its kind:
 
 | File | Does |
 | --- | --- |
-| `root.toml` | the flows root's state machine, laid out in `root.fsm` beside it; each subfolder is a state's work |
-| `task.toml` | a task: a state machine below the root, laid out in `task.fsm` beside it |
+| `root.toml` | the flows root's state machine, laid out in `root.fsm` beside it; each subfolder is an agent |
+| `agent.toml` | an agent: a state machine in a folder of the root, laid out in `agent.fsm`; each subfolder is a state's work, or a task it starts |
+| `task.toml` | a task: a state machine below an agent, laid out in `task.fsm` beside it |
 | `decide.toml` | chooses one of its subfolders (or the folders of a shared `_` folder named by `branches`) |
 | `generate.toml` | writes text with the language model, for the application, the bubble or the clipboard |
 | `transcript.toml` | uses the words as recognized, with no model |
@@ -79,7 +80,7 @@ Each folder is a node, and the file in it names its kind:
 A decision in the built-in tree:
 
 ```toml
-# flows/dictate/chat/decide.toml
+# flows/dictation/dictate/chat/decide.toml
 description = "A chat application"   # what the decision above chooses by
 priority = 20                        # dictate/ chooses with select = "rules": highest wins
 select = "rules"
@@ -96,17 +97,18 @@ The decision model reads each branch's `description` as that choice, along with 
 
 The built-in tree:
 
-- The root machine (`root.toml`, `root.fsm`) waits in `idle` and asks who the words are for: the application (**dictate**, the `[else]` transition), jevons (**ask**), or a saved task (**run**, an automation). It takes the model's choice from 70% and dictates below that. Words that start with "Pregunta" or "Question" always go to **ask**, and in a terminal the words are always dictated, both with no model call (`[prefer]` in those folders). Each state's work done, it is back in `idle`.
-- `dictate/` chooses by rules, per application: `code/` and `terminal/` (only insert or type as heard; a terminal's buffer is never rewritten), `chat/` (with `thread/` for replies), `web-mail/`, `notes/` and `any/`. Each takes its branches from the shared `_actions/` folder: `insert`, `replace` (with a selection), `rewrite` (with text in the field) and `verbatim` (the words as heard, no generation).
-- `ask/` answers in the bubble. In Slack it reads, with XPath, the open conversation, its latest messages and the channels (`slack_conversation`, `slack_messages`, `slack_channels`), lazily, and `slack/` answers from them; in other chat apps (`chat/`, `web-chat/`) it first reads the open conversation with an investigation.
-- `run/` runs one of your approved automations; it is not a choice until one is approved.
+- The root machine (`root.toml`, `root.fsm`) waits in `idle` and asks which agent the words are for: the application (**dictation**, the `[else]` transition), jevons (**assistant**), or a saved task (**automations**). It takes the model's choice from 70% and dictates below that. Words that start with "Pregunta" or "Question" always go to the assistant, and in a terminal the words are always dictated, both with no model call (`[prefer]` in each agent's `agent.toml`). The agent gets the take, and the root is back in `idle` at once.
+- Each built-in agent (`agent.toml`, `agent.fsm`) has one state of work, so it adds no decision: `dictation/dictate/`, `assistant/ask/` and `automations/run/`. An agent is where you add states and tasks.
+- `dictation/dictate/` chooses by rules, per application: `code/` and `terminal/` (only insert or type as heard; a terminal's buffer is never rewritten), `chat/` (with `thread/` for replies), `web-mail/`, `notes/` and `any/`. Each takes its branches from the shared `_actions/` folder: `insert`, `replace` (with a selection), `rewrite` (with text in the field) and `verbatim` (the words as heard, no generation).
+- `assistant/ask/` answers in the bubble. In Slack it reads, with XPath, the open conversation, its latest messages and the channels (`slack_conversation`, `slack_messages`, `slack_channels`), lazily, and `slack/` answers from them; in other chat apps (`chat/`, `web-chat/`) it first reads the open conversation with an investigation.
+- `automations/run/` runs one of your approved automations; the agent is not a choice for the root until one is approved.
 
-### Machines: tasks that wait for you
+### Agents and tasks
 
-A task that takes more than one turn is a machine in a state's folder: a search you follow up on ("open the second one"), a draft you revise, a command you confirm. It is `task.toml` with `task.fsm`, a state diagram in [Oxidate](https://crates.io/crates/oxidate-fsm)'s Mermaid-like language, and each state's work is the subfolder of its name: a tool call, a generation, an agent, a decision tree.
+An agent is a folder of the root with a machine of its own. It runs for as long as the app, gets every take the root hands it, and routes it among its own states and the tasks it started. A task is a job with an end that takes more than one turn: a search you follow up on ("open the second one"), a draft you revise, a command you confirm. It is a folder below an agent, `task.toml` with `task.fsm`, a state diagram in [Oxidate](https://crates.io/crates/oxidate-fsm)'s Mermaid-like language, and each state's work is the subfolder of its name: a tool call, a generation, a tool loop, a decision tree.
 
 ```text
-# flows/search/task.fsm (examples/desktop/machines/search)
+# flows/research/search/task.fsm (examples/desktop/machines/research)
 fsm Search {
     timer quiet = 120000 -> quiet
     [*] --> searching
@@ -121,14 +123,16 @@ fsm Search {
 }
 ```
 
-- **Between takes** the task waits in its state, and what you say next is `said` for it, not for the root. The decision model takes a transition by its guard's sentence (or by the target state's description), with rules first; when it is unsure, a `said` stays where it was, so an unsure take never moves a task on. Two quiet minutes (`timer`) end this one.
+- **Starting one:** an agent's state whose folder is a task starts it and is done at once, so the task runs beside its agent, which is free for the next take. Several run side by side (`search-1`, `search-2`).
+- **Between takes** the task waits in its state. What you say next goes the same way as any take: the root chooses the agent (which is a choice only while it has something to do with the take: a rule that lets it start something, or a task that waits), the agent chooses among its own transitions and its waiting tasks, and the task chosen takes it as its own `said`. One request asks all three. The decision model takes a transition by its guard's sentence (or by the target state's description), with rules first; when it is unsure, a `said` stays where it was, so an unsure take never moves a task on. Two quiet minutes (`timer`) end this one.
+- **When a task ends,** its agent takes `task_done` or `task_failed` and may react (tell you, start another), reading which task as `{task.name}` and what it last wrote as `{task.result}`.
 - **Each state does one thing,** and only what its node file says. A machine lists every tool its states call in its node file's `tools`, so a task cannot reach further than that list. Risky work (opening an address, running a command) is a state of its own, reached only by the transitions drawn; its tool asks in the bubble first, and declining it is `denied`, a transition back to where you were.
 - **States remember** what earlier states wrote (`{searching}` is the search's result) until the task ends. A result with fields keeps them (`{searching.status}`; a generation with a `[schema]` answers in fields), and a guard can check one, so "the search found nothing" is a rule and costs no model call. A timer's work delivers into the window the task started in, or onto the clipboard when that window is no longer in front.
-- **The bubble is the task's conversation.** While a task waits, its bubble stays open and your next words join it: the earlier turns stay above, each with what you said and what the task answered or how the turn ended. **Close** hides it, and **Show the task's conversation** in the tray menu brings it back. It goes when the task ends. Like a chat, the bubble follows its newest text; scroll up and a button takes you back to the end, blinking while more arrives.
+- **The bubble is the task's conversation.** While the task the latest take reached waits, its bubble stays open and your next words join it: the earlier turns stay above, each with what you said and what the task answered or how the turn ended. **Close** hides it, and **Show the task's conversation** in the tray menu brings it back. It goes when the task ends. Like a chat, the bubble follows its newest text; scroll up and a button takes you back to the end, blinking while more arrives.
 - **What decides a transition** is in the open: `jevons-desktop --check-flows` lists, for each machine, whether a state's event is decided by the event alone, by rules, or by the decision model (after the rules, when some apply).
-- **The Machines tab** draws each machine's diagram with the state it is in, the transitions taken (by rules, by the model and its probability, or a stay) and **Cancel task**. The bubble shows where a running task is.
+- **The Machines tab** lists what runs (the root, each agent and its tasks), draws any machine's diagram with the state it is in, and shows the transitions taken (by rules, by the model and its probability, or a stay). Each task has its **Cancel**, and **Cancel all tasks** ends them all. The bubble shows where a running task is.
 
-[examples/desktop/machines](../examples/desktop/machines) has the search task, with the tools to register and the two lines that let the root enter it.
+[examples/desktop/machines](../examples/desktop/machines) has the `research` agent with its search task, the tools to register and the two lines that add it to the root.
 
 `AGENTS.md` in the folder is the full reference: every field, placeholders such as `{selection}` and `{chat.messages}`, investigations, tools, agents and the rules the loader enforces. [examples/desktop/flows](../examples/desktop/flows) is the built-in tree.
 

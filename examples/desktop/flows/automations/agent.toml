@@ -1,0 +1,5 @@
+# Automations: it runs one of the tasks jevons learned from a recording. Its machine (agent.fsm)
+# has one state of work, `run`; without an approved automation it is no choice for the root.
+description = "The user asks to run one of their saved automations: a task jevons learned from a recording, such as posting a message, filing a ticket or filling a form."
+# Everything its states may call: any approved automation.
+tools = ["script:*"]

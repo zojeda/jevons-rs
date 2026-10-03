@@ -31,7 +31,7 @@ pub mod layout;
 
 pub use engine::{
     Asked, By, Candidate, Chosen, DecidedBy, Decides, Decision, Definition, Effect, Facts, Input,
-    Instance, Outcome, Pick, Question, Ruled, Step, Verdict, Weighed,
+    Instance, Outcome, Outside, Pick, Question, Ruled, Step, Verdict, Weighed,
 };
 
 use serde::Serialize;
@@ -53,12 +53,23 @@ pub enum Event {
     Failed,
     /// The user declined a tool call the state's work asked about.
     Denied,
+    /// A task the machine started ended (an agent's diagram).
+    TaskDone,
+    /// A task the machine started failed, with no transition of its own to handle it.
+    TaskFailed,
     /// A timer of the diagram ran out.
     Timer(String),
 }
 
 impl Event {
-    pub const BUILT_IN: [&str; 4] = ["said", "done", "failed", "denied"];
+    pub const BUILT_IN: [&str; 6] = [
+        "said",
+        "done",
+        "failed",
+        "denied",
+        "task_done",
+        "task_failed",
+    ];
 
     pub fn name(&self) -> &str {
         match self {
@@ -66,6 +77,8 @@ impl Event {
             Self::Done => "done",
             Self::Failed => "failed",
             Self::Denied => "denied",
+            Self::TaskDone => "task_done",
+            Self::TaskFailed => "task_failed",
             Self::Timer(event) => event,
         }
     }
@@ -76,6 +89,8 @@ impl Event {
             "done" => Self::Done,
             "failed" => Self::Failed,
             "denied" => Self::Denied,
+            "task_done" => Self::TaskDone,
+            "task_failed" => Self::TaskFailed,
             _ => return None,
         })
     }

@@ -14,7 +14,7 @@ Everything runs locally. The speech, decision and language models run inside the
 ## The desktop app
 
 - **Context-aware.** On Windows, UI Automation gives the focused field's role and name, the selection, the text around the caret and the browser's address. Password fields are never read, text is truncated, and the clipboard is read only if you allow it.
-- **A flow tree you can edit, with machines for tasks.** The root is a state machine (`root.fsm`, in [Oxidate](https://crates.io/crates/oxidate-fsm)'s language) whose states are folders; a task that waits for your next words, such as a web search you follow up on, is a machine of its own (`task.fsm`), and the inspector shows where it is. Each folder holds one node file: `decide.toml` picks a subfolder, `generate.toml` writes with the language model, `transcript.toml` uses the words as heard, and `tool.toml` and `loop.toml` call tools. Guards (`[when]` rules on the application, window, page, field, selection or the words themselves) prune branches with no model call. Instructions add up from the root down. The files reload as soon as you save them, and an `AGENTS.md` in the folder teaches coding agents the format.
+- **A flow tree you can edit, with agents and tasks.** The root is a state machine (`root.fsm`, in [Oxidate](https://crates.io/crates/oxidate-fsm)'s language) that hands each take to an agent: dictation, the assistant, your automations, or one you add. An agent is a machine too (`agent.fsm`), and it starts tasks: a task that waits for your next words, such as a web search you follow up on, is a machine of its own (`task.fsm`), several can run side by side, and the inspector shows where each one is. Each folder holds one node file: `decide.toml` picks a subfolder, `generate.toml` writes with the language model, `transcript.toml` uses the words as heard, and `tool.toml` and `loop.toml` call tools. Guards (`[when]` rules on the application, window, page, field, selection or the words themselves) prune branches with no model call. Instructions add up from the root down. The files reload as soon as you save them, and an `AGENTS.md` in the folder teaches coding agents the format.
 - **Reads more of the screen when a branch asks.** An `[extract]` pulls elements out of the application's interface with an XPath expression (a chat's channels, its last messages), with no model and in tens of milliseconds. An `[investigate]` question sends an agent through the interface when the answer's place is not known in advance.
 - **Automations you show once.**
   - **Recording:** record a task (click, type, press keys) and say what it is.
@@ -71,27 +71,30 @@ Settings are in `%APPDATA%\jevons\config\jevons-desktop.toml` (see [jevons-deskt
 
 ```
 flows/
-  root.toml                # the root machine: dictate, ask or run? unsure: dictate
-  root.fsm                 # its states: idle --said--> dictate | ask | run --> idle
-  dictate/
-    decide.toml            # select = "rules": the application picks the branch; [prefer] terminals
-    chat/decide.toml       # [when] app = ["slack.exe", …]; casual instructions
-    code/decide.toml       # only insert or type as heard
-    terminal/decide.toml   # prompts and commands: never rewrite the terminal's buffer
-    any/decide.toml        # everything else
-  ask/                     # [prefer] transcript: words starting with "Pregunta" or "Question"
-    decide.toml            # in Slack, reads its messages by XPath
-    slack/generate.toml    # output = "bubble"; answers from ask's Slack extracts
-    chat/generate.toml     # other chat apps: reads the open conversation first
-    any/generate.toml
-  run/run.toml             # runs an approved automation
+  root.toml                # the root: which agent is the take for? unsure: dictation
+  root.fsm                 # idle --said--> dictation | assistant | automations --> idle
+  dictation/               # an agent: agent.toml ([prefer] terminals) and agent.fsm
+    dictate/
+      decide.toml          # select = "rules": the application picks the branch
+      chat/decide.toml     # [when] app = ["slack.exe", …]; casual instructions
+      code/decide.toml     # only insert or type as heard
+      terminal/decide.toml # prompts and commands: never rewrite the terminal's buffer
+      any/decide.toml      # everything else
+  assistant/               # an agent: [prefer] words starting with "Pregunta" or "Question"
+    ask/
+      decide.toml          # in Slack, reads its messages by XPath
+      slack/generate.toml  # output = "bubble"; answers from ask's Slack extracts
+      chat/generate.toml   # other chat apps: reads the open conversation first
+      any/generate.toml
+  automations/             # an agent: its one state runs an approved automation
+    run/run.toml
   _actions/                # shared: insert, replace, rewrite, verbatim
 ```
 
 A branch is a folder with one file:
 
 ```toml
-# flows/dictate/chat/decide.toml
+# flows/dictation/dictate/chat/decide.toml
 description = "A chat application"
 priority = 20
 branches = "_actions"      # take insert, replace, rewrite and verbatim from the shared folder
@@ -187,7 +190,7 @@ The desktop app reads through one set of platform traits, decides in the platfor
 - **XPath** (`xpath/`) is an XPath 1.0 subset over those trees. Element names are roles and attributes are properties (`@name`, `@class`, `@automation_id`). It evaluates lazily through `ContextInspector`, and a descendant step with conditions runs as one native search. `$variables` take their values from outside, so a value never changes what an expression means. `selector` writes the expressions that find a recorded element again, most robust first.
 - **Flow tree** (`flow/`):
   - **Loading.** `tree` loads one node file per folder and reports every problem with its file and line. The files reload on save, and the last tree that loaded cleanly keeps running.
-  - **Machines.** The `jevons-machine` crate reads a diagram (`root.fsm` at the root, `task.fsm` for a task) with Oxidate's parser and checks it (states are folders, events are `said`, `done`, `failed`, `denied` and timers, no actions in the diagram). Its engine moves one machine at a time and does nothing itself: an event in, what the host must do next out (ask for a decision, run a state's work, arm a timer). It holds the order a transition is chosen in: rules, `[prefer]`, the decision, `[else]`, and staying when unsure. `machine::runtime` in `jevons-desktop-core` is that host: it keeps the root machine and the tasks nested in it across takes, gives `said` to the innermost one waiting, answers the rules from the take's context, asks the decision model (in one request with the candidates' first decisions), and walks a state's folder as its work. `jevons-machine`'s `layout` lays a diagram out for the Machines tab.
+  - **Machines.** The `jevons-machine` crate reads a diagram (`root.fsm` at the root, `task.fsm` for a task) with Oxidate's parser and checks it (states are folders, events are `said`, `done`, `failed`, `denied` and timers, no actions in the diagram). Its engine moves one machine at a time and does nothing itself: an event in, what the host must do next out (ask for a decision, run a state's work, arm a timer). It holds the order a transition is chosen in: rules, `[prefer]`, the decision, `[else]`, and staying when unsure. `machine::runtime` in `jevons-desktop-core` is that host: it keeps the root, one instance per agent and each agent's tasks across takes. The root hands a take to an agent, which routes it among its own states and its waiting tasks; the host answers the rules from the take's context, asks the decision model (the root's, the agent's and the work's first questions in one request), and walks a state's folder as its work. `jevons-machine`'s `layout` lays a diagram out for the Machines tab.
   - **Walking.** `walk` carries a `Frame` down from the root: the snapshot and transcript, the route, the instructions gathered from the root down, the named values (extract and investigation answers, a tool's `{result}`), the lazy reads not made yet, and the nearest delivery settings.
   - **Deciding.** At a `decide.toml`, `[when]` guards drop branches and a passing `[prefer]` takes one, both with no model call. `select = "rules"` takes the highest priority; otherwise System One reads the branches' descriptions. Consecutive decisions go in one request, and an answer below `min_probability` takes the `fallback`.
   - **Reading more.** An `[extract]` reads an XPath expression with no model. An `[investigate]` question runs the investigator, an agent with `outline`, `find`, `xpath`, `read` and `list_windows` tools, whose element arguments are enums of the ids seen so far. A successful investigation remembers its XPath per application and question (`investigations.json` in the cache folder), so the next one is read and answered in one call.

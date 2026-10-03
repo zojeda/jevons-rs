@@ -330,7 +330,7 @@ impl Trace {
             .push((step.into(), since.elapsed().as_millis() as u64));
     }
 
-    /// The branches taken, such as `dictate/notes → _actions/rewrite`.
+    /// The branches taken, such as `dictation/dictate/notes → _actions/rewrite`.
     pub fn route(&self) -> String {
         self.flow
             .iter()
@@ -922,6 +922,9 @@ mod tests {
                 .unwrap()
                 .iter()
                 .map(|(key, question)| {
+                    if question["type"] == "noul" {
+                        return (key.clone(), json!({"type": "noul", "noul": confidence}));
+                    }
                     let offered: Vec<&String> =
                         question["criteria"].as_object().unwrap().keys().collect();
                     let choice = labels
@@ -1102,7 +1105,7 @@ mod tests {
 
     #[tokio::test]
     async fn realtime_404_falls_back_to_batch_upload() {
-        let (client, seen) = server(prefer(&["dictate", "verbatim"]), "unused").await;
+        let (client, seen) = server(prefer(&["dictation", "verbatim"]), "unused").await;
         let sink = RecordingSink::new(Some(7));
         let trace = take(&env(client, Some(&sink)), None).await;
         assert_eq!(trace.error, None, "{:?}", trace.notes);
@@ -1114,7 +1117,7 @@ mod tests {
 
     #[tokio::test]
     async fn words_needing_no_edits_are_typed_after_one_merged_decision() {
-        let (client, seen) = server(prefer(&["dictate", "verbatim"]), "unused").await;
+        let (client, seen) = server(prefer(&["dictation", "verbatim"]), "unused").await;
         let sink = RecordingSink::new(Some(7));
         let trace = take(&env(client, Some(&sink)), None).await;
         assert_eq!(trace.error, None, "{:?}", trace.notes);
@@ -1124,7 +1127,10 @@ mod tests {
         assert_eq!(delivered.len(), 1);
         assert_eq!(delivered[0].action, Action::Insert);
         assert_eq!(delivered[0].text, "hello world");
-        assert_eq!(trace.route(), "dictate → dictate/notes → _actions/verbatim");
+        assert_eq!(
+            trace.route(),
+            "dictation/dictate → dictation/dictate/notes → _actions/verbatim"
+        );
         // The root and the action are asked together: one decision call for the take.
         let decisions = seen.decisions.lock().unwrap();
         assert_eq!(decisions.len(), 1);
@@ -1139,7 +1145,7 @@ mod tests {
         let notes = trace
             .flow
             .iter()
-            .find(|s| s.node == "dictate/notes")
+            .find(|s| s.node == "dictation/dictate/notes")
             .unwrap();
         assert!(
             notes.how.as_deref().unwrap().starts_with("asked ahead"),
@@ -1151,7 +1157,7 @@ mod tests {
     #[tokio::test]
     async fn a_rewrite_of_the_selection_generates_with_the_branch_instructions() {
         let (client, seen) =
-            server(prefer(&["dictate", "rewrite"]), "Dear team, hello world.").await;
+            server(prefer(&["dictation", "rewrite"]), "Dear team, hello world.").await;
         let sink = RecordingSink::new(Some(7));
         let trace = take(&env(client, Some(&sink)), Some("hi all")).await;
         assert_eq!(trace.error, None, "{:?}", trace.notes);
@@ -1177,7 +1183,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_decision_and_the_generation_report_their_stages_in_order() {
-        let (client, _) = server(prefer(&["dictate", "rewrite"]), "Dear team.").await;
+        let (client, _) = server(prefer(&["dictation", "rewrite"]), "Dear team.").await;
         let sink = RecordingSink::new(Some(7));
         let env = env(client, Some(&sink));
         let (audio, finish) = one_second_of_audio();
@@ -1207,8 +1213,8 @@ mod tests {
         assert_eq!(
             stages,
             [
-                "Deciding what to do [ask dictate]",
-                "→ dictate 0.90 true",
+                "Deciding what to do [assistant dictation]",
+                "→ dictation 0.90 true",
                 "Deciding dictate [any notes]",
                 "→ notes rules true",
                 "Deciding notes [insert replace rewrite verbatim]",
@@ -1221,14 +1227,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_question_is_answered_in_the_bubble_and_never_typed() {
-        let (client, seen) = server(prefer(&["ask"]), "It is five o'clock.").await;
+        let (client, seen) = server(prefer(&["assistant"]), "It is five o'clock.").await;
         let sink = RecordingSink::new(Some(7));
         let trace = take(&env(client, Some(&sink)), None).await;
         assert_eq!(trace.error, None, "{:?}", trace.notes);
         let leaf = trace.leaf.as_ref().unwrap();
         assert_eq!(
             (leaf.node.as_str(), leaf.output),
-            ("ask/any", Output::Bubble)
+            ("assistant/ask/any", Output::Bubble)
         );
         assert_eq!(trace.delivery, Some(DeliveryOutcome::Shown));
         assert!(sink.requests().is_empty());
@@ -1250,11 +1256,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_hotkey_entry_starts_below_the_root_without_its_decision() {
-        let (client, seen) = server(prefer(&["dictate"]), "An answer.").await;
-        let trace = take_at(&env(client, None), None, Some("ask")).await;
+        let (client, seen) = server(prefer(&["dictation"]), "An answer.").await;
+        let trace = take_at(&env(client, None), None, Some("assistant")).await;
         assert_eq!(trace.error, None, "{:?}", trace.notes);
-        assert_eq!(trace.entry, "ask");
-        assert_eq!(trace.leaf.as_ref().unwrap().node, "ask/any");
+        assert_eq!(trace.entry, "assistant");
+        assert_eq!(trace.leaf.as_ref().unwrap().node, "assistant/ask/any");
         assert!(
             seen.decisions.lock().unwrap().is_empty(),
             "ask chooses by rules"
@@ -1263,12 +1269,12 @@ mod tests {
 
     #[tokio::test]
     async fn an_unsure_root_decision_takes_the_fallback() {
-        let (client, _) = server(prefer_with(&["ask", "verbatim"], 0.3), "unused").await;
+        let (client, _) = server(prefer_with(&["assistant", "verbatim"], 0.3), "unused").await;
         let sink = RecordingSink::new(Some(7));
         let trace = take(&env(client, Some(&sink)), None).await;
         assert_eq!(trace.error, None, "{:?}", trace.notes);
         let root = &trace.flow[0];
-        assert_eq!(root.chosen.as_deref(), Some("dictate"));
+        assert_eq!(root.chosen.as_deref(), Some("dictation"));
         assert!(
             root.how.as_deref().unwrap().contains("unsure"),
             "{:?}",
@@ -1279,7 +1285,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_changed_window_leaves_the_text_on_the_clipboard() {
-        let (client, _) = server(prefer(&["dictate", "verbatim"]), "unused").await;
+        let (client, _) = server(prefer(&["dictation", "verbatim"]), "unused").await;
         let sink = RecordingSink::new(Some(99));
         let trace = take(&env(client, Some(&sink)), None).await;
         assert!(matches!(
@@ -1292,7 +1298,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_press_too_short_for_speech_is_dropped_without_requests() {
-        let (client, seen) = server(prefer(&["dictate"]), "unused").await;
+        let (client, seen) = server(prefer(&["dictation"]), "unused").await;
         let env = env(client, None);
         let (audio, receiver) = mpsc::unbounded_channel();
         audio.send(AudioEvent::Chunk(vec![0; 100])).unwrap();
@@ -1482,7 +1488,7 @@ mod tests {
 
     #[tokio::test]
     async fn words_starting_with_pregunta_are_a_question_with_no_root_decision() {
-        let (client, seen) = server(prefer(&["dictate"]), "Paul means Friday.").await;
+        let (client, seen) = server(prefer(&["dictation"]), "Paul means Friday.").await;
         let trace = said(
             &env(client, None),
             "slack.exe",
@@ -1490,7 +1496,7 @@ mod tests {
         )
         .await;
         assert_eq!(trace.error, None, "{:?}", trace.notes);
-        assert_eq!(trace.flow[0].chosen.as_deref(), Some("ask"));
+        assert_eq!(trace.flow[0].chosen.as_deref(), Some("assistant"));
         assert_eq!(
             trace.flow[0].how.as_deref(),
             Some("preferred: its transcript rule passed")
@@ -1498,7 +1504,7 @@ mod tests {
         let ask = trace.flow[0]
             .branches
             .iter()
-            .find(|b| b.name == "ask")
+            .find(|b| b.name == "assistant")
             .unwrap();
         assert!(ask.preferred && ask.prefer[0].passed);
         assert!(
@@ -1506,7 +1512,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .all(|d| !d.to_string().contains("\"dictate\"")),
+                .all(|d| !d.to_string().contains("\"dictation\"")),
             "the root was not asked"
         );
         assert_eq!(trace.output, "Paul means Friday.");
@@ -1514,7 +1520,7 @@ mod tests {
 
     #[tokio::test]
     async fn in_a_terminal_the_words_are_dictated_and_never_rewritten() {
-        let (client, seen) = server(prefer(&["ask", "rewrite", "verbatim"]), "unused").await;
+        let (client, seen) = server(prefer(&["assistant", "rewrite", "verbatim"]), "unused").await;
         let sink = RecordingSink::new(Some(7));
         let trace = said(
             &env(client, Some(&sink)),
@@ -1529,7 +1535,7 @@ mod tests {
         );
         assert_eq!(
             trace.route(),
-            "dictate → dictate/terminal → _actions/verbatim"
+            "dictation/dictate → dictation/dictate/terminal → _actions/verbatim"
         );
         let decisions = seen.decisions.lock().unwrap();
         assert_eq!(decisions.len(), 1, "only the action is asked");
@@ -1545,21 +1551,21 @@ mod tests {
 
     #[tokio::test]
     async fn the_root_takes_the_model_s_choice_from_seventy_percent_and_dictates_below() {
-        let (client, seen) = server(prefer_with(&["ask"], 0.86), "It means yes.").await;
+        let (client, seen) = server(prefer_with(&["assistant"], 0.86), "It means yes.").await;
         let trace = said(&env(client, None), "notepad.exe", "what does this mean?").await;
-        assert_eq!(trace.flow[0].chosen.as_deref(), Some("ask"));
+        assert_eq!(trace.flow[0].chosen.as_deref(), Some("assistant"));
         assert_eq!(trace.flow[0].how.as_deref(), Some("model 0.86"));
         let state = seen.decisions.lock().unwrap()[0]["state"].clone();
         assert!(
             state.as_str().unwrap().contains("(accepts typing)"),
             "{state}"
         );
-        let (client, _) = server(prefer_with(&["ask"], 0.65), "unused").await;
+        let (client, _) = server(prefer_with(&["assistant"], 0.65), "unused").await;
         let trace = said(&env(client, None), "notepad.exe", "what does this mean?").await;
-        assert_eq!(trace.flow[0].chosen.as_deref(), Some("dictate"));
+        assert_eq!(trace.flow[0].chosen.as_deref(), Some("dictation"));
         assert_eq!(
             trace.flow[0].how.as_deref(),
-            Some("unsure (ask 0.65): the fallback")
+            Some("unsure (assistant 0.65): the fallback")
         );
     }
 
@@ -1567,7 +1573,7 @@ mod tests {
     async fn in_slack_the_built_in_ask_branch_answers_from_the_root_s_slack_extracts() {
         let tree = FlowTree::load(&crate::flow::defaults::builtin(), &Catalog::default());
         assert!(tree.is_valid(), "{:?}", tree.errors);
-        let (client, seen) = server(prefer(&["ask"]), "Five.").await;
+        let (client, seen) = server(prefer(&["assistant"]), "Five.").await;
         let recorded: crate::recorded::RecordedTree =
             serde_json::from_str(include_str!("../../../examples/desktop/trees/slack.json"))
                 .unwrap();
@@ -1599,7 +1605,7 @@ mod tests {
         };
         let trace = run_take(&env, start, audio, finish, &updates).await;
         assert_eq!(trace.error, None, "{:?}", trace.notes);
-        assert_eq!(trace.leaf.as_ref().unwrap().node, "ask/slack");
+        assert_eq!(trace.leaf.as_ref().unwrap().node, "assistant/ask/slack");
         let extracts: Vec<_> = trace.flow.iter().flat_map(|f| &f.extracts).collect();
         let mut names: Vec<&str> = extracts.iter().map(|e| e.name.as_str()).collect();
         names.sort();
@@ -1619,23 +1625,29 @@ mod tests {
 
     #[tokio::test]
     async fn without_approved_automations_the_run_branch_is_no_candidate() {
-        let (client, seen) = server(prefer(&["run", "dictate", "verbatim"]), "unused").await;
+        let (client, seen) =
+            server(prefer(&["automations", "dictation", "verbatim"]), "unused").await;
         let sink = RecordingSink::new(Some(7));
         let trace = take(&env(client, Some(&sink)), None).await;
         assert_eq!(trace.error, None, "{:?}", trace.notes);
         let run = trace.flow[0]
             .branches
             .iter()
-            .find(|b| b.name == "run")
+            .find(|b| b.name == "automations")
             .unwrap();
+        // The agent's only state runs an automation, and none is approved: it has nothing to
+        // do with the take, so the root does not offer it.
         assert!(!run.passed);
-        assert_eq!(run.checks[0].value.as_deref(), Some("0 approved"));
+        assert_eq!(
+            (run.checks[0].rule, run.checks[0].value.as_deref()),
+            ("agent", Some("nothing"))
+        );
         let asked = serde_json::to_string(&seen.decisions.lock().unwrap()[0]).unwrap();
         assert!(
-            !asked.contains("\"run\""),
+            !asked.contains("\"automations\""),
             "the model is never offered it: {asked}"
         );
-        assert_ne!(trace.leaf.unwrap().node, "run");
+        assert_ne!(trace.leaf.unwrap().node, "automations/run");
     }
 
     #[tokio::test]
@@ -1783,34 +1795,89 @@ confirm = false
 
     /// A root machine that dictates, or starts a search task that waits for what the user says
     /// about its results.
+    /// A root with two agents: `typing` types the words as heard, and `research` starts a
+    /// search, a task that waits for what the user says about its results.
     const SEARCH_TASK: &[(&str, &str)] = &[
         ("root.toml", "tools = [\"search\"]"),
         (
             "root.fsm",
-            "fsm App {\n[*] --> idle\nidle --> type : said [else]\nidle --> find : said\ntype --> idle\nfind --> idle\n}",
+            "fsm App {\n[*] --> idle\nidle --> typing : said [else]\nidle --> research : said\ntyping --> idle\nresearch --> idle\n}",
         ),
-        ("type/transcript.toml", "description = \"Dictation\""),
+        ("typing/agent.toml", "description = \"Dictation\""),
         (
-            "find/task.toml",
+            "typing/agent.fsm",
+            "fsm Typing {\n[*] --> idle\nidle --> type : said\ntype --> idle\n}",
+        ),
+        ("typing/type/transcript.toml", ""),
+        (
+            "research/agent.toml",
+            "description = \"The user wants to search the web, or says something about a search\"\ntools = [\"search\"]",
+        ),
+        (
+            "research/agent.fsm",
+            "fsm Research {\n[*] --> idle\nidle --> find : said\nfind --> idle\n}",
+        ),
+        (
+            "research/find/task.toml",
             "description = \"The user wants to search the web\"\ntools = [\"search\"]",
         ),
         (
-            "find/task.fsm",
+            "research/find/task.fsm",
             "fsm Find {\ntimer idle = 40 -> quiet\n[*] --> searching\nstate searching: \"Searching\"\nstate answering: \"The results are in the bubble\"\nsearching --> answering\nsearching --> [*] : failed\nanswering --> opening : said [the user wants a result opened]\nanswering --> [*] : said [the user is done with the results]\nanswering --> [*] : quiet\nopening --> [*]\n}",
         ),
         (
-            "find/searching/tool.toml",
+            "research/find/searching/tool.toml",
             "tool = \"search\"\noutput = \"none\"\n[args.query]\nvalue = \"{transcript}\"",
         ),
         (
-            "find/answering/generate.toml",
+            "research/find/answering/generate.toml",
             "output = \"bubble\"\nprompt = \"Results: {searching}. Question: {transcript}\"",
         ),
         (
-            "find/opening/tool.toml",
+            "research/find/opening/tool.toml",
             "tool = \"search\"\noutput = \"none\"\n[args.query]\nvalue = \"{transcript}\"",
         ),
     ];
+
+    /// The files of one machine with its states' work, as the agent `main` of a root that hands
+    /// it every take: for tests of what an agent and its tasks do.
+    fn agent_tree(files: &[(&str, &str)]) -> Arc<FlowTree> {
+        let tools = files
+            .iter()
+            .find(|(path, _)| *path == "root.toml")
+            .and_then(|(_, text)| text.lines().find(|l| l.starts_with("tools")))
+            .unwrap_or_default();
+        let mut wrapped = vec![
+            ("root.toml".to_string(), tools.to_string()),
+            (
+                "root.fsm".to_string(),
+                "fsm Root {\n[*] --> idle\nidle --> main : said\nmain --> idle\n}".to_string(),
+            ),
+        ];
+        for (path, text) in files {
+            let path = match *path {
+                "root.toml" => "main/agent.toml".to_string(),
+                "root.fsm" => "main/agent.fsm".to_string(),
+                other => format!("main/{other}"),
+            };
+            wrapped.push((path, text.to_string()));
+        }
+        let wrapped: Vec<(&str, &str)> = wrapped
+            .iter()
+            .map(|(p, t)| (p.as_str(), t.as_str()))
+            .collect();
+        tree_of(&wrapped)
+    }
+
+    /// The steps below the root: the agents' and the tasks'.
+    fn inner(trace: &Trace) -> Vec<String> {
+        trace
+            .machine
+            .iter()
+            .filter(|s| s.machine != "/")
+            .map(|s| format!("{} {} → {}", s.from, s.event, s.to))
+            .collect()
+    }
 
     fn task_env(client: Client, machines: Arc<Runtime>) -> Env {
         Env {
@@ -1841,20 +1908,27 @@ confirm = false
 
     #[tokio::test]
     async fn a_task_waits_across_takes_and_the_model_takes_its_transitions() {
-        let (client, seen) = server(prefer(&["find", "opening"]), "Two crates fit.").await;
+        let labels = &["research", "find-1", "opening"];
+        let (client, seen) = server(prefer(labels), "Two crates fit.").await;
         let machines = Arc::new(Runtime::new());
         let env = task_env(client, machines.clone());
         let first = say(&env, 1, "search for state machine crates").await;
         assert_eq!(first.error, None, "{:?}", first.notes);
+        // The root hands the take to the agent and is back in `idle` at once; the agent starts
+        // the task and is back in `idle` too, while the task goes on.
         assert_eq!(
             moves(&first),
             [
+                "idle said → research",
+                "research done → idle",
                 "idle said → find",
+                "find done → idle",
                 "[*] start → searching",
                 "searching done → answering"
             ]
         );
         assert_eq!(first.machine[0].how, "model 0.90");
+        assert_eq!(first.machine[2].how, "the only transition that applies");
         assert_eq!(
             first.calls[0].arguments,
             json!({"query": "search for state machine crates"})
@@ -1866,66 +1940,107 @@ confirm = false
             prompt.contains("Results: ") && prompt.contains("dry_run"),
             "{prompt}"
         );
-        assert_eq!(machines.view().path(), "find › answering");
+        assert_eq!(machines.view().path(), "research › find › answering");
+        assert!(machines.view().in_task());
 
-        // What the user says next is for the task, not the root.
+        // What the user says next goes the same way: the root chooses the agent, the agent the
+        // task that waits, the task its transition. One request asks all three.
         let second = say(&env, 2, "open the second one").await;
         assert_eq!(second.error, None, "{:?}", second.notes);
         assert_eq!(
             moves(&second),
             [
+                "idle said → research",
+                "research done → idle",
+                "idle said → task find-1",
                 "answering said → opening",
-                "opening done → [*]",
-                "find done → idle"
+                "opening done → [*]"
             ]
         );
-        let asked = &seen.decisions.lock().unwrap()[1]["questions"]["q00"];
-        assert!(
-            asked["instructions"]
-                .as_str()
+        let decisions = seen.decisions.lock().unwrap();
+        assert_eq!(decisions.len(), 2, "one request per take");
+        let questions = decisions[1]["questions"].as_object().unwrap();
+        let keys = |q: &str| -> Vec<String> {
+            questions[q]["criteria"]
+                .as_object()
                 .unwrap()
-                .contains("in the middle of a task, Find"),
-            "{asked}"
+                .keys()
+                .cloned()
+                .collect()
+        };
+        assert_eq!(keys("q00"), ["research", "typing"]);
+        // The agent: start another search, or the one that waits, by where it is.
+        assert_eq!(keys("q01"), ["find", "find-1"]);
+        let waiting = questions["q01"]["criteria"]["find-1"].as_str().unwrap();
+        assert_eq!(
+            waiting,
+            "For the running task find (Find), now at answering: The results are in the bubble"
         );
-        let criteria = asked["criteria"].as_object().unwrap();
-        assert_eq!(criteria.keys().collect::<Vec<_>>(), ["end", "opening"]);
+        // The task: its own transitions.
+        assert_eq!(keys("q02"), ["end", "opening"]);
+        let asked = questions["q02"]["instructions"].as_str().unwrap();
+        assert!(asked.contains("in the middle of a task, Find"), "{asked}");
         assert_eq!(
             second.calls[0].arguments,
             json!({"query": "open the second one"})
         );
         assert_eq!(machines.view().path(), "idle");
+        assert!(!machines.view().in_task());
         let history: Vec<String> = machines
             .view()
             .history
             .iter()
             .map(|s| format!("{}:{}", s.machine, s.to))
             .collect();
-        assert_eq!(history.len(), 6, "{history:?}");
+        assert_eq!(history.len(), 11, "{history:?}");
+        assert_eq!(history[4], "research/find:searching");
     }
 
     #[tokio::test]
     async fn an_unsure_take_leaves_a_waiting_task_where_it_was() {
         let machines = Arc::new(Runtime::new());
-        let (client, _) = server(prefer(&["find"]), "Results.").await;
+        let (client, _) = server(prefer(&["research"]), "Results.").await;
         let first = say(&task_env(client, machines.clone()), 1, "search for crates").await;
         assert_eq!(first.error, None, "{:?}", first.notes);
-        let (client, seen) = server(prefer_with(&["opening"], 0.4), "unused").await;
+        // Sure of the agent and of the task, unsure of what the task should do.
+        let unsure: Decider = Arc::new(|request: &Value| {
+            let answers: serde_json::Map<String, Value> = request["questions"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(key, question)| {
+                    let offered = question["criteria"].as_object().unwrap();
+                    let (choice, sure) = ["research", "find-1"]
+                        .iter()
+                        .find(|l| offered.contains_key(**l))
+                        .map_or(("opening", 0.4), |l| (*l, 0.9));
+                    let answer = json!({"type": "choice", "choice": choice,
+                        "probabilities": {choice: sure}, "confidence": sure});
+                    (key.clone(), answer)
+                })
+                .collect();
+            json!({"model": "jev", "usage": {"input_tokens": 1, "output_tokens": 1}, "answers": answers})
+        });
+        let (client, seen) = server(unsure, "unused").await;
         let env = Env {
             flows: machines.view().tree.unwrap(),
             ..task_env(client, machines.clone())
         };
         let second = say(&env, 2, "hmm, maybe").await;
-        assert_eq!(moves(&second), ["answering said → answering"]);
-        assert!(
-            second.machine[0].how.contains("stayed"),
-            "{:?}",
-            second.machine
+        assert_eq!(
+            inner(&second),
+            ["idle said → task find-1", "answering said → answering"]
         );
+        let stay = second.machine.last().unwrap();
+        assert!(stay.how.contains("stayed"), "{:?}", second.machine);
         assert!(second.calls.is_empty(), "nothing ran");
         assert!(seen.generations.lock().unwrap().is_empty());
-        assert_eq!(machines.view().path(), "find › answering");
+        assert_eq!(machines.view().path(), "research › find › answering");
         // Cancelling ends the task and runs nothing.
-        assert_eq!(machines.cancel().await.as_deref(), Some("find › answering"));
+        assert_eq!(
+            machines.cancel().await.as_deref(),
+            Some("research › find › answering")
+        );
         assert_eq!(machines.view().path(), "idle");
         assert_eq!(machines.cancel().await, None);
     }
@@ -1935,7 +2050,7 @@ confirm = false
         let machines = Arc::new(Runtime::new());
         let (due, mut timers) = mpsc::unbounded_channel();
         machines.set_timers(due);
-        let (client, _) = server(prefer(&["find"]), "Results.").await;
+        let (client, _) = server(prefer(&["research"]), "Results.").await;
         let env = task_env(client, machines.clone());
         say(&env, 1, "search for crates").await;
         let fired = tokio::time::timeout(Duration::from_secs(5), timers.recv())
@@ -1950,69 +2065,14 @@ confirm = false
             .timer(&env, fired.clone(), 9, &updates)
             .await
             .expect("the task still waited in answering");
-        assert_eq!(moves(&trace), ["answering quiet → [*]", "find done → idle"]);
+        // The task ends; its agent, which has no transition on `task_done`, stays in `idle`.
+        assert_eq!(moves(&trace), ["answering quiet → [*]"]);
         assert_eq!(trace.take, 9);
         assert_eq!(machines.view().path(), "idle");
         // The state it was armed in is gone: the view says so before anything runs.
         assert!(!machines.view().in_task());
         assert!(!machines.view().waits_for(&fired));
         assert!(machines.timer(&env, fired, 10, &updates).await.is_none());
-    }
-
-    #[tokio::test]
-    async fn a_machine_that_leaves_its_state_leaves_the_task_running_there() {
-        let tree = FlowTree::load(
-            &Memory::new(
-                "test",
-                [
-                    ("root.toml", ""),
-                    (
-                        "root.fsm",
-                        "fsm App {\ntimer limit = 50 -> limit\n[*] --> idle\nidle --> job : said\n\
-                         job --> idle\njob --> idle : limit\n}",
-                    ),
-                    ("job/task.toml", "description = \"A job\""),
-                    (
-                        "job/task.fsm",
-                        "fsm Job {\n[*] --> waiting\n\
-                         waiting --> [*] : said [the user says it is finished]\n}",
-                    ),
-                ],
-            ),
-            &Catalog::default(),
-        );
-        assert!(tree.is_valid(), "{:?}", tree.errors);
-        let machines = Arc::new(Runtime::new());
-        let (due, mut timers) = mpsc::unbounded_channel();
-        machines.set_timers(due);
-        let (client, seen) = server(prefer(&[]), "unused").await;
-        let env = Env {
-            flows: Arc::new(tree),
-            machines: machines.clone(),
-            ..env(client, None)
-        };
-        let first = say(&env, 1, "start the job").await;
-        assert_eq!(moves(&first), ["idle said → job", "[*] start → waiting"]);
-        assert_eq!(machines.view().path(), "job › waiting");
-        // The root's timer runs out while the task waits in its state: the root moves on, and
-        // the task goes with the state.
-        let fired = tokio::time::timeout(Duration::from_secs(5), timers.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(fired.event, "limit");
-        let (updates, _) = mpsc::unbounded_channel();
-        let trace = machines
-            .timer(&env, fired, 9, &updates)
-            .await
-            .expect("the root still waited in job");
-        assert_eq!(moves(&trace), ["job limit → idle"]);
-        assert_eq!(machines.view().path(), "idle");
-        assert!(!machines.view().in_task());
-        assert!(seen.decisions.lock().unwrap().is_empty());
-        // The next take is the root's again.
-        let next = say(&env, 2, "start it again").await;
-        assert_eq!(moves(&next), ["idle said → job", "[*] start → waiting"]);
     }
 
     #[tokio::test]
@@ -2047,7 +2107,7 @@ confirm = false
         // The tool's result keeps its fields: the guard reads one, and so does the next state.
         let (client, seen) = server(prefer(&[]), "Here they are.").await;
         let env = Env {
-            flows: tree_of(&files),
+            flows: agent_tree(&files),
             tools: Some(tool_host()),
             machines: Arc::new(Runtime::new()),
             ..env(client, None)
@@ -2055,15 +2115,20 @@ confirm = false
         let found = say(&env, 1, "state machine crates").await;
         assert_eq!(found.error, None, "{:?}", found.notes);
         assert_eq!(
-            moves(&found),
+            inner(&found),
             [
                 "idle said → find",
+                "find done → idle",
                 "[*] start → look",
                 "look done → shown",
                 "shown done → wait"
             ]
         );
-        assert_eq!(found.machine[2].how, "the only transition that applies");
+        let how = |trace: &Trace, to: &str| {
+            let step = trace.machine.iter().find(|s| s.to == to).unwrap();
+            step.how.clone()
+        };
+        assert_eq!(how(&found, "shown"), "the only transition that applies");
         let prompt = seen.generations.lock().unwrap()[0]["input"]
             .as_str()
             .unwrap()
@@ -2076,10 +2141,15 @@ confirm = false
         };
         let none = say(&env, 2, "Nothing at all").await;
         assert_eq!(
-            moves(&none),
-            ["idle said → find", "[*] start → look", "look done → none"]
+            inner(&none),
+            [
+                "idle said → find",
+                "find done → idle",
+                "[*] start → look",
+                "look done → none"
+            ]
         );
-        assert_eq!(none.machine[2].how, "preferred: its value rule passed");
+        assert_eq!(how(&none, "none"), "preferred: its value rule passed");
         assert!(seen.decisions.lock().unwrap().is_empty());
     }
 
@@ -2116,16 +2186,17 @@ confirm = false
         let answer = r#"{"kind": "News", "count": "3", "extra": true}"#;
         let (client, seen) = server(prefer(&[]), answer).await;
         let env = Env {
-            flows: tree_of(&files),
+            flows: agent_tree(&files),
             machines: Arc::new(Runtime::new()),
             ..env(client, None)
         };
         let trace = say(&env, 1, "the latest on Rust").await;
         assert_eq!(trace.error, None, "{:?}", trace.notes);
         assert_eq!(
-            moves(&trace),
+            inner(&trace),
             [
                 "idle said → sort",
+                "sort done → idle",
                 "[*] start → kind",
                 "kind done → told",
                 "told done → wait"
@@ -2144,47 +2215,262 @@ confirm = false
     }
 
     #[tokio::test]
+    async fn two_tasks_of_one_agent_run_side_by_side_and_each_gets_its_own_follow_ups() {
+        // The model routes by what was said: a new search for "search", the first search for
+        // "first", the second for "second"; and the task then opens a result.
+        let router: Decider = Arc::new(|request: &Value| {
+            let said = request["state"].as_str().unwrap_or_default().to_string();
+            let answers: serde_json::Map<String, Value> = request["questions"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(key, question)| {
+                    let offered = question["criteria"].as_object().unwrap();
+                    let wanted = if said.contains("first") {
+                        "find-1"
+                    } else if said.contains("second") {
+                        "find-2"
+                    } else {
+                        "find"
+                    };
+                    let choice = ["research", wanted, "opening"]
+                        .into_iter()
+                        .find(|l| offered.contains_key(*l))
+                        .unwrap_or_else(|| offered.keys().next().unwrap());
+                    let answer = json!({"type": "choice", "choice": choice,
+                        "probabilities": {choice: 0.9}, "confidence": 0.9});
+                    (key.clone(), answer)
+                })
+                .collect();
+            json!({"model": "jev", "usage": {"input_tokens": 1, "output_tokens": 1}, "answers": answers})
+        });
+        let (client, seen) = server(router, "Results.").await;
+        let machines = Arc::new(Runtime::new());
+        let env = task_env(client, machines.clone());
+        say(&env, 1, "search for crates").await;
+        // A take for the agent itself while a task waits: it starts another search beside it.
+        let another = say(&env, 2, "search for books").await;
+        assert_eq!(another.error, None, "{:?}", another.notes);
+        assert_eq!(
+            inner(&another),
+            [
+                "idle said → find",
+                "find done → idle",
+                "[*] start → searching",
+                "searching done → answering"
+            ]
+        );
+        let view = machines.view();
+        let agent = view.stack.iter().find(|r| r.folder == "research").unwrap();
+        let tasks: Vec<(String, String)> = view
+            .tasks(agent.id)
+            .map(|t| (t.label(), t.state.clone()))
+            .collect();
+        assert_eq!(
+            tasks,
+            [
+                ("find-1".to_string(), "answering".to_string()),
+                ("find-2".to_string(), "answering".to_string())
+            ]
+        );
+        let (first, second) = {
+            let mut ids = view.tasks(agent.id).map(|t| t.id);
+            (ids.next().unwrap(), ids.next().unwrap())
+        };
+        assert_eq!(view.focus, Some(second), "the bubble follows the latest");
+        // Each follow-up reaches the search it is about, and only that one moves.
+        let on_second = say(&env, 3, "open the second search's result").await;
+        assert_eq!(
+            inner(&on_second),
+            [
+                "idle said → task find-2",
+                "answering said → opening",
+                "opening done → [*]"
+            ]
+        );
+        assert!(on_second.machine[3..].iter().all(|s| s.instance == second));
+        let left: Vec<u64> = machines.view().tasks(agent.id).map(|t| t.id).collect();
+        assert_eq!(left, [first]);
+        let on_first = say(&env, 4, "open the first search's result").await;
+        assert_eq!(
+            inner(&on_first),
+            [
+                "idle said → task find-1",
+                "answering said → opening",
+                "opening done → [*]"
+            ]
+        );
+        assert!(on_first.machine[3..].iter().all(|s| s.instance == first));
+        assert!(machines.view().at_rest());
+        assert_eq!(
+            seen.decisions.lock().unwrap().len(),
+            4,
+            "one request per take"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_task_can_be_cancelled_and_the_others_go_on() {
+        let (client, _) = server(prefer(&["research", "find"]), "Results.").await;
+        let machines = Arc::new(Runtime::new());
+        let env = task_env(client, machines.clone());
+        say(&env, 1, "search for crates").await;
+        say(&env, 2, "search for books").await;
+        let view = machines.view();
+        let agent = view
+            .stack
+            .iter()
+            .find(|r| r.folder == "research")
+            .unwrap()
+            .id;
+        let tasks: Vec<u64> = view.tasks(agent).map(|t| t.id).collect();
+        assert_eq!(tasks.len(), 2);
+        // The second one is where the app is; cancelling it leaves the first, and its agent
+        // where it was.
+        assert_eq!(
+            machines.cancel_task(tasks[1]).await.as_deref(),
+            Some("research › find › answering")
+        );
+        let view = machines.view();
+        let left: Vec<String> = view.tasks(agent).map(|t| t.label()).collect();
+        assert_eq!(left, ["find-1"]);
+        assert_eq!(view.focus, None);
+        assert_eq!(view.history.back().unwrap().how, "the user cancelled");
+        // Neither the root nor an agent is a task to cancel, nor one that is gone.
+        assert_eq!(machines.cancel_task(agent).await, None);
+        assert_eq!(machines.cancel_task(tasks[1]).await, None);
+        // The next search of that folder takes the free number above the one that runs.
+        say(&env, 3, "search for films").await;
+        let labels: Vec<String> = machines.view().tasks(agent).map(|t| t.label()).collect();
+        assert_eq!(labels, ["find-1", "find-2"]);
+    }
+
+    #[tokio::test]
+    async fn a_task_s_end_reaches_its_agent_as_an_event_with_what_it_wrote() {
+        let files = [
+            ("root.toml", "tools = [\"note\"]"),
+            (
+                "root.fsm",
+                "fsm Helper {\n[*] --> idle\nidle --> job : said\njob --> idle\n\
+                 idle --> told : task_done\ntold --> idle\n\
+                 idle --> sorry : task_failed\nsorry --> idle\n}",
+            ),
+            ("job/task.toml", "tools = [\"note\"]"),
+            (
+                "job/task.fsm",
+                "fsm Job {\n[*] --> work\nwork --> save : done [keep]\nwork --> [*] : done [else]\n\
+                 save --> [*]\n}",
+            ),
+            ("job/work/transcript.toml", "output = \"none\""),
+            (
+                "job/save/tool.toml",
+                "tool = \"note\"\n[args.title]\nvalue = \"x\"\n[args.folder]\nvalue = \"y\"\n\
+                 [args.body]\nvalue = \"{work}\"",
+            ),
+            (
+                "told/generate.toml",
+                "output = \"bubble\"\nprompt = \"{task.name} finished with: {task.result}\"",
+            ),
+            (
+                "sorry/generate.toml",
+                "output = \"bubble\"\nprompt = \"{task.name} failed\"",
+            ),
+        ];
+        let guards = "\n[guards.keep]\nwhen = { transcript = \"^keep\" }\n\
+                      prefer = { transcript = \"^keep\" }";
+        let task = format!("{}{guards}", files[2].1);
+        let mut files = files.to_vec();
+        files[2].1 = &task;
+        let (client, seen) = server(prefer(&[]), "Done.").await;
+        let env = Env {
+            flows: agent_tree(&files),
+            tools: Some(tool_host()),
+            // No one to ask: a tool call is declined.
+            confirmer: None,
+            machines: Arc::new(Runtime::new()),
+            ..env(client, Some(&RecordingSink::new(Some(7))))
+        };
+        // The task ends in the take that started it: its agent takes `task_done`, and reads
+        // which task it was and what it last wrote.
+        let done = say(&env, 1, "tidy the notes").await;
+        assert_eq!(done.error, None, "{:?}", done.notes);
+        assert_eq!(
+            inner(&done),
+            [
+                "idle said → job",
+                "job done → idle",
+                "[*] start → work",
+                "work done → [*]",
+                "idle task_done → told",
+                "told done → idle"
+            ]
+        );
+        assert_eq!(
+            seen.generations.lock().unwrap()[0]["input"],
+            "job finished with: tidy the notes"
+        );
+        // A task that fails with nothing of its own to handle it ends, and its agent takes
+        // `task_failed`: the failure is handled, and the trace says why.
+        let failed = say(&env, 2, "keep this one").await;
+        assert_eq!(
+            inner(&failed),
+            [
+                "idle said → job",
+                "job done → idle",
+                "[*] start → work",
+                "work done → save",
+                "save failed → [*]",
+                "idle task_failed → sorry",
+                "sorry done → idle"
+            ]
+        );
+        assert_eq!(failed.error, None, "the agent handled it");
+        assert!(
+            failed.notes.iter().any(|n| n.contains("not confirmed")),
+            "{:?}",
+            failed.notes
+        );
+        assert_eq!(seen.generations.lock().unwrap()[1]["input"], "job failed");
+        assert!(env.machines.view().at_rest());
+    }
+
+    #[tokio::test]
     async fn a_task_keeps_the_extracts_read_on_the_way_to_it() {
-        let tree = FlowTree::load(
-            &Memory::new(
-                "test",
-                [
-                    ("root.toml", ""),
-                    (
-                        "root.fsm",
-                        "fsm App {\n[*] --> idle\nidle --> chat : said\nchat --> idle\n}",
-                    ),
-                    (
-                        "chat/decide.toml",
-                        "description = \"Chat\"\n\
+        let tree = agent_tree(&[
+            ("root.toml", ""),
+            (
+                "root.fsm",
+                "fsm App {\n[*] --> idle\nidle --> chat : said\nchat --> idle\n}",
+            ),
+            (
+                "chat/decide.toml",
+                "description = \"Chat\"\n\
                          [extract.channels]\n\
                          xpath = \"//TreeItem[.//Group[has-class(@class, 'p-channel_sidebar__channel')]]/@name\"\n\
                          as = \"list\"\n\
                          [extract.last]\n\
                          xpath = \"string((//ListItem[.//Text])[last()]//Text)\"\n\
                          lazy = true",
-                    ),
-                    ("chat/task/task.toml", "description = \"A reply\""),
-                    (
-                        "chat/task/task.fsm",
-                        "fsm Reply {\n[*] --> waiting\nwaiting --> reply : said\nreply --> [*]\n}",
-                    ),
-                    (
-                        "chat/task/reply/generate.toml",
-                        "output = \"bubble\"\nprompt = \"Last: {last}. Channels: {channels}. Said: {transcript}\"",
-                    ),
-                ],
             ),
-            &Catalog::default(),
-        );
+            ("chat/task/task.toml", "description = \"A reply\""),
+            (
+                "chat/task/task.fsm",
+                "fsm Reply {\n[*] --> waiting\nwaiting --> reply : said\nreply --> [*]\n}",
+            ),
+            (
+                "chat/task/reply/generate.toml",
+                "output = \"bubble\"\nprompt = \"Last: {last}. Channels: {channels}. Said: {transcript}\"",
+            ),
+        ]);
         assert!(tree.is_valid(), "{:?}", tree.errors);
-        let (client, seen) = server(prefer(&[]), "Sure.").await;
+        // The second take is for the task that waits, not for another one.
+        let (client, seen) = server(prefer(&["task-1"]), "Sure.").await;
         let recorded: crate::recorded::RecordedTree =
             serde_json::from_str(include_str!("../../../examples/desktop/trees/slack.json"))
                 .unwrap();
         let machines = Arc::new(Runtime::new());
         let env = Env {
-            flows: Arc::new(tree),
+            flows: tree,
             reader: Some(Arc::new(crate::flow::extract::Reader::new(
                 Arc::new(crate::recorded::RecordedInspector::new(recorded)),
                 crate::context::Privacy::default(),
@@ -2211,7 +2497,7 @@ confirm = false
         let (updates, _) = mpsc::unbounded_channel();
         let first = run_transcript(&env, slack(1), "draft a reply", &updates).await;
         assert_eq!(first.error, None, "{:?}", first.notes);
-        assert_eq!(machines.view().path(), "chat › waiting");
+        assert_eq!(machines.view().path(), "main › task › waiting");
         // A later take in the task still has the extract read on the way, and reads the lazy one.
         let second = run_transcript(&env, slack(2), "say yes", &updates).await;
         assert_eq!(second.error, None, "{:?}", second.notes);
@@ -2229,7 +2515,7 @@ confirm = false
     async fn a_declined_tool_call_takes_the_denied_transition() {
         let (client, _) = server(prefer(&[]), "unused").await;
         let env = Env {
-            flows: tree_of(&[
+            flows: agent_tree(&[
                 ("root.toml", "tools = [\"note\"]"),
                 (
                     "root.fsm",
@@ -2248,7 +2534,7 @@ confirm = false
         };
         let trace = say(&env, 1, "note that the build is green").await;
         assert_eq!(
-            moves(&trace),
+            inner(&trace),
             [
                 "idle said → saving",
                 "saving denied → told",
@@ -2264,20 +2550,22 @@ confirm = false
         assert_eq!(trace.calls[0].confirmed, Some(false));
     }
 
-    /// The built-in tree with `examples/desktop/machines/search` added as its README says.
+    /// The built-in tree with `examples/desktop/machines/research` added as its README says.
     fn with_search_example() -> (Arc<FlowTree>, Arc<ToolHost>) {
         let example = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples/desktop/machines/search");
+            .join("../../examples/desktop/machines/research");
         let read = |file: &str| std::fs::read_to_string(example.join(file)).unwrap();
         let search: Vec<(String, String)> = [
-            "task.toml",
-            "task.fsm",
-            "searching/tool.toml",
-            "answering/generate.toml",
-            "opening/tool.toml",
+            "agent.toml",
+            "agent.fsm",
+            "search/task.toml",
+            "search/task.fsm",
+            "search/searching/tool.toml",
+            "search/answering/generate.toml",
+            "search/opening/tool.toml",
         ]
         .iter()
-        .map(|f| (format!("search/{f}"), read(f)))
+        .map(|f| (format!("research/{f}"), read(f)))
         .collect();
         let mut files: Vec<(String, String)> = crate::flow::defaults::TREE
             .iter()
@@ -2286,14 +2574,14 @@ confirm = false
         for (path, text) in &mut files {
             if path == "root.fsm" {
                 *text = text.replace(
-                    "    ask --> idle",
-                    "    idle --> search : said [search]\n    search --> idle\n    ask --> idle",
+                    "    assistant --> idle",
+                    "    idle --> research : said\n    research --> idle\n    assistant --> idle",
                 );
             }
             if path == "root.toml" {
                 *text = text.replace(
                     "tools = [\"script:*\"]",
-                    "tools = [\"script:*\", \"web_search\", \"open_url\"]\n\n[guards.search]\nwhen = { transcript = \"(?i)^\\\\W*(search|b[uú]sca(r|me|lo|la|los|las|nos)?)\\\\b\" }\nprefer = { transcript = \"(?i)^\\\\W*(search|b[uú]sca(r|me|lo|la|los|las|nos)?)\\\\b\" }",
+                    "tools = [\"script:*\", \"web_search\", \"open_url\"]",
                 );
             }
         }
@@ -2308,14 +2596,14 @@ url = "https://api.search.brave.com/res/v1/web/search?q={query}&count=5"
 headers = { Accept = "application/json", "X-Subscription-Token" = "${env:BRAVE_API_KEY}" }
 arguments = { query = "What to search for" }
 confirm = false
-allow = ["search/*"]
+allow = ["research/search/*"]
 
 [tools.open_url]
 kind = "open"
 description = "Opens an address in the default browser"
 url = "{url}"
 arguments = { url = "The address to open" }
-allow = ["search/*"]
+allow = ["research/search/*"]
 "#,
         )
         .unwrap();
@@ -2331,7 +2619,8 @@ allow = ["search/*"]
     #[tokio::test]
     async fn the_search_example_searches_answers_and_opens_a_result_once_approved() {
         let (flows, tools) = with_search_example();
-        let (client, seen) = server(prefer(&["opening", "end"]), "1. jevons-fsm").await;
+        let labels = &["research", "search-1", "opening", "end"];
+        let (client, seen) = server(prefer(labels), "1. jevons-fsm").await;
         let (confirm, mut asked) = mpsc::unbounded_channel::<crate::flow::confirm::Confirmation>();
         let approver = tokio::spawn(async move {
             let call = asked.recv().await.unwrap();
@@ -2348,7 +2637,8 @@ allow = ["search/*"]
             machines: machines.clone(),
             ..env(client, None)
         };
-        // "Buscar" (like "Search", "Busca" or "Búscame") starts the task with no root decision.
+        // "Buscar" (like "Search", "Busca" or "Búscame") starts a search with no decision: the
+        // agent's rule prefers it, which makes the root prefer the agent.
         let first = say(&env, 1, "Buscar crates de máquinas de estado para Rust").await;
         assert_eq!(first.error, None, "{:?}", first.notes);
         assert_eq!(
@@ -2358,7 +2648,10 @@ allow = ["search/*"]
         assert_eq!(
             moves(&first),
             [
+                "idle said → research",
+                "research done → idle",
                 "idle said → search",
+                "search done → idle",
                 "[*] start → searching",
                 "searching done → answering",
                 "answering done → results"
@@ -2366,35 +2659,61 @@ allow = ["search/*"]
         );
         assert_eq!(first.calls[0].tool, "web_search");
         assert_eq!(first.delivery, Some(DeliveryOutcome::Shown));
-        assert_eq!(machines.view().path(), "search › results");
+        assert_eq!(machines.view().path(), "research › search › results");
         assert!(seen.decisions.lock().unwrap().is_empty());
-        // The words that start the task search again from the results, with no decision either.
+        // The same words while that search waits: another search, or this one again? The model
+        // says which, in one request; the search then takes them by its own rule.
         let again = say(&env, 2, "Búscame las asíncronas").await;
         assert_eq!(again.error, None, "{:?}", again.notes);
         assert_eq!(
-            moves(&again),
+            inner(&again),
             [
+                "idle said → task search-1",
                 "results said → searching",
                 "searching done → answering",
                 "answering done → results"
             ]
         );
-        assert!(seen.decisions.lock().unwrap().is_empty());
-        // A follow-up opens a result, once the user approves it in the bubble.
+        assert_eq!(seen.decisions.lock().unwrap().len(), 1);
+        assert_eq!(
+            again
+                .machine
+                .iter()
+                .find(|s| s.to == "searching")
+                .unwrap()
+                .how,
+            "preferred: its transcript rule passed"
+        );
+        // A follow-up is for the agent only because its search waits. It opens a result, once
+        // the user approves it in the bubble.
         let second = say(&env, 3, "open the first one").await;
         assert_eq!(second.error, None, "{:?}", second.notes);
         assert_eq!(
-            moves(&second),
-            ["results said → opening", "opening done → results"]
+            inner(&second),
+            [
+                "idle said → task search-1",
+                "results said → opening",
+                "opening done → results"
+            ]
         );
+        assert_eq!(seen.decisions.lock().unwrap().len(), 2, "one request");
         assert_eq!(approver.await.unwrap(), "open_url");
         assert_eq!(second.calls[0].confirmed, Some(true));
-        // Done: the task ends and the root waits again.
-        let (client, _) = server(prefer(&["end"]), "unused").await;
+        // Done: the search ends, and with none waiting the agent is no choice for the root.
+        let (client, _) = server(prefer(&["research", "search-1", "end"]), "unused").await;
         let env = Env { client, ..env };
         let third = say(&env, 4, "thanks, that's all").await;
-        assert_eq!(moves(&third), ["results said → [*]", "search done → idle"]);
+        assert_eq!(
+            inner(&third),
+            ["idle said → task search-1", "results said → [*]"]
+        );
         assert_eq!(machines.view().path(), "idle");
+        let (client, seen) = server(prefer(&["research", "dictation", "verbatim"]), "unused").await;
+        let env = Env { client, ..env };
+        let later = say(&env, 5, "open the first one").await;
+        assert_eq!(later.machine[0].to, "dictation");
+        let asked = serde_json::to_string(&seen.decisions.lock().unwrap()[0]).unwrap();
+        assert!(!asked.contains("\"research\""), "{asked}");
     }
 
     #[tokio::test]
@@ -2486,7 +2805,7 @@ allow = ["search/*"]
                 }
             })
         };
-        let (client, _) = server(prefer(&["dictate", "verbatim"]), "unused").await;
+        let (client, _) = server(prefer(&["dictation", "verbatim"]), "unused").await;
         let app = axum::Router::new()
             .route("/v1/realtime", get(session))
             .fallback_service(axum::routing::any(
@@ -2567,9 +2886,9 @@ allow = ["search/*"]
                 .any(|u| matches!(u, Update::Delta(d) if d == "sekond"))
         );
         assert!(
-            shown
-                .iter()
-                .any(|u| matches!(u, Update::StageDone { chosen: Some(c), .. } if c == "dictate"))
+            shown.iter().any(
+                |u| matches!(u, Update::StageDone { chosen: Some(c), .. } if c == "dictation")
+            )
         );
     }
 

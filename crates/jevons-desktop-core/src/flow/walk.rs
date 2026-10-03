@@ -1851,26 +1851,45 @@ mod tests {
                 .map(|s| s.node)
                 .collect()
         };
-        let route = |file: &str| from("dictate", file);
+        let route = |file: &str| from("dictation/dictate", file);
         assert_eq!(
             route("context-slack.json"),
-            ["dictate", "dictate/chat", "dictate/chat/thread"]
+            [
+                "dictation/dictate",
+                "dictation/dictate/chat",
+                "dictation/dictate/chat/thread"
+            ]
         );
         assert_eq!(
             route("context-notepad-selection.json"),
-            ["dictate", "dictate/notes"]
+            ["dictation/dictate", "dictation/dictate/notes"]
         );
         // Slack reads its conversation by XPath rather than with the chat investigation.
-        assert_eq!(from("ask", "context-slack.json"), ["ask", "ask/slack"]);
+        assert_eq!(
+            from("assistant/ask", "context-slack.json"),
+            ["assistant/ask", "assistant/ask/slack"]
+        );
+        // From an agent, its one state's work follows with no model.
+        assert_eq!(
+            from("assistant", "context-slack.json"),
+            ["assistant", "assistant/ask", "assistant/ask/slack"]
+        );
     }
 
     #[test]
     fn the_preview_follows_guards_and_rules_and_stops_at_the_model() {
         let tree = FlowTree::load(&defaults::builtin(), &Catalog::default());
-        let dictate = tree.find("dictate").unwrap();
+        let dictate = tree.find("dictation/dictate").unwrap();
         let steps = preview(&tree, &snapshot("slack.exe", Some("hi")), dictate);
         let nodes: Vec<&str> = steps.iter().map(|s| s.node.as_str()).collect();
-        assert_eq!(nodes, ["dictate", "dictate/chat", "dictate/chat/thread"]);
+        assert_eq!(
+            nodes,
+            [
+                "dictation/dictate",
+                "dictation/dictate/chat",
+                "dictation/dictate/chat/thread"
+            ]
+        );
         assert_eq!(steps[0].chosen.as_deref(), Some("chat"));
         let chat = steps[0].branches.iter().find(|b| b.name == "chat").unwrap();
         assert!(chat.passed && chat.priority == 20);
@@ -1882,7 +1901,13 @@ mod tests {
         // From the root, the first decision is already the model's.
         let root = preview(&tree, &snapshot("slack.exe", None), tree.root());
         assert_eq!(root.len(), 1);
-        assert!(root[0].how.as_deref().unwrap().contains("ask, dictate"));
+        assert!(
+            root[0]
+                .how
+                .as_deref()
+                .unwrap()
+                .contains("assistant, dictation")
+        );
         // A code editor only offers inserting.
         let code = preview(&tree, &snapshot("code.exe", Some("x")), dictate);
         assert!(
@@ -1903,8 +1928,14 @@ mod tests {
             terminal[0].how.as_deref(),
             Some("preferred: its app rule passed")
         );
-        assert_eq!(terminal[1].node, "dictate");
-        assert_eq!(terminal[2].node, "dictate/terminal");
+        // The agent's one state follows, then its work.
+        assert_eq!(terminal[1].node, "dictation");
+        assert_eq!(
+            terminal[1].how.as_deref(),
+            Some("the only transition that applies")
+        );
+        assert_eq!(terminal[2].node, "dictation/dictate");
+        assert_eq!(terminal[3].node, "dictation/dictate/terminal");
         assert!(
             terminal
                 .last()

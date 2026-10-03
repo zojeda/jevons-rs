@@ -31,7 +31,7 @@ Elsewhere:
 ### R1 One node file per folder names its kind
 
 Every folder under the flows root is a node, except folders whose name starts with `_` or `.`. A
-node folder holds one of `root.toml`, `task.toml`, `decide.toml`, `generate.toml`,
+node folder holds one of `root.toml`, `agent.toml`, `task.toml`, `decide.toml`, `generate.toml`,
 `transcript.toml`, `tool.toml`, `loop.toml` and `run.toml`. A folder with none or with two is an
 error that names the folder, and so is a root with none. Any other `.toml` file whose name does
 not start with `.` is an error as an unknown node file.
@@ -372,23 +372,24 @@ Tests: `the_preview_follows_guards_and_rules_and_stops_at_the_model`, `the_examp
 ### R37 The built-in tree is the example folder
 
 The built-in tree is every file of `examples/desktop/flows` but `AGENTS.md`, embedded in the app,
-and it loads with no errors. Its root is a machine whose states are `ask`, `dictate` and `run`,
-which are also where hotkeys may start.
+and it loads with no errors. Its root is a machine whose states are three agents, `assistant`,
+`dictation` and `automations`, which are also where hotkeys may start. Each agent has one state
+of inline work (`ask`, `dictate`, `run`), so it adds no decision.
 
-Tests: `the_builtin_tree_is_valid_and_lists_every_example_file`, `the_built_in_root_is_a_machine_whose_states_are_the_old_branches`
+Tests: `the_builtin_tree_is_valid_and_lists_every_example_file`, `the_built_in_root_is_a_machine_whose_states_are_the_three_agents`
 
 ### R38 The root routes by who the words are for
 
 The root waits in `idle`, and each take is `said` there. Words that start with "Pregunta" or
-"Question" go to `ask`, and in a terminal the words go to `dictate`, both with no model call. The
-decision model's choice is taken from 0.7; below that, or with no answer, the words are dictated.
-`run` is a candidate only when an approved automation exists.
+"Question" go to `assistant`, and in a terminal the words go to `dictation`, both with no model
+call. The decision model's choice is taken from 0.7; below that, or with no answer, the words are
+dictated. `automations` is a candidate only when an approved automation exists.
 
 Tests: `words_starting_with_pregunta_are_a_question_with_no_root_decision`, `in_a_terminal_the_words_are_dictated_and_never_rewritten`, `the_root_takes_the_model_s_choice_from_seventy_percent_and_dictates_below`, `without_approved_automations_the_run_branch_is_no_candidate`
 
 ### R39 `dictate` chooses by application
 
-`dictate` chooses by rules among `code`, `terminal`, `chat` (with `thread` for replies),
+`dictation`'s state `dictate` chooses by rules among `code`, `terminal`, `chat` (with `thread` for replies),
 `web-mail`, `notes` and `any`, each taking its branches from `_actions`: `insert`, `replace` with
 a selection, `rewrite` with text in the field, and `verbatim`. `code` and `terminal` offer only
 `insert` and `verbatim`, so a terminal's text is never rewritten.
@@ -397,9 +398,9 @@ Tests: `the_example_contexts_route_to_their_branches`, `the_preview_follows_guar
 
 ### R40 `ask` answers in the bubble, from Slack's extracts in Slack
 
-`ask` answers in the bubble and never types. In Slack it reads the open conversation, its latest
+`assistant`'s state `ask` answers in the bubble and never types. In Slack it reads the open conversation, its latest
 messages and the channels with lazy extracts (`slack_conversation`, `slack_messages`,
-`slack_channels`), and `ask/slack` answers from them.
+`slack_channels`), and `assistant/ask/slack` answers from them.
 
 Tests: `a_question_is_answered_in_the_bubble_and_never_typed`, `in_slack_the_built_in_ask_branch_answers_from_the_root_s_slack_extracts`, `the_example_contexts_route_to_their_branches`
 
@@ -449,8 +450,9 @@ Tests: `init_writes_the_tree_once_and_agents_md_until_it_is_edited`, `an_unedite
 
 `flow/earlier.rs` records each earlier built-in tree as its files and their SHA-256. When a flows
 folder's files match one of those trees (line endings aside, leaving out `AGENTS.md`,
-`TOOLS.md`, `_schemas/` and dot files), `init` removes the files the current tree lacks, writes
-those that changed, and notes the upgrade. The next `init` changes nothing.
+`TOOLS.md`, `_schemas/` and dot files), `init` removes the files the current tree lacks and the
+folders that leaves empty, writes those that changed, and notes the upgrade. The next `init`
+changes nothing.
 
 Tests: `an_unedited_earlier_built_in_tree_is_brought_up_to_date_and_an_edited_one_is_not`
 

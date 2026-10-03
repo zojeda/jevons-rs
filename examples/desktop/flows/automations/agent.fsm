@@ -1,0 +1,9 @@
+// The automations agent's machine: what the user says names an automation to run.
+fsm Automations {
+    [*] --> idle
+
+    state idle: "Waiting for an automation to run"
+
+    idle --> run : said
+    run --> idle
+}

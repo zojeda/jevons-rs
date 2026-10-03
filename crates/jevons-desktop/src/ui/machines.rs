@@ -1,5 +1,6 @@
-//! The machines: where the app is now, each machine's diagram with its current state and latest
-//! transition marked, a state in full, and the latest transitions. The diagram is laid out by
+//! The machines: what runs now (the root, each agent and the tasks it started), any machine's
+//! diagram with its current state and latest transition marked, a state in full, and the latest
+//! transitions. The diagram is laid out by
 //! `flow::machine::layout`: edges, start and end dots and choice diamonds in one SVG (no SVG
 //! text, which Blitz may not draw), states and labels as positioned boxes.
 
@@ -8,8 +9,8 @@ use super::components::{Choice as Option_, Select, badge};
 use crate::agent::Command;
 use dioxus::prelude::*;
 use jevons_desktop_core::flow::machine::layout::{self, Edge, Layout, NodeKind, Placed};
-use jevons_desktop_core::flow::machine::runtime::{Step, View as Machines};
-use jevons_desktop_core::flow::machine::{self, Condition, Loaded, Target};
+use jevons_desktop_core::flow::machine::runtime::{Running, Step, View as Machines};
+use jevons_desktop_core::flow::machine::{self, Condition, Level, Loaded, Target};
 use jevons_desktop_core::flow::tree::{FlowTree, Node, NodeSpec};
 use jevons_desktop_core::flow::{Kind, defaults};
 use std::sync::Arc;
@@ -327,7 +328,9 @@ fn step_row(i: usize, step: &Step) -> Element {
 pub fn MachinesPage(rev: u64) -> Element {
     let _ = rev;
     let ctx = use_context::<Ctx>();
+    // The machine whose diagram shows, by folder; and which of its running ones, when picked.
     let mut picked = use_signal(|| None::<String>);
+    let mut instance = use_signal(|| None::<u64>);
     let selected = use_signal(|| None::<String>);
     let view = ctx.view.lock().expect("the view lock");
     let machines: Machines = view.machines.view();
@@ -336,21 +339,13 @@ pub fn MachinesPage(rev: u64) -> Element {
 
     let nodes = machine_nodes(&tree);
     let path = machines.path();
-    let at_rest = match machines.stack.as_slice() {
-        [] => true,
-        [root] => tree
-            .node(root.machine)
-            .machine
-            .as_ref()
-            .is_some_and(|m| m.diagram.initial == root.state),
-        _ => false,
-    };
+    let at_rest = machines.at_rest();
     let header = rsx! {
         div { class: "spread",
             div { class: "stack",
                 h2 { "Machines" }
                 span { class: "muted",
-                    "The flows root is the app's machine; a state whose folder is a machine runs a task that lasts several takes."
+                    "The root hands each take to an agent. An agent routes it among its own states and the tasks it started, which last several takes."
                 }
             }
             div { class: "row",
@@ -359,8 +354,11 @@ pub fn MachinesPage(rev: u64) -> Element {
                 }
                 span { class: "mono fsm-path", if path.is_empty() { "not started" } else { "{path}" } }
                 button { class: "dx-button", "data-style": "outline", "data-size": "sm", disabled: at_rest,
-                    onclick: move |_| ctx.send(Command::CancelTask),
-                    "Cancel task"
+                    onclick: {
+                        let ctx = ctx.clone();
+                        move |_| ctx.send(Command::CancelTask)
+                    },
+                    "Cancel all tasks"
                 }
             }
         }
@@ -371,10 +369,19 @@ pub fn MachinesPage(rev: u64) -> Element {
             p { class: "muted", "The flows root is a decision, not a machine: the tree has no machines." }
         };
     }
-    // The innermost machine that runs, unless one was picked.
+    // The running machine that shows: the one picked while it runs, else the task the latest
+    // take reached.
+    let shown = instance()
+        .filter(|id| machines.running(*id).is_some())
+        .or(machines.focus);
+    // Its folder, unless another machine was picked; the root when nothing runs but it.
     let current_folder = picked()
         .filter(|p| nodes.iter().any(|n| n.label() == p))
-        .or_else(|| machines.stack.last().map(|r| r.folder.clone()))
+        .or_else(|| {
+            shown
+                .and_then(|id| machines.running(id))
+                .map(|r| r.folder.clone())
+        })
         .unwrap_or_else(|| nodes[0].label().to_string());
     let node = nodes
         .iter()
@@ -396,14 +403,62 @@ pub fn MachinesPage(rev: u64) -> Element {
             ),
         })
         .collect();
-    let running = machines.stack.iter().find(|r| r.folder == node.label());
+    // Of that machine's running instances, the one that shows, else its first.
+    let running = shown
+        .and_then(|id| machines.running(id))
+        .filter(|r| r.folder == node.label())
+        .or_else(|| machines.stack.iter().find(|r| r.folder == node.label()));
     let current = running.map(|r| r.state.clone());
     let hot = machines
         .history
         .iter()
         .rev()
-        .find(|s| s.machine == node.label())
+        .find(|s| s.machine == node.label() && running.is_none_or(|r| r.id == s.instance))
         .and_then(|s| s.transition);
+    // What runs: the root and the agents, each agent with its tasks under it.
+    let rows: Vec<&Running> = machines
+        .stack
+        .iter()
+        .filter(|r| r.parent.is_none())
+        .flat_map(|r| std::iter::once(r).chain(machines.tasks(r.id)))
+        .collect();
+    let showing = running.map(|r| r.id);
+    let runs = rows.into_iter().map(|r| {
+        let (id, folder, task) = (r.id, r.folder.clone(), r.parent.is_some());
+        let waiting = if r.waiting.is_empty() {
+            String::new()
+        } else {
+            format!("waits for {}", r.waiting.join(", "))
+        };
+        let level = match r.level {
+            Level::Root => "root",
+            Level::Agent => "agent",
+            Level::Task => "task",
+        };
+        let cancel = ctx.clone();
+        rsx! {
+            div { key: "run-{id}", class: "fsm-run", "data-level": level,
+                "data-showing": if showing == Some(id) { "true" } else { "false" },
+                onclick: move |_| {
+                    picked.set(Some(folder.clone()));
+                    instance.set(Some(id));
+                },
+                {badge(level, "secondary")}
+                span { class: "fsm-run-name", "{r.label()}" }
+                span { class: "mono fsm-path", "{r.state}" }
+                span { class: "muted", "{waiting}" }
+                if task {
+                    button { class: "dx-button", "data-style": "outline", "data-size": "sm",
+                        onclick: move |event: MouseEvent| {
+                            event.stop_propagation();
+                            cancel.send(Command::CancelOneTask(id));
+                        },
+                        "Cancel"
+                    }
+                }
+            }
+        }
+    });
     let content = match &node.machine {
         None => {
             let diagram = machine::diagram_file(&node.file);
@@ -429,8 +484,22 @@ pub fn MachinesPage(rev: u64) -> Element {
         div { class: "dx-card",
             div { class: "dx-card-header",
                 div {
+                    div { class: "dx-card-title", "Running" }
+                    div { class: "dx-card-description", "The root, the agents and each agent's tasks. Select one to see its diagram." }
+                }
+            }
+            div { class: "dx-card-content fsm-runs",
+                {runs}
+            }
+        }
+        div { class: "dx-card",
+            div { class: "dx-card-header",
+                div {
                     div { class: "dx-card-title",
                         {node.machine.as_ref().map_or_else(|| node.label().to_string(), |m| m.diagram.name.clone())}
+                        if let Some(running) = running.filter(|r| r.parent.is_some()) {
+                            span { class: "muted", " · {running.label()}" }
+                        }
                     }
                     div { class: "dx-card-description",
                         match (&current, &waiting) {
@@ -445,7 +514,10 @@ pub fn MachinesPage(rev: u64) -> Element {
                         {badge("built-in", "secondary")}
                     }
                     Select { value: Some(node.label().to_string()), choices,
-                        onchange: move |v: Option<String>| picked.set(v) }
+                        onchange: move |v: Option<String>| {
+                            picked.set(v);
+                            instance.set(None);
+                        } }
                 }
             }
             div { class: "dx-card-content",

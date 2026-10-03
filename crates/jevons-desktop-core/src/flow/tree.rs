@@ -31,10 +31,11 @@ pub const MAX_MODEL_DECISIONS: usize = 4;
 /// A decision's most branches (System One's most choices).
 pub const MAX_BRANCHES: usize = 128;
 
-/// The node file names and their kinds. A machine is `root.toml` at the flows root and
-/// `task.toml` below it.
-pub const NODE_FILES: [(&str, Kind); 8] = [
+/// The node file names and their kinds. A machine is `root.toml` at the flows root,
+/// `agent.toml` in a root state's folder and `task.toml` below an agent.
+pub const NODE_FILES: [(&str, Kind); 9] = [
     (machine::ROOT, Kind::Machine),
+    (machine::AGENT, Kind::Machine),
     (machine::TASK, Kind::Machine),
     ("decide.toml", Kind::Decide),
     ("generate.toml", Kind::Generate),
@@ -186,6 +187,11 @@ impl Node {
             }
         }
         out
+    }
+
+    /// Which machine this folder is: the root, an agent or a task. `None` for other nodes.
+    pub fn level(&self) -> Option<machine::Level> {
+        machine::Level::of(&self.file)
     }
 
     /// The label shown for this node: its path, or `/` for the root.
@@ -596,8 +602,9 @@ impl Loader<'_> {
                         self.error(
                             &join(dir, &file),
                             "unknown node file; a folder holds one of root.toml (the flows \
-                             root's machine), task.toml (a machine below it), decide.toml, \
-                             generate.toml, transcript.toml, tool.toml, loop.toml or run.toml",
+                             root's machine), agent.toml (an agent), task.toml (a task), \
+                             decide.toml, generate.toml, transcript.toml, tool.toml, loop.toml \
+                             or run.toml",
                         );
                     }
                 }
@@ -614,9 +621,10 @@ impl Loader<'_> {
             [] => {
                 self.error(
                     dir,
-                    "no node file: add root.toml (at the flows root) or task.toml (a \
-                     machine), decide.toml, generate.toml, transcript.toml, tool.toml, loop.toml \
-                     or run.toml (or start the folder name with _ to keep it out of routing)",
+                    "no node file: add root.toml (at the flows root), agent.toml (an agent), \
+                     task.toml (a task), decide.toml, generate.toml, transcript.toml, tool.toml, \
+                     loop.toml or run.toml (or start the folder name with _ to keep it out of \
+                     routing)",
                 );
                 return None;
             }
@@ -629,13 +637,38 @@ impl Loader<'_> {
                 return None;
             }
         };
+        // Each machine's file says its level, and each level has its place: the root at the
+        // flows root, agents in the root's states, tasks below agents.
+        let above = |loader: &Self, level: machine::Level| {
+            loader.nodes.iter().any(|n| {
+                n.level() == Some(level)
+                    && (n.path.is_empty() || dir.starts_with(&format!("{}/", n.path)))
+            })
+        };
         let misplaced = match node_files[0].0.as_str() {
-            machine::ROOT if !dir.is_empty() => {
-                Some("root.toml is the flows root's machine; a machine below the root is task.toml")
-            }
-            machine::TASK if dir.is_empty() => {
-                Some("task.toml is a machine below the flows root; the root's machine is root.toml")
-            }
+            machine::ROOT if !dir.is_empty() => Some(
+                "root.toml is the flows root's machine; a folder of the root is an agent \
+                 (agent.toml), and a machine below an agent is a task (task.toml)",
+            ),
+            machine::AGENT if dir.is_empty() => Some(
+                "agent.toml is an agent's machine, in a folder of the flows root; the root's \
+                 machine is root.toml",
+            ),
+            machine::AGENT if dir.contains('/') || !above(self, machine::Level::Root) => Some(
+                "agent.toml is an agent's machine: an agent is a folder of the flows root, one \
+                 of the root machine's states; a machine below an agent is a task (task.toml)",
+            ),
+            machine::TASK if dir.is_empty() => Some(
+                "task.toml is a task's machine, below an agent; the root's machine is root.toml",
+            ),
+            machine::TASK if above(self, machine::Level::Task) => Some(
+                "a task cannot hold another task: an agent starts tasks, and a task's states \
+                 run plain work",
+            ),
+            machine::TASK if !above(self, machine::Level::Agent) => Some(
+                "task.toml is a task's machine, below an agent: put it in a folder of an \
+                 agent (agent.toml), which starts it",
+            ),
             _ => None,
         };
         if let Some(message) = misplaced {
@@ -922,11 +955,11 @@ impl Loader<'_> {
                 );
             }
         }
-        if file != machine::ROOT && !diagram.ends() {
+        if machine::Level::of(file) == Some(machine::Level::Task) && !diagram.ends() {
             self.error(
                 &fsm,
-                "the task never ends: add a transition to [*] (only the flows root's machine \
-                 runs for as long as the app)",
+                "the task never ends: add a transition to [*] (only the root and the agents \
+                 run for as long as the app)",
             );
         }
         // What the engine needs beyond the diagram; its states' work is added once the
@@ -1167,6 +1200,19 @@ impl Loader<'_> {
                             &child.file,
                             "priority has no effect on a state's work: the transitions of \
                              the machine's diagram lead into it",
+                        );
+                    }
+                    // The root only decides which agent a take is for.
+                    if node.level() == Some(machine::Level::Root)
+                        && child.level() != Some(machine::Level::Agent)
+                    {
+                        self.error(
+                            &child.file,
+                            format!(
+                                "the root's states are agents: {}/ needs agent.toml and \
+                                 agent.fsm, with this as the work of one of the agent's states",
+                                child.name
+                            ),
                         );
                     }
                 }
@@ -1514,6 +1560,16 @@ impl Loader<'_> {
                 next.values
                     .entry(state.name.clone())
                     .or_insert((shape, node.label().to_string()));
+            }
+            // An agent reads which of its tasks ended, and what it last wrote.
+            if node.level() == Some(machine::Level::Agent) {
+                let ended = Shape::Object(BTreeMap::from([
+                    ("name".to_string(), Shape::String),
+                    ("result".to_string(), Shape::String),
+                ]));
+                next.values
+                    .entry("task".into())
+                    .or_insert((ended, node.label().to_string()));
             }
             for (name, guard) in &loaded.guards {
                 for (table, rules) in [("when", &guard.when), ("prefer", &guard.prefer)] {
@@ -1999,7 +2055,7 @@ mod tests {
     }
 
     #[test]
-    fn the_built_in_root_is_a_machine_whose_states_are_the_old_branches() {
+    fn the_built_in_root_is_a_machine_whose_states_are_the_three_agents() {
         let tree = FlowTree::load(&super::super::defaults::builtin(), &Catalog::default());
         assert!(tree.is_valid(), "{:?}", tree.errors);
         let root = tree.node(tree.root());
@@ -2007,8 +2063,22 @@ mod tests {
         let diagram = &root.machine.as_ref().unwrap().diagram;
         assert_eq!(diagram.initial, "idle");
         let states: Vec<&str> = tree.children(root.id).map(|c| c.name.as_str()).collect();
-        assert_eq!(states, ["ask", "dictate", "run"]);
+        assert_eq!(states, ["assistant", "automations", "dictation"]);
         assert_eq!(tree.entries().len(), 3);
+        // Each is an agent with one state of inline work.
+        for (agent, work) in [
+            ("assistant", "assistant/ask"),
+            ("automations", "automations/run"),
+            ("dictation", "dictation/dictate"),
+        ] {
+            let node = tree.node(tree.find(agent).unwrap());
+            assert_eq!(node.level(), Some(machine::Level::Agent), "{agent}");
+            assert!(
+                node.description().is_some(),
+                "{agent}: the root chooses by it"
+            );
+            assert!(tree.find(work).is_some(), "{work}");
+        }
     }
 
     #[test]
@@ -2029,9 +2099,16 @@ mod tests {
             said,
             [
                 ("/".into(), "idle said".into(), DecidedBy::RulesThenModel),
-                ("/".into(), "ask done".into(), DecidedBy::Event),
-                ("/".into(), "dictate done".into(), DecidedBy::Event),
-                ("/".into(), "run done".into(), DecidedBy::Event),
+                ("/".into(), "assistant done".into(), DecidedBy::Event),
+                ("/".into(), "dictation done".into(), DecidedBy::Event),
+                ("/".into(), "automations done".into(), DecidedBy::Event),
+                ("assistant".into(), "idle said".into(), DecidedBy::Event),
+                ("assistant".into(), "ask done".into(), DecidedBy::Event),
+                // Its one state runs an automation, which needs an approved one: a rule.
+                ("automations".into(), "idle said".into(), DecidedBy::Rules),
+                ("automations".into(), "run done".into(), DecidedBy::Event),
+                ("dictation".into(), "idle said".into(), DecidedBy::Event),
+                ("dictation".into(), "dictate done".into(), DecidedBy::Event),
             ]
         );
         // A task: a named guard with rules and a criterion, and sentences for the model.
@@ -2060,7 +2137,7 @@ mod tests {
             tools: BTreeMap::from([("search".to_string(), CatalogTool::default())]),
             servers: BTreeMap::new(),
         };
-        let tree = FlowTree::load(&Memory::new("test", files), &catalog);
+        let tree = as_agent(&files, &catalog);
         assert!(tree.is_valid(), "{:?}", tree.errors);
         let by = |machine: &str, at: &str, event: &str| {
             tree.decided()
@@ -2075,12 +2152,12 @@ mod tests {
                 .by
         };
         // One transition, nothing to check: the event alone.
-        assert_eq!(by("/", "find", "done"), DecidedBy::Event);
-        assert_eq!(by("find", "look", "done"), DecidedBy::Event);
+        assert_eq!(by("main", "find", "done"), DecidedBy::Event);
+        assert_eq!(by("main/find", "look", "done"), DecidedBy::Event);
         // One transition behind rules, with no criterion: rules alone, never the model.
-        assert_eq!(by("/", "idle", "said"), DecidedBy::Rules);
+        assert_eq!(by("main", "idle", "said"), DecidedBy::Rules);
         // Rules first, then the model.
-        assert_eq!(by("find", "shown", "said"), DecidedBy::RulesThenModel);
+        assert_eq!(by("main/find", "shown", "said"), DecidedBy::RulesThenModel);
     }
 
     #[test]
@@ -2129,44 +2206,141 @@ mod tests {
         errors(&tree(files))
     }
 
+    /// The files of one machine with its states' work, as the agent `main` of a root that hands
+    /// it every take: `root.toml` and `root.fsm` become the agent's, and the rest moves below.
+    fn as_agent(files: &[(&str, &str)], catalog: &Catalog) -> FlowTree {
+        let tools = files
+            .iter()
+            .find(|(path, _)| *path == "root.toml")
+            .and_then(|(_, text)| text.lines().find(|l| l.starts_with("tools")))
+            .unwrap_or_default();
+        let mut wrapped = vec![
+            ("root.toml".to_string(), tools.to_string()),
+            (
+                "root.fsm".to_string(),
+                "fsm Root {\n[*] --> idle\nidle --> main : said\nmain --> idle\n}".to_string(),
+            ),
+        ];
+        for (path, text) in files {
+            let path = match *path {
+                "root.toml" => "main/agent.toml".to_string(),
+                "root.fsm" => "main/agent.fsm".to_string(),
+                other => format!("main/{other}"),
+            };
+            wrapped.push((path, text.to_string()));
+        }
+        FlowTree::load(
+            &Memory::new(
+                "test",
+                wrapped.iter().map(|(p, t)| (p.as_str(), t.as_str())),
+            ),
+            catalog,
+        )
+    }
+
     #[test]
-    fn the_root_machine_is_root_toml_and_a_machine_below_it_is_task_toml() {
-        let root = "fsm App {\n[*] --> idle\nidle --> work : said\nwork --> idle\n}";
+    fn each_machine_s_file_says_its_level_and_each_level_has_its_place() {
+        let root = "fsm App {\n[*] --> idle\nidle --> main : said\nmain --> idle\n}";
+        let agent = "fsm Main {\n[*] --> idle\nidle --> work : said\nwork --> idle\n}";
         let task = "fsm Work {\n[*] --> waiting\nwaiting --> [*] : said\n}";
-        let fine = tree_of_errors(&[
+        // The root at the flows root, an agent in each of its states, a task below an agent.
+        let levels = [
             ("root.toml", ""),
             ("root.fsm", root),
-            ("work/task.toml", ""),
-            ("work/task.fsm", task),
-        ]);
-        assert!(fine.is_empty(), "{fine:?}");
-        let nested_root = tree_of_errors(&[
-            ("root.toml", ""),
-            ("root.fsm", root),
-            ("work/root.toml", ""),
-            ("work/root.fsm", task),
-        ]);
-        assert!(
-            nested_root.iter().any(|m| m.starts_with(
-                "work/root.toml: root.toml is the flows root's machine; a machine below the \
-                 root is task.toml"
-            )),
-            "{nested_root:?}"
+            ("main/agent.toml", ""),
+            ("main/agent.fsm", agent),
+            ("main/work/task.toml", ""),
+            ("main/work/task.fsm", task),
+        ];
+        let fine = tree(&levels);
+        assert!(fine.is_valid(), "{:?}", errors(&fine));
+        let level = |path: &str| fine.node(fine.find(path).unwrap()).level();
+        assert_eq!(level(""), Some(machine::Level::Root));
+        assert_eq!(level("main"), Some(machine::Level::Agent));
+        assert_eq!(level("main/work"), Some(machine::Level::Task));
+        // Each file elsewhere is an error that says where it belongs.
+        let misplaced = |files: &[(&str, &str)], says: &str| {
+            let e = tree_of_errors(files);
+            assert!(e.iter().any(|m| m.starts_with(says)), "{says}: {e:?}");
+        };
+        misplaced(
+            &[
+                ("root.toml", ""),
+                ("root.fsm", root),
+                ("main/root.toml", ""),
+                ("main/root.fsm", agent),
+            ],
+            "main/root.toml: root.toml is the flows root's machine; a folder of the root is an \
+             agent (agent.toml)",
         );
-        let task_at_root = tree_of_errors(&[("task.toml", ""), ("task.fsm", root)]);
-        assert!(
-            task_at_root
-                .iter()
-                .any(|m| m.starts_with("task.toml: task.toml is a machine below the flows root")),
-            "{task_at_root:?}"
+        misplaced(
+            &[("agent.toml", ""), ("agent.fsm", root)],
+            "agent.toml: agent.toml is an agent's machine, in a folder of the flows root",
         );
-        let unknown = tree_of_errors(&[("machine.toml", ""), ("machine.fsm", root)]);
-        assert!(
-            unknown.iter().any(|m| m.starts_with(
-                "machine.toml: unknown node file; a folder holds one of \
-                                       root.toml"
-            )),
-            "{unknown:?}"
+        misplaced(
+            &[("task.toml", ""), ("task.fsm", root)],
+            "task.toml: task.toml is a task's machine, below an agent",
+        );
+        // A task directly in a root state has no agent to start it.
+        misplaced(
+            &[
+                ("root.toml", ""),
+                ("root.fsm", root),
+                ("main/task.toml", ""),
+                ("main/task.fsm", task),
+            ],
+            "main/task.toml: task.toml is a task's machine, below an agent: put it in a folder \
+             of an agent",
+        );
+        // An agent is a folder of the root, not deeper, and only of a root machine.
+        misplaced(
+            &[
+                ("root.toml", ""),
+                ("root.fsm", root),
+                ("main/agent.toml", ""),
+                ("main/agent.fsm", agent),
+                ("main/work/agent.toml", ""),
+                ("main/work/agent.fsm", agent),
+            ],
+            "main/work/agent.toml: agent.toml is an agent's machine: an agent is a folder of \
+             the flows root",
+        );
+        misplaced(
+            &[
+                ("decide.toml", "fallback = \"main\""),
+                ("main/agent.toml", ""),
+                ("main/agent.fsm", agent),
+            ],
+            "main/agent.toml: agent.toml is an agent's machine: an agent is a folder of the \
+             flows root, one of the root machine's states",
+        );
+        // A task's states run plain work.
+        misplaced(
+            &[
+                ("root.toml", ""),
+                ("root.fsm", root),
+                ("main/agent.toml", ""),
+                ("main/agent.fsm", agent),
+                ("main/work/task.toml", ""),
+                ("main/work/task.fsm", task),
+                ("main/work/waiting/task.toml", ""),
+                ("main/work/waiting/task.fsm", task),
+            ],
+            "main/work/waiting/task.toml: a task cannot hold another task",
+        );
+        // The root only hands takes to agents: its states are agents' folders.
+        misplaced(
+            &[
+                ("root.toml", ""),
+                ("root.fsm", root),
+                ("main/generate.toml", "output = \"bubble\""),
+            ],
+            "main/generate.toml: the root's states are agents: main/ needs agent.toml and \
+             agent.fsm",
+        );
+        misplaced(
+            &[("machine.toml", ""), ("machine.fsm", root)],
+            "machine.toml: unknown node file; a folder holds one of root.toml",
         );
     }
 
@@ -2189,37 +2363,42 @@ mod tests {
             ),
             ("find/look/tool.toml", "tool = \"search\""),
         ];
-        let tree = FlowTree::load(&Memory::new("test", files), &catalog);
+        let tree = as_agent(&files, &catalog);
         let e = errors(&tree);
         assert!(
             e.iter()
-                .any(|m| m.starts_with("find/task.fsm: the task never ends")),
+                .any(|m| m.starts_with("main/find/task.fsm: the task never ends")),
             "{e:?}"
         );
         assert!(
             e.iter().any(|m| m.starts_with(
-                "find/look/tool.toml: calls search, which the machine above (find/task.toml)"
+                "main/find/look/tool.toml: calls search, which the machine above \
+                 (main/find/task.toml)"
             )),
             "{e:?}"
         );
-        // The root's list covers it: only the nested machine's own is missing.
+        // The root's list and the agent's cover it: only the task's own is missing.
         assert!(!e.iter().any(|m| m.contains("(root.toml)")), "{e:?}");
+        assert!(!e.iter().any(|m| m.contains("(main/agent.toml)")), "{e:?}");
     }
 
     #[test]
     fn states_read_what_earlier_states_wrote() {
-        let tree = tree(&[
-            ("root.toml", ""),
-            (
-                "root.fsm",
-                "fsm A {\n[*] --> idle\nidle --> draft : said\ndraft --> show\nshow --> idle\n}",
-            ),
-            ("draft/generate.toml", "output = \"none\""),
-            (
-                "show/generate.toml",
-                "output = \"bubble\"\nprompt = \"{draft} {nothing}\"",
-            ),
-        ]);
+        let tree = as_agent(
+            &[
+                ("root.toml", ""),
+                (
+                    "root.fsm",
+                    "fsm A {\n[*] --> idle\nidle --> draft : said\ndraft --> show\nshow --> idle\n}",
+                ),
+                ("draft/generate.toml", "output = \"none\""),
+                (
+                    "show/generate.toml",
+                    "output = \"bubble\"\nprompt = \"{draft} {nothing}\"",
+                ),
+            ],
+            &Catalog::default(),
+        );
         let e = errors(&tree);
         assert_eq!(e.len(), 1, "{e:?}");
         assert!(e[0].contains("{nothing}"), "{e:?}");
@@ -2255,8 +2434,7 @@ mod tests {
                 ),
                 ("find/shown/generate.toml", shown),
             ];
-            let tree = FlowTree::load(&Memory::new("test", files), &catalog);
-            errors(&tree)
+            errors(&as_agent(&files, &catalog))
         };
         let guard = |rule: &str| format!("[guards.nothing]\nwhen = {{ {rule} }}");
         // A tool's result has whatever fields came back; a structured generation has its
@@ -2278,7 +2456,9 @@ mod tests {
         let e = load(&guard("value = \"{nowhere.x}\", empty = true"), "");
         assert_eq!(e.len(), 1, "{e:?}");
         assert!(
-            e[0].starts_with("find/task.toml: guards.nothing.when.value: {nowhere.x}: no built-in"),
+            e[0].starts_with(
+                "main/find/task.toml: guards.nothing.when.value: {nowhere.x}: no built-in"
+            ),
             "{e:?}"
         );
         let e = load(&guard("value = \"{sort.missing}\", empty = true"), "");
@@ -2297,7 +2477,7 @@ mod tests {
             "[when]\nvalue = \"{later}\"\nempty = false",
         );
         assert!(
-            e[0].contains("find/shown/generate.toml: when.value: {later}: no built-in"),
+            e[0].contains("main/find/shown/generate.toml: when.value: {later}: no built-in"),
             "{e:?}"
         );
         let e = load(
@@ -2305,7 +2485,7 @@ mod tests {
             "schema = \"text\"",
         );
         assert!(
-            e[0].contains("find/shown/generate.toml: schema: \"text\" is not a type"),
+            e[0].contains("main/find/shown/generate.toml: schema: \"text\" is not a type"),
             "{e:?}"
         );
     }

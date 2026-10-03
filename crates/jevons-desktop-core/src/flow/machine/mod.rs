@@ -44,8 +44,36 @@ use std::collections::BTreeMap;
 
 /// The flows root's machine, with its diagram in `root.fsm` beside it.
 pub const ROOT: &str = "root.toml";
-/// A machine below the flows root (a task), with its diagram in `task.fsm` beside it.
+/// An agent's machine, in a folder of the flows root, with its diagram in `agent.fsm`.
+pub const AGENT: &str = "agent.toml";
+/// A task's machine, below an agent, with its diagram in `task.fsm` beside it.
 pub const TASK: &str = "task.toml";
+
+/// Which machine a folder is, by its node file.
+///
+/// - The **root** decides which agent a take is for, and nothing else.
+/// - An **agent** runs for as long as the app: it routes what it gets among its own states and
+///   the tasks it started.
+/// - A **task** does one job and ends.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Level {
+    Root,
+    Agent,
+    Task,
+}
+
+impl Level {
+    /// The level a node file makes its folder, such as `research/agent.toml`.
+    pub fn of(node_file: &str) -> Option<Self> {
+        match node_file.rsplit('/').next()? {
+            ROOT => Some(Self::Root),
+            AGENT => Some(Self::Agent),
+            TASK => Some(Self::Task),
+            _ => None,
+        }
+    }
+}
 
 /// The diagram beside a machine's node file: `find/task.toml` → `find/task.fsm`.
 pub fn diagram_file(node_file: &str) -> String {

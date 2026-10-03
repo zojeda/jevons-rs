@@ -504,6 +504,14 @@ p { margin: 0; }
 .flow-kind[data-kind="machine"] { color: var(--accent); background: var(--accent-soft); }
 .flow-kind[data-kind="event"] { min-width: 48px; color: var(--secondary-color-2); background: var(--primary-color-5); }
 .fsm-path { color: var(--accent); }
+/* What runs: the root, the agents, and each agent's tasks under it. */
+.fsm-runs { display: flex; flex-direction: column; gap: 2px; }
+.fsm-run { display: flex; align-items: center; gap: 10px; padding: 4px 8px; border-radius: 6px; border: 1px solid transparent; }
+.fsm-run:hover { background: var(--primary-color-5); }
+.fsm-run[data-level="task"] { margin-left: 28px; }
+.fsm-run[data-showing="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.fsm-run-name { color: var(--secondary-color-1); font-weight: 600; }
+.fsm-run .muted { flex: 1; }
 .fsm-scroll { overflow-x: auto; overflow-y: hidden; padding-bottom: 6px; }
 .fsm-canvas { position: relative; flex-shrink: 0; }
 .fsm-lines { position: absolute; left: 0; top: 0; }

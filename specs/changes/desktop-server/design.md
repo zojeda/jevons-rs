@@ -142,6 +142,15 @@ chosen work go in one System One request, within the provider's question limit, 
 already merges the root's question with its states' first decisions. Routing that rules settle,
 or that has one candidate, asks nothing. Dictation stays at one call.
 
+**A task runs beside its agent within the take that moves it.** Entering the state is `done` at
+once for the agent, and the task's work runs before the take ends; nothing outlives a take yet.
+Tasks do not nest: a task's states run plain work, and only an agent starts tasks.
+
+**An agent is a candidate only when it has something to do with the take:** one of its own
+transitions passes its rules, or one of its tasks waits. The root prefers an agent whose own rules
+choose what it would do, so a keyword that starts a task in an agent also sends the take there
+with no model.
+
 **Running instances form a forest:** the root, one instance per agent, and each agent's tasks.
 Effects, timers, protocol messages and traces carry the instance they belong to. The Machines tab
 shows the agents, each with its running tasks, and draws any of their diagrams.

@@ -576,7 +576,7 @@ mod tests {
     fn labels_stay_clear_of_each_other_and_of_nodes() {
         let text = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../examples/desktop/machines/search/task.fsm"),
+                .join("../../examples/desktop/machines/research/search/task.fsm"),
         )
         .unwrap();
         let l = layout(&machine(&text));

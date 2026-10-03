@@ -721,12 +721,12 @@ mod tests {
             "only in Slack"
         );
         // ask declares them, for every branch below it.
-        let root = tree.node(tree.find("ask").unwrap());
+        let root = tree.node(tree.find("assistant/ask").unwrap());
         let reader = reader(Privacy::default());
         let readings = read_applicable(&tree, &slack, &reader);
         assert_eq!(readings[1].name, "slack_conversation");
         assert_eq!(readings[1].found.value, json!("general"));
-        assert!(readings.iter().all(|r| r.node == "ask" && r.lazy));
+        assert!(readings.iter().all(|r| r.node == "assistant/ask" && r.lazy));
         let none = Variables::new();
         let conversation = reader.read(&root.extracts["slack_conversation"], &slack, &none);
         assert_eq!(conversation.value, json!("general"));
