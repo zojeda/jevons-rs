@@ -975,9 +975,8 @@ impl Loader<'_> {
                 .iter()
                 .filter_map(|(name, g)| Some((name.clone(), g.criterion.clone()?)))
                 .collect(),
-            min_probability: spec
-                .min_probability
-                .unwrap_or(machine::runtime::DEFAULT_MIN_PROBABILITY),
+            // Unset, the decision model's provider says how sure it must be.
+            min_probability: spec.min_probability,
             ..diagram
         };
         Some(Arc::new(Loaded { diagram, guards }))

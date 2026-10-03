@@ -185,12 +185,14 @@ Tests: `the_oracle_reads_each_candidate_s_criterion_and_its_sure_choice_is_taken
 
 ### R19 The oracle's choice is taken from `min_probability` up
 
-A choice among the candidates asked, at the definition's `min_probability` (0.7 unless set) or
-above, is taken ("model 0.90"). Below it ("unsure (<label> 0.58)"), for a label that was not asked
+A choice among the candidates asked is taken at the floor or above ("model 0.90"). The floor is
+the definition's `min_probability`, else the oracle's own, which the host gives
+(`Facts::min_probability`, 0.7 unless it says otherwise): probabilities are not comparable between
+oracles. Below it ("unsure (<label> 0.58)"), for a label that was not asked
 about, with no answer (the host's reason, such as "no decision model"), and with no candidate
 left ("no transition applies"), the `[else]` candidate is taken ("…: the fallback").
 
-Tests: `below_min_probability_the_else_transition_is_taken`, `the_oracle_reads_each_candidate_s_criterion_and_its_sure_choice_is_taken`, `the_root_takes_the_model_s_choice_from_seventy_percent_and_dictates_below`, `an_unsure_root_decision_takes_the_fallback`
+Tests: `below_min_probability_the_else_transition_is_taken`, `the_oracle_brings_its_own_floor_and_the_definition_s_wins`, `the_oracle_reads_each_candidate_s_criterion_and_its_sure_choice_is_taken`, `the_root_takes_the_model_s_choice_from_seventy_percent_and_dictates_below`, `an_unsure_root_decision_takes_the_fallback`
 
 ### R20 Without an `[else]`, an unsure event leaves the machine where it was
 

@@ -96,11 +96,9 @@ fn render(template: &str, args: &Map<String, Value>, escape: Escape) -> String {
     while let Some(start) = rest.find(['{', '$']) {
         out.push_str(&rest[..start]);
         rest = &rest[start..];
-        if let Some(after) = rest.strip_prefix("${env:")
-            && let Some(end) = after.find('}')
-        {
-            out.push_str(&std::env::var(&after[..end]).unwrap_or_default());
-            rest = &after[end + 1..];
+        if let Some((value, after)) = crate::config::env_at(rest) {
+            out.push_str(&value);
+            rest = after;
             continue;
         }
         if let Some(after) = rest.strip_prefix('{')

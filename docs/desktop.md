@@ -307,13 +307,51 @@ A run asks in the bubble first unless the automation is listed in `automation.un
 The **Settings** tab edits the runtime, dictation and privacy settings. A change marks the page (a bar on its left and a dot on the tab) and shows a bar under it, in view however far you scroll: **Apply and save** writes them all at once, and **Revert** drops them. Changes are kept while you visit other tabs.
 
 - **Runtime.**
-  - *Run the models in this app* loads them in-process.
   - By default the API is private: it listens on an ephemeral loopback port with a random key that only the app knows.
   - *Expose the API* serves it on the address and port you choose, so the OpenAI SDK, Open WebUI or `scripts/smoke-test.py` can use it. It takes the key from `TYPESAFE_API_KEY` or the settings; without a key the API is open.
   - Turning exposure on or off, or changing the port, rebinds the listener without reloading the models.
-  - *Use a jevons server* skips local models and uses a server URL and key instead.
+- **Providers and routes.** Where each capability runs; see [below](#providers-and-routes).
 - **Dictation.** The hotkeys (push-to-talk, live dictation, inspector, and one per top-level branch), live feedback, the microphone, language (detected when empty), whether to ask the decision model (when off, decisions take their fallback), and the most tokens a generation may write unless a node sets its own.
 - **Privacy.** How many characters of each field to keep, whether to include the clipboard, and the API log. Reading windows other than the take's own has no control in the tab: set `read_other_windows` and `readable_apps` under `[privacy]` in the settings file.
+
+### Providers and routes
+
+The app asks models for four things, and each can come from a different place:
+
+| Capability | What it is | Requests |
+| --- | --- | --- |
+| Speech | A take's audio to text, uploaded | `/v1/audio/transcriptions` |
+| Live speech | The same, streamed while you speak | `/v1/realtime` |
+| Decisions | The flow tree's and machines' choices | `/v1/systemone` |
+| Generation | Rewrites, answers, loops, the investigator | `/v1/responses`, `/v1/chat/completions` |
+
+By default all four run on the models the app loads (the `embedded` provider). To send one
+elsewhere, add a provider and route the capability to it, in the Settings tab or the file:
+
+```toml
+[providers.openrouter]
+kind = "openrouter"
+key = "${env:OPENROUTER_API_KEY}"
+
+[providers.box]
+kind = "jevons"
+url = "http://box.local:8080"
+
+[routes]
+decision = { provider = "openrouter", model = "typesafe/jev-1.13" }
+generation = { provider = "box" }
+```
+
+- **Kinds.** `jevons` is a jevons server (`http://127.0.0.1:8080`, key from `TYPESAFE_API_KEY`). `openrouter` is OpenRouter (`https://openrouter.ai/api`, key from `OPENROUTER_API_KEY`), which serves Jev through System One and many language models. `openai-compatible` is any other server with OpenAI's API; give its root as `url`, without `/v1`.
+- **Keys.** `${env:NAME}` reads the key from the environment, so it stays out of the file, which the app keeps in a git repository.
+- **Models.** An embedded or jevons provider names its own model for each capability, so the route needs none. Other providers need `model`.
+- **What gets loaded.** Only the models of the capabilities routed to `embedded`. With decisions and generation elsewhere, the app loads the speech model alone.
+- **Live speech** follows speech when that is embedded or on a jevons server, and falls back to uploads when the stream cannot open.
+- **A provider that fails** (a server that does not answer) is reported in the tray and the Settings tab; the capabilities on the others keep working.
+
+A decision provider that is not jevons gets TypeSafe's System One contract alone. A flow that sets `steps`, `samples` or a thinking budget still runs there, without them, and the take's trace says what was dropped (`steps dropped: openrouter/typesafe/jev-1.13 does not support it`). jevons asks such a provider at most 8 questions a request and splits a longer one, noting it in the trace. OpenRouter documents no limit, so 8 is a cautious guess: set `max_questions` on the provider to change it, and `extensions = ["steps", "samples", "think"]` for one that takes ours.
+
+How sure the decision model must be for a machine to take its choice (`min_probability`) comes from the provider too: 0.7 unless the provider sets it. Probabilities differ between models, so a threshold tuned on one does not carry to another. A machine or node that sets `min_probability` keeps its own.
 
 ## Models
 
@@ -361,7 +399,7 @@ The decision and generation have time limits (60 s and 120 s). When the decision
 
 ## Headless runs
 
-`--replay` runs one take from an audio file, and `--transcript` from text as if you had said it; both take a context snapshot and print the trace as JSON. They use the same settings (embedded or remote runtime, flow tree). Use them for scripted checks and to try a flow tree without speaking:
+`--replay` runs one take from an audio file, and `--transcript` from text as if you had said it; both take a context snapshot and print the trace as JSON. They use the same settings (providers, routes and flow tree). Use them for scripted checks and to try a flow tree without speaking:
 
 ```bash
 cargo run -p jevons-desktop -- --replay examples/speech-en.flac \
@@ -411,7 +449,8 @@ flowchart LR
     agent --> mic["AudioSource<br/>CPAL"]
     agent --> pipeline["Pipeline<br/>jevons-desktop-core"]
     pipeline --> client["API client"]
-    client -- "loopback or remote" --> api["jevons-api<br/>embedded runtime thread"]
+    client -- "one route per capability" --> api["jevons-api<br/>embedded runtime thread"]
+    client -- "HTTPS" --> providers["Other providers<br/>a jevons server · OpenRouter"]
     pipeline --> sink["TextSink<br/>SendInput · clipboard"]
 ```
 

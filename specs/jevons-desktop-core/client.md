@@ -2,12 +2,14 @@
 
 [Back to jevons-desktop-core](spec.md)
 
-The client speaks to the jevons API, embedded in the app or on a server: typed requests for
-Realtime sessions, transcription uploads, System One decisions, Responses and Chat Completions,
-with the API log that can record them. Next to it sit the model catalog and its downloads from
-Hugging Face, and the tray icon's frames. The wire formats themselves belong to jevons-api; the
-client mirrors them without sharing its types. Choosing the runtime (embedded or remote) is in
-jevons-desktop.
+The client speaks to the jevons API, embedded in the app or on a server, and to other providers
+of the same APIs: typed requests for Realtime sessions, transcription uploads, System One
+decisions, Responses and Chat Completions, with the API log that can record them. Each capability
+has a route to its provider, and a decision route knows what its provider takes. Next to it sit
+the model catalog and its downloads from Hugging Face, and the tray icon's frames. The wire
+formats themselves belong to jevons-api; the client mirrors them without sharing its types.
+Turning the settings' providers and routes into live routes is in jevons-desktop
+([runtime](../jevons-desktop/runtime.md)).
 
 ## Requirements
 
@@ -54,9 +56,12 @@ Tests: `wav_uploads_decode_back_to_the_same_audio`
 A decision request holds the model, the state, the questions, and optional `steps`, `samples` and
 `think`. A question is `noul` (yes or no, with optional criteria for each), `choice` (one of 1 to
 128 labels, each with its description) or `score` (2 to 10 levels, lowest first). The request
-serializes as the server's own fixture does, and every answer type parses.
+serializes as the server's own fixture does, and every answer type parses. A response's `id`,
+`provider` and `usage.cost` are ignored. A choice or a score may leave out its probabilities and
+its confidence: the probability of a choice is its own among the probabilities, else the
+confidence, and an answer that gives neither is taken as given.
 
-Tests: `systemone_questions_round_trip_the_server_fixture`, `systemone_answers_parse_every_type`
+Tests: `systemone_questions_round_trip_the_server_fixture`, `systemone_answers_parse_every_type`, `an_external_answer_parses_with_what_it_leaves_out`
 
 ### R6 Responses stream their text
 
@@ -170,3 +175,56 @@ Tests: `every_state_indexes_its_own_frame`, `tuning_has_its_own_amber_frame_and_
 The app icon, drawn at any size, is a dark head with glowing eyes and clear corners.
 
 Tests: `the_app_icon_glows_at_the_eyes_on_a_dark_head_with_clear_corners`
+
+### R19 Each capability has a route
+
+A take reaches inference through four routes, each a provider's client, the model to ask it for,
+the provider's name and its decision profile: speech (uploads), Realtime, decisions and
+generation. A capability with no route is not served.
+
+- A take streams to the Realtime route when there is one, and uploads to the speech route when
+  there is none, when the session cannot open or when it fails. Live dictation needs the Realtime
+  route.
+- Decisions, the root's and machines' included, go to the decision route.
+- Generation, loops, tool arguments the model writes, the investigator and the automation author
+  go to the generation route.
+
+A route is named `<provider>/<model>` in traces, such as `openrouter/typesafe/jev-1.13`.
+
+Tests: `each_capability_goes_to_its_own_provider`, `realtime_404_falls_back_to_batch_upload`
+
+### R20 A decision provider has a profile
+
+A profile says which of our System One extensions (`steps`, `samples`, `think`) the provider
+takes, the most questions one request may ask, whether a noul question's criteria need both
+`true` and `false`, and the probability from which its model's choice counts as sure.
+
+| Kind of provider | Extensions | Questions a request | Noul criteria | Sure from |
+| --- | --- | --- | --- | --- |
+| `embedded`, `jevons` | all three | no limit | either alone | 0.7 |
+| `openrouter`, `openai-compatible` | none | 8 | both | 0.7 |
+
+A provider's `extensions`, `max_questions` and `min_probability` in the settings replace that part
+of its kind's profile. The 8 and the 0.7 of the second row are not documented by OpenRouter: they
+are cautious defaults until measured.
+
+Tests: `a_provider_s_kind_gives_its_profile_and_its_settings_replace_parts`
+
+### R21 What a provider lacks is left out, and the trace says so
+
+A decision request goes to its route without the extensions the profile does not take, and each
+one dropped adds a note to the take's trace: "steps dropped: openrouter/typesafe/jev-1.13 does not
+support it". The trace keeps the request as it went. For a provider whose noul criteria need
+both keys, the one a question leaves out goes as `null`. A request to our own System One goes
+unchanged.
+
+Tests: `extensions_a_provider_lacks_are_dropped_with_a_note`, `a_provider_without_our_extensions_gets_none_and_the_trace_says_so`
+
+### R22 Questions over a provider's limit go in several requests
+
+A request with more questions than the profile takes is asked in as many requests as needed, one
+after the other, in the questions' order, each with the same state. The answers come back as one
+response with the usage summed, and the trace notes it: "12 questions asked in 3 requests:
+openrouter/typesafe/jev-1.13 takes 5 in one". A request that fails fails the decision.
+
+Tests: `questions_over_a_provider_s_limit_go_in_several_requests`, `questions_over_the_provider_s_limit_are_asked_in_several_requests`

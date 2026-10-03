@@ -198,9 +198,11 @@ its folder's `description`. With one candidate the model answers yes or no. The 
 machine's node file's `question`; by default the root's `said` asks which fits what the user
 wants, and a task names itself, its state and the event. With no decision model, when the request
 fails or times out, and when the model gives no answer, the engine is told so, and takes its
-`[else]` or stays (R19 and R20 there). `min_probability` is the node file's, 0.7 by default.
+`[else]` or stays (R19 and R20 there). `min_probability` is the node file's; one that sets none
+takes the decision route's ([client](client.md) R20), so each provider says how sure its model
+must be.
 
-Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`
+Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`, `the_decision_provider_says_how_sure_its_model_must_be`
 
 ### R24 Below `min_probability` the `[else]` transition is taken
 

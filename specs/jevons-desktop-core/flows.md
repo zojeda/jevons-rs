@@ -382,7 +382,8 @@ Tests: `the_builtin_tree_is_valid_and_lists_every_example_file`, `the_built_in_r
 
 The root waits in `idle`, and each take is `said` there. Words that start with "Pregunta" or
 "Question" go to `assistant`, and in a terminal the words go to `dictation`, both with no model
-call. The decision model's choice is taken from 0.7; below that, or with no answer, the words are
+call. The root sets no `min_probability`: the decision model's choice is taken from its
+provider's floor (0.7 for the models jevons runs); below that, or with no answer, the words are
 dictated. `automations` is a candidate only when an approved automation exists.
 
 Tests: `words_starting_with_pregunta_are_a_question_with_no_root_decision`, `in_a_terminal_the_words_are_dictated_and_never_rewritten`, `the_root_takes_the_model_s_choice_from_seventy_percent_and_dictates_below`, `without_approved_automations_the_run_branch_is_no_candidate`

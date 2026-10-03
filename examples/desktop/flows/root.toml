@@ -6,8 +6,8 @@ question = """
 What does the user want done with what they said? Decide who the words are for: the application \
 (text to type there, including questions meant for the people they write to) or you, the \
 assistant listening (a question to answer for them)."""
-# When the decision model is unsure (the agent it chose below 70%) or unavailable, the words are
-# dictated: `[else]` in root.fsm.
-min_probability = 0.7
+# When the decision model is unsure or unavailable, the words are dictated: `[else]` in root.fsm.
+# How sure it must be is its provider's to say (70% for the models jevons runs); set
+# `min_probability` here to say otherwise.
 # Everything the agents may call: `automations` runs any approved automation.
 tools = ["script:*"]

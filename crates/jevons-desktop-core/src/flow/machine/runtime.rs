@@ -26,7 +26,9 @@
 //! their work delivers to the window the task started in, or to the clipboard when it changed.
 
 use super::{Condition, Event, Level, Loaded, Target};
-use crate::client::{Answer, DecisionRequest, NoulCriteria, Question};
+use crate::client::{
+    Answer, DecisionRequest, MIN_PROBABILITY, NoulCriteria, Question, probability_of,
+};
 use crate::flow::frame::Frame;
 use crate::flow::guard::Check;
 use crate::flow::tree::{FlowTree, Kind, Node, NodeId, NodeSpec};
@@ -612,6 +614,13 @@ struct Rules<'a> {
 }
 
 impl Facts for Rules<'_> {
+    /// How sure the decision model must be is its provider's to say: probabilities are not
+    /// comparable between models.
+    fn min_probability(&self) -> f64 {
+        let route = self.env.routes.decision.as_ref();
+        route.map_or(MIN_PROBABILITY, |route| route.profile.min_probability)
+    }
+
     fn check(&self, candidate: &Candidate) -> Verdict {
         let work = |state: &str| self.tree.children(self.machine).find(|c| c.name == state);
         let mut rules = Vec::new();
@@ -1458,7 +1467,7 @@ impl<'a> Turn<'a> {
     }
 
     fn can_decide(&self) -> bool {
-        self.env.settings.decide && self.env.settings.models.decision.is_some()
+        self.env.settings.decide && self.env.routes.decision.is_some()
     }
 
     /// The question as the decision model reads it: with one candidate, whether it holds; with
@@ -1505,7 +1514,7 @@ impl<'a> Turn<'a> {
                 probabilities,
                 confidence,
             }) => Decision::Chose {
-                probability: probabilities.get(&choice).copied().unwrap_or(confidence),
+                probability: probability_of(&probabilities, &choice, confidence),
                 label: choice,
                 probabilities,
             },
@@ -1695,10 +1704,11 @@ impl<'a> Turn<'a> {
         questions: &[(Option<Ahead>, Question)],
     ) -> Option<Vec<Option<Answer>>> {
         let env = self.env;
-        let model = env.settings.models.decision.clone()?;
+        let route = env.routes.decision.as_ref()?;
         let keys: Vec<String> = (0..questions.len()).map(|i| format!("q{i:02}")).collect();
-        let request = DecisionRequest {
-            model,
+        // What the provider does not take is left out, and the trace says so.
+        let (request, notes) = route.fit(DecisionRequest {
+            model: route.model.clone(),
             state: frame.state(),
             questions: keys
                 .iter()
@@ -1708,7 +1718,8 @@ impl<'a> Turn<'a> {
             steps: spec.steps,
             samples: spec.samples,
             think: frame.think.filter(|t| *t > 0),
-        };
+        });
+        self.trace.notes.extend(notes);
         let began = Instant::now();
         tracing::info!(
             take = self.start.id,
@@ -1716,7 +1727,7 @@ impl<'a> Turn<'a> {
             "Deciding a transition"
         );
         let response =
-            tokio::time::timeout(env.settings.decision_timeout, env.client.decide(&request)).await;
+            tokio::time::timeout(env.settings.decision_timeout, route.decide(&request)).await;
         self.trace
             .timings
             .push(("decide".into(), began.elapsed().as_millis() as u64));

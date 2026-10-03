@@ -8,7 +8,8 @@
 //!    prefer is chosen among the preferred ones, with no model.
 //! 2. A single candidate left that needs no judgement is taken.
 //! 3. Otherwise the oracle decides ([`Effect::Decide`], answered with [`Input::Decided`]). Its
-//!    choice is taken from the definition's `min_probability` up.
+//!    choice is taken from the definition's `min_probability` up, or from the oracle's own
+//!    ([`Facts::min_probability`]) when the definition sets none.
 //! 4. Below that, with no answer, or with no candidate left, the `[else]` transition is taken;
 //!    without one the machine stays where it was, so an unsure answer never moves it on.
 //!
@@ -50,8 +51,9 @@ pub struct Definition {
     /// The named guards that carry rules, and the states whose work carries rules of its own:
     /// candidates [`Facts`] may drop or prefer. The others always pass.
     pub ruled: Ruled,
-    /// Below this probability the oracle's choice is not taken.
-    pub min_probability: f64,
+    /// Below this probability the oracle's choice is not taken; unset, the oracle's own floor
+    /// applies ([`Facts::min_probability`]).
+    pub min_probability: Option<f64>,
 }
 
 /// What carries rules in a definition.
@@ -69,7 +71,7 @@ impl From<Machine> for Definition {
             described: BTreeMap::new(),
             criteria: BTreeMap::new(),
             ruled: Ruled::default(),
-            min_probability: DEFAULT_MIN_PROBABILITY,
+            min_probability: None,
         }
     }
 }
@@ -357,6 +359,12 @@ impl Verdict {
 pub trait Facts {
     /// Called once per candidate of a decision, in their order.
     fn check(&self, candidate: &Candidate) -> Verdict;
+
+    /// The probability from which the oracle's choice counts as sure, for a definition that
+    /// sets none: probabilities are not comparable between oracles, so each brings its own.
+    fn min_probability(&self) -> f64 {
+        DEFAULT_MIN_PROBABILITY
+    }
 }
 
 /// Candidates weighed by rules alone.
@@ -816,7 +824,10 @@ impl Instance {
                     fallback,
                 } = *asking;
                 turn.working = working;
-                let pick = by_oracle(def, &options, &pool, fallback, decision);
+                let floor = def
+                    .min_probability
+                    .unwrap_or_else(|| facts.min_probability());
+                let pick = by_oracle(floor, &options, &pool, fallback, decision);
                 turn.out
                     .push(chose(self, &at, &event, &options, &pool, &pick, true));
                 if let Some(next) = self.picked(&mut turn, &event, at, &options, pick) {
@@ -1047,7 +1058,7 @@ impl Instance {
 
 /// What the oracle's answer comes to.
 fn by_oracle(
-    def: &Definition,
+    floor: f64,
     options: &[Candidate],
     pool: &[usize],
     fallback: Option<usize>,
@@ -1060,7 +1071,7 @@ fn by_oracle(
             probability,
             probabilities,
         } => match pool.iter().find(|&&i| options[i].label == label) {
-            Some(&index) if probability >= def.min_probability => Pick {
+            Some(&index) if probability >= floor => Pick {
                 index: Some(index),
                 by: By::Model,
                 how: format!("model {probability:.2}"),
@@ -1112,6 +1123,8 @@ mod tests {
     struct Rules {
         fail: Vec<&'static str>,
         prefer: Vec<&'static str>,
+        /// The oracle's own floor, when it is not the default.
+        floor: Option<f64>,
     }
 
     impl Facts for Rules {
@@ -1126,6 +1139,10 @@ mod tests {
                     Vec::new()
                 },
             }
+        }
+
+        fn min_probability(&self) -> f64 {
+            self.floor.unwrap_or(DEFAULT_MIN_PROBABILITY)
         }
     }
 
@@ -1401,7 +1418,7 @@ mod tests {
             ["idle said → dictate: unsure (ask 0.69): the fallback"]
         );
         // The floor is the definition's.
-        def.min_probability = 0.5;
+        def.min_probability = Some(0.5);
         let mut root = Instance::resting(&def);
         root.handle(&def, Input::Event(Event::Said), &none());
         let effects = root.handle(&def, chose("ask", 0.69), &none());
@@ -1414,6 +1431,29 @@ mod tests {
         assert_eq!(
             steps(&effects),
             ["idle said → dictate: the decision failed: the fallback"]
+        );
+    }
+
+    #[test]
+    fn the_oracle_brings_its_own_floor_and_the_definition_s_wins() {
+        let mut def = def(ROOT, &["ask", "dictate"]);
+        // An oracle that is sure from 0.6 up.
+        let oracle = Rules {
+            floor: Some(0.6),
+            ..Rules::default()
+        };
+        let mut root = Instance::resting(&def);
+        root.handle(&def, Input::Event(Event::Said), &oracle);
+        let effects = root.handle(&def, chose("ask", 0.65), &oracle);
+        assert_eq!(steps(&effects), ["idle said → ask: model 0.65"]);
+        // A definition that sets its own is not moved by the oracle's.
+        def.min_probability = Some(0.9);
+        let mut root = Instance::resting(&def);
+        root.handle(&def, Input::Event(Event::Said), &oracle);
+        let effects = root.handle(&def, chose("ask", 0.65), &oracle);
+        assert_eq!(
+            steps(&effects),
+            ["idle said → dictate: unsure (ask 0.65): the fallback"]
         );
     }
 

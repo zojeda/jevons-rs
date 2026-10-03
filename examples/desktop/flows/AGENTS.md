@@ -193,7 +193,7 @@ fsm Search {
 |---|---|
 | `description` | For the machine above, which enters this one by it: the root chooses an agent by its description, an agent a task by its. |
 | `question` | What the model answers when it chooses a transition; by default, which one fits, given the task and its state. |
-| `min_probability` | Below this probability (0 to 1; 0.7 by default) the model's choice is not taken. |
+| `min_probability` | Below this probability (0 to 1) the model's choice is not taken. Leave it out: the decision model's provider says how sure its model must be (0.7 for the models jevons runs), since probabilities differ between models. |
 | `tools` | Every tool its states call (tool nodes, loops' tools, `script:<name>` or `script:*` for automations, `server:*`). A state that calls another is an error, so the list is all a task can do, an agent's covers its tasks', and the root's covers everything. |
 | `[guards.<name>]` | The named guards: `when`, `prefer`, `criterion`. |
 | `steps`, `samples` | System One refinement steps (1 to 8) and samples (1 to 32). |

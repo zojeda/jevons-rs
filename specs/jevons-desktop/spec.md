@@ -19,8 +19,8 @@ jevons-desktop owns:
 - the agent thread: hotkey gestures, takes, confirmations in the bubble, recordings, automation
   runs from the tray, the settings and history actions, reloading the flows folder and library;
 - the tray thread: the icon, its menu and the global hotkeys;
-- the runtime thread: the embedded jevons-api (loaded models and the listener) or a remote
-  server;
+- the runtime thread: the embedded jevons-api (loaded models and the listener), the other
+  providers, and each capability's route to one of them;
 - the inspector window and the feedback bubble, on dioxus-native (Blitz);
 - the platform layers for each OS: context, interface reads and actions, text input, the
   recorder, the microphone, and the keyboard hook for held hotkeys;
@@ -42,7 +42,7 @@ Each file numbers its own requirements.
 | Spec | Covers |
 | --- | --- |
 | [app](app.md) | The tray and its menu, hotkey gestures, takes in the app, confirmations, recordings and automation runs from the tray, settings, reset and history actions, reloading |
-| [runtime](runtime.md) | The embedded runtime and its listener, the remote server, the runtime's status |
+| [runtime](runtime.md) | The embedded runtime and its listener, the other providers, each capability's route, the runtime's status |
 | [ui](ui.md) | The inspector's tabs (Context, Takes, Flows, Machines, Settings, Models) and the feedback bubble |
 | [platform](platform.md) | Context and text input per OS, the microphone, the keyboard hook, interface actions and the recorder on Windows |
 | [cli](cli.md) | The command line: headless takes, checks, queries, dry runs, reset and clears |

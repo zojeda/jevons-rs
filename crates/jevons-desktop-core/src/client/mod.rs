@@ -1,17 +1,23 @@
-//! Typed requests to the jevons API. The server parses requests by hand, so these mirror its
-//! schemas rather than share types with it (which would also pull in the inference stack).
+//! Typed requests to the jevons API and to other providers of the same APIs, and the routes
+//! that send each capability to its provider. The jevons server parses requests by hand, so
+//! these mirror its schemas rather than share types with it (which would also pull in the
+//! inference stack).
 
 mod chat;
 pub mod log;
 mod realtime;
 mod responses;
+mod route;
 mod systemone;
 mod transcriptions;
 
 pub use chat::{ChatMessage, ChatReply, ChatRequest};
 pub use realtime::{RealtimeEvent, RealtimeReader, RealtimeWriter, Turns};
 pub use responses::{Reasoning, ResponseRequest};
-pub use systemone::{Answer, DecisionRequest, DecisionResponse, NoulCriteria, Question, Usage};
+pub use route::{EXTERNAL_MAX_QUESTIONS, MIN_PROBABILITY, Profile, Route, Routes};
+pub use systemone::{
+    Answer, DecisionRequest, DecisionResponse, NoulCriteria, Question, Usage, probability_of,
+};
 pub use transcriptions::Transcription;
 
 use serde::Deserialize;
@@ -19,9 +25,9 @@ use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
-    #[error("cannot reach the jevons API: {0}")]
+    #[error("cannot reach the API: {0}")]
     Http(#[from] reqwest::Error),
-    #[error("the jevons API answered {status}: {message}")]
+    #[error("the API answered {status}: {message}")]
     Api { status: u16, message: String },
     #[error("{0} is not served by this runtime")]
     NotServed(&'static str),
@@ -31,7 +37,7 @@ pub enum ClientError {
     Protocol(String),
 }
 
-/// A jevons API endpoint and its key.
+/// A provider's endpoint and its key.
 #[derive(Clone, Debug)]
 pub struct Client {
     http: reqwest::Client,

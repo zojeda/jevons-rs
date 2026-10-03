@@ -69,21 +69,51 @@ pub enum Answer {
         /// The probability of yes.
         noul: f64,
     },
+    /// A provider may leave out the probabilities and the confidence.
     Choice {
         choice: String,
+        #[serde(default)]
         probabilities: BTreeMap<String, f64>,
-        confidence: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        confidence: Option<f64>,
     },
     Score {
         score: f64,
+        #[serde(default)]
         legend: BTreeMap<String, String>,
+        #[serde(default)]
         probabilities: BTreeMap<String, f64>,
-        confidence: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        confidence: Option<f64>,
     },
+}
+
+/// The probability of the label a choice answered with: its own among `probabilities`, else
+/// the answer's confidence. An answer that gives neither is taken as given.
+pub fn probability_of(
+    probabilities: &BTreeMap<String, f64>,
+    choice: &str,
+    confidence: Option<f64>,
+) -> f64 {
+    probabilities
+        .get(choice)
+        .copied()
+        .or(confidence)
+        .unwrap_or(1.0)
 }
 
 impl Client {
     pub async fn decide(&self, request: &DecisionRequest) -> Result<DecisionResponse, ClientError> {
+        let body = serde_json::to_value(request)
+            .map_err(|e| ClientError::Protocol(format!("System One request: {e}")))?;
+        self.decide_body(&body).await
+    }
+
+    /// A System One request with the body as given: a route sends what its provider takes.
+    pub(super) async fn decide_body(
+        &self,
+        request: &serde_json::Value,
+    ) -> Result<DecisionResponse, ClientError> {
         let call = super::log::Call::start("POST /v1/systemone", request);
         let body = async {
             let response = self

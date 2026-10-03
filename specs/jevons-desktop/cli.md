@@ -41,8 +41,9 @@ Tests: none yet
 
 ### R5 Headless takes run as the app does, without acting
 
-`--replay` and `--transcript` use the settings' runtime (embedded or remote) and flow tree, and
-wait for the runtime to be ready; without one they fail with its status. The context is the
+`--replay` and `--transcript` use the settings' providers, routes and flow tree, and wait for the
+runtime to be ready; with nothing served they fail with its status, and a provider that failed
+is a note while the others serve the take. The context is the
 snapshot in `--context <json>`, or empty. `--flow <branch>` starts the take at that branch. `--tree
 <json>` answers extracts and investigations from a recorded interface instead of the live one.
 The tools run as a dry run with no one to confirm them: MCP servers are started and listed, and

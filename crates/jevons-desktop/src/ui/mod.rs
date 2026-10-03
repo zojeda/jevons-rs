@@ -1444,7 +1444,7 @@ mod tests {
         // model is asked.
         let machines = Arc::new(Machines::new());
         let env = Env {
-            client: jevons_desktop_core::client::Client::new("http://127.0.0.1:9", None),
+            routes: jevons_desktop_core::client::Routes::default(),
             flows: tree.clone(),
             settings: Settings::default(),
             sink: None,

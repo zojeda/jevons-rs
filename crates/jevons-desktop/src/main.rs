@@ -623,12 +623,18 @@ fn replay(
         let _ = ready.send(());
     });
     runtime.apply(&config, &config_file);
-    let connection = loop {
+    let routes = loop {
         changed.recv()?;
         match runtime.status() {
             runtime::Status::Loading => continue,
-            status => match runtime.connection() {
-                Some(connection) => break connection,
+            status => match runtime.routes() {
+                Some(routes) => {
+                    // A provider that does not answer leaves its capabilities out.
+                    if matches!(status, runtime::Status::Failed(_)) {
+                        eprintln!("note: {}", status.describe());
+                    }
+                    break routes;
+                }
                 None => return Err(status.describe().into()),
             },
         }
@@ -667,10 +673,10 @@ fn replay(
         )?),
         None => platform::context_inspector(),
     };
-    let investigator = connection.models.generative.clone().map(|model| {
+    let investigator = routes.generation.as_ref().map(|route| {
         Arc::new(jevons_desktop_core::flow::investigator::Investigator::new(
-            connection.client.clone(),
-            model,
+            route.client.clone(),
+            route.model.clone(),
             inspector.clone(),
             config.privacy.clone(),
             Arc::default(),
@@ -682,11 +688,9 @@ fn replay(
     ));
     let dictation = &config.dictation;
     let env = Env {
-        client: connection.client,
+        routes,
         flows: Arc::new(flows),
         settings: pipeline::Settings {
-            models: connection.models,
-            realtime: connection.realtime,
             language: dictation.language.clone(),
             decide: dictation.decide,
             max_output_tokens: dictation.max_output_tokens,

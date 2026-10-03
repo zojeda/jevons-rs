@@ -34,7 +34,9 @@ Tests: `a_missing_file_gives_defaults_and_unknown_fields_are_errors`, `the_examp
 
 | Section | Fields and defaults |
 | --- | --- |
-| `[server]` | `mode` (`embedded` or `remote`, `embedded`), `expose` (false), `bind` (`127.0.0.1`), `port` (8080), `api_key` (none), `remote_url` (`http://127.0.0.1:8080`), `remote_key` (none) |
+| `[server]` | `expose` (false), `bind` (`127.0.0.1`), `port` (8080), `api_key` (none) |
+| `[providers.<name>]` | `kind` (`embedded`, `jevons`, `openrouter` or `openai-compatible`), `url` (the kind's), `key` (the kind's environment variable), `extensions`, `max_questions` and `min_probability` (the kind's profile) |
+| `[routes]` | `speech`, `realtime`, `decision` and `generation`, each a `provider` and an optional `model` (all `embedded`) |
 | `[models]` | `folder`, `runtime_config`, `generative`, `decision` and `speech` (each a `path`, an optional `mmproj` and the `catalog` entry it came from), `realtime` (true) |
 | `[dictation]` | `hotkey` (`Ctrl+Alt+Space`), `hotkey_mode` (`hold`), `live_hotkey` (`F9`), `live_hotkey_mode` (`hold`), `live_feedback` (true), `inspector_hotkey` (none), `branch_hotkeys` (none), `microphone` (the default device), `language` (detected), `decide` (true), `max_output_tokens` (1024) |
 | `[privacy]` | `max_context_chars` (2000), `read_clipboard` (false), `read_other_windows` (false), `readable_apps` (none), `log_api` (false) |
@@ -166,3 +168,45 @@ Each clear reports its kind and what it did: `<kind>: <n> removed`, then `, <m> 
 clear` when there was nothing of jevons' there.
 
 Tests: `clearing_the_logs_empties_the_open_one_and_leaves_other_files`, `clearing_recordings_removes_only_recording_folders`
+
+### R19 Providers say where inference may come from
+
+`[providers.<name>]` names a provider and its `kind`. `embedded`, the models the app loads, is
+always there without being written.
+
+| Kind | Address when `url` is left out | Key when `key` is left out |
+| --- | --- | --- |
+| `embedded` | the app's own | the app's own |
+| `jevons` | `http://127.0.0.1:8080` | `TYPESAFE_API_KEY` |
+| `openrouter` | `https://openrouter.ai/api` | `OPENROUTER_API_KEY` |
+| `openai-compatible` | none: `url` is required | none |
+
+`url` is the server root, without `/v1`; a trailing `/` is dropped. In `key`, `${env:NAME}` is that
+environment variable, so the key stays out of the file; an empty key counts as none.
+
+Tests: `each_capability_goes_to_the_provider_its_route_names`, `a_provider_s_key_comes_from_the_file_or_the_environment`
+
+### R20 Each capability goes to the provider its route names
+
+`[routes]` sends `speech`, `realtime`, `decision` and `generation` each to a provider, with the
+model to ask it for. A route left out goes to `embedded`. `realtime` left out follows `speech` when
+that is on an embedded or jevons provider, and is off otherwise. An embedded or jevons provider
+names its own model when the route has none. Settings that set neither providers nor routes write
+neither when saved.
+
+Tests: `routes_left_out_go_to_the_embedded_provider`, `each_capability_goes_to_the_provider_its_route_names`
+
+### R21 Providers and routes that cannot work are errors
+
+The settings are refused, with what is wrong, when:
+
+- a route names a provider `[providers]` does not have;
+- a provider other than the embedded one has no address;
+- a route has no `model` and its provider does not name its own;
+- `max_questions` is 0, or `min_probability` is not from 0 to 1;
+- one model name is asked of two providers (other clients' requests are forwarded by model
+  name).
+
+The `mode`, `remote_url` and `remote_key` of earlier settings files are unknown fields.
+
+Tests: `providers_and_routes_that_cannot_work_are_errors`

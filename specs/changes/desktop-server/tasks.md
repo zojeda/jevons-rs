@@ -264,26 +264,28 @@ Before installing it: the single runtime mode goes away, and the settings file r
 fields, so an existing `jevons-desktop.toml` stops loading. The user's needs moving by hand, as
 their flows folder did; keep `[providers]` and `[routes]` a short diff from `[server]`.
 
-- [ ] Settings:
+- [x] Settings:
       - `[providers.<name>]`: the kind (embedded, jevons, openrouter, openai-compatible), base
         URL and key (`${env:NAME}`);
       - `[routes]`: speech, realtime, decision and generation, each a provider and a model.
-      The single runtime mode (embedded or remote) goes away.
-- [ ] A client per route in place of one `Client`. Realtime falls back to uploads per route, as
-      now.
-- [ ] Provider profiles:
-      - extensions supported (`steps`, `samples`, `think`, `sequential`, images);
+      The single runtime mode (embedded or remote) goes away. `embedded` is always there, and a
+      route left out goes to it, so settings that set neither behave as before.
+- [x] A client per route in place of one `Client`. Realtime falls back to uploads per route, as
+      now. Only the models of the capabilities routed to `embedded` are loaded.
+- [x] Provider profiles:
+      - extensions supported (`steps`, `samples`, `think`);
       - the most questions per request;
-      - label rules;
+      - label rules: whether noul criteria need both `true` and `false`;
       - the decision model's `min_probability`.
 
-      Built-in profiles for the embedded engine, remote jevons, and OpenRouter's Jev
-      (`typesafe/jev-latest`).
-- [ ] With an external System One:
+      Built-in profiles for the embedded engine and remote jevons (ours) and for OpenRouter's Jev
+      and other servers (TypeSafe's contract alone). A provider's settings replace parts of its
+      kind's.
+- [x] With an external System One:
       - drop unsupported extensions and add a trace note ("steps dropped: … does not support
         it");
       - split requests that ask more questions than the provider takes, noting the extra calls.
-- [ ] Let the decision model's profile set `min_probability`. Remove `min_probability = 0.7` from
+- [x] Let the decision model's profile set `min_probability`. Remove `min_probability = 0.7` from
       the built-in root; a node or machine that sets it still overrides the profile.
 - [ ] Forward `/v1/*`: a pass-through by model name, with the provider's key added and `log_api`
       applied. It listens where the exposed API listens now.
@@ -296,6 +298,25 @@ Tested by:
 
 Done when: dictation runs with decisions on Jev and generation elsewhere, and its traces say what
 was dropped.
+
+What phase 3 decided on the way:
+
+- **What is known of Jev comes from OpenRouter's reference, not from a run.** Its schema requires
+  `instructions` on every question (the desktop always sends them) and both keys of a noul's
+  criteria (the profile fills the missing one with `null`), and makes a choice's probabilities
+  and confidence optional (the client takes either, or the answer as given). It states no limit
+  on questions, labels or state size, and nothing about calibration: 8 questions a request and
+  0.7 are cautious defaults a provider's settings replace, and the manual run is what settles
+  them.
+- **`sequential` and images are not in the profile:** the desktop never sends either to System
+  One, so there is nothing to drop.
+- **The profile sets the floor for machines only.** A decision node (`decide.toml`) without
+  `min_probability` still takes the model's choice at any probability, as before: its floor is
+  what starts `enrich` and the fallback, a different contract from a machine's "unsure".
+- **Split requests go one after the other,** so a split take is slower by a request each; they
+  are rare at 8 a request (a take asks 2 to 6).
+- **A provider that fails leaves the others running:** the status says what failed, and the
+  capabilities on providers that answer are served.
 
 ## Phase 4: split desktop-core into server and client
 

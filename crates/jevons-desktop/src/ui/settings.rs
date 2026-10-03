@@ -5,7 +5,9 @@ use super::components::{Choice, CopyButton, HotkeyField, Select, Switch, badge};
 use crate::agent::Command;
 use crate::runtime::Status;
 use dioxus::prelude::*;
-use jevons_desktop_core::config::{DesktopConfig, HotkeyMode, Mode};
+use jevons_desktop_core::config::{
+    Capability, DesktopConfig, EMBEDDED, HotkeyMode, Provider, ProviderKind, RouteTo,
+};
 use std::collections::BTreeMap;
 
 /// The hotkey mode a switch sets: on holds the hotkey while speaking.
@@ -23,6 +25,83 @@ fn mode_label(mode: HotkeyMode) -> String {
         HotkeyMode::Toggle => "Press to start, press again to finish",
     }
     .into()
+}
+
+fn route_label(capability: Capability) -> &'static str {
+    match capability {
+        Capability::Speech => "Speech",
+        Capability::Realtime => "Live speech",
+        Capability::Decision => "Decisions",
+        Capability::Generation => "Generation",
+    }
+}
+
+fn kind_label(kind: ProviderKind) -> &'static str {
+    match kind {
+        ProviderKind::Embedded => "The models in this app",
+        ProviderKind::Jevons => "A jevons server",
+        ProviderKind::Openrouter => "OpenRouter",
+        ProviderKind::OpenaiCompatible => "OpenAI-compatible",
+    }
+}
+
+/// Sends `capability` to `provider`, with the provider's own model: a model's name belongs to
+/// the provider it was asked of. `None` is the route left out (Realtime follows speech).
+fn route_to(config: &mut DesktopConfig, capability: Capability, provider: Option<String>) {
+    let route = provider.map(|provider| RouteTo {
+        provider,
+        model: None,
+    });
+    set_route(config, capability, route);
+}
+
+/// Names the model `capability` asks its provider for; empty is the provider's own.
+fn route_model(config: &mut DesktopConfig, capability: Capability, model: &str) {
+    let Some(mut route) = config.route(capability) else {
+        return;
+    };
+    route.model = Some(model.trim().to_string()).filter(|m| !m.is_empty());
+    set_route(config, capability, Some(route));
+}
+
+/// Sets a route, leaving it out of the file when it is what a route left out means.
+fn set_route(config: &mut DesktopConfig, capability: Capability, route: Option<RouteTo>) {
+    config.routes.set(capability, None);
+    if route != config.route(capability) {
+        config.routes.set(capability, route);
+    }
+}
+
+/// Adds a provider of `kind` under a name not taken yet.
+fn add_provider(config: &mut DesktopConfig, kind: ProviderKind) {
+    let base = match kind {
+        ProviderKind::Embedded => EMBEDDED,
+        ProviderKind::Jevons => "jevons",
+        ProviderKind::Openrouter => "openrouter",
+        ProviderKind::OpenaiCompatible => "openai",
+    };
+    let name = (1..)
+        .map(|n| match n {
+            1 => base.to_string(),
+            n => format!("{base}-{n}"),
+        })
+        .find(|name| !config.providers.contains_key(name))
+        .expect("a name is free");
+    config.providers.insert(name, Provider::of(kind));
+}
+
+/// Removes a provider; the capabilities routed to it go back to the default.
+fn remove_provider(config: &mut DesktopConfig, name: &str) {
+    config.providers.remove(name);
+    for capability in Capability::ALL {
+        if config
+            .routes
+            .get(capability)
+            .is_some_and(|route| route.provider == name)
+        {
+            config.routes.set(capability, None);
+        }
+    }
 }
 
 /// A setting typed as text, kept as typed and checked when saved: a number field rewritten on
@@ -142,6 +221,7 @@ impl SettingsDraft {
                 }
             }
         }
+        config.check_routes()?;
         Ok(config)
     }
 
@@ -236,6 +316,7 @@ pub fn SettingsPage(rev: u64) -> Element {
     let view = ctx.view.lock().expect("the view lock");
     let config_file = view.config_file.display().to_string();
     let status = view.runtime.clone();
+    let served = view.served.clone();
     let devices = view.devices.clone();
     let entries = view.flows.entries();
     let automations = view.automations.clone();
@@ -246,6 +327,24 @@ pub fn SettingsPage(rev: u64) -> Element {
     let (bind, port) = (draft.typed(Field::Bind), draft.typed(Field::Port));
     let (tokens, chars) = (draft.typed(Field::Tokens), draft.typed(Field::Chars));
     let open_api = d.server.expose && d.exposed_key().is_none();
+    let providers: Vec<(String, Provider)> = d
+        .providers
+        .iter()
+        .map(|(name, provider)| (name.clone(), provider.clone()))
+        .collect();
+    let mut provider_choices = vec![Choice {
+        value: Some(EMBEDDED.into()),
+        label: "embedded (this app)".into(),
+    }];
+    provider_choices.extend(
+        d.providers
+            .keys()
+            .filter(|n| *n != EMBEDDED)
+            .map(|name| Choice {
+                value: Some(name.clone()),
+                label: name.clone(),
+            }),
+    );
     let mut microphones = vec![Choice {
         value: None,
         label: "Default microphone".into(),
@@ -279,52 +378,119 @@ pub fn SettingsPage(rev: u64) -> Element {
                 }
             }
             div { class: "dx-card-content",
-                div { class: "dx-tabs-list",
-                    button { class: "dx-tabs-trigger",
-                        "data-state": if d.server.mode == Mode::Embedded { "active" } else { "inactive" },
-                        onclick: move |_| draft.edit(|c| c.server.mode = Mode::Embedded),
-                        "Run the models in this app" }
-                    button { class: "dx-tabs-trigger",
-                        "data-state": if d.server.mode == Mode::Remote { "active" } else { "inactive" },
-                        onclick: move |_| draft.edit(|c| c.server.mode = Mode::Remote),
-                        "Use a jevons server" }
+                div { class: "field",
+                    span { class: "field-label", "Expose the API" }
+                    Switch { checked: d.server.expose, label: "Serve other clients (OpenAI SDK, scripts)".to_string(),
+                        onchange: move |on| draft.edit(|c| c.server.expose = on) }
                 }
-                if d.server.mode == Mode::Embedded {
+                if d.server.expose {
                     div { class: "field",
-                        span { class: "field-label", "Expose the API" }
-                        Switch { checked: d.server.expose, label: "Serve other clients (OpenAI SDK, scripts)".to_string(),
-                            onchange: move |on| draft.edit(|c| c.server.expose = on) }
-                    }
-                    if d.server.expose {
-                        div { class: "field",
-                            span { class: "field-label", "Address and port" }
-                            div { class: "row",
-                                input { class: "dx-input mono", value: "{bind}", oninput: move |e| draft.set_typed(Field::Bind, e.value()) }
-                                input { class: "dx-input narrow mono", value: "{port}",
-                                    oninput: move |e| draft.set_typed(Field::Port, e.value()) }
-                            }
+                        span { class: "field-label", "Address and port" }
+                        div { class: "row",
+                            input { class: "dx-input mono", value: "{bind}", oninput: move |e| draft.set_typed(Field::Bind, e.value()) }
+                            input { class: "dx-input narrow mono", value: "{port}",
+                                oninput: move |e| draft.set_typed(Field::Port, e.value()) }
                         }
-                        div { class: "field",
-                            span { class: "field-label", "API key" }
-                            input { class: "dx-input mono", placeholder: "or set TYPESAFE_API_KEY",
-                                value: "{d.server.api_key.clone().unwrap_or_default()}",
-                                oninput: move |e| draft.edit(|c| c.server.api_key = Some(e.value()).filter(|k| !k.is_empty())) }
-                        }
-                        if open_api {
-                            p { class: "warn", "Without a key, anyone who can reach the port can use the API." }
-                        }
-                    }
-                } else {
-                    div { class: "field",
-                        span { class: "field-label", "Server URL" }
-                        input { class: "dx-input mono", value: "{d.server.remote_url}",
-                            oninput: move |e| draft.edit(|c| c.server.remote_url = e.value()) }
                     }
                     div { class: "field",
                         span { class: "field-label", "API key" }
-                        input { class: "dx-input mono", value: "{d.server.remote_key.clone().unwrap_or_default()}",
-                            oninput: move |e| draft.edit(|c| c.server.remote_key = Some(e.value()).filter(|k| !k.is_empty())) }
+                        input { class: "dx-input mono", placeholder: "or set TYPESAFE_API_KEY",
+                            value: "{d.server.api_key.clone().unwrap_or_default()}",
+                            oninput: move |e| draft.edit(|c| c.server.api_key = Some(e.value()).filter(|k| !k.is_empty())) }
                     }
+                    if open_api {
+                        p { class: "warn", "Without a key, anyone who can reach the port can use the API." }
+                    }
+                }
+            }
+        }
+
+        div { class: "dx-card",
+            div { class: "dx-card-header",
+                div {
+                    div { class: "dx-card-title", "Providers and routes" }
+                    div { class: "dx-card-description",
+                        "Each capability goes to a provider: the models in this app, a jevons server, OpenRouter or another server with OpenAI's API"
+                    }
+                }
+            }
+            div { class: "dx-card-content",
+                {Capability::ALL.into_iter().map(|capability| {
+                    let route = d.route(capability);
+                    // Realtime left out follows speech, which the select says as such.
+                    let provider = match capability {
+                        Capability::Realtime => d.routes.realtime.as_ref().map(|r| r.provider.clone()),
+                        _ => route.as_ref().map(|r| r.provider.clone()),
+                    };
+                    let model = route.as_ref().and_then(|r| r.model.clone()).unwrap_or_default();
+                    let now = served.get(capability.key()).cloned().unwrap_or_else(|| "not served".into());
+                    let mut choices = provider_choices.clone();
+                    if capability == Capability::Realtime {
+                        choices.insert(0, Choice { value: None, label: "follow speech".into() });
+                    }
+                    rsx! {
+                        div { class: "field", key: "{capability.key()}",
+                            div { class: "stack",
+                                span { class: "field-label", "{route_label(capability)}" }
+                                span { class: "field-hint mono", "{now}" }
+                            }
+                            div { class: "row",
+                                Select { value: provider, choices,
+                                    onchange: move |to| draft.edit(|c| route_to(c, capability, to)) }
+                                input { class: "dx-input mono", placeholder: "the provider's own model",
+                                    value: "{model}",
+                                    oninput: move |e| draft.edit(|c| route_model(c, capability, &e.value())) }
+                            }
+                        }
+                    }
+                })}
+                {providers.into_iter().map(|(name, provider)| {
+                    let (for_url, for_key, gone) = (name.clone(), name.clone(), name.clone());
+                    let url_hint = provider.kind.default_url().unwrap_or("https://host (the root, without /v1)");
+                    let key_hint = provider.kind.default_key().map_or_else(
+                        || "${env:NAME}".to_string(),
+                        |name| format!("${{env:{name}}}"),
+                    );
+                    rsx! {
+                        div { class: "field", key: "{name}",
+                            div { class: "stack",
+                                span { class: "field-label mono", "{name}" }
+                                span { class: "field-hint", "{kind_label(provider.kind)}" }
+                            }
+                            div { class: "row",
+                                input { class: "dx-input mono", placeholder: "{url_hint}",
+                                    value: "{provider.url.clone().unwrap_or_default()}",
+                                    oninput: move |e| draft.edit(|c| if let Some(p) = c.providers.get_mut(&for_url) {
+                                        p.url = Some(e.value().trim().to_string()).filter(|u| !u.is_empty());
+                                    }) }
+                                input { class: "dx-input mono", placeholder: "{key_hint}",
+                                    value: "{provider.key.clone().unwrap_or_default()}",
+                                    oninput: move |e| draft.edit(|c| if let Some(p) = c.providers.get_mut(&for_key) {
+                                        p.key = Some(e.value().trim().to_string()).filter(|k| !k.is_empty());
+                                    }) }
+                                button { class: "dx-button", "data-style": "outline", "data-size": "sm",
+                                    onclick: move |_| draft.edit(|c| remove_provider(c, &gone)),
+                                    "Remove" }
+                            }
+                        }
+                    }
+                })}
+                div { class: "field",
+                    span { class: "field-label", "Add a provider" }
+                    div { class: "row",
+                        button { class: "dx-button", "data-style": "outline", "data-size": "sm",
+                            onclick: move |_| draft.edit(|c| add_provider(c, ProviderKind::Jevons)),
+                            "A jevons server" }
+                        button { class: "dx-button", "data-style": "outline", "data-size": "sm",
+                            onclick: move |_| draft.edit(|c| add_provider(c, ProviderKind::Openrouter)),
+                            "OpenRouter" }
+                        button { class: "dx-button", "data-style": "outline", "data-size": "sm",
+                            onclick: move |_| draft.edit(|c| add_provider(c, ProviderKind::OpenaiCompatible)),
+                            "An OpenAI-compatible server" }
+                    }
+                }
+                p { class: "muted",
+                    "A key written as ${{env:NAME}} is read from the environment. What a provider's decision model takes (extensions, max_questions, min_probability) is set in the settings file."
                 }
             }
         }
@@ -507,6 +673,47 @@ pub fn SettingsPage(rev: u64) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn routes_edited_in_the_panel_leave_what_is_default_out_of_the_file() {
+        let mut config = DesktopConfig::default();
+        add_provider(&mut config, ProviderKind::Openrouter);
+        add_provider(&mut config, ProviderKind::Openrouter);
+        add_provider(&mut config, ProviderKind::Jevons);
+        let names: Vec<&String> = config.providers.keys().collect();
+        assert_eq!(names, ["jevons", "openrouter", "openrouter-2"]);
+        // Decisions go to OpenRouter, which needs a model named.
+        route_to(&mut config, Capability::Decision, Some("openrouter".into()));
+        assert!(config.check_routes().is_err());
+        route_model(&mut config, Capability::Decision, " typesafe/jev-1.13 ");
+        assert_eq!(config.check_routes(), Ok(()));
+        let decision = config.routes.decision.clone().unwrap();
+        assert_eq!(decision.model.as_deref(), Some("typesafe/jev-1.13"));
+        // Another provider is asked for its own model, not the last one's.
+        route_to(&mut config, Capability::Decision, Some("jevons".into()));
+        assert_eq!(config.routes.decision.clone().unwrap().model, None);
+        // Back on the app's models, the route is left out; so is Realtime following speech.
+        route_to(&mut config, Capability::Decision, Some(EMBEDDED.into()));
+        route_to(&mut config, Capability::Realtime, None);
+        assert_eq!(config.routes, Default::default());
+        // A model named for the embedded provider is a route of its own.
+        route_model(&mut config, Capability::Generation, "gemma");
+        assert_eq!(
+            config.routes.generation,
+            Some(RouteTo {
+                provider: EMBEDDED.into(),
+                model: Some("gemma".into())
+            })
+        );
+        route_model(&mut config, Capability::Generation, "");
+        assert_eq!(config.routes.generation, None);
+        // Removing a provider sends what it served back to the default.
+        route_to(&mut config, Capability::Speech, Some("jevons".into()));
+        remove_provider(&mut config, "jevons");
+        assert_eq!(config.routes.speech, None);
+        assert!(!config.providers.contains_key("jevons"));
+        assert_eq!(config.check_routes(), Ok(()));
+    }
 
     #[test]
     fn saving_applies_only_the_edits_onto_settings_changed_meanwhile() {

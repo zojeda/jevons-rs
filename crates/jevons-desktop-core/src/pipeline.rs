@@ -4,7 +4,7 @@
 //! Every step is recorded in a [`Trace`] for the inspector.
 
 use crate::client::{
-    Client, ClientError, DecisionRequest, DecisionResponse, RealtimeEvent, ResponseRequest, Turns,
+    ClientError, DecisionRequest, DecisionResponse, RealtimeEvent, ResponseRequest, Routes, Turns,
 };
 use crate::context::ContextSnapshot;
 use crate::delivery::{Decision, Pending};
@@ -115,19 +115,8 @@ const LIVE_DRAIN: Duration = Duration::from_secs(5);
 /// How long to wait for the final transcript after the take ends.
 const TRANSCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The model ids to request; each is `None` when that service is not available.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-pub struct ServiceModels {
-    pub speech: Option<String>,
-    pub decision: Option<String>,
-    pub generative: Option<String>,
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
-    pub models: ServiceModels,
-    /// Try Realtime first; uploads are the fallback.
-    pub realtime: bool,
     pub language: Option<String>,
     /// Ask the decision model at model decisions; when off, they take their fallback.
     pub decide: bool,
@@ -142,8 +131,6 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            models: ServiceModels::default(),
-            realtime: true,
             language: None,
             decide: true,
             max_output_tokens: 1024,
@@ -155,7 +142,9 @@ impl Default for Settings {
 
 /// What the pipeline needs from the app.
 pub struct Env {
-    pub client: Client,
+    /// Each capability's provider and model: speech (Realtime first, uploads as the
+    /// fallback), decisions and generation.
+    pub routes: Routes,
     /// The flow tree takes walk (the last one that loaded without errors).
     pub flows: Arc<FlowTree>,
     pub settings: Settings,
@@ -523,12 +512,15 @@ async fn transcribe(
     trace: &mut Trace,
 ) -> Result<String, ClientError> {
     let settings = &env.settings;
-    let model = settings.models.speech.as_deref();
     let mut session = None;
-    if settings.realtime {
-        match env
+    if let Some(route) = &env.routes.realtime {
+        match route
             .client
-            .realtime(model, settings.language.as_deref(), Turns::Client)
+            .realtime(
+                Some(&route.model),
+                settings.language.as_deref(),
+                Turns::Client,
+            )
             .await
         {
             Ok(opened) => session = Some(opened),
@@ -625,11 +617,20 @@ async fn transcribe(
                 .push("Uploading after the streamed transcript timed out".into()),
         }
     }
-    let model = model.ok_or(ClientError::NotServed("Speech to text"))?;
+    let route = env
+        .routes
+        .speech
+        .as_ref()
+        .ok_or(ClientError::NotServed("Speech to text"))?;
     trace.transcription = Some(TranscriptionPath::Upload);
-    let transcription = env
+    let transcription = route
         .client
-        .transcribe(&buffer, SAMPLE_RATE, model, settings.language.as_deref())
+        .transcribe(
+            &buffer,
+            SAMPLE_RATE,
+            &route.model,
+            settings.language.as_deref(),
+        )
         .await?;
     Ok(transcription.text)
 }
@@ -668,15 +669,20 @@ pub async fn run_live(
     let take = start.id;
     tracing::info!(take, app = %start.context.app.process_name, "Live dictation started");
     let settings = &env.settings;
-    let (mut writer, mut reader) = match env
-        .client
-        .realtime(
-            settings.models.speech.as_deref(),
-            settings.language.as_deref(),
-            Turns::Client,
-        )
-        .await
-    {
+    let session = match &env.routes.realtime {
+        Some(route) => {
+            route
+                .client
+                .realtime(
+                    Some(&route.model),
+                    settings.language.as_deref(),
+                    Turns::Client,
+                )
+                .await
+        }
+        None => Err(ClientError::NotServed("Realtime transcription")),
+    };
+    let (mut writer, mut reader) = match session {
         Ok(session) => session,
         Err(e) => {
             trace.error = Some(format!("Live dictation needs Realtime transcription: {e}"));
@@ -893,6 +899,7 @@ pub async fn deliver_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::{Client, Profile, Route};
     use crate::context::{AppInfo, Element, WindowInfo};
     use crate::fake::RecordingSink;
     use crate::flow::{Catalog, Memory};
@@ -1025,14 +1032,14 @@ mod tests {
         (Client::new(&base, None), seen)
     }
 
-    fn settings() -> Settings {
-        Settings {
-            models: ServiceModels {
-                speech: Some("parakeet".into()),
-                decision: Some("jev".into()),
-                generative: Some("jev".into()),
-            },
-            ..Settings::default()
+    /// Every capability on one server of ours.
+    fn routes(client: Client) -> Routes {
+        let route = |model: &str| Some(Route::ours(client.clone(), "embedded", model));
+        Routes {
+            speech: route("parakeet"),
+            realtime: route("parakeet"),
+            decision: route("jev"),
+            generation: route("jev"),
         }
     }
 
@@ -1044,9 +1051,9 @@ mod tests {
 
     fn env(client: Client, sink: Option<&RecordingSink>) -> Env {
         Env {
-            client,
+            routes: routes(client),
             flows: builtin(),
-            settings: settings(),
+            settings: Settings::default(),
             sink: sink.map(RecordingSink::shared),
             investigator: None,
             reader: None,
@@ -1113,6 +1120,194 @@ mod tests {
         assert_eq!(*seen.uploads.lock().unwrap(), 1);
         assert!(trace.notes[0].contains("Realtime"), "{:?}", trace.notes);
         assert_eq!(trace.transcript, "hello world");
+    }
+
+    /// A route to a System One that is not ours, as Jev on OpenRouter is.
+    fn external(client: Client) -> Route {
+        Route {
+            client,
+            model: "typesafe/jev-1.13".into(),
+            provider: "openrouter".into(),
+            profile: Profile::external(),
+        }
+    }
+
+    #[tokio::test]
+    async fn each_capability_goes_to_its_own_provider() {
+        // Speech on one provider, decisions on one that is not ours, generation on a third.
+        let (speech, heard) = server(prefer(&[]), "unused").await;
+        let (decision, decided) = server(prefer(&["dictation", "rewrite"]), "unused").await;
+        let (generation, written) = server(prefer(&[]), "Dear team, hello world.").await;
+        let sink = RecordingSink::new(Some(7));
+        let env = Env {
+            routes: Routes {
+                speech: Some(Route::ours(speech, "box", "parakeet")),
+                realtime: None,
+                decision: Some(external(decision)),
+                generation: Some(Route::ours(generation, "embedded", "gemma")),
+            },
+            ..env(Client::new("http://127.0.0.1:9", None), Some(&sink))
+        };
+        let trace = take(&env, Some("hi all")).await;
+        assert_eq!(trace.error, None, "{:?}", trace.notes);
+        assert_eq!(trace.output, "Dear team, hello world.");
+        // Each provider got its own capability, asked for its own model, and nothing else.
+        let count = |seen: &Seen| {
+            (
+                *seen.uploads.lock().unwrap(),
+                seen.decisions.lock().unwrap().len(),
+                seen.generations.lock().unwrap().len(),
+            )
+        };
+        assert_eq!(count(&heard), (1, 0, 0));
+        assert_eq!(count(&decided), (0, 1, 0));
+        assert_eq!(count(&written), (0, 0, 1));
+        assert_eq!(
+            decided.decisions.lock().unwrap()[0]["model"],
+            "typesafe/jev-1.13"
+        );
+        assert_eq!(written.generations.lock().unwrap()[0]["model"], "gemma");
+        // With no Realtime route the take uploads, without trying to stream first.
+        assert_eq!(trace.transcription, Some(TranscriptionPath::Upload));
+        assert_eq!(trace.notes, Vec::<String>::new());
+    }
+
+    /// A root that chooses between two agents by the model, with our System One extensions set.
+    const TWO_AGENTS: &[(&str, &str)] = &[
+        ("root.toml", "steps = 4\nsamples = 2"),
+        (
+            "root.fsm",
+            "fsm App {\n[*] --> idle\nidle --> typing : said [else]\nidle --> asking : said\ntyping --> idle\nasking --> idle\n}",
+        ),
+        ("typing/agent.toml", "description = \"Dictation\""),
+        (
+            "typing/agent.fsm",
+            "fsm Typing {\n[*] --> idle\nidle --> type : said\ntype --> idle\n}",
+        ),
+        ("typing/type/transcript.toml", ""),
+        (
+            "asking/agent.toml",
+            "description = \"A question for the assistant\"",
+        ),
+        (
+            "asking/agent.fsm",
+            "fsm Asking {\n[*] --> idle\nidle --> answer : said\nanswer --> idle\n}",
+        ),
+        ("asking/answer/transcript.toml", "output = \"bubble\""),
+    ];
+
+    #[tokio::test]
+    async fn a_provider_without_our_extensions_gets_none_and_the_trace_says_so() {
+        let (client, seen) = server(prefer(&["asking"]), "unused").await;
+        let elsewhere = Env {
+            routes: Routes {
+                decision: Some(external(client.clone())),
+                ..routes(client.clone())
+            },
+            flows: tree_of(TWO_AGENTS),
+            ..env(client, None)
+        };
+        let trace = say(&elsewhere, 1, "what time is it").await;
+        assert_eq!(trace.error, None, "{:?}", trace.notes);
+        assert_eq!(moves(&trace)[0], "idle said → asking");
+        assert_eq!(
+            trace.notes,
+            [
+                "steps dropped: openrouter/typesafe/jev-1.13 does not support it",
+                "samples dropped: openrouter/typesafe/jev-1.13 does not support it",
+            ]
+        );
+        let sent = seen.decisions.lock().unwrap()[0].clone();
+        assert!(sent.get("steps").is_none() && sent.get("samples").is_none());
+        // The trace keeps the request as it went.
+        let asked = trace.flow.iter().find_map(|s| s.decision.as_ref()).unwrap();
+        assert_eq!((asked.request.steps, asked.request.samples), (None, None));
+        // Our own System One takes them, and nothing is noted.
+        let (client, seen) = server(prefer(&["asking"]), "unused").await;
+        let ours = Env {
+            flows: tree_of(TWO_AGENTS),
+            ..env(client, None)
+        };
+        let trace = say(&ours, 1, "what time is it").await;
+        assert_eq!(trace.notes, Vec::<String>::new());
+        let sent = seen.decisions.lock().unwrap()[0].clone();
+        assert_eq!(
+            (sent["steps"].clone(), sent["samples"].clone()),
+            (json!(4), json!(2))
+        );
+    }
+
+    #[tokio::test]
+    async fn questions_over_the_provider_s_limit_are_asked_in_several_requests() {
+        // The built-in tree asks the root's question and the action's in one request; a
+        // provider that takes one a request gets two, and the take ends the same.
+        let (client, seen) = server(prefer(&["dictation", "verbatim"]), "unused").await;
+        let mut one = external(client.clone());
+        one.profile.max_questions = Some(1);
+        let sink = RecordingSink::new(Some(7));
+        let env = Env {
+            routes: Routes {
+                decision: Some(one),
+                ..routes(client.clone())
+            },
+            ..env(client, Some(&sink))
+        };
+        let trace = say(&env, 1, "hello world").await;
+        assert_eq!(trace.error, None, "{:?}", trace.notes);
+        assert_eq!(
+            trace.route(),
+            "dictation/dictate → dictation/dictate/notes → _actions/verbatim"
+        );
+        assert_eq!(sink.requests()[0].text, "hello world");
+        assert_eq!(
+            trace.notes,
+            ["2 questions asked in 2 requests: openrouter/typesafe/jev-1.13 takes 1 in one"]
+        );
+        let decisions = seen.decisions.lock().unwrap();
+        let asked: Vec<Vec<&String>> = decisions
+            .iter()
+            .map(|d| d["questions"].as_object().unwrap().keys().collect())
+            .collect();
+        assert_eq!(asked, [["q00"], ["q01"]]);
+    }
+
+    #[tokio::test]
+    async fn the_decision_provider_says_how_sure_its_model_must_be() {
+        // The model chooses `asking` at 0.65. Our models are sure from 0.7, so the root takes
+        // its `[else]`.
+        let (client, _) = server(prefer_with(&["asking"], 0.65), "unused").await;
+        let unsure = Env {
+            flows: tree_of(TWO_AGENTS),
+            ..env(client.clone(), None)
+        };
+        let trace = say(&unsure, 1, "what time is it").await;
+        assert_eq!(moves(&trace)[0], "idle said → typing");
+        assert_eq!(trace.machine[0].how, "unsure (asking 0.65): the fallback");
+        // A provider whose model is sure from 0.6 has its choice taken.
+        let mut calibrated = Route::ours(client.clone(), "box", "jev");
+        calibrated.profile.min_probability = 0.6;
+        let routes = Routes {
+            decision: Some(calibrated),
+            ..routes(client.clone())
+        };
+        let sure = Env {
+            routes: routes.clone(),
+            flows: tree_of(TWO_AGENTS),
+            ..env(client.clone(), None)
+        };
+        let trace = say(&sure, 1, "what time is it").await;
+        assert_eq!(moves(&trace)[0], "idle said → asking");
+        assert_eq!(trace.machine[0].how, "model 0.65");
+        // A machine that sets its own is not moved by the provider's.
+        let mut files = TWO_AGENTS.to_vec();
+        files[0] = ("root.toml", "min_probability = 0.9");
+        let own = Env {
+            routes,
+            flows: tree_of(&files),
+            ..env(client, None)
+        };
+        let trace = say(&own, 1, "what time is it").await;
+        assert_eq!(moves(&trace)[0], "idle said → typing");
     }
 
     #[tokio::test]
@@ -2774,7 +2969,10 @@ allow = ["research/search/*"]
         assert_eq!(second.calls[0].confirmed, Some(true));
         // Done: the search ends, and with none waiting the agent is no choice for the root.
         let (client, _) = server(prefer(&["research", "search-1", "end"]), "unused").await;
-        let env = Env { client, ..env };
+        let env = Env {
+            routes: routes(client),
+            ..env
+        };
         let third = say(&env, 4, "thanks, that's all").await;
         assert_eq!(
             inner(&third),
@@ -2782,7 +2980,10 @@ allow = ["research/search/*"]
         );
         assert_eq!(machines.view().path(), "idle");
         let (client, seen) = server(prefer(&["research", "dictation", "verbatim"]), "unused").await;
-        let env = Env { client, ..env };
+        let env = Env {
+            routes: routes(client),
+            ..env
+        };
         let later = say(&env, 5, "open the first one").await;
         assert_eq!(later.machine[0].to, "dictation");
         let asked = serde_json::to_string(&seen.decisions.lock().unwrap()[0]).unwrap();
@@ -3005,7 +3206,7 @@ allow = ["research/search/*"]
         let env = Env {
             settings: Settings {
                 decision_timeout: Duration::from_millis(200),
-                ..settings()
+                ..Settings::default()
             },
             ..env(Client::new(&base, None), Some(&sink))
         };

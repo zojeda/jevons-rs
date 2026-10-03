@@ -8,7 +8,8 @@ use jevons_desktop_core::automation::author::{self, Authored};
 use jevons_desktop_core::automation::check::CheckReport;
 use jevons_desktop_core::automation::host::AutomationHost;
 use jevons_desktop_core::automation::run::RunTrace;
-use jevons_desktop_core::config::{DesktopConfig, HotkeyMode};
+use jevons_desktop_core::client::Routes;
+use jevons_desktop_core::config::{Capability, DesktopConfig, HotkeyMode};
 use jevons_desktop_core::context::ContextSnapshot;
 use jevons_desktop_core::flow::confirm::{ChannelConfirmer, Confirmation};
 use jevons_desktop_core::flow::extract::{self, Reader};
@@ -32,7 +33,7 @@ use jevons_desktop_core::recorded::RecordedTree;
 use jevons_desktop_core::recording::{Session, bundle};
 use jevons_desktop_core::settings;
 use jevons_desktop_core::xpath::selector::Candidate;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -426,6 +427,9 @@ pub struct View {
     pub hotkey_error: Option<String>,
     pub notice: Option<String>,
     pub runtime: Option<Status>,
+    /// What serves each capability now, by its key in `[routes]`, such as
+    /// `openrouter/typesafe/jev-1.13`.
+    pub served: BTreeMap<&'static str, String>,
     pub context_backend: &'static str,
     pub sink_backend: &'static str,
     pub devices: Vec<AudioDevice>,
@@ -1132,7 +1136,11 @@ impl Agent {
                     };
                     self.set_tray(state);
                 }
-                self.view().runtime = Some(status);
+                let served = served(self.runtime.routes().as_ref());
+                let mut view = self.view();
+                view.runtime = Some(status);
+                view.served = served;
+                drop(view);
                 self.repaint();
             }
             Command::TakeFinished(trace) => self.finished(*trace),
@@ -2301,7 +2309,7 @@ impl Agent {
         held: bool,
         flows: Option<Arc<FlowTree>>,
     ) {
-        let Some(connection) = self.runtime.connection() else {
+        let Some(routes) = self.runtime.routes() else {
             let status = self.runtime.status().describe();
             self.notice(&format!("Dictation is unavailable: {status}"));
             self.set_tray(TrayState::Error);
@@ -2324,7 +2332,7 @@ impl Agent {
             }
         };
         let (finish, finished) = oneshot::channel();
-        let env = self.take_env(connection, flows);
+        let env = self.take_env(routes, flows);
         let start = TakeStart {
             id,
             context: context.clone(),
@@ -2481,12 +2489,12 @@ impl Agent {
         if !self.machines.view().waits_for(&due) {
             return;
         }
-        let Some(connection) = self.runtime.connection() else {
+        let Some(routes) = self.runtime.routes() else {
             return;
         };
         let id = self.next_take;
         self.next_take += 1;
-        let env = self.take_env(connection, None);
+        let env = self.take_env(routes, None);
         let updates = self.watch_updates(id);
         if self.active.is_none() {
             // The timer of the task the conversation is of joins it.
@@ -2522,11 +2530,7 @@ impl Agent {
     }
 
     /// What a take (or a machine's timer) runs with.
-    fn take_env(
-        &self,
-        connection: crate::runtime::Connection,
-        flows: Option<Arc<FlowTree>>,
-    ) -> Env {
+    fn take_env(&self, routes: Routes, flows: Option<Arc<FlowTree>>) -> Env {
         let dictation = &self.config.dictation;
         let (confirm, mut asked) = mpsc::unbounded_channel::<Confirmation>();
         let forward = self.commands.clone();
@@ -2535,21 +2539,19 @@ impl Agent {
                 let _ = forward.send(Command::ConfirmRequested(confirmation));
             }
         });
-        let investigator = connection.models.generative.clone().map(|model| {
+        let investigator = routes.generation.as_ref().map(|route| {
             Arc::new(Investigator::new(
-                connection.client.clone(),
-                model,
+                route.client.clone(),
+                route.model.clone(),
                 self.inspector.clone(),
                 self.config.privacy.clone(),
                 self.paths.clone(),
             )) as Arc<dyn Investigate>
         });
         Env {
-            client: connection.client,
+            routes,
             flows: flows.unwrap_or_else(|| self.flows.clone()),
             settings: pipeline::Settings {
-                models: connection.models,
-                realtime: connection.realtime,
                 language: dictation.language.clone(),
                 decide: dictation.decide,
                 max_output_tokens: dictation.max_output_tokens,
@@ -2824,15 +2826,16 @@ impl Agent {
         let recordings = self.config.recordings_dir();
         let library = self.automations.dir().to_path_buf();
         let replacing = self.replacing.take();
-        let author_with = self.runtime.connection().and_then(|c| {
-            let model = self
-                .config
-                .automation
-                .author_model
-                .clone()
-                .or(c.models.generative.clone())?;
-            Some((c.client, model))
-        });
+        // The author writes with the generation route's provider, and its model unless the
+        // settings name another of that provider's.
+        let author_with = self
+            .runtime
+            .routes()
+            .and_then(|routes| routes.generation)
+            .map(|route| {
+                let model = self.config.automation.author_model.clone();
+                (route.client, model.unwrap_or(route.model))
+            });
         tokio::spawn(async move {
             let into = library.clone();
             let finished = tokio::task::spawn_blocking(move || {
@@ -3235,7 +3238,7 @@ impl Agent {
     /// Listens while the record hotkey is held, and transcribes what the user said for the
     /// recording.
     fn begin_note(&mut self, source: u32) {
-        let Some(connection) = self.runtime.connection() else {
+        let Some(routes) = self.runtime.routes() else {
             return;
         };
         let (audio, audio_events) = mpsc::unbounded_channel();
@@ -3254,11 +3257,9 @@ impl Agent {
         let (finish, finished) = oneshot::channel();
         let dictation = &self.config.dictation;
         let env = Env {
-            client: connection.client,
+            routes,
             flows: self.flows.clone(),
             settings: pipeline::Settings {
-                models: connection.models,
-                realtime: connection.realtime,
                 language: dictation.language.clone(),
                 ..pipeline::Settings::default()
             },
@@ -3361,6 +3362,22 @@ impl Agent {
 
 /// Commits what jevons wrote in the settings folder, off the agent thread, when it is jevons'
 /// repository.
+/// The name of what serves each capability, by its key in `[routes]`.
+fn served(routes: Option<&Routes>) -> BTreeMap<&'static str, String> {
+    let Some(routes) = routes else {
+        return BTreeMap::new();
+    };
+    [
+        (Capability::Speech, &routes.speech),
+        (Capability::Realtime, &routes.realtime),
+        (Capability::Decision, &routes.decision),
+        (Capability::Generation, &routes.generation),
+    ]
+    .into_iter()
+    .filter_map(|(capability, route)| Some((capability.key(), route.as_ref()?.name())))
+    .collect()
+}
+
 fn commit_in_background(repository: Option<Repository>, paths: Vec<PathBuf>, message: String) {
     let Some(repository) = repository.filter(|_| !paths.is_empty()) else {
         return;

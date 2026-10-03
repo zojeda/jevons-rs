@@ -20,7 +20,9 @@ use super::spec::{
 use super::tool_loop::{self as loops, Task};
 use super::tools::result_text;
 use super::tree::{FlowTree, Investigation, Kind, Node, NodeId, NodeSpec};
-use crate::client::{Answer, ClientError, DecisionRequest, Question, Reasoning, ResponseRequest};
+use crate::client::{
+    Answer, ClientError, DecisionRequest, Question, Reasoning, ResponseRequest, probability_of,
+};
 use crate::pipeline::{DecisionTrace, Env, GenerationTrace, Stage, StageKind, Trace, Update};
 use crate::platform::{Action, DeliveryMethod};
 use adk_core::{Tool, ToolConfirmationHandler};
@@ -86,10 +88,6 @@ fn narrow(branches: &[BranchCheck], candidates: Vec<NodeId>, tree: &FlowTree) ->
 }
 
 /// The model's probability for `choice`, or its confidence when it gave none.
-fn probabilities_of(probabilities: &BTreeMap<String, f64>, choice: &str, confidence: f64) -> f64 {
-    probabilities.get(choice).copied().unwrap_or(confidence)
-}
-
 /// One investigation a take ran (or reused).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct InvestigationTrace {
@@ -720,7 +718,7 @@ impl Walker<'_> {
     }
 
     fn can_decide(&self) -> bool {
-        self.env.settings.decide && self.env.settings.models.decision.is_some() && !self.stalled
+        self.env.settings.decide && self.env.routes.decision.is_some() && !self.stalled
     }
 
     async fn decide(&mut self, node: &Node, d: &DecideSpec) -> Result<NodeId, ClientError> {
@@ -871,7 +869,7 @@ impl Walker<'_> {
         };
         let asked = if ahead { "asked ahead" } else { "model" };
         let floor = d.min_probability.unwrap_or(0.0);
-        let probability = probabilities_of(&probabilities, &choice, confidence);
+        let probability = probability_of(&probabilities, &choice, confidence);
         if probability >= floor {
             return (chosen, format!("{asked} {probability:.2}"));
         }
@@ -894,7 +892,7 @@ impl Walker<'_> {
                     confidence,
                 }) = answers.remove(0)
             {
-                let again = probabilities_of(&probabilities, &choice, confidence);
+                let again = probability_of(&probabilities, &choice, confidence);
                 self.step().probabilities = probabilities;
                 if let Some(chosen) = self.child(node, &choice).filter(|c| candidates.contains(c))
                     && again >= floor
@@ -1000,16 +998,20 @@ impl Walker<'_> {
         samples: Option<u32>,
     ) -> Option<crate::client::DecisionResponse> {
         let env = self.env;
-        let model = env.settings.models.decision.clone()?;
+        let route = env.routes.decision.as_ref()?;
         let count = questions.len();
-        let request = DecisionRequest {
-            model,
+        // What the provider does not take is left out, and the trace says so.
+        let (request, notes) = route.fit(DecisionRequest {
+            model: route.model.clone(),
             state: self.frame.state(),
             questions,
             steps,
             samples,
             think: self.frame.think.filter(|t| *t > 0),
-        };
+        });
+        for note in notes {
+            self.note(note);
+        }
         let began = Instant::now();
         tracing::info!(
             take = self.trace.take,
@@ -1018,7 +1020,7 @@ impl Walker<'_> {
             "Deciding"
         );
         let response =
-            tokio::time::timeout(env.settings.decision_timeout, env.client.decide(&request)).await;
+            tokio::time::timeout(env.settings.decision_timeout, route.decide(&request)).await;
         let ms = began.elapsed().as_millis() as u64;
         self.trace.timings.push(("decide".into(), ms));
         tracing::info!(
@@ -1346,11 +1348,13 @@ impl Walker<'_> {
         name: &str,
         instruction: &str,
     ) -> Result<String, ClientError> {
-        let Some(model) = self.env.settings.models.generative.clone() else {
+        let env = self.env;
+        let Some(route) = env.routes.generation.as_ref() else {
             return Err(ClientError::NotServed(
                 "A language model to write tool arguments",
             ));
         };
+        let model = route.model.clone();
         let _ = self
             .updates
             .send(Update::Progress(format!("writing {name}")));
@@ -1374,7 +1378,7 @@ impl Walker<'_> {
         let began = Instant::now();
         let written = tokio::time::timeout(
             self.env.settings.generation_timeout,
-            self.env.client.respond(&request, |_| {}),
+            route.client.respond(&request, |_| {}),
         )
         .await
         .map_err(|_| ClientError::Protocol(format!("no value for `{name}` in time")))??;
@@ -1386,9 +1390,11 @@ impl Walker<'_> {
 
     /// Runs an agent over the node's tools (and the investigator) to its answer.
     async fn tool_loop(&mut self, node: &Node, a: &LoopSpec) -> Result<Ahead, ClientError> {
-        let Some(model) = self.env.settings.models.generative.clone() else {
+        let env = self.env;
+        let Some(route) = env.routes.generation.as_ref() else {
             return Err(ClientError::NotServed("A language model for agents"));
         };
+        let model = route.model.clone();
         let resolved = match &self.env.tools {
             Some(host) => host
                 .resolve(&a.tools, node.label())
@@ -1442,7 +1448,7 @@ impl Walker<'_> {
         }
         self.stage(Stage::new(StageKind::Loop, node.name.clone()));
         let updates = self.updates.clone();
-        let llm = JevonsLlm::new(self.env.client.clone(), model)
+        let llm = JevonsLlm::new(route.client.clone(), model)
             .with_think(self.frame.think.unwrap_or(0))
             .with_deltas(Arc::new(move |delta: &str| {
                 let _ = updates.send(Update::Output(delta.to_string()));
@@ -1555,10 +1561,12 @@ impl Walker<'_> {
             Action::Insert
         };
         let heard = self.frame.transcript.clone();
-        let Some(model) = self.env.settings.models.generative.clone() else {
+        let env = self.env;
+        let Some(route) = env.routes.generation.as_ref() else {
             self.note("No language model: using the words as heard");
             return Ok(self.leaf(node, heard, output, action));
         };
+        let model = route.model.clone();
         if self.stalled {
             self.note("The language model did not answer: using the words as heard");
             return Ok(self.leaf(node, heard, output, action));
@@ -1618,7 +1626,7 @@ impl Walker<'_> {
         let updates = self.updates;
         let generated = tokio::time::timeout(
             self.env.settings.generation_timeout,
-            self.env.client.respond(&request, |delta| {
+            route.client.respond(&request, |delta| {
                 let _ = updates.send(Update::Output(delta.to_string()));
             }),
         )

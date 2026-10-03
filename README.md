@@ -26,7 +26,7 @@ Everything runs locally. The speech, decision and language models run inside the
 - **Live feedback and answers.** A bubble above the tray icon shows the words as they are recognized, then the route taken, the text written and whether it was inserted. Questions are answered there instead of being typed. It never takes the focus. Turn it off from the tray menu.
 - **Safe delivery.** Text goes only into the window the take started in, once every key is released. It is pasted with your clipboard restored, typed, set through the accessibility API, or left on the clipboard, as the flow says. If the focus moved, the text waits on the clipboard.
 - **An inspector for everything.** The window shows the live context and the route it takes through the tree, with every guard checked; every take with its decision probabilities, prompt and timings; the flow tree and its problems; the settings and the models. **New branch from the current context** writes a folder whose guard matches what you are looking at.
-- **Private by default.** The models run in the app, and its API listens on a loopback port with a random key. You can expose it on a port for other clients, or use a jevons server on another machine instead. Logs never contain your text; full traces stay in `~/jevons/traces`.
+- **Private by default.** The models run in the app, and its API listens on a loopback port with a random key. You can expose it on a port for other clients, or send each capability (speech, decisions, generation) to another provider: a jevons server on another machine, OpenRouter, or any server with OpenAI's API. Logs never contain your text; full traces stay in `~/jevons/traces`.
 
 ### From speech to a leaf
 
@@ -159,7 +159,7 @@ flowchart TB
         actor["UiActor<br/>invoke · click · set value · toggle · select<br/>keys · bring a window forward"]
     end
 
-    runtime["jevons-api · embedded or remote<br/>Speech · Decision · Generative"]
+    runtime["Providers, one per capability<br/>jevons-api embedded · a jevons server · OpenRouter"]
 
     triggers --> pipeline
     snapshot --> pipeline
@@ -199,7 +199,7 @@ The desktop app reads through one set of platform traits, decides in the platfor
   - **Text.** `TextSink` inserts at the caret, replaces the selection or rewrites the field, by pasting (the clipboard is restored after), typing (SendInput through `enigo`), setting the value (UI Automation's value pattern) or copying. It delivers only into the window the take started in, once no key is held; otherwise the text waits on the clipboard.
   - **Tools.** The tool host runs `command` (no shell, a filtered environment, a time limit), `http` and `open`, and MCP servers over stdio, whose tools flows name `server:tool`. Tools come only from the settings file, never from the flows folder, and each call asks in the bubble first unless the settings say otherwise. Tool loops (`loop.toml` nodes and the investigator) run on adk-rust through `JevonsLlm`, over the API's Chat Completions tools.
   - **Automations** (`automation/`) are Rhai scripts with a manifest (`automation.toml`), and the engine gives them no file, network or process access. Every action passes `hands` first: only in the manifest's applications, never typing into a password field or acting on a disabled element, and keys only to a window of those applications. Then `UiActor` carries it out, with UI Automation patterns or SendInput clicks and keys. A script runs only once the `sha256` of its two files is pinned in the settings (`[automation.approved]`). `author` writes one from a recording, and `check` dry-runs it against the recording, step by step.
-- **Runtime.** `client/` speaks the jevons API: `/v1/realtime` (or `/v1/audio/transcriptions`), `/v1/systemone`, `/v1/responses` and `/v1/chat/completions`. `runtime.rs` loads `jevons-api` in the app, on a loopback port with a random key, or the app uses a jevons server on another machine.
+- **Runtime.** `client/` speaks the jevons API: `/v1/realtime` (or `/v1/audio/transcriptions`), `/v1/systemone`, `/v1/responses` and `/v1/chat/completions`. Each capability has a route to a provider (`[providers]` and `[routes]` in the settings): `runtime.rs` loads `jevons-api` in the app, on a loopback port with a random key, for the capabilities routed to it, and the others go to a jevons server, OpenRouter or another OpenAI-compatible server. A decision provider's profile says what it takes, so a request goes without what it lacks and the trace says so.
 
 ## The runtime
 
@@ -251,7 +251,7 @@ flowchart TB
     foundation["Foundation: jevons-core (model contracts) · jevons-formats (GGUF, safetensors)<br/>jevons-tokenizer · jevons-audio (decoding, resampling, mel, VAD)"]
 
     clients -- "HTTP · SSE · WebSocket" --> api
-    desktop -- "embedded or remote" --> api
+    desktop -- "embedded, or a route to it" --> api
     openai --> generative
     openai --> speech
     systemone --> decision

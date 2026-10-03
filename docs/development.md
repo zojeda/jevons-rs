@@ -8,7 +8,7 @@ The workspace is layered: the API on top, three services, the diffusion layer th
 
 | Layer | Crate | Responsibility |
 | --- | --- | --- |
-| Desktop | `jevons-desktop` | The tray dictation binary: tray and hotkey thread, agent, inspector and settings window, CPAL microphone, per-OS context and text input, the embedded or remote runtime ([guide](desktop.md)) |
+| Desktop | `jevons-desktop` | The tray dictation binary: tray and hotkey thread, agent, inspector and settings window, CPAL microphone, per-OS context and text input, the embedded runtime and the routes to other providers ([guide](desktop.md)) |
 | | `jevons-desktop-core` | Platform-free desktop behaviour: the platform traits, context snapshots, the flow tree (node files, guards, validation, the walker), the take pipeline, the typed API client, gestures, paste safety, tray frames, the model catalog and downloads |
 | API | `jevons-api` | Routes, authentication, settings, the wire formats, the model workers and Realtime sessions; `load` starts the workers, `serve` serves them on a listener, and `run` does both for the server |
 | | `jevons-rs` | The server binary (`main.rs`: logging, then `jevons_api::run`) |

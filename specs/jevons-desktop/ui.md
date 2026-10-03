@@ -192,14 +192,20 @@ Tests: `a_running_task_shows_under_its_agent_with_its_state_and_can_be_cancelled
 
 ### R20 Settings are edited, then applied together
 
-The Settings tab edits the runtime (embedded or a server, exposing the API with its address, port
-and key, the server's address and key, and a button that copies the API's base URL), dictation (the hotkeys and their hold or toggle mode, live
+The Settings tab edits the runtime (exposing the API with its address, port and key, and a button
+that copies the API's base URL), the providers and routes (each capability's provider and model,
+with what serves it now or "not served" under its name; each provider's address and key, a
+button per kind that adds one under a free name, and Remove, which sends what it served back to
+the default), dictation (the hotkeys and their hold or toggle mode, live
 feedback, the inspector hotkey, the microphone, the language, whether to ask the decision model,
 the most tokens a generation writes), a push-to-talk hotkey per top-level branch, the record
 hotkey and one per automation, and privacy (characters per field, the clipboard, the API log). A
 hotkey field records the combination pressed, as an accelerator the global hotkeys accept.
+Choosing a provider for a capability asks it for its own model until one is typed, and a route
+that is what a route left out means is not written to the file. Providers and routes the
+settings would refuse show their problem in the save bar, and cannot be saved.
 
-Tests: `recorded_combinations_parse_as_global_hotkeys`, `edited_settings_mark_the_page_and_save_from_a_bar_that_shows_only_then`
+Tests: `recorded_combinations_parse_as_global_hotkeys`, `edited_settings_mark_the_page_and_save_from_a_bar_that_shows_only_then`, `routes_edited_in_the_panel_leave_what_is_default_out_of_the_file`
 
 ### R21 Edits mark the page and save from a bar
 
