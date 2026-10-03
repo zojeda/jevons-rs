@@ -411,6 +411,18 @@ Done when: the server crate does not depend on the client core, and the app beha
 Scope: put a wire under the phase 4 boundary, so the desktop server can move from the app's
 process to a local background process (the expected main setup) as a deployment change.
 
+Left by phase 4 for this one:
+
+- **One desk per session.** Today the tool host holds a desk of its own, built once at startup
+  (the automations library), and each take builds a second one. They share the automation host,
+  so it works in one process; over a wire the host's client tools must come from the session's
+  desk.
+- **The server builds its own parts.** `Env.tools` and `Env.investigator` are server constructs
+  the app assembles today; the server should build them from its settings and the session's
+  desk.
+- **Traces and the take's stream** (`Trace`, `Update`) are still the server crate's types. They
+  move to the protocol when they travel.
+
 - [ ] New crate `jevons-desktop-protocol`, holding:
       - events (takes, effect results, control) and effects (deliver, show, confirm, read, open,
         run a client tool);

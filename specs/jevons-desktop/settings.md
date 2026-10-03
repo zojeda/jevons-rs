@@ -90,11 +90,12 @@ Tests: `approvals_are_written_alone_and_saving_the_settings_keeps_them`
 
 ### R8 jevons fills in what the folder lacks
 
-On every start, jevons writes each settings file there is none of, the built-in flow tree and its
+On every start, jevons writes each settings file there is none of (one that is there is left
+exactly as it is, whatever it holds), the built-in flow tree and its
 guides ([flows](../jevons-desktop-server/flows.md)), and the automations library's guides ([automations](../jevons-desktop-core/automations.md)).
 A deleted folder gets the defaults again on the next start.
 
-Tests: `a_new_settings_folder_gets_the_defaults_in_a_repository_of_its_own`
+Tests: `a_settings_file_that_is_there_is_never_rewritten`, `a_new_settings_folder_gets_the_defaults_in_a_repository_of_its_own`
 
 ### R9 The folder is a repository of its own
 

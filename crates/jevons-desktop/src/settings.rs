@@ -238,16 +238,12 @@ pub fn list(paths: &[String]) -> String {
 fn fill(config_file: &Path, config: &DesktopConfig) -> std::io::Result<Vec<PathBuf>> {
     let mut written = Vec::new();
     std::fs::create_dir_all(folder(config_file))?;
-    // Both halves of the settings, each in its own file.
-    let server = server_file(config_file);
-    if !config_file.exists() || !server.exists() {
-        let missing: Vec<PathBuf> = [config_file.to_path_buf(), server]
-            .into_iter()
-            .filter(|file| !file.exists())
-            .collect();
-        config.save(config_file).map_err(std::io::Error::other)?;
-        written.extend(missing);
-    }
+    // Each half of the settings in its own file; one that is there is never rewritten.
+    written.extend(
+        config
+            .write_missing(config_file)
+            .map_err(std::io::Error::other)?,
+    );
     let flows = config.flows_dir(config_file);
     let report = jevons_desktop_server::flow::defaults::init(&flows)?;
     written.extend(report.changed().map(|f| flows.join(f)));
@@ -304,6 +300,36 @@ mod tests {
             std::env::temp_dir().join(format!("jevons-settings-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir.join("jevons-desktop.toml")
+    }
+
+    #[test]
+    fn a_settings_file_that_is_there_is_never_rewritten() {
+        if !available() {
+            return eprintln!("skipped: git is not installed");
+        }
+        // A client's file from before the settings were two files: it has a comment, a
+        // setting of its own, and a section that is the server's now.
+        let file = settings_file("kept");
+        let dir = folder(&file).to_path_buf();
+        std::fs::create_dir_all(&dir).unwrap();
+        let mine = "# my settings\n[dictation]\nlanguage = \"es\"\n\n[server]\nexpose = true\n";
+        std::fs::write(&file, mine).unwrap();
+        // It does not load, so the app starts on the defaults; the folder is prepared with
+        // those.
+        assert!(DesktopConfig::load(&file).is_err());
+        let prepared = prepare(&file, &DesktopConfig::default());
+        assert!(prepared.notes.is_empty(), "{:?}", prepared.notes);
+        // The file is as it was, and the server's file was written next to it.
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), mine);
+        let server = server_file(&file);
+        assert!(server.exists());
+        let written = DesktopConfig::default().write_missing(&file).unwrap();
+        assert!(written.is_empty(), "{written:?}");
+        // With both there, nothing is written; with the client's alone missing, only that.
+        std::fs::remove_file(&file).unwrap();
+        let written = DesktopConfig::default().write_missing(&file).unwrap();
+        assert_eq!(written, std::slice::from_ref(&file));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

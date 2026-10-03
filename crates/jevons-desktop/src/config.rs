@@ -142,6 +142,22 @@ impl DesktopConfig {
         write(&server_file(file), &self.server())
     }
 
+    /// Writes each settings file there is none of, and returns the ones written. A file that
+    /// is there is left exactly as it is, whatever it holds.
+    pub fn write_missing(&self, file: &Path) -> Result<Vec<PathBuf>, ConfigError> {
+        let mut written = Vec::new();
+        if !file.exists() {
+            write(file, &self.client())?;
+            written.push(file.to_path_buf());
+        }
+        let server = server_file(file);
+        if !server.exists() {
+            write(&server, &self.server())?;
+            written.push(server);
+        }
+        Ok(written)
+    }
+
     /// Pins `version` as the approved one of automation `name`, changing nothing else in the
     /// client's file; returns the settings as saved.
     pub fn approve(file: &Path, name: &str, version: &str) -> Result<Self, ConfigError> {
