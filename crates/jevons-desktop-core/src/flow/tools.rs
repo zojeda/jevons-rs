@@ -8,19 +8,20 @@
 //!   output; their tools are `name:tool` in flow files and `name__tool` to the model (whose tool
 //!   names cannot hold a colon).
 //!
-//! - Automations from the library (`script:<name>`) run their approved script.
+//! - The client's tools (`script:<name>`, the automations library) run at the desk: the host
+//!   lists them and passes each call on.
 //!
 //! Every tool asks in the bubble before it runs unless the settings say otherwise. In a dry run
 //! (headless replays) nothing runs: each call returns what it would have done.
 
 use super::tree::{Catalog, CatalogTool};
-use crate::automation::host::{AutomationHost, SERVER as SCRIPTS};
 use crate::config::{McpConfig, ToolConfig, ToolKind};
 use adk_core::{Content, ReadonlyContext, Tool, ToolContext, Toolset, async_trait};
 use adk_tool::mcp::McpToolset;
 use adk_tool::mcp::rmcp::ServiceExt;
 use adk_tool::mcp::rmcp::transport::TokioChildProcess;
 use globset::{Glob, GlobSetBuilder};
+use jevons_desktop_protocol::desk::{ClientTools, Desk};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -291,6 +292,38 @@ fn parameters(config: &ToolConfig) -> Value {
     json!({"type": "object", "properties": properties, "required": config.arguments.keys().collect::<Vec<_>>()})
 }
 
+/// A tool the client runs, as the model names it (`script__<name>`): each call is passed to
+/// the desk.
+struct AtDesk {
+    name: String,
+    reference: String,
+    description: String,
+    parameters: Value,
+    desk: Arc<dyn Desk>,
+}
+
+#[async_trait]
+impl Tool for AtDesk {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+
+    fn parameters_schema(&self) -> Option<Value> {
+        Some(self.parameters.clone())
+    }
+
+    async fn execute(&self, _: Arc<dyn ToolContext>, args: Value) -> adk_core::Result<Value> {
+        self.desk
+            .run_tool(self.reference.clone(), args)
+            .await
+            .map_err(adk_core::AdkError::tool)
+    }
+}
+
 /// A tool under another name (MCP tools, which the model names `server__tool`).
 struct Renamed {
     name: String,
@@ -456,7 +489,8 @@ impl Server {
 pub struct ToolHost {
     builtins: BTreeMap<String, Arc<Builtin>>,
     servers: BTreeMap<String, Arc<Server>>,
-    automations: Option<Arc<AutomationHost>>,
+    /// Where the client's tools run.
+    desk: Option<Arc<dyn Desk>>,
     dry_run: bool,
 }
 
@@ -504,19 +538,22 @@ impl ToolHost {
                     )
                 })
                 .collect(),
-            automations: None,
+            desk: None,
             dry_run: false,
         }
     }
 
-    /// The automations library, when this host offers it.
-    pub fn automations(&self) -> Option<Arc<AutomationHost>> {
-        self.automations.clone()
+    /// The tools the client runs, when this host has a desk.
+    pub fn client_tools(&self) -> ClientTools {
+        self.desk
+            .as_ref()
+            .map(|desk| desk.tools())
+            .unwrap_or_default()
     }
 
-    /// Also offers the library's automations, as `script:<name>`.
-    pub fn with_automations(mut self, automations: Arc<AutomationHost>) -> Self {
-        self.automations = Some(automations);
+    /// Also offers the tools the client runs at `desk` (`script:<name>`).
+    pub fn with_desk(mut self, desk: Arc<dyn Desk>) -> Self {
+        self.desk = Some(desk);
         self
     }
 
@@ -527,12 +564,7 @@ impl ToolHost {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.builtins.is_empty()
-            && self.servers.is_empty()
-            && self
-                .automations
-                .as_ref()
-                .is_none_or(|a| a.library().automations.is_empty())
+        self.builtins.is_empty() && self.servers.is_empty() && self.client_tools().tools.is_empty()
     }
 
     /// Starts every MCP server and lists its tools; returns the problems, one per server.
@@ -558,22 +590,23 @@ impl ToolHost {
                 },
             );
         }
-        if let Some(automations) = &self.automations {
-            catalog.servers.insert(SCRIPTS.into(), true);
-            for listed in automations.list() {
-                let note = if listed.approved {
-                    ""
-                } else {
-                    " (not approved yet: it runs once approved from the tray)"
-                };
-                catalog.tools.insert(
-                    format!("{SCRIPTS}:{}", listed.name),
-                    CatalogTool {
-                        description: format!("{}{note}", listed.description),
-                        parameters: Some(listed.parameters),
-                    },
-                );
-            }
+        let client = self.client_tools();
+        for served in client.served {
+            catalog.servers.insert(served, true);
+        }
+        for tool in client.tools {
+            let note = if tool.approved {
+                ""
+            } else {
+                " (not approved yet: it runs once approved from the tray)"
+            };
+            catalog.tools.insert(
+                tool.reference,
+                CatalogTool {
+                    description: format!("{}{note}", tool.description),
+                    parameters: Some(tool.parameters),
+                },
+            );
         }
         for (name, server) in &self.servers {
             let listed = server.listed.lock().expect("the listing lock").clone();
@@ -621,6 +654,7 @@ impl ToolHost {
         node: &str,
     ) -> Result<Vec<Resolved>, String> {
         let mut out = Vec::new();
+        let client = self.client_tools();
         for reference in references {
             match reference.split_once(':') {
                 None => {
@@ -633,25 +667,31 @@ impl ToolHost {
                     }
                     out.push(self.wrap(reference, tool.clone(), tool.config.confirm));
                 }
-                Some((SCRIPTS, wanted)) if self.automations.is_some() => {
-                    let automations = self.automations.as_ref().expect("checked");
-                    let tools = automations.tools(wanted);
-                    if tools.is_empty() {
+                Some((kind, wanted)) if client.served.iter().any(|s| s == kind) => {
+                    let desk = self.desk.as_ref().expect("a desk serves it");
+                    let found: Vec<_> = client
+                        .tools
+                        .iter()
+                        .filter(|t| wanted == "*" || t.reference == *reference)
+                        .collect();
+                    if found.is_empty() {
                         return Err(format!("there is no automation {wanted:?} in the library"));
                     }
-                    for tool in tools {
-                        let name = tool
-                            .name()
-                            .strip_prefix(&format!("{SCRIPTS}__"))
-                            .unwrap_or_default()
-                            .to_string();
-                        if !allowed(&automations.allow(&name), node) {
+                    for tool in found {
+                        let name = tool.reference.split_once(':').map_or("", |(_, name)| name);
+                        if !allowed(&tool.allow, node) {
                             return Err(format!(
                                 "the automation {name} does not allow the node {node}"
                             ));
                         }
-                        let reference = format!("{SCRIPTS}:{name}");
-                        out.push(self.wrap(&reference, tool, automations.asks(&name)));
+                        let at_desk = Arc::new(AtDesk {
+                            name: format!("{kind}__{name}"),
+                            reference: tool.reference.clone(),
+                            description: tool.description.clone(),
+                            parameters: tool.parameters.clone(),
+                            desk: desk.clone(),
+                        });
+                        out.push(self.wrap(&tool.reference, at_desk, tool.confirm));
                     }
                 }
                 Some((server_name, wanted)) => {
@@ -699,14 +739,16 @@ impl ToolHost {
              can use them, never add them.\n",
         );
         let catalog = self.catalog();
+        let client = self.client_tools();
         if catalog.tools.is_empty() && catalog.servers.is_empty() {
             md.push_str("\nNo tools are registered yet.\n");
         }
         for (name, tool) in &catalog.tools {
             let confirm = match name.split_once(':') {
-                Some((SCRIPTS, tool)) if self.automations.is_some() => {
-                    self.automations.as_ref().is_some_and(|a| a.asks(tool))
-                }
+                Some((kind, _)) if client.served.iter().any(|s| s == kind) => client
+                    .tools
+                    .iter()
+                    .any(|t| t.reference == *name && t.confirm),
                 None => self.builtins.get(name).is_some_and(|t| t.config.confirm),
                 Some((server, tool)) => self.servers.get(server).is_some_and(|s| {
                     s.config.confirm && !s.config.unconfirmed.iter().any(|u| u == tool)
@@ -907,13 +949,14 @@ arguments = { text = "Text" }
         std::fs::write(dir.join("post/script.rhai"), "#{}\n").unwrap();
         let mut settings = crate::config::AutomationSettings::default();
         settings.allow.insert("post".into(), vec!["run".into()]);
-        let host = Arc::new(AutomationHost::new(
+        let host = Arc::new(crate::automation::host::AutomationHost::new(
             &dir,
             settings,
             Arc::new(crate::platform::Unsupported),
             Arc::new(crate::platform::Unsupported),
         ));
-        let tools = ToolHost::new(&BTreeMap::new(), &BTreeMap::new()).with_automations(host);
+        let desk = Arc::new(crate::desk::LocalDesk::default().with_automations(host));
+        let tools = ToolHost::new(&BTreeMap::new(), &BTreeMap::new()).with_desk(desk);
         let catalog = tools.catalog();
         assert!(catalog.servers["script"]);
         assert!(

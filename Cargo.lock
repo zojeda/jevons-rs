@@ -6181,6 +6181,7 @@ dependencies = [
  "jevons-api",
  "jevons-audio",
  "jevons-desktop-core",
+ "jevons-desktop-protocol",
  "notify",
  "peniko",
  "pulldown-cmark",

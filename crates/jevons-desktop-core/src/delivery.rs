@@ -4,6 +4,8 @@
 //! let go of every key, and within [`WAIT`]; otherwise it stays on the clipboard for the user
 //! to paste.
 
+use crate::platform::{DeliveryMethod, DeliveryOutcome, DeliveryRequest, TextSink};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// How long delivery waits for held keys (such as the hotkey itself) to be released.
@@ -50,6 +52,54 @@ impl Pending {
             Decision::Manual
         } else {
             Decision::Wait
+        }
+    }
+}
+
+/// Types `request` into `window` once every key is released, or leaves it on the clipboard when
+/// the window changed or keys stayed down (the bubble's Insert uses it too).
+pub async fn deliver_text(
+    sink: &Arc<Mutex<Box<dyn TextSink>>>,
+    take: u64,
+    window: u64,
+    request: DeliveryRequest,
+) -> Result<Option<DeliveryOutcome>, String> {
+    let copy = |reason: String| -> Result<Option<DeliveryOutcome>, String> {
+        sink.lock()
+            .expect("the sink lock is not poisoned")
+            .copy(&request.text)
+            .map_err(|e| e.to_string())?;
+        Ok(Some(DeliveryOutcome::OnClipboard { reason }))
+    };
+    if request.method == DeliveryMethod::Clipboard {
+        return copy("the flow delivers to the clipboard".into());
+    }
+    let pending = Pending::new(take, window, Instant::now());
+    loop {
+        let (foreground, keys_down) = {
+            let sink = sink.lock().expect("the sink lock is not poisoned");
+            (sink.foreground_window().unwrap_or(0), sink.keys_down())
+        };
+        match pending.decide(take, foreground, keys_down, Instant::now()) {
+            Decision::Deliver => {
+                let result = sink
+                    .lock()
+                    .expect("the sink lock is not poisoned")
+                    .deliver(&request);
+                return match result {
+                    Ok(outcome) => Ok(Some(outcome)),
+                    Err(e) => copy(format!("delivery failed: {e}")),
+                };
+            }
+            Decision::Manual => {
+                return copy(if foreground != window {
+                    "the focused window changed".into()
+                } else {
+                    "keys were held too long".into()
+                });
+            }
+            Decision::Wait => tokio::time::sleep(Duration::from_millis(25)).await,
+            Decision::Cancel => return Ok(None),
         }
     }
 }

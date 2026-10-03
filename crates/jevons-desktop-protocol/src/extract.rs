@@ -2,12 +2,40 @@
 //! with no model. The server checks it when the flow tree loads, and the client when it reads
 //! it, with the same code.
 
+use crate::context::ContextSnapshot;
 use crate::shape::{Shape, is_identifier};
 use crate::xpath::XPath;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use std::collections::BTreeMap;
+
+/// The values of an expression's `$variables`, by name.
+pub type Variables = BTreeMap<String, String>;
+
+/// Reads extracts where the interface is at hand: the client, and the inspector's workbench.
+/// Accessibility calls block: call it off the async workers.
+pub trait ReadScreen {
+    /// Evaluates `extract` for a take that started in `snapshot`, with a line for each of the
+    /// first `lines` elements or values the expression selected.
+    fn read_outlined(
+        &self,
+        extract: &Extract,
+        snapshot: &ContextSnapshot,
+        variables: &Variables,
+        lines: usize,
+    ) -> (Extracted, Vec<String>);
+
+    /// The answer alone.
+    fn read(
+        &self,
+        extract: &Extract,
+        snapshot: &ContextSnapshot,
+        variables: &Variables,
+    ) -> Extracted {
+        self.read_outlined(extract, snapshot, variables, 0).0
+    }
+}
 
 /// The most matches an extract keeps.
 pub const MAX_LIMIT: u32 = 500;
@@ -193,4 +221,28 @@ pub struct Extracted {
     pub matches: usize,
     /// Why the answer may be incomplete: a window it may not read, an error.
     pub note: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mistakes_are_reported_by_field() {
+        let compile = |text: &str| {
+            let spec: ExtractSpec = toml::from_str(text).unwrap();
+            Extract::compile("msgs", &spec).unwrap_err().join("; ")
+        };
+        assert!(compile("xpath = \"//ListItem[\"").starts_with("extract.msgs.xpath: column 12"));
+        assert!(compile("xpath = \"//ListItem\"\nas = \"table\"").contains("needs `fields`"));
+        assert!(
+            compile("xpath = \"//ListItem\"\nfields = { a = \"@name\" }")
+                .contains("only for as = \"table\"")
+        );
+        assert!(
+            compile("xpath = \"//ListItem\"\nas = \"table\"\nfields = { A = \"@nam\" }")
+                .contains("fields.A: column names")
+        );
+        assert!(compile("xpath = \"//ListItem\"\nlimit = 0").contains("limit must be 1 to 500"));
+    }
 }

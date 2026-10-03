@@ -1447,10 +1447,8 @@ mod tests {
             routes: jevons_desktop_core::client::Routes::default(),
             flows: tree.clone(),
             settings: Settings::default(),
-            sink: None,
+            desk: std::sync::Arc::new(jevons_desktop_protocol::desk::Nobody),
             investigator: None,
-            reader: None,
-            confirmer: None,
             tools: None,
             machines: machines.clone(),
         };

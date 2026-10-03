@@ -10,11 +10,12 @@ use jevons_desktop_core::automation::host::AutomationHost;
 use jevons_desktop_core::automation::run::RunTrace;
 use jevons_desktop_core::client::Routes;
 use jevons_desktop_core::config::{Capability, DesktopConfig, HotkeyMode};
+use jevons_desktop_core::confirm::{ChannelConfirmer, Confirmation};
 use jevons_desktop_core::context::ContextSnapshot;
-use jevons_desktop_core::flow::confirm::{ChannelConfirmer, Confirmation};
-use jevons_desktop_core::flow::extract::{self, Reader};
+use jevons_desktop_core::desk::LocalDesk;
+use jevons_desktop_core::flow::extract;
 use jevons_desktop_core::flow::investigate::Investigate;
-use jevons_desktop_core::flow::investigator::{Investigator, PathCache};
+use jevons_desktop_core::flow::investigator::Investigator;
 use jevons_desktop_core::flow::machine::runtime::{Due, Runtime as Machines};
 use jevons_desktop_core::flow::tools::ToolHost;
 use jevons_desktop_core::flow::walk::{self, FlowStep};
@@ -23,16 +24,19 @@ use jevons_desktop_core::git::Repository;
 use jevons_desktop_core::history::{self, History};
 use jevons_desktop_core::icons::TrayState;
 use jevons_desktop_core::interface;
+use jevons_desktop_core::look::{Looks, PathCache};
 use jevons_desktop_core::pipeline::{self, Env, StageKind, TakeStart, Trace, Update};
 use jevons_desktop_core::platform::{
     AudioDevice, AudioSource, Binding, CaptureHandle, ContextInspector, ContextProvider,
     DeliveryOutcome, HotkeyAction, HotkeyEvent, MenuCommand, MenuModel, Recorder, RecordingHandle,
     TextSink, TrayBackend, UiActor, UiElement, WindowEntry,
 };
+use jevons_desktop_core::reader::Reader;
 use jevons_desktop_core::recorded::RecordedTree;
 use jevons_desktop_core::recording::{Session, bundle};
 use jevons_desktop_core::settings;
 use jevons_desktop_core::xpath::selector::Candidate;
+use jevons_desktop_protocol::desk::{Desk, Nobody};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -698,9 +702,8 @@ impl Agent {
             &commands,
             repository.as_ref(),
         );
-        let tools = Arc::new(
-            ToolHost::new(&config.tools, &config.mcp).with_automations(automations.clone()),
-        );
+        let tools =
+            Arc::new(ToolHost::new(&config.tools, &config.mcp).with_desk(tool_desk(&automations)));
         let (tree, report) = defaults::open(&flows_dir, &tools.catalog());
         let notes = report.notes;
         let errors = tree.errors.clone();
@@ -2045,7 +2048,7 @@ impl Agent {
                         select_all: false,
                         erase: 0,
                     };
-                    let outcome = pipeline::deliver_text(
+                    let outcome = jevons_desktop_core::delivery::deliver_text(
                         &sink,
                         feedback.take,
                         feedback.window.unwrap_or(0),
@@ -2211,7 +2214,7 @@ impl Agent {
         if tools_changed || flows_changed || library_changed {
             self.tools = Arc::new(
                 ToolHost::new(&self.config.tools, &self.config.mcp)
-                    .with_automations(self.automations.clone()),
+                    .with_desk(tool_desk(&self.automations)),
             );
             self.list_tools();
         }
@@ -2539,13 +2542,23 @@ impl Agent {
                 let _ = forward.send(Command::ConfirmRequested(confirmation));
             }
         });
+        // The client's side of the take: this machine's layers, within the privacy settings.
+        let privacy = &self.config.privacy;
+        let reader = Reader::new(self.inspector.clone(), privacy.clone());
+        let looks = Looks::new(self.inspector.clone(), privacy.clone(), self.paths.clone());
+        let desk: Arc<dyn Desk> = Arc::new(
+            LocalDesk::default()
+                .with_sink(self.sink.clone())
+                .with_reader(Arc::new(reader))
+                .with_looks(Arc::new(looks))
+                .with_confirmer(Arc::new(ChannelConfirmer::new(confirm)))
+                .with_automations(self.automations.clone()),
+        );
         let investigator = routes.generation.as_ref().map(|route| {
             Arc::new(Investigator::new(
                 route.client.clone(),
                 route.model.clone(),
-                self.inspector.clone(),
-                self.config.privacy.clone(),
-                self.paths.clone(),
+                desk.clone(),
             )) as Arc<dyn Investigate>
         });
         Env {
@@ -2557,13 +2570,8 @@ impl Agent {
                 max_output_tokens: dictation.max_output_tokens,
                 ..pipeline::Settings::default()
             },
-            sink: Some(self.sink.clone()),
+            desk,
             investigator,
-            reader: Some(Arc::new(Reader::new(
-                self.inspector.clone(),
-                self.config.privacy.clone(),
-            ))),
-            confirmer: Some(Arc::new(ChannelConfirmer::new(confirm))),
             tools: Some(self.tools.clone()),
             machines: self.machines.clone(),
         }
@@ -3263,10 +3271,8 @@ impl Agent {
                 language: dictation.language.clone(),
                 ..pipeline::Settings::default()
             },
-            sink: None,
+            desk: Arc::new(Nobody),
             investigator: None,
-            reader: None,
-            confirmer: None,
             tools: None,
             machines: Arc::default(),
         };
@@ -3376,6 +3382,11 @@ fn served(routes: Option<&Routes>) -> BTreeMap<&'static str, String> {
     .into_iter()
     .filter_map(|(capability, route)| Some((capability.key(), route.as_ref()?.name())))
     .collect()
+}
+
+/// The desk the tool host reaches the client's tools through: the automations library.
+fn tool_desk(automations: &Arc<AutomationHost>) -> Arc<dyn Desk> {
+    Arc::new(LocalDesk::default().with_automations(automations.clone()))
 }
 
 fn commit_in_background(repository: Option<Repository>, paths: Vec<PathBuf>, message: String) {

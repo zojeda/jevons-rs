@@ -511,8 +511,9 @@ fn check_flows(
         Arc::new(jevons_desktop_core::platform::Unsupported),
         Arc::new(jevons_desktop_core::platform::Unsupported),
     ));
+    let desk = jevons_desktop_core::desk::LocalDesk::default().with_automations(automations);
     let catalog = jevons_desktop_core::flow::tools::ToolHost::new(&config.tools, &config.mcp)
-        .with_automations(automations)
+        .with_desk(Arc::new(desk))
         .catalog();
     let tree = FlowTree::load(&jevons_desktop_core::flow::Disk::new(dir), &catalog);
     for error in &tree.errors {
@@ -649,9 +650,10 @@ fn replay(
         Arc::new(jevons_desktop_core::platform::Unsupported),
         Arc::new(jevons_desktop_core::platform::Unsupported),
     ));
+    let scripts = jevons_desktop_core::desk::LocalDesk::default().with_automations(automations);
     let tools = Arc::new(
         jevons_desktop_core::flow::tools::ToolHost::new(&config.tools, &config.mcp)
-            .with_automations(automations)
+            .with_desk(Arc::new(scripts))
             .dry_run(),
     );
     for problem in tokio.block_on(tools.start()) {
@@ -673,19 +675,26 @@ fn replay(
         )?),
         None => platform::context_inspector(),
     };
+    // The client's side: the interface is read within the privacy settings, the text is
+    // typed only with --deliver, and there is no one to confirm a tool.
+    let reader =
+        jevons_desktop_core::reader::Reader::new(inspector.clone(), config.privacy.clone());
+    let looks =
+        jevons_desktop_core::look::Looks::new(inspector, config.privacy.clone(), Arc::default());
+    let mut desk = jevons_desktop_core::desk::LocalDesk::default()
+        .with_reader(Arc::new(reader))
+        .with_looks(Arc::new(looks));
+    if args.deliver {
+        desk = desk.with_sink(Arc::new(Mutex::new(platform::text_sink())));
+    }
+    let desk: Arc<dyn jevons_desktop_protocol::desk::Desk> = Arc::new(desk);
     let investigator = routes.generation.as_ref().map(|route| {
         Arc::new(jevons_desktop_core::flow::investigator::Investigator::new(
             route.client.clone(),
             route.model.clone(),
-            inspector.clone(),
-            config.privacy.clone(),
-            Arc::default(),
+            desk.clone(),
         )) as Arc<dyn jevons_desktop_core::flow::investigate::Investigate>
     });
-    let reader = Arc::new(jevons_desktop_core::flow::extract::Reader::new(
-        inspector,
-        config.privacy.clone(),
-    ));
     let dictation = &config.dictation;
     let env = Env {
         routes,
@@ -696,13 +705,9 @@ fn replay(
             max_output_tokens: dictation.max_output_tokens,
             ..pipeline::Settings::default()
         },
-        sink: args
-            .deliver
-            .then(|| Arc::new(Mutex::new(platform::text_sink()))),
+        desk,
         investigator,
-        reader: Some(reader),
         // Headless runs never run a tool that asks first, and run no tool at all.
-        confirmer: None,
         tools: Some(tools),
         machines: Arc::default(),
     };

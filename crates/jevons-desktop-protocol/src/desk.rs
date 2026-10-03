@@ -12,7 +12,6 @@ use crate::extract::{Extract, ExtractSpec, Extracted};
 use futures_util::future::BoxFuture;
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 /// Text for the window a take started in.
 #[derive(Clone, Debug, PartialEq)]
@@ -96,8 +95,14 @@ pub struct ClientTool {
     pub allow: Vec<String>,
 }
 
-/// Told what a tool is doing, as it does it.
-pub type Told = Arc<dyn Fn(&str) + Send + Sync>;
+/// The tools the client runs.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ClientTools {
+    /// The kinds it serves, by the prefix flow files name them with (`script`), whether or not
+    /// it has any yet: "none in the library" is not "not available here".
+    pub served: Vec<String>,
+    pub tools: Vec<ClientTool>,
+}
 
 /// What the server asks of the client.
 pub trait Desk: Send + Sync {
@@ -124,15 +129,11 @@ pub trait Desk: Send + Sync {
     fn look_end(&self, session: u64, remember: bool) -> BoxFuture<'_, Option<String>>;
 
     /// The tools the client runs.
-    fn tools(&self) -> Vec<ClientTool>;
+    fn tools(&self) -> ClientTools;
 
     /// Runs one of the client's tools.
-    fn run_tool(
-        &self,
-        reference: String,
-        arguments: Value,
-        told: Option<Told>,
-    ) -> BoxFuture<'_, Result<Value, String>>;
+    fn run_tool(&self, reference: String, arguments: Value)
+    -> BoxFuture<'_, Result<Value, String>>;
 }
 
 /// Why an extract is empty where nothing reads the interface.
@@ -185,16 +186,11 @@ impl Desk for Nobody {
         Box::pin(async { None })
     }
 
-    fn tools(&self) -> Vec<ClientTool> {
-        Vec::new()
+    fn tools(&self) -> ClientTools {
+        ClientTools::default()
     }
 
-    fn run_tool(
-        &self,
-        reference: String,
-        _: Value,
-        _: Option<Told>,
-    ) -> BoxFuture<'_, Result<Value, String>> {
+    fn run_tool(&self, reference: String, _: Value) -> BoxFuture<'_, Result<Value, String>> {
         Box::pin(async move { Err(format!("no tool {reference:?} is registered")) })
     }
 }

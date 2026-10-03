@@ -7,7 +7,6 @@ use crate::client::{
     ClientError, DecisionRequest, DecisionResponse, RealtimeEvent, ResponseRequest, Routes, Turns,
 };
 use crate::context::ContextSnapshot;
-use crate::delivery::{Decision, Pending};
 use crate::flow::frame::Frame;
 use crate::flow::investigate::Investigate;
 use crate::flow::machine::runtime::{Runtime, Step};
@@ -16,11 +15,12 @@ use crate::flow::tools::ToolHost;
 use crate::flow::walk::{self, FlowStep, Leaf, ToolTrace, Walked};
 use crate::flow::{FlowTree, Kind};
 use crate::platform::{
-    Action, AudioEvent, DeliveryMethod, DeliveryOutcome, DeliveryRequest, SAMPLE_RATE, TextSink,
+    Action, AudioEvent, DeliveryMethod, DeliveryOutcome, DeliveryRequest, SAMPLE_RATE,
 };
+use jevons_desktop_protocol::desk::{Delivery, Desk};
 use serde::Serialize;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, oneshot};
 
@@ -148,14 +148,12 @@ pub struct Env {
     /// The flow tree takes walk (the last one that loaded without errors).
     pub flows: Arc<FlowTree>,
     pub settings: Settings,
-    /// `None` for a dry run: the text is only recorded.
-    pub sink: Option<Arc<Mutex<Box<dyn TextSink>>>>,
+    /// The client: it delivers the text, asks the user, reads the screen and runs its own
+    /// tools. With no one at it (`Nobody`), the text is only recorded, tool calls that need
+    /// confirmation are denied, and nothing is read.
+    pub desk: Arc<dyn Desk>,
     /// Answers `[investigate]` questions; without it their answers are empty.
     pub investigator: Option<Arc<dyn Investigate>>,
-    /// Reads `[extract]` expressions; without it their answers are empty.
-    pub reader: Option<Arc<crate::flow::extract::Reader>>,
-    /// Approves tool calls that need confirmation; without it they are denied.
-    pub confirmer: Option<Arc<crate::flow::confirm::ChannelConfirmer>>,
     /// The tools the settings register; without them tool and agent nodes fail.
     pub tools: Option<Arc<ToolHost>>,
     /// The machines that run across takes: the flows root's and the tasks nested in it.
@@ -466,20 +464,18 @@ pub(crate) async fn deliver_leaf(env: &Env, start: &TakeStart, leaf: Leaf, trace
                 Err(e) => trace.error = Some(e),
             },
             Output::Clipboard => {
-                if let Some(sink) = &env.sink {
-                    trace.delivery = match sink
-                        .lock()
-                        .expect("the sink lock is not poisoned")
-                        .copy(&leaf.text)
-                    {
-                        Ok(()) => Some(DeliveryOutcome::OnClipboard {
+                let copy = Leaf {
+                    delivery: DeliveryMethod::Clipboard,
+                    ..leaf.clone()
+                };
+                match deliver(env, start, &copy).await {
+                    Ok(Some(_)) => {
+                        trace.delivery = Some(DeliveryOutcome::OnClipboard {
                             reason: "the flow sends it to the clipboard".into(),
-                        }),
-                        Err(e) => {
-                            trace.error = Some(e.to_string());
-                            None
-                        }
-                    };
+                        });
+                    }
+                    Ok(None) => {}
+                    Err(e) => trace.error = Some(e),
                 }
             }
             Output::Bubble => trace.delivery = Some(DeliveryOutcome::Shown),
@@ -828,15 +824,13 @@ fn starts_with_punctuation(text: &str) -> bool {
     text.starts_with(|c: char| ",.;:!?)".contains(c))
 }
 
-/// Delivers a leaf's text into the application once it is safe, or leaves it on the clipboard.
+/// Asks the desk to put a leaf's text into the window the take started in: it types it once
+/// that is safe, or leaves it on the clipboard.
 async fn deliver(
     env: &Env,
     start: &TakeStart,
     leaf: &Leaf,
 ) -> Result<Option<DeliveryOutcome>, String> {
-    let Some(sink) = &env.sink else {
-        return Ok(None);
-    };
     let request = DeliveryRequest {
         action: leaf.action,
         text: leaf.text.clone(),
@@ -844,56 +838,13 @@ async fn deliver(
         select_all: leaf.action == Action::Rewrite && start.context.selection().is_none(),
         erase: 0,
     };
-    let window = start.context.window.handle.unwrap_or(0);
-    deliver_text(sink, start.id, window, request).await
-}
-
-/// Types `request` into `window` once every key is released, or leaves it on the clipboard when
-/// the window changed or keys stayed down (the bubble's Insert uses it too).
-pub async fn deliver_text(
-    sink: &Arc<Mutex<Box<dyn TextSink>>>,
-    take: u64,
-    window: u64,
-    request: DeliveryRequest,
-) -> Result<Option<DeliveryOutcome>, String> {
-    let copy = |reason: String| -> Result<Option<DeliveryOutcome>, String> {
-        sink.lock()
-            .expect("the sink lock is not poisoned")
-            .copy(&request.text)
-            .map_err(|e| e.to_string())?;
-        Ok(Some(DeliveryOutcome::OnClipboard { reason }))
-    };
-    if request.method == DeliveryMethod::Clipboard {
-        return copy("the flow delivers to the clipboard".into());
-    }
-    let pending = Pending::new(take, window, Instant::now());
-    loop {
-        let (foreground, keys_down) = {
-            let sink = sink.lock().expect("the sink lock is not poisoned");
-            (sink.foreground_window().unwrap_or(0), sink.keys_down())
-        };
-        match pending.decide(take, foreground, keys_down, Instant::now()) {
-            Decision::Deliver => {
-                let result = sink
-                    .lock()
-                    .expect("the sink lock is not poisoned")
-                    .deliver(&request);
-                return match result {
-                    Ok(outcome) => Ok(Some(outcome)),
-                    Err(e) => copy(format!("delivery failed: {e}")),
-                };
-            }
-            Decision::Manual => {
-                return copy(if foreground != window {
-                    "the focused window changed".into()
-                } else {
-                    "keys were held too long".into()
-                });
-            }
-            Decision::Wait => tokio::time::sleep(Duration::from_millis(25)).await,
-            Decision::Cancel => return Ok(None),
-        }
-    }
+    env.desk
+        .deliver(Delivery {
+            take: start.id,
+            window: start.context.window.handle.unwrap_or(0),
+            request,
+        })
+        .await
 }
 
 #[cfg(test)]
@@ -901,11 +852,13 @@ mod tests {
     use super::*;
     use crate::client::{Client, Profile, Route};
     use crate::context::{AppInfo, Element, WindowInfo};
+    use crate::desk::LocalDesk;
     use crate::fake::RecordingSink;
     use crate::flow::{Catalog, Memory};
     use axum::Json;
     use axum::routing::{get, post};
     use serde_json::{Value, json};
+    use std::sync::Mutex;
 
     #[derive(Clone, Default)]
     struct Seen {
@@ -1049,15 +1002,23 @@ mod tests {
         Arc::new(tree)
     }
 
+    /// The client's desk over fakes: text goes to `sink`, when there is one, and there is no
+    /// one to ask and nothing to read.
+    fn desk(sink: Option<&RecordingSink>) -> Arc<dyn Desk> {
+        let desk = LocalDesk::default();
+        Arc::new(match sink {
+            Some(sink) => desk.with_sink(sink.shared()),
+            None => desk,
+        })
+    }
+
     fn env(client: Client, sink: Option<&RecordingSink>) -> Env {
         Env {
             routes: routes(client),
             flows: builtin(),
             settings: Settings::default(),
-            sink: sink.map(RecordingSink::shared),
+            desk: desk(sink),
             investigator: None,
-            reader: None,
-            confirmer: None,
             tools: None,
             machines: Arc::new(Runtime::new()),
         }
@@ -1594,10 +1555,12 @@ mod tests {
                 .unwrap();
         let env = Env {
             flows: Arc::new(tree),
-            reader: Some(Arc::new(crate::flow::extract::Reader::new(
-                Arc::new(crate::recorded::RecordedInspector::new(recorded)),
-                crate::context::Privacy::default(),
-            ))),
+            desk: Arc::new(
+                LocalDesk::default().with_reader(Arc::new(crate::reader::Reader::new(
+                    Arc::new(crate::recorded::RecordedInspector::new(recorded)),
+                    crate::context::Privacy::default(),
+                ))),
+            ),
             ..env(client, None)
         };
         let (audio, finish) = one_second_of_audio();
@@ -1774,10 +1737,12 @@ mod tests {
                 .unwrap();
         let env = Env {
             flows: Arc::new(tree),
-            reader: Some(Arc::new(crate::flow::extract::Reader::new(
-                Arc::new(crate::recorded::RecordedInspector::new(recorded)),
-                crate::context::Privacy::default(),
-            ))),
+            desk: Arc::new(
+                LocalDesk::default().with_reader(Arc::new(crate::reader::Reader::new(
+                    Arc::new(crate::recorded::RecordedInspector::new(recorded)),
+                    crate::context::Privacy::default(),
+                ))),
+            ),
             ..env(client, None)
         };
         let (audio, finish) = one_second_of_audio();
@@ -1874,8 +1839,9 @@ mod tests {
         settings.unconfirmed.push("open-channel".into());
         host.set_settings(settings);
         let none = std::collections::BTreeMap::new();
+        let desk: Arc<dyn Desk> = Arc::new(LocalDesk::default().with_automations(host));
         let tools = Arc::new(
-            ToolHost::new(&none, &std::collections::BTreeMap::new()).with_automations(host),
+            ToolHost::new(&none, &std::collections::BTreeMap::new()).with_desk(desk.clone()),
         );
         let tree = FlowTree::load(
             &Memory::new("test", [("run.toml", "description = \"Runs automations\"")]),
@@ -1887,6 +1853,7 @@ mod tests {
         let env = Env {
             flows: Arc::new(tree),
             tools: Some(tools),
+            desk,
             ..env(client, None)
         };
         let trace = take(&env, None).await;
@@ -1932,7 +1899,7 @@ confirm = false
     #[tokio::test]
     async fn a_tool_node_fills_its_arguments_asks_and_answers_with_the_result() {
         let (client, seen) = server(prefer(&["work"]), "Launch moved").await;
-        let (confirm, mut asked) = mpsc::unbounded_channel::<crate::flow::confirm::Confirmation>();
+        let (confirm, mut asked) = mpsc::unbounded_channel::<crate::confirm::Confirmation>();
         let approver = tokio::spawn(async move {
             let call = asked.recv().await.unwrap();
             let tool = call.tool.clone();
@@ -1945,9 +1912,10 @@ confirm = false
                 "tool = \"note\"\n[args.title]\ngenerate = \"A short title\"\n[args.folder]\nchoose = { inbox = \"Unsorted\", work = \"About work\" }\n[args.body]\nvalue = \"{transcript}\"",
             )]),
             tools: Some(tool_host()),
-            confirmer: Some(Arc::new(crate::flow::confirm::ChannelConfirmer::new(
-                confirm,
-            ))),
+            desk: Arc::new(
+                LocalDesk::default()
+                    .with_confirmer(Arc::new(crate::confirm::ChannelConfirmer::new(confirm))),
+            ),
             ..env(client, None)
         };
         let trace = take(&env, None).await;
@@ -1976,7 +1944,6 @@ confirm = false
                 "tool = \"note\"\n[args.title]\nvalue = \"x\"\n[args.folder]\nvalue = \"y\"\n[args.body]\nvalue = \"z\"",
             )]),
             tools: Some(tool_host()),
-            confirmer: None,
             ..env(client, None)
         };
         let trace = take(&env, None).await;
@@ -2653,8 +2620,6 @@ confirm = false
         let env = Env {
             flows: agent_tree(&files),
             tools: Some(tool_host()),
-            // No one to ask: a tool call is declined.
-            confirmer: None,
             machines: Arc::new(Runtime::new()),
             ..env(client, Some(&RecordingSink::new(Some(7))))
         };
@@ -2739,10 +2704,12 @@ confirm = false
         let machines = Arc::new(Runtime::new());
         let env = Env {
             flows: tree,
-            reader: Some(Arc::new(crate::flow::extract::Reader::new(
-                Arc::new(crate::recorded::RecordedInspector::new(recorded)),
-                crate::context::Privacy::default(),
-            ))),
+            desk: Arc::new(
+                LocalDesk::default().with_reader(Arc::new(crate::reader::Reader::new(
+                    Arc::new(crate::recorded::RecordedInspector::new(recorded)),
+                    crate::context::Privacy::default(),
+                ))),
+            ),
             machines: machines.clone(),
             ..env(client, None)
         };
@@ -2796,8 +2763,6 @@ confirm = false
                 ("told/transcript.toml", "output = \"clipboard\""),
             ]),
             tools: Some(tool_host()),
-            // No one to ask: the call is declined.
-            confirmer: None,
             ..env(client, Some(&RecordingSink::new(Some(7))))
         };
         let trace = say(&env, 1, "note that the build is green").await;
@@ -2889,7 +2854,7 @@ allow = ["research/search/*"]
         let (flows, tools) = with_search_example();
         let labels = &["research", "search-1", "opening", "end"];
         let (client, seen) = server(prefer(labels), "1. jevons-fsm").await;
-        let (confirm, mut asked) = mpsc::unbounded_channel::<crate::flow::confirm::Confirmation>();
+        let (confirm, mut asked) = mpsc::unbounded_channel::<crate::confirm::Confirmation>();
         let approver = tokio::spawn(async move {
             let call = asked.recv().await.unwrap();
             call.reply.send(true).unwrap();
@@ -2899,9 +2864,10 @@ allow = ["research/search/*"]
         let env = Env {
             flows,
             tools: Some(tools),
-            confirmer: Some(Arc::new(crate::flow::confirm::ChannelConfirmer::new(
-                confirm,
-            ))),
+            desk: Arc::new(
+                LocalDesk::default()
+                    .with_confirmer(Arc::new(crate::confirm::ChannelConfirmer::new(confirm))),
+            ),
             machines: machines.clone(),
             ..env(client, None)
         };

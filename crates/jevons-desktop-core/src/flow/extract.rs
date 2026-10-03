@@ -5,16 +5,9 @@
 //! one the same way ([`trial`]) and writes it back into its node file ([`save`]).
 
 use super::spec::{ExtractAs, ExtractSpec};
-use crate::context::{ContextSnapshot, Privacy};
-use crate::platform::ContextInspector;
-use crate::xpath::{self, Document, Limits, Node, Value, Variables};
-pub use jevons_desktop_protocol::extract::{Extract, Extracted, MAX_LIMIT};
-use serde_json::{Map, Value as Json, json};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-
-/// How long one extract may read before it gives up.
-const DEADLINE: Duration = Duration::from_secs(5);
+use crate::context::ContextSnapshot;
+pub use jevons_desktop_protocol::extract::{Extract, Extracted, MAX_LIMIT, ReadScreen, Variables};
+use std::time::Instant;
 
 /// The extracts the tree reads in `snapshot`'s context: those of every node whose guard, and
 /// its ancestors', passes (whatever the decisions choose), lazy ones included, and whose `app`
@@ -67,7 +60,7 @@ pub struct Reading {
 pub fn read_applicable(
     tree: &super::FlowTree,
     snapshot: &ContextSnapshot,
-    reader: &Reader,
+    reader: &dyn ReadScreen,
 ) -> Vec<Reading> {
     let mut frame = super::frame::Frame::new(snapshot.clone(), "");
     let mut out = Vec::new();
@@ -97,7 +90,7 @@ fn bind(extract: &Extract, frame: &super::frame::Frame) -> Variables {
         .into_iter()
         .map(|path| {
             let value = frame.value(&path).unwrap_or_default();
-            (path.join("."), Value::String(value))
+            (path.join("."), value)
         })
         .collect()
 }
@@ -129,7 +122,7 @@ pub fn trial(
     name: &str,
     spec: &ExtractSpec,
     snapshot: &ContextSnapshot,
-    reader: &Reader,
+    reader: &dyn ReadScreen,
 ) -> Trial {
     let began = Instant::now();
     let extract = match Extract::compile(name, spec) {
@@ -290,172 +283,14 @@ pub fn as_toml(name: &str, spec: &ExtractSpec) -> String {
     document.to_string()
 }
 
-/// Reads extracts from the platform's interface.
-pub struct Reader {
-    pub inspector: Arc<dyn ContextInspector>,
-    pub privacy: Privacy,
-}
-
-impl Reader {
-    pub fn new(inspector: Arc<dyn ContextInspector>, privacy: Privacy) -> Self {
-        Self { inspector, privacy }
-    }
-
-    /// Evaluates `extract` for a take that started in `snapshot`. Accessibility calls block:
-    /// call it off the async workers.
-    pub fn read(
-        &self,
-        extract: &Extract,
-        snapshot: &ContextSnapshot,
-        variables: &Variables,
-    ) -> Extracted {
-        self.read_outlined(extract, snapshot, variables, 0).0
-    }
-
-    /// [`read`](Self::read), with a line for each of the first `lines` elements or values the
-    /// expression selected.
-    pub fn read_outlined(
-        &self,
-        extract: &Extract,
-        snapshot: &ContextSnapshot,
-        variables: &Variables,
-        lines: usize,
-    ) -> (Extracted, Vec<String>) {
-        let (windows, note) = xpath::readable_windows(
-            &*self.inspector,
-            snapshot,
-            &extract.spec.scope,
-            &self.privacy,
-        );
-        let empty = |note: Option<String>| {
-            let found = Extracted {
-                value: empty(extract.spec.kind),
-                matches: 0,
-                note,
-            };
-            (found, Vec::new())
-        };
-        if windows.is_empty() {
-            return empty(note);
-        }
-        let max_text = self.privacy.max_context_chars.max(200);
-        let mut document = Document::new(&*self.inspector, &windows).with_limits(Limits {
-            deadline: Some(Instant::now() + DEADLINE),
-            max_text,
-            ..Limits::default()
-        });
-        let Some(window) = document.window(0) else {
-            return empty(note);
-        };
-        let value = match document.evaluate(&extract.xpath, window, variables) {
-            Ok(value) => value,
-            Err(e) => return empty(Some(format!("{}: {e}", extract.spec.xpath))),
-        };
-        let matches = match &value {
-            Value::Nodes(nodes) => nodes.len(),
-            _ => 1,
-        };
-        let outline = match &value {
-            _ if lines == 0 => Vec::new(),
-            Value::Nodes(nodes) => {
-                let first = Value::Nodes(nodes.iter().take(lines).copied().collect());
-                xpath::describe(&mut document, &first, 160)
-            }
-            other => xpath::describe(&mut document, other, 160),
-        };
-        match project(&mut document, extract, &value, variables) {
-            Ok(value) => (
-                Extracted {
-                    value,
-                    matches,
-                    note,
-                },
-                outline,
-            ),
-            Err(e) => empty(Some(e)),
-        }
-    }
-}
-
-fn empty(kind: ExtractAs) -> Json {
-    match kind {
-        ExtractAs::List | ExtractAs::Table => json!([]),
-        ExtractAs::Count => json!(0),
-        ExtractAs::Exists => json!(false),
-        ExtractAs::Text => Json::Null,
-    }
-}
-
-fn text_or_null(text: String) -> Json {
-    if text.trim().is_empty() {
-        Json::Null
-    } else {
-        Json::String(text)
-    }
-}
-
-/// The value an expression evaluated to, as the extract's answer.
-fn project(
-    document: &mut Document<'_>,
-    extract: &Extract,
-    value: &Value,
-    variables: &Variables,
-) -> Result<Json, String> {
-    let limit = extract.limit;
-    let error = |e: xpath::EvalError| e.to_string();
-    Ok(match extract.spec.kind {
-        ExtractAs::Text => text_or_null(document.text(value).map_err(error)?),
-        ExtractAs::List => match value {
-            Value::Nodes(nodes) => {
-                let mut out = Vec::new();
-                for node in nodes.iter().take(limit) {
-                    let text = document.string_of(*node).map_err(error)?;
-                    if !text.trim().is_empty() {
-                        out.push(Json::String(text));
-                    }
-                }
-                Json::Array(out)
-            }
-            other => json!([document.text(other).map_err(error)?]),
-        },
-        ExtractAs::Count => match value {
-            Value::Nodes(nodes) => json!(nodes.len()),
-            Value::Number(n) if n.is_finite() => json!(n.round() as i64),
-            _ => Json::Null,
-        },
-        ExtractAs::Exists => json!(xpath::eval::boolean(value)),
-        ExtractAs::Table => {
-            let Value::Nodes(nodes) = value else {
-                return Err(format!(
-                    "{} does not select elements, so it cannot make a table",
-                    extract.spec.xpath
-                ));
-            };
-            let mut rows = Vec::new();
-            for node in nodes.iter().take(limit) {
-                if !matches!(node, Node::Element(_)) {
-                    continue;
-                }
-                let mut row = Map::new();
-                for (field, xpath) in &extract.fields {
-                    let cell = document.evaluate(xpath, *node, variables).map_err(error)?;
-                    row.insert(
-                        field.clone(),
-                        text_or_null(document.text(&cell).map_err(error)?),
-                    );
-                }
-                rows.push(Json::Object(row));
-            }
-            Json::Array(rows)
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::{AppInfo, WindowInfo};
+    use crate::context::{AppInfo, Privacy, WindowInfo};
+    use crate::reader::Reader;
     use crate::recorded::{RecordedInspector, RecordedTree};
+    use serde_json::json;
+    use std::sync::Arc;
 
     fn reader(privacy: Privacy) -> Reader {
         let tree: RecordedTree = serde_json::from_str(include_str!(
@@ -477,95 +312,6 @@ mod tests {
             },
             ..ContextSnapshot::default()
         }
-    }
-
-    fn extract(text: &str) -> Extract {
-        let spec: ExtractSpec = toml::from_str(text).unwrap();
-        Extract::compile("x", &spec).unwrap()
-    }
-
-    #[test]
-    fn each_kind_of_answer_fits_its_shape() {
-        let reader = reader(Privacy::default());
-        let slack = snapshot("slack.exe");
-        let none = Variables::new();
-        let read = |text: &str| reader.read(&extract(text), &slack, &none);
-        let channels = read(
-            "xpath = \"//TreeItem[.//Group[has-class(@class, 'p-channel_sidebar__channel')]]/@name\"\nas = \"list\"\nlimit = 3",
-        );
-        assert_eq!(
-            channels.value,
-            json!(["general", "launch 3 unread messages", "random"])
-        );
-        assert_eq!(channels.matches, 5);
-        assert_eq!(
-            read("xpath = \"count(//TreeItem)\"\nas = \"count\"").value,
-            json!(7)
-        );
-        assert_eq!(
-            read("xpath = \"//ListItem\"\nas = \"count\"").value,
-            json!(6)
-        );
-        assert_eq!(
-            read("xpath = \"//Edit[has-class(@class,'ql-editor')]\"\nas = \"exists\"").value,
-            json!(true)
-        );
-        assert_eq!(
-            read("xpath = \"//Edit[has-class(@class,'ql-editor')]/@name\"").value,
-            json!("Message #general")
-        );
-        assert_eq!(read("xpath = \"//Slider\"").value, Json::Null);
-        let messages = read(
-            "xpath = \"//ListItem[.//Text][position() > last() - 2]\"\nas = \"table\"\n\
-             fields = { author = \".//Button[1]/@name\", text = \"string(.//Text[last()])\", \
-             reaction = \".//Group/@name\" }",
-        );
-        assert_eq!(
-            messages.value,
-            json!([
-                {"author": "Bo Chen", "text": "Thanks! I will update the plan.", "reaction": "1 reaction"},
-                {"author": "Ana Silva", "text": "Can someone review the release notes?", "reaction": null},
-            ])
-        );
-        assert_eq!(
-            extract("xpath = \".\"\nas = \"table\"\nfields = { a = \"@name\" }")
-                .shape
-                .json_schema()["type"],
-            json!(["array", "null"])
-        );
-    }
-
-    #[test]
-    fn variables_bind_values_and_other_apps_need_permission() {
-        let slack = snapshot("slack.exe");
-        let mut variables = Variables::new();
-        variables.insert("transcript".into(), Value::String("random".into()));
-        let by_name = extract(
-            "xpath = \"//TreeItem[@name = $transcript]/following-sibling::TreeItem[1]/@name\"",
-        );
-        assert_eq!(by_name.variables(), [vec!["transcript".to_string()]]);
-        let closed = reader(Privacy::default());
-        assert_eq!(
-            closed.read(&by_name, &slack, &variables).value,
-            json!("Direct messages")
-        );
-        // From another application, Slack is readable only when the settings allow it.
-        let notepad = snapshot("notepad.exe");
-        let scoped = extract(
-            "xpath = \"/Window[@app='slack.exe']//TreeItem[2]/@name\"\nscope = [\"slack.exe\"]",
-        );
-        let denied = closed.read(&scoped, &notepad, &variables);
-        assert_eq!(denied.value, Json::Null);
-        assert!(denied.note.unwrap().contains("read_other_windows"));
-        let open = reader(Privacy {
-            read_other_windows: true,
-            readable_apps: vec!["slack.exe".into()],
-            ..Privacy::default()
-        });
-        assert_eq!(
-            open.read(&scoped, &notepad, &variables).value,
-            json!("general")
-        );
     }
 
     #[test]
@@ -616,24 +362,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn mistakes_are_reported_by_field() {
-        let compile = |text: &str| {
-            let spec: ExtractSpec = toml::from_str(text).unwrap();
-            Extract::compile("msgs", &spec).unwrap_err().join("; ")
-        };
-        assert!(compile("xpath = \"//ListItem[\"").starts_with("extract.msgs.xpath: column 12"));
-        assert!(compile("xpath = \"//ListItem\"\nas = \"table\"").contains("needs `fields`"));
-        assert!(
-            compile("xpath = \"//ListItem\"\nfields = { a = \"@name\" }")
-                .contains("only for as = \"table\"")
-        );
-        assert!(
-            compile("xpath = \"//ListItem\"\nas = \"table\"\nfields = { A = \"@nam\" }")
-                .contains("fields.A: column names")
-        );
-        assert!(compile("xpath = \"//ListItem\"\nlimit = 0").contains("limit must be 1 to 500"));
-    }
     #[test]
     fn a_trial_reads_an_edited_expression_as_a_take_would() {
         use crate::flow::{Catalog, FlowTree, defaults};

@@ -7,6 +7,7 @@
 //! questions go in one System One request, so a typical take costs one decision call. Every step
 //! is recorded as a [`FlowStep`] with the guards it checked and the probabilities it read.
 
+use super::confirm::DeskConfirmer;
 use super::extract::Extract;
 use super::frame::{Frame, Lazy};
 use super::guard::Check;
@@ -25,7 +26,8 @@ use crate::client::{
 };
 use crate::pipeline::{DecisionTrace, Env, GenerationTrace, Stage, StageKind, Trace, Update};
 use crate::platform::{Action, DeliveryMethod};
-use adk_core::{Tool, ToolConfirmationHandler};
+use adk_core::Tool;
+use jevons_desktop_protocol::desk::{Ask, NO_INVESTIGATOR, Read};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -36,6 +38,39 @@ use tokio::sync::mpsc::UnboundedSender;
 /// The most questions one merged decision request asks.
 const MAX_MERGED_QUESTIONS: usize = 12;
 const DEFAULT_QUESTION: &str = "Which of these fits what the user wants?";
+
+/// How flow files name the tools of the automations library.
+const SCRIPTS: &str = "script";
+
+/// An automation of the client's library, as a run node lists it.
+#[derive(Clone)]
+struct Automation {
+    name: String,
+    description: String,
+    /// Its arguments' JSON Schema.
+    parameters: Value,
+    approved: bool,
+}
+
+/// The automations the client offers.
+fn automations(env: &Env) -> Vec<Automation> {
+    let Some(host) = &env.tools else {
+        return Vec::new();
+    };
+    let prefix = format!("{SCRIPTS}:");
+    host.client_tools()
+        .tools
+        .into_iter()
+        .filter_map(|tool| {
+            Some(Automation {
+                name: tool.reference.strip_prefix(&prefix)?.to_string(),
+                description: tool.description,
+                parameters: tool.parameters,
+                approved: tool.approved,
+            })
+        })
+        .collect()
+}
 
 /// How one branch fared against its guard.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -482,12 +517,12 @@ impl Walker<'_> {
                 Box::pin(self.resolve(name)).await;
             }
         }
-        let variables: crate::xpath::Variables = extract
+        let variables: super::extract::Variables = extract
             .variables()
             .into_iter()
             .map(|path| {
                 let value = self.frame.value(&path).unwrap_or_default();
-                (path.join("."), crate::xpath::Value::String(value))
+                (path.join("."), value)
             })
             .collect();
         let key = extract.key(&variables);
@@ -503,26 +538,17 @@ impl Walker<'_> {
                 true,
             ),
             None => {
-                let found = match self.env.reader.clone() {
-                    Some(reader) => {
-                        let owned = extract.clone();
-                        let snapshot = self.frame.snapshot.clone();
-                        tokio::task::spawn_blocking(move || {
-                            reader.read(&owned, &snapshot, &variables)
-                        })
-                        .await
-                        .unwrap_or_else(|e| super::extract::Extracted {
-                            value: extract.shape.empty(),
-                            matches: 0,
-                            note: Some(format!("The extract stopped: {e}")),
-                        })
-                    }
-                    None => super::extract::Extracted {
-                        value: extract.shape.empty(),
-                        matches: 0,
-                        note: Some("No interface reader is available here".into()),
-                    },
-                };
+                // The interface is the client's to read.
+                let found = self
+                    .env
+                    .desk
+                    .read(Read {
+                        name: extract.name.clone(),
+                        spec: extract.spec.clone(),
+                        snapshot: self.frame.snapshot.clone(),
+                        variables,
+                    })
+                    .await;
                 self.memo.insert(key, found.value.clone());
                 (found, false)
             }
@@ -588,7 +614,7 @@ impl Walker<'_> {
                     None => super::investigate::Found {
                         value: investigation.shape.empty(),
                         steps: Vec::new(),
-                        note: Some("No context investigator is available here".into()),
+                        note: Some(NO_INVESTIGATOR.into()),
                     },
                 };
                 let answer = investigation.shape.conform(&found.value);
@@ -671,11 +697,7 @@ impl Walker<'_> {
 
     /// How many approved automations a run node may run.
     fn runnable(&self, r: &RunSpec) -> usize {
-        let Some(automations) = self.env.tools.as_ref().and_then(|t| t.automations()) else {
-            return 0;
-        };
-        automations
-            .list()
+        automations(self.env)
             .into_iter()
             .filter(|a| {
                 a.approved
@@ -1089,10 +1111,14 @@ impl Walker<'_> {
             let _ = self
                 .updates
                 .send(Update::Progress("waiting for your confirmation".into()));
-            let approved = match &self.env.confirmer {
-                Some(confirmer) => confirmer.ask(&resolved.reference, &arguments).await,
-                None => false,
-            };
+            let approved = self
+                .env
+                .desk
+                .confirm(Ask {
+                    tool: resolved.reference.clone(),
+                    arguments: arguments.clone(),
+                })
+                .await;
             record.confirmed = Some(approved);
             if !approved {
                 self.trace.calls.push(record);
@@ -1146,14 +1172,13 @@ impl Walker<'_> {
             .tools
             .clone()
             .ok_or(ClientError::NotServed("Tools (the automations library)"))?;
-        let automations = host
-            .automations()
-            .ok_or(ClientError::NotServed("The automations library"))?;
+        if !host.client_tools().served.iter().any(|s| s == SCRIPTS) {
+            return Err(ClientError::NotServed("The automations library"));
+        }
         let allowed = |name: &str| {
             r.automations.is_empty() || r.automations.iter().any(|a| a == "*" || a == name)
         };
-        let (listed, waiting): (Vec<_>, Vec<_>) = automations
-            .list()
+        let (listed, waiting): (Vec<_>, Vec<_>) = automations(self.env)
             .into_iter()
             .filter(|a| allowed(&a.name))
             .partition(|a| a.approved);
@@ -1462,11 +1487,7 @@ impl Walker<'_> {
             max_steps: a.max_steps.unwrap_or(4),
             output_schema: None,
             confirm,
-            confirmer: self
-                .env
-                .confirmer
-                .clone()
-                .map(|c| c as Arc<dyn ToolConfirmationHandler>),
+            confirmer: Some(Arc::new(DeskConfirmer(self.env.desk.clone()))),
         };
         let began = Instant::now();
         let outcome = loops::run(Arc::new(llm), task).await;

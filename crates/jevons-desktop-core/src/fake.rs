@@ -3,9 +3,11 @@
 use crate::context::{ContextSnapshot, Privacy};
 use crate::levels::Meter;
 use crate::platform::{
-    AudioDevice, AudioEvent, AudioSource, CaptureHandle, ContextProvider, DeliveryOutcome,
-    DeliveryRequest, PlatformError, SAMPLE_RATE, SinkCapabilities, TextSink,
+    AudioDevice, AudioEvent, AudioSource, CaptureHandle, ContextInspector, ContextProvider,
+    DeliveryOutcome, DeliveryRequest, PlatformError, SAMPLE_RATE, SinkCapabilities, TextSink,
+    UiElement, WindowEntry,
 };
+use crate::recorded::{RecordedElement, RecordedInspector, RecordedTree, RecordedWindow};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -162,4 +164,74 @@ impl TextSink for RecordingSink {
         self.recorded.lock().unwrap().clipboard = Some(text.into());
         Ok(())
     }
+}
+
+fn el(role: &str, name: &str, children: Vec<RecordedElement>) -> RecordedElement {
+    RecordedElement {
+        element: UiElement {
+            role: role.into(),
+            name: name.into(),
+            ..UiElement::default()
+        },
+        children,
+    }
+}
+
+/// A chat app as the context investigator sees it: wrappers, a channel header and a message
+/// list, with a mail window it may not read behind it.
+pub fn slack_inspector() -> Arc<dyn ContextInspector> {
+    let messages = el(
+        "List",
+        "Messages in general",
+        vec![
+            el(
+                "ListItem",
+                "",
+                vec![
+                    el("Text", "Ana", vec![]),
+                    el("Text", "Launch moved to Friday", vec![]),
+                ],
+            ),
+            el(
+                "ListItem",
+                "",
+                vec![el("Text", "Bo", vec![]), el("Text", "Thanks!", vec![])],
+            ),
+        ],
+    );
+    let body = el(
+        "Group",
+        "",
+        vec![el(
+            "Group",
+            "",
+            vec![el("Heading", "general", vec![]), messages],
+        )],
+    );
+    let tree = RecordedTree {
+        windows: vec![
+            RecordedWindow {
+                window: WindowEntry {
+                    id: "w-slack".into(),
+                    app: "slack.exe".into(),
+                    title: "general - Acme".into(),
+                    front: true,
+                },
+                children: vec![
+                    el("Pane", "", vec![body]),
+                    el("Edit", "Message #general", vec![]),
+                ],
+            },
+            RecordedWindow {
+                window: WindowEntry {
+                    id: "w-mail".into(),
+                    app: "outlook.exe".into(),
+                    title: "Inbox".into(),
+                    front: false,
+                },
+                children: vec![el("Text", "Secret mail", vec![])],
+            },
+        ],
+    };
+    Arc::new(RecordedInspector::new(tree))
 }

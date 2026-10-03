@@ -16,6 +16,7 @@ embedded = ["dep:jevons-api"]
 jevons-api = { workspace = true, optional = true }
 jevons-audio.workspace = true
 jevons-desktop-core = { workspace = true, features = ["testing"] }
+jevons-desktop-protocol.workspace = true
 active-win-pos-rs.workspace = true
 arboard.workspace = true
 clap.workspace = true

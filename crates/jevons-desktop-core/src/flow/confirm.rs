@@ -1,110 +1,35 @@
-//! Confirmation before a tool runs: the call goes to whoever shows it (the feedback bubble),
-//! and the take waits for the answer. Unanswered calls are denied.
+//! Confirmation before a tool runs: the desk asks the user, and the call waits for the answer.
+//! A desk with no one at it denies every call.
 
 use adk_core::{
     ToolConfirmationDecision, ToolConfirmationHandler, ToolConfirmationRequest, async_trait,
 };
-use serde_json::Value;
-use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use jevons_desktop_protocol::desk::{Ask, Desk};
+use std::sync::Arc;
 
-/// How long a call waits for the user before it is denied.
-pub const WAIT: Duration = Duration::from_secs(60);
+/// Asks the desk about each call a tool loop wants confirmed.
+pub struct DeskConfirmer(pub Arc<dyn Desk>);
 
-/// A call waiting for the user.
-#[derive(Debug)]
-pub struct Confirmation {
-    pub tool: String,
-    pub arguments: Value,
-    /// `true` runs it.
-    pub reply: oneshot::Sender<bool>,
-}
-
-/// Sends each call to be confirmed down a channel and waits for the reply.
-#[derive(Debug)]
-pub struct ChannelConfirmer {
-    sender: mpsc::UnboundedSender<Confirmation>,
-    wait: Duration,
-}
-
-impl ChannelConfirmer {
-    pub fn new(sender: mpsc::UnboundedSender<Confirmation>) -> Self {
-        Self { sender, wait: WAIT }
-    }
-
-    pub fn with_wait(mut self, wait: Duration) -> Self {
-        self.wait = wait;
-        self
-    }
-
-    /// Asks about one call: `true` when the user approved it in time.
-    pub async fn ask(&self, tool: &str, arguments: &Value) -> bool {
-        let (reply, answer) = oneshot::channel();
-        let sent = self.sender.send(Confirmation {
-            tool: tool.into(),
-            arguments: arguments.clone(),
-            reply,
-        });
-        if sent.is_err() {
-            return false;
-        }
-        matches!(tokio::time::timeout(self.wait, answer).await, Ok(Ok(true)))
+impl std::fmt::Debug for DeskConfirmer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DeskConfirmer")
     }
 }
 
 #[async_trait]
-impl ToolConfirmationHandler for ChannelConfirmer {
+impl ToolConfirmationHandler for DeskConfirmer {
     async fn decide(
         &self,
         request: &ToolConfirmationRequest,
     ) -> adk_core::Result<ToolConfirmationDecision> {
-        Ok(if self.ask(&request.tool_name, &request.args).await {
+        let ask = Ask {
+            tool: request.tool_name.clone(),
+            arguments: request.args.clone(),
+        };
+        Ok(if self.0.confirm(ask).await {
             ToolConfirmationDecision::Approve
         } else {
             ToolConfirmationDecision::Deny
         })
-    }
-}
-
-/// Denies every call: headless runs never run tools that need confirmation.
-#[derive(Debug, Default)]
-pub struct DenyAll;
-
-#[async_trait]
-impl ToolConfirmationHandler for DenyAll {
-    async fn decide(
-        &self,
-        _: &ToolConfirmationRequest,
-    ) -> adk_core::Result<ToolConfirmationDecision> {
-        Ok(ToolConfirmationDecision::Deny)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[tokio::test]
-    async fn a_call_runs_only_when_approved_in_time() {
-        let (sender, mut asked) = mpsc::unbounded_channel();
-        let confirmer = ChannelConfirmer::new(sender).with_wait(Duration::from_millis(100));
-        let approve = tokio::spawn(async move {
-            let first = asked.recv().await.unwrap();
-            assert_eq!(first.tool, "send");
-            first.reply.send(true).unwrap();
-            let second = asked.recv().await.unwrap();
-            second.reply.send(false).unwrap();
-            // The third is never answered.
-            let _third = asked.recv().await.unwrap();
-            tokio::time::sleep(Duration::from_millis(300)).await;
-        });
-        assert!(confirmer.ask("send", &json!({"to": "Ana"})).await);
-        assert!(!confirmer.ask("send", &json!({})).await);
-        assert!(
-            !confirmer.ask("send", &json!({})).await,
-            "unanswered calls are denied"
-        );
-        approve.await.unwrap();
     }
 }
