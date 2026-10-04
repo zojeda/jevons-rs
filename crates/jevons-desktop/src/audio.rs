@@ -160,7 +160,11 @@ fn open(
     }));
     let errors = events.clone();
     let on_error = move |e: cpal::Error| {
-        let _ = errors.send(AudioEvent::Failed(e.to_string()));
+        if ends_capture(e.kind()) {
+            let _ = errors.send(AudioEvent::Failed(e.to_string()));
+        } else {
+            tracing::warn!(error = %e, "The microphone skipped");
+        }
     };
     let config = supported.config();
     let sink = converter.clone();
@@ -205,9 +209,24 @@ fn downmix<T: Copy>(data: &[T], channels: usize, to_f32: impl Fn(T) -> f32) -> V
         .collect()
 }
 
+/// Whether a stream error ends the capture. A glitch does not (the system was busy for a
+/// moment and some samples were lost), nor does a change of route the stream followed by
+/// itself: the take goes on with what is heard.
+fn ends_capture(kind: cpal::ErrorKind) -> bool {
+    !matches!(kind, cpal::ErrorKind::Xrun | cpal::ErrorKind::DeviceChanged)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_glitch_does_not_end_the_capture_and_a_lost_device_does() {
+        assert!(!ends_capture(cpal::ErrorKind::Xrun));
+        assert!(!ends_capture(cpal::ErrorKind::DeviceChanged));
+        assert!(ends_capture(cpal::ErrorKind::DeviceNotAvailable));
+        assert!(ends_capture(cpal::ErrorKind::BackendError));
+    }
 
     #[test]
     fn stereo_is_averaged_and_output_comes_in_100_ms_chunks() {

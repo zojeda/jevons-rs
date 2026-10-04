@@ -50,9 +50,12 @@ Tests: none yet
 
 Capture opens the named device, or the default one, and lists the devices for the Settings tab.
 It averages the channels to mono, resamples to 24 kHz PCM16, and sends 100 ms chunks, each with
-its meter levels. A device that fails or goes away ends the take with its error.
+its meter levels. A device that fails or goes away ends the take with its error. A glitch the system reports while it is busy (a buffer
+overrun, which loses a few samples) and a change of route the stream follows by itself do not end
+the capture: they are logged and the take goes on. Any other stream error fails the take, with
+the microphone's message.
 
-Tests: `stereo_is_averaged_and_output_comes_in_100_ms_chunks`
+Tests: `stereo_is_averaged_and_output_comes_in_100_ms_chunks`, `a_glitch_does_not_end_the_capture_and_a_lost_device_does`
 
 ### R6 A held hotkey's repeats stay out of the application
 
