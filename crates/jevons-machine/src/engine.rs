@@ -390,15 +390,23 @@ pub fn weigh(candidates: &[Candidate], facts: &dyn Facts) -> Weighed {
     let passed: Vec<usize> = (0..candidates.len())
         .filter(|&i| verdicts[i].passed)
         .collect();
-    let preferred: Vec<usize> = passed
+    let mut preferred: Vec<usize> = passed
         .iter()
         .copied()
         .filter(|&i| verdicts[i].preferred)
         .collect();
-    let rules = preferred
-        .iter()
-        .flat_map(|&i| verdicts[i].rules.iter().cloned())
-        .collect();
+    // What already runs has the words before something new starts: among the preferred, the
+    // candidates from outside the machine stand alone when there are any.
+    if preferred.iter().any(|&i| candidates[i].to.is_none()) {
+        preferred.retain(|&i| candidates[i].to.is_none());
+    }
+    // Each rule once, however many candidates it preferred.
+    let mut rules: Vec<String> = Vec::new();
+    for rule in preferred.iter().flat_map(|&i| &verdicts[i].rules) {
+        if !rules.contains(rule) {
+            rules.push(rule.clone());
+        }
+    }
     Weighed {
         fallback: candidates
             .iter()
@@ -2059,6 +2067,36 @@ mod tests {
         let effects = agent.handle_among(&def, Input::Event(Event::Said), &prefer, running());
         assert!(!asks(&effects));
         assert!(matches!(&effects[1], Effect::Passed { label, .. } if label == "search-2"));
+        // When rules prefer it and one of the machine's own transitions too, what already
+        // runs has the words: it is passed them, and nothing new starts.
+        let mut agent = Instance::resting(&def);
+        let both = Rules {
+            prefer: vec!["search", "search-2"],
+            ..Rules::default()
+        };
+        let effects = agent.handle_among(&def, Input::Event(Event::Said), &both, running());
+        assert!(!asks(&effects));
+        assert!(matches!(&effects[1], Effect::Passed { label, .. } if label == "search-2"));
+        assert_eq!(agent.state(), "idle");
+        // Two that run and are both preferred: the oracle says which, among them alone.
+        let mut agent = Instance::resting(&def);
+        let two = || {
+            vec![
+                waits("search", "The first search waits"),
+                waits("search", "The second search waits"),
+            ]
+        };
+        let all = Rules {
+            prefer: vec!["search", "search-2", "search-3"],
+            ..Rules::default()
+        };
+        let effects = agent.handle_among(&def, Input::Event(Event::Said), &all, two());
+        let asked: Vec<&str> = question(&effects)
+            .candidates
+            .iter()
+            .map(|c| c.label.as_str())
+            .collect();
+        assert_eq!(asked, ["search-2", "search-3"]);
         let alone = super::tests::def("[*] --> busy\nbusy --> [*] : task_done", &[]);
         let mut agent = Instance::resting(&alone);
         let effects = agent.handle_among(&alone, Input::Event(Event::Said), &none(), running());

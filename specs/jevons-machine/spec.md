@@ -277,6 +277,11 @@ single one left is asked about, yes or no. One chosen is passed the event, by it
 place among those the host gave, and the machine stays where it is. `among` and `question` give
 the candidates and the oracle's question ahead of any take.
 
+What already runs has the words before something new starts: when rules prefer a candidate from
+outside and one of the machine's own transitions, the one from outside stands alone, and is
+passed the event with no oracle. Several from outside that rules prefer are the oracle's to
+choose between, among them alone. A rule that preferred several candidates is named once.
+
 Tests: `a_candidate_from_outside_may_take_the_event_instead_of_a_transition`
 
 ### R30 A task's end is an event

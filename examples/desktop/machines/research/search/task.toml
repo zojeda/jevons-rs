@@ -8,8 +8,8 @@ unsure = "parent"
 # Everything this task may call: the search reads, opening a result asks first.
 tools = ["web_search", "open_url"]
 
-# From the results, another search: by rule when the words start with "Search", "Busca", "Buscar"
-# or "Búscame" (the words that start the task), otherwise when the model reads it so.
+# From the results, another search: by rule when the words start as those that start the task do
+# ("Search …", "Busca …", "Ah, buscame …"), otherwise when the model reads it so.
 [guards.again]
-prefer = { transcript = "(?i)^\\W*(search|b[uú]sca(r|me|lo|la|los|las|nos)?)\\b" }
+prefer = { transcript = "(?i)^\\W*(?:(?:ah|eh|ey|oh|ok|okay|bueno|dale|che|a ver|y|entonces|ahora|por favor|please|now|so|and)\\W+){0,2}(?:search|b[uú]sc[aá](?:r|me|lo|la|los|las|nos|melo|mela)?)\\b" }
 criterion = "The user asks to search for something else"

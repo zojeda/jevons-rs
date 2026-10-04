@@ -174,7 +174,9 @@ fsm Search {
   criterion: the guard's sentence (`[the user wants one of the results opened]`), else the target
   folder's `description` (the diagram's state description when it has no folder). Below
   `min_probability` it takes the transition marked `[else]`, or, on `said`, stays where it was:
-  an unsure take never moves a task on. With `unsure = "parent"` in its node file, the machine
+  an unsure take never moves a task on. A waiting task whose own rule prefers the words takes
+  them before its agent starts another, so "Search …" while a search waits searches again in
+  that search. With `unsure = "parent"` in its node file, the machine
   that stays also hands what was said to the one above (a task to its agent, an agent to the
   root), which takes it as if that machine were not there: this is how dictation keeps working
   while a task waits. The root's question, the agent's, the task's and the first decision of the

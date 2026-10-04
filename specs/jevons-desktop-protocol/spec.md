@@ -82,7 +82,8 @@ again when they change), `take` (where the user was, and whether it is push-to-t
 dictation or a transcription alone), `audio` and `finish` for that take, `transcript` (a take
 from text), `cancel`, `cancel_task`, `answer` (the user's choice for an unsure decision) and
 `reply`. The server says: `welcome`, `effect`, `update`
-(what a take is doing), `trace` (a finished take), `transcribed`, `timer`, `answered` and `stale` (a timer's or an answer's
+(what a take is doing, among it `task`: the words are for a task that was waiting, named by its
+instance), `trace` (a finished take), `transcribed`, `timer`, `answered` and `stale` (a timer's or an answer's
 take, which the server starts by itself), `machines` (where the machines are) and `closed` (with
 why). Each is JSON with its name in `type`, and every message, effect, reply and update reads
 back as it was written.

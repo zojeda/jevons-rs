@@ -46,8 +46,9 @@ for it after all.
    Any search API that answers a GET with text works the same way, such as a SearXNG instance
    (`https://<host>/search?q={query}&format=json`). To try it with no key, search English
    Wikipedia's articles:
-   `https://en.wikipedia.org/w/api.php?action=query&generator=search&gsrsearch={query}&gsrlimit=5&prop=info&inprop=url&format=json&formatversion=2`,
-   with a `User-Agent` header, since Wikipedia refuses requests without one.
+   `https://en.wikipedia.org/w/api.php?action=query&generator=search&gsrsearch={query}&gsrlimit=5&prop=info%7Cextracts&inprop=url&exintro=1&explaintext=1&exsentences=3&exlimit=5&format=json&formatversion=2`,
+   with a `User-Agent` header, since Wikipedia refuses requests without one. The extracts give
+   the answer something to answer from; titles and addresses alone do not.
 
 2. Copy `research/` into the flows folder, beside `root.fsm`.
 
@@ -62,6 +63,18 @@ for it after all.
 
    ```toml
    tools = ["script:*", "web_search", "open_url"]
+   ```
+
+   The root's `question` there names two takers, the application and the assistant. Add the
+   third, so that a follow-up with none of the search words ("open the second one") is read as
+   one:
+
+   ```toml
+   question = """
+   What does the user want done with what they said? Decide who the words are for: the application \
+   (text to type there, including questions meant for the people they write to), you, the \
+   assistant listening (a question to answer for them), or something you are doing for them that \
+   waits for what they say next, such as a search whose results are shown."""
    ```
 
    The agent's own files say the rest: `research/agent.toml` holds its description, its tools

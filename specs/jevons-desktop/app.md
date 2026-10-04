@@ -241,14 +241,17 @@ Tests: none yet
 ### R25 A waiting task's bubble is its conversation
 
 While the task the latest take reached waits for what the user says next, its bubble stays after
-each take and timer, with no time limit, and the next take joins it: the earlier turns stay above the one being said, each
-with what was said and what the task answered or how the turn ended. **Copy** and **Insert** take
+each take and timer, with no time limit. The next take's bubble starts with that take alone:
+what is being said may be dictation, and earlier turns above it would read as part of it. Once
+the words turn out to be for the task (the server's `task` update), the earlier turns go above
+the take, each with what was said and what the task answered or how the turn ended. **Copy** and **Insert** take
 the latest text the conversation holds. **Close** hides it, and **Show the task's conversation**
 in the tray menu brings it back while the task waits and no take runs. When the task ends, the
-conversation ends with it: the bubble follows R9 again, a conversation left resting in it goes,
-and the next take starts a bubble of its own. A take that goes elsewhere while the task waits
-(dictation, another agent) is no part of the conversation: its bubble follows R9, and the
-conversation stays as it was for the next take that reaches the task. A take that reaches another
+conversation ends with it: the take that ended it shows its own outcome and no earlier turn, the
+bubble follows R9 again, and a conversation left resting in it goes. A take that goes elsewhere
+while the task waits (dictation, another agent) is no part of the conversation: its bubble
+follows R9 and never shows the task's turns, and the conversation stays as it was for the next
+take that reaches the task. A take that reaches another
 task starts that task's conversation.
 
 Tests: `a_waiting_task_s_turns_stay_in_the_bubble_for_the_next_take`, `menu_ids_map_to_commands`

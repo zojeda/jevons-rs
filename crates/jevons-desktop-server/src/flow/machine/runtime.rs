@@ -841,7 +841,7 @@ impl Runtime {
         turn.transcript = turn.trace.transcript.clone();
         turn.forget();
         // The bubble follows the task this take reaches, if it reaches one.
-        turn.forest.focus = None;
+        turn.shown = turn.forest.focus.take();
         let root = tree.root();
         let at = turn.forest.root();
         match (entry.filter(|id| *id != root), at) {
@@ -1301,6 +1301,8 @@ struct Turn<'a> {
     offered: HashMap<u64, Vec<u64>>,
     /// The user's answer to the next decision of a machine, in the model's place.
     told: Option<(u64, String)>,
+    /// The task the bubble followed when the take started, if it still waits.
+    shown: Option<u64>,
     /// The machines that handed what was said back up, by the machine above them: no longer
     /// candidates there for this take.
     handed: RefCell<HashMap<u64, Vec<u64>>>,
@@ -1335,6 +1337,7 @@ impl<'a> Turn<'a> {
             steps: 0,
             offered: HashMap::new(),
             told: None,
+            shown: None,
             handed: RefCell::new(HashMap::new()),
             above: HashMap::new(),
         }
@@ -1457,12 +1460,17 @@ impl<'a> Turn<'a> {
         if self.level(agent) != Level::Agent {
             return Vec::new();
         }
-        self.forest
+        let tasks: Vec<u64> = self
+            .forest
             .tasks(agent)
             .into_iter()
             .filter(|task| !self.instance(*task).engine.busy() && self.listens(*task))
             // One that handed the take back is not offered it again.
             .filter(|task| !self.handed_back(agent, *task))
+            .collect();
+        let several = tasks.len() > 1;
+        tasks
+            .into_iter()
             .map(|task| {
                 let node = self.machine_node(task);
                 let loaded = self.loaded(task);
@@ -1472,10 +1480,16 @@ impl<'a> Turn<'a> {
                     .state(state)
                     .and_then(|s| s.description.clone())
                     .unwrap_or_else(|| state.to_string());
+                // Of several, the one the user sees is the likelier.
+                let shown = match self.shown {
+                    Some(shown) if several && shown == task => " (the one the bubble shows now)",
+                    Some(_) if several => " (an earlier one, no longer in the bubble)",
+                    _ => "",
+                };
                 let outside = Outside {
                     label: format!("{}-{}", node.name, self.instance(task).number),
                     criterion: format!(
-                        "For the running task {} ({}), now at {state}: {about}",
+                        "For the running task {} ({}), now at {state}: {about}{shown}",
                         node.name, loaded.diagram.name
                     ),
                 };
@@ -1503,6 +1517,13 @@ impl<'a> Turn<'a> {
             // Nothing it may take, and no fallback.
             Some(pick) if pick.index.is_none() => Outlook::default(),
             Some(pick) if pick.by == By::Preferred => Outlook {
+                able: true,
+                preferred: true,
+                rules: weighed.rules,
+            },
+            // Its rules prefer several things: the words are for it all the same, and the
+            // model only says which.
+            None if weighed.preferred => Outlook {
                 able: true,
                 preferred: true,
                 rules: weighed.rules,
@@ -1738,6 +1759,8 @@ impl<'a> Turn<'a> {
             },
         );
         self.forest.focus = Some(task);
+        // From here the take is part of that task's conversation.
+        let _ = self.updates.send(Update::Task { instance: task });
         Some(Next::Input(task, Input::Event(Event::Said)))
     }
 
@@ -2115,19 +2138,37 @@ impl<'a> Turn<'a> {
             .map(|t| t.render(|p| frame.value(p)))
             .filter(|q| !q.trim().is_empty())
             .unwrap_or_else(|| self.default_question(id, &question.at, &question.event));
+        // The root chooses an agent by its description, which does not say what the agent
+        // is in the middle of: the tasks of its own that wait for what the user says next.
+        let criterion = |candidate: &engine::Asked| {
+            let mut criterion = candidate.criterion.clone();
+            if self.level(id) == Level::Root
+                && let Some(Target::State(state)) = &candidate.to
+                && let Some(agent) = self.work(id, state).and_then(|w| self.forest.of(w))
+            {
+                for (_, task) in self.waiting(agent) {
+                    criterion.push_str("\nWaiting now for what the user says next: ");
+                    criterion.push_str(&task.criterion);
+                }
+            }
+            criterion
+        };
         match question.candidates.as_slice() {
-            [only] => Question::Noul {
-                instructions: Some(format!("{instructions}\nIs this true? {}", only.criterion)),
-                criteria: Some(NoulCriteria {
-                    yes: Some(only.criterion.clone()),
-                    no: None,
-                }),
-            },
+            [only] => {
+                let criterion = criterion(only);
+                Question::Noul {
+                    instructions: Some(format!("{instructions}\nIs this true? {criterion}")),
+                    criteria: Some(NoulCriteria {
+                        yes: Some(criterion),
+                        no: None,
+                    }),
+                }
+            }
             several => Question::Choice {
                 instructions: Some(instructions),
                 criteria: several
                     .iter()
-                    .map(|c| (c.label.clone(), c.criterion.clone()))
+                    .map(|c| (c.label.clone(), criterion(c)))
                     .collect(),
             },
         }

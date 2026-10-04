@@ -380,10 +380,21 @@ Tests: `a_guard_on_a_state_s_result_takes_a_transition_with_no_model`, `results_
 When an agent gets `said`, each task of its own that is not busy and whose state has a transition
 on `said` is a candidate beside the agent's own transitions, labelled by its folder and number
 (`search-1`). The model reads it as the running task, its diagram's name, its state and that
-state's description. A task chosen gets the take as its own `said`, and the agent stays where it
-is; the bubble then follows that task.
+state's description; when several wait, also which one the bubble showed when the take started
+and which are earlier ones. A task chosen gets the take as its own `said`, and the agent stays
+where it is; the bubble then follows that task, and the client is told which task the words
+were for (the `task` update).
 
-Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`, `two_tasks_of_one_agent_run_side_by_side_and_each_gets_its_own_follow_ups`
+A waiting task whose own rules prefer the words takes them before its agent starts another
+([jevons-machine](../jevons-machine/spec.md) R29): "Search …" while a search waits searches
+again in that search, with no model. An agent whose rules prefer several of its candidates is
+preferred by the root all the same: the model only says which.
+
+The root chooses an agent by its description, which does not say what the agent is in the middle
+of. For an agent with waiting tasks, the root's model also reads each of them, as the agent's
+own question words it, after "Waiting now for what the user says next:".
+
+Tests: `a_task_waits_across_takes_and_the_model_takes_its_transitions`, `two_tasks_of_one_agent_run_side_by_side_and_each_gets_its_own_follow_ups`, `the_search_example_searches_answers_and_opens_a_result_once_approved`, `words_two_waiting_tasks_both_claim_are_for_their_agent_and_the_model_says_which`
 
 ### R52 A task's end is an event for its agent
 

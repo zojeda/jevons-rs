@@ -2614,6 +2614,115 @@ confirm = false
         assert_eq!(view.stack.last().unwrap().number, 2);
     }
 
+    #[tokio::test]
+    async fn words_two_waiting_tasks_both_claim_are_for_their_agent_and_the_model_says_which() {
+        // A search that searches again by rule, started by an agent that starts one when
+        // the model says so.
+        let files: Vec<(&str, String)> = SEARCH_TASK
+            .iter()
+            .map(|(path, text)| {
+                let text = text
+                    .replace("timer idle = 40", "timer idle = 600000")
+                    .replace(
+                        "idle --> find : said",
+                        "idle --> find : said [the user asks to look something up]",
+                    )
+                    .replace(
+                        "answering --> [*] : quiet",
+                        "answering --> searching : said [more]\nanswering --> [*] : quiet",
+                    );
+                let text = match *path {
+                    "research/find/task.toml" => format!(
+                        "{text}\n[guards.more]\nprefer = {{ transcript = \"(?i)^search\" }}\n\
+                         criterion = \"The user asks to search for something else\""
+                    ),
+                    _ => text,
+                };
+                (*path, text)
+            })
+            .collect();
+        let files = files.iter().map(|(p, t)| (*p, t.as_str()));
+        let tree = FlowTree::load(&Memory::new("test", files), &tool_host().catalog());
+        assert!(tree.is_valid(), "{:?}", tree.errors);
+        let machines = Arc::new(Runtime::new());
+        let (client, _) = server(prefer(&["research", "find"]), "Results.").await;
+        let env = Env {
+            flows: Arc::new(tree),
+            tools: Some(tool_host()),
+            machines: machines.clone(),
+            ..env(client, None)
+        };
+        // Two searches side by side: the model starts the second. A take that starts a task
+        // is no follow-up to one.
+        let (updates, mut said) = mpsc::unbounded_channel();
+        let start = TakeStart {
+            id: 1,
+            context: context(None),
+            entry: None,
+        };
+        run_transcript(&env, start, "look up rust", &updates).await;
+        drop(updates);
+        while let Some(update) = said.recv().await {
+            assert!(!matches!(update, Update::Task { .. }), "{update:?}");
+        }
+        let second = say(&env, 2, "look up tokio").await;
+        assert_eq!(inner(&second)[0], "idle said → find", "{:?}", second.notes);
+        assert_eq!(
+            machines.view().tasks(machines.view().stack[1].id).count(),
+            2
+        );
+        // Both search again on "search …", by their own rule. The root needs no model to
+        // know the words are the agent's; the model says which search, and reads which of
+        // them the bubble shows.
+        let (client, seen) = server(prefer(&["find-2"]), "Results.").await;
+        let env = Env {
+            routes: routes(client),
+            ..env
+        };
+        let (updates, mut said) = mpsc::unbounded_channel();
+        let start = TakeStart {
+            id: 3,
+            context: context(None),
+            entry: None,
+        };
+        let third = run_transcript(&env, start, "search for async", &updates).await;
+        assert_eq!(third.error, None, "{:?}", third.notes);
+        // The client is told which task the words were for, once: from then on the take is
+        // part of that task's conversation.
+        drop(updates);
+        let mut reached = Vec::new();
+        while let Some(update) = said.recv().await {
+            if let Update::Task { instance } = update {
+                reached.push(instance);
+            }
+        }
+        assert_eq!(reached, [machines.view().focus.unwrap()]);
+        assert_eq!(
+            moves(&third)[..4],
+            [
+                "idle said → research",
+                "research done → idle",
+                "idle said → task find-2",
+                "answering said → searching"
+            ]
+        );
+        assert_eq!(
+            third.machine[0].how,
+            "preferred: its transcript rule passed"
+        );
+        let requests = seen.decisions.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        let criteria = &requests[0]["questions"]["q00"]["criteria"];
+        let ends =
+            |label: &str, with: &str| criteria[label].as_str().is_some_and(|c| c.ends_with(with));
+        assert!(
+            ends("find-1", "(an earlier one, no longer in the bubble)")
+                && ends("find-2", "(the one the bubble shows now)")
+                && criteria.as_object().unwrap().len() == 2,
+            "{criteria}"
+        );
+    }
+
     /// A file to keep the machines in, in a folder of this test's own.
     fn kept_in(test: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("jevons-kept-{test}-{}", std::process::id()));
@@ -4225,8 +4334,9 @@ allow = ["research/search/*"]
         assert_eq!(first.delivery, Some(DeliveryOutcome::Shown));
         assert_eq!(machines.view().path(), "research › search › results");
         assert!(seen.decisions.lock().unwrap().is_empty());
-        // The same words while that search waits: another search, or this one again? The model
-        // says which, in one request; the search then takes them by its own rule.
+        // The same words while that search waits: the agent's rule would start another, and
+        // the search's own rule searches again. The one that runs has the words, with no
+        // model at any level, so searches do not pile up.
         let again = say(&env, 2, "Búscame las asíncronas").await;
         assert_eq!(again.error, None, "{:?}", again.notes);
         assert_eq!(
@@ -4238,16 +4348,19 @@ allow = ["research/search/*"]
                 "answering done → results"
             ]
         );
-        assert_eq!(seen.decisions.lock().unwrap().len(), 1);
-        assert_eq!(
-            again
-                .machine
-                .iter()
-                .find(|s| s.to == "searching")
-                .unwrap()
-                .how,
-            "preferred: its transcript rule passed"
-        );
+        assert!(seen.decisions.lock().unwrap().is_empty());
+        for step in again.machine.iter().filter(|s| s.event == "said") {
+            assert_eq!(
+                step.how, "preferred: its transcript rule passed",
+                "{step:?}"
+            );
+        }
+        // A lead-in before the word starts nothing new either, and voseo counts.
+        for words in ["Ah, buscame las de tokio", "A ver, buscá otra cosa"] {
+            let more = say(&env, 20, words).await;
+            assert_eq!(inner(&more)[..2], inner(&again)[..2], "{words}");
+        }
+        assert!(seen.decisions.lock().unwrap().is_empty());
         // A follow-up is for the agent only because its search waits. It opens a result, once
         // the user approves it in the bubble.
         let second = say(&env, 3, "open the first one").await;
@@ -4260,7 +4373,15 @@ allow = ["research/search/*"]
                 "opening done → results"
             ]
         );
-        assert_eq!(seen.decisions.lock().unwrap().len(), 2, "one request");
+        assert_eq!(seen.decisions.lock().unwrap().len(), 1, "one request");
+        // The root reads what the agent is in the middle of, not its description alone: these
+        // words name no search.
+        let asked = seen.decisions.lock().unwrap()[0]["questions"]["q00"].to_string();
+        assert!(
+            asked.contains("Waiting now for what the user says next: For the running task search (Search), now at results")
+                && asked.contains("abrir el segundo"),
+            "{asked}"
+        );
         // Opening is the client's: it asked the user by itself, and ran there.
         assert_eq!(approver.await.unwrap(), "open_url");
         assert_eq!(second.calls[0].tool, "open_url");
@@ -4274,7 +4395,7 @@ allow = ["research/search/*"]
             "{:?}",
             second.calls[0].result
         );
-        assert_eq!(searched.lock().unwrap().len(), 2, "two searches, no more");
+        assert_eq!(searched.lock().unwrap().len(), 4, "four searches, no more");
         // What is dictated while the search waits: the model takes it for the search, which
         // does not know what to do with it. The example hands it up, to the agent and then
         // the root, whose `[else]` types it. The search still waits.

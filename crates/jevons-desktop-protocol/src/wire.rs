@@ -647,6 +647,7 @@ mod tests {
             Update::Output("Hi".into()),
             Update::Answering,
             Update::State("research › search › results".into()),
+            Update::Task { instance: 5 },
         ];
         let mut to_client = vec![
             ToClient::Welcome { version: VERSION },

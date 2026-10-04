@@ -620,6 +620,19 @@ What phase 8 decided on the way:
   click still sends them to the task. Answering after a hand-up acts twice, by the user's
   choice.
 - **The example opts in** at both levels; the built-in agents have nothing to hand up.
+- **After the first live session (2026-10-03), from its traces:**
+  - "Buscar …" while a search waited was typed as dictation, or started a second and a third
+    search: the agent's rule and the waiting search's rule both preferred the words, which made
+    it the model's choice and cost the agent its preference at the root. Now what already runs
+    has the words (an engine rule), and an agent whose rules prefer several things is preferred
+    all the same.
+  - "Abrir el segundo." went to the assistant: nothing told the root's model a search was
+    waiting. It now reads each agent's waiting tasks.
+  - "Ah, buscame …" matched no rule: the example's rule takes a word or two of lead-in, and
+    voseo.
+  - The bubble seeded every new take with the waiting task's turns, so dictation read as part of
+    the search. A take starts alone and joins the conversation when the server says the words
+    were for that task (`Update::Task`).
 - **Not done in phase 8:** the tray app as a client of a separate server (the phase 5 leftover),
   and declining a waiting question on a cancel that comes over the wire (the client's to do).
 

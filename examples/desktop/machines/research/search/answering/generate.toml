@@ -6,7 +6,8 @@ The user asked: {transcript}
 Web search results (JSON):
 {searching}
 
-Answer from the results in a few sentences. Then list the results that matter, numbered, each with \
-its title and address, so the user can ask for one by its number. Use only what the results hold: \
+Answer from the results in a few sentences. Then list the results that matter, numbered in the \
+order the search ranked them, each with its title and address, so the user can ask for one by its \
+number. Use only what the results hold: \
 when they hold none, say the search found nothing and suggest other words, and never list a result \
 that is not in them."""

@@ -7,7 +7,7 @@ fsm Search {
 
     state searching: "Searching the web for what the user asked"
     state answering: "Answering from the search results, in the bubble"
-    state results: "The answer is in the bubble; waiting for what the user says about it"
+    state results: "The answer and its numbered results are in the bubble, and it waits for what the user says about them: to open one (\"open the second one\", \"abrir el segundo\"), to search for something else, or that they are done"
     state opening: "Opening one of the results in the browser"
 
     searching --> answering

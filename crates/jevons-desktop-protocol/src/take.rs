@@ -53,6 +53,11 @@ pub enum Update {
     Answering,
     /// The machines moved: where they are now, such as `search › answering`.
     State(String),
+    /// The words are for a task that was waiting: its agent handed them to it. Until then a
+    /// take is not part of any task's conversation.
+    Task {
+        instance: u64,
+    },
 }
 
 /// What a stage does, for the bubble's icon and animation.

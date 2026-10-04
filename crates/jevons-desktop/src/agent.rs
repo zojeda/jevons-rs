@@ -280,6 +280,14 @@ impl Feedback {
         turns
     }
 
+    /// Joins the conversation `thread` ended with: its turns go above this take, which is
+    /// the task's next turn.
+    pub fn join(&mut self, thread: &Feedback) {
+        self.task = true;
+        self.turns = thread.conversation();
+        self.state = thread.state.clone();
+    }
+
     /// What Copy and Insert take: this take's text, or the latest earlier turn's.
     pub fn latest_output(&self) -> &str {
         if !self.output.is_empty() {
@@ -350,6 +358,8 @@ impl Feedback {
                 self.output.clear();
             }
             Update::State(path) => self.state = path.clone(),
+            // Whoever holds the conversation joins it to the bubble.
+            Update::Task { .. } => {}
         }
         true
     }
@@ -2449,13 +2459,10 @@ impl Agent {
             entry: entry.or_else(|| self.view().start.clone()),
         };
         let route = self.preview(&context, start.entry.as_deref());
-        // While a task waits, the take joins its conversation.
-        let turns = self.thread.as_ref().map(Feedback::conversation);
-        let state = self
-            .thread
-            .as_ref()
-            .map(|t| t.state.clone())
-            .unwrap_or_default();
+        // The bubble starts with this take alone. A waiting task's conversation joins it only
+        // once the words turn out to be for that task: until then they may be dictation, and
+        // earlier turns above them would read as part of what is being said.
+        let joins = self.thread_task.zip(self.thread.clone());
         {
             let mut view = self.view();
             view.dictating = true;
@@ -2465,9 +2472,6 @@ impl Agent {
             view.feedback = Some(Feedback {
                 take: id,
                 live,
-                task: turns.is_some(),
-                turns: turns.unwrap_or_default(),
-                state,
                 window: context.window.handle,
                 status: format!(
                     "{}: {}",
@@ -2500,7 +2504,7 @@ impl Agent {
         self.set_tray(TrayState::Listening { level: 0 });
         self.publish_menu();
 
-        let updates = self.watch_updates(id);
+        let updates = self.watch_updates(id, joins);
         let commands = self.commands.clone();
         let session = self.session.clone();
         let task = tokio::spawn(async move {
@@ -2522,7 +2526,11 @@ impl Agent {
     }
 
     /// Shows a take's progress (or a timer's) in the tray and the bubble.
-    fn watch_updates(&self, id: u64) -> mpsc::UnboundedSender<Update> {
+    fn watch_updates(
+        &self,
+        id: u64,
+        joins: Option<(u64, Feedback)>,
+    ) -> mpsc::UnboundedSender<Update> {
         let (updates, mut received) = mpsc::unbounded_channel();
         let view = self.view.clone();
         let mut tray = self.tray.clone();
@@ -2558,6 +2566,13 @@ impl Agent {
                     let mut view = view.lock().expect("the view lock");
                     if let Some(feedback) = view.feedback.as_mut().filter(|f| f.take == id) {
                         feedback.apply(&update);
+                        // The words are for the task whose conversation waited: its earlier
+                        // turns go above this one.
+                        if let (Update::Task { instance }, Some((task, thread))) = (&update, &joins)
+                            && instance == task
+                        {
+                            feedback.join(thread);
+                        }
                     }
                     let state = match update {
                         Update::Level(bands) => Some(TrayState::Listening {
@@ -2577,6 +2592,7 @@ impl Agent {
                         | Update::Progress(_)
                         | Update::StageDone { .. }
                         | Update::Answering
+                        | Update::Task { .. }
                         | Update::State(_) => None,
                         Update::Output(text) => {
                             view.live_output.push_str(&text);
@@ -2603,7 +2619,7 @@ impl Agent {
     /// user's answer to an unsure decision. Its bubble shows `status` while it runs, unless
     /// another take is in the way.
     fn own_take(&mut self, take: u64, instance: u64, status: String) {
-        let updates = self.watch_updates(take);
+        let updates = self.watch_updates(take, None);
         self.timer_updates.insert(take, updates);
         if self.active.is_none() {
             // The take of the task the conversation is of joins it.
@@ -2729,10 +2745,6 @@ impl Agent {
         let machines = self.session.view();
         let waits = machines.in_task();
         let same = machines.focus == self.thread_task;
-        let reached = waits
-            || self
-                .thread_task
-                .is_some_and(|task| trace.machine.iter().any(|s| s.instance == task));
         let earlier = self
             .thread
             .as_ref()
@@ -2751,14 +2763,16 @@ impl Agent {
             if let Some(feedback) = view.feedback.as_mut().filter(|f| f.take == trace.take) {
                 feedback.finish(&trace);
                 if waits {
-                    // Another task's turns are not this one's.
-                    if !same {
-                        feedback.turns.clear();
-                    }
+                    // The task's earlier turns, whether or not they joined while the take
+                    // ran; another task's are not this one's.
+                    feedback.turns = earlier.clone().unwrap_or_default();
                     feedback.task = true;
                     feedback.state = machines.path();
                     conversation = Some(feedback.clone());
-                } else if !reached {
+                } else {
+                    // No task waits for what comes next: the take stands alone, and a
+                    // conversation that ended with it, or that it was no part of, is not
+                    // shown.
                     feedback.task = false;
                     feedback.turns.clear();
                 }
@@ -3826,7 +3840,17 @@ mod tests {
         assert_eq!(second.turns[0].heard, "Buscar máquinas de estados");
         assert!(second.turns[0].answer);
         assert_eq!(second.latest_output(), "1. **Máquina de estados**");
-        // A third take sees both turns, in order.
+        // The take after starts alone, whatever waits: only words that reach the task join
+        // its conversation, with its turns above them.
+        let mut third = Feedback {
+            take: 3,
+            ..Feedback::default()
+        };
+        assert!(third.turns.is_empty() && !third.task);
+        third.join(&second);
+        assert!(third.task);
+        assert_eq!(third.turns.len(), 2);
+        // It sees both turns, in order.
         let turns = second.conversation();
         assert_eq!(
             turns.iter().map(|t| t.heard.as_str()).collect::<Vec<_>>(),
