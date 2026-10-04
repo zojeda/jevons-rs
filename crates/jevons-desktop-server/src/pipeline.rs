@@ -4194,8 +4194,12 @@ confirm = false
             "agent.fsm",
             "search/task.toml",
             "search/task.fsm",
-            "search/searching/tool.toml",
+            "search/searching/decide.toml",
+            "search/searching/web/tool.toml",
+            "search/searching/news/tool.toml",
             "search/answering/generate.toml",
+            "search/reading/tool.toml",
+            "search/reading/summary/generate.toml",
             "search/opening/tool.toml",
         ]
         .iter()
@@ -4215,21 +4219,43 @@ confirm = false
             if path == "root.toml" {
                 *text = text.replace(
                     "tools = [\"script:*\"]",
-                    "tools = [\"script:*\", \"web_search\", \"open_url\"]",
+                    "tools = [\"script:*\", \"web_search\", \"news_search\", \"read_page\", \"open_url\"]",
                 );
             }
         }
         files.extend(search);
-        // A search service that answers every query with one result.
+        // A search service that answers every query with one result, as Tavily shapes them,
+        // and a reader that says what a page says. Each call is kept: `web: <query>`,
+        // `news: <query>`, `read: <address>`.
         let searched = Arc::new(Mutex::new(Vec::<String>::new()));
-        let got = searched.clone();
-        let search = axum::Router::new().route(
-            "/search",
-            get(move |query: axum::extract::RawQuery| {
-                got.lock().unwrap().push(query.0.unwrap_or_default());
-                async { Json(json!({"results": [{"title": "jevons-fsm", "url": "https://x/1"}]})) }
-            }),
-        );
+        let (got, read) = (searched.clone(), searched.clone());
+        let search = axum::Router::new()
+            .route(
+                "/search",
+                post(move |Json(body): Json<Value>| {
+                    let news = body["topic"] == "news";
+                    let kind = if news { "news" } else { "web" };
+                    let query = body["query"].as_str().unwrap_or_default();
+                    got.lock().unwrap().push(format!("{kind}: {query}"));
+                    let mut result = json!({"title": "jevons-fsm", "url": "https://x/1",
+                        "content": "A state machine crate for Rust"});
+                    if news {
+                        result["published_date"] = json!("Sat, 03 Oct 2026 17:00:00 GMT");
+                    }
+                    async move { Json(json!({"query": body["query"], "results": [result]})) }
+                }),
+            )
+            .route(
+                "/read/{*page}",
+                get(
+                    move |axum::extract::Path(page): axum::extract::Path<String>| {
+                        read.lock().unwrap().push(format!("read: {page}"));
+                        async {
+                            "Title: jevons-fsm\n\njevons-fsm runs \"state machines\" from diagrams."
+                        }
+                    },
+                ),
+            );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, search).await.unwrap() });
@@ -4237,10 +4263,29 @@ confirm = false
             r#"
 [tools.web_search]
 kind = "http"
-method = "GET"
 description = "Searches the web and returns the top results as JSON"
-url = "http://{address}/search?q={{query}}&count=5"
+url = "http://{address}/search"
+body = '{{"query": "{{query}}", "topic": "general", "max_results": 5}}'
 arguments = {{ query = "What to search for" }}
+confirm = false
+allow = ["research/search/*"]
+
+[tools.news_search]
+kind = "http"
+description = "Searches the news and returns the latest as JSON"
+url = "http://{address}/search"
+body = '{{"query": "{{query}}", "topic": "news", "max_results": 5}}'
+arguments = {{ query = "What to search the news for" }}
+confirm = false
+allow = ["research/search/*"]
+
+[tools.read_page]
+kind = "http"
+method = "GET"
+description = "Reads a web page and returns its text"
+url = "http://{address}/read/{{url}}"
+arguments = {{ url = "The address of the page" }}
+max_output = 8000
 confirm = false
 allow = ["research/search/*"]
 "#
@@ -4286,7 +4331,7 @@ allow = ["research/search/*"]
         let (confirm, mut asked) =
             mpsc::unbounded_channel::<jevons_desktop_core::confirm::Confirmation>();
         let (flows, tools, desk, searched) = with_search_example(confirm).await;
-        let labels = &["research", "search-1", "opening", "end"];
+        let labels = &["research", "search-1", "opening", "end", "web"];
         let (client, seen) = server(prefer(labels), "1. jevons-fsm").await;
         let approver = tokio::spawn(async move {
             let call = asked.recv().await.unwrap();
@@ -4321,9 +4366,12 @@ allow = ["research/search/*"]
                 "answering done → results"
             ]
         );
-        // The search ran with the server: its request reached the search service.
+        // The search ran with the server: its request reached the search service. The web
+        // or the news? These words name neither, so the model said, in the one request of
+        // the take.
         assert_eq!(first.calls[0].tool, "web_search");
         assert_eq!(searched.lock().unwrap().len(), 1);
+        assert!(searched.lock().unwrap()[0].starts_with("web: "));
         assert!(
             first.calls[0]
                 .result
@@ -4333,10 +4381,11 @@ allow = ["research/search/*"]
         );
         assert_eq!(first.delivery, Some(DeliveryOutcome::Shown));
         assert_eq!(machines.view().path(), "research › search › results");
-        assert!(seen.decisions.lock().unwrap().is_empty());
+        let asked = || seen.decisions.lock().unwrap().len();
+        assert_eq!(asked(), 1);
         // The same words while that search waits: the agent's rule would start another, and
         // the search's own rule searches again. The one that runs has the words, with no
-        // model at any level, so searches do not pile up.
+        // model at any level, so searches do not pile up: the one request is where to look.
         let again = say(&env, 2, "Búscame las asíncronas").await;
         assert_eq!(again.error, None, "{:?}", again.notes);
         assert_eq!(
@@ -4348,7 +4397,7 @@ allow = ["research/search/*"]
                 "answering done → results"
             ]
         );
-        assert!(seen.decisions.lock().unwrap().is_empty());
+        assert_eq!(asked(), 2);
         for step in again.machine.iter().filter(|s| s.event == "said") {
             assert_eq!(
                 step.how, "preferred: its transcript rule passed",
@@ -4360,7 +4409,35 @@ allow = ["research/search/*"]
             let more = say(&env, 20, words).await;
             assert_eq!(inner(&more)[..2], inner(&again)[..2], "{words}");
         }
-        assert!(seen.decisions.lock().unwrap().is_empty());
+        assert_eq!(asked(), 4);
+        // Words that name the news search the news, with no model at all.
+        let news = say(&env, 21, "Dame las últimas noticias de Rust").await;
+        assert_eq!(news.error, None, "{:?}", news.notes);
+        assert_eq!(inner(&news)[..2], inner(&again)[..2]);
+        assert_eq!(news.calls[0].tool, "news_search");
+        assert!(news.calls[0].result.as_ref().unwrap().contains("2026"));
+        assert_eq!(asked(), 4);
+        // "Resumime …" has a result read, by rule: the reader fetches the page, and what it
+        // says goes to the bubble as plain text for the model to tell.
+        let read = say(&env, 22, "Resumime el primero").await;
+        assert_eq!(read.error, None, "{:?}", read.notes);
+        assert_eq!(
+            inner(&read),
+            [
+                "idle said → task search-1",
+                "results said → reading",
+                "reading done → results"
+            ]
+        );
+        assert_eq!(read.calls[0].tool, "read_page");
+        assert_eq!(read.delivery, Some(DeliveryOutcome::Shown));
+        assert_eq!(asked(), 4);
+        let told = seen.generations.lock().unwrap().last().unwrap().to_string();
+        assert!(
+            told.contains(r#"jevons-fsm runs \"state machines\" from diagrams."#)
+                && !told.contains("\\\\\""),
+            "{told}"
+        );
         // A follow-up is for the agent only because its search waits. It opens a result, once
         // the user approves it in the bubble.
         let second = say(&env, 3, "open the first one").await;
@@ -4373,14 +4450,14 @@ allow = ["research/search/*"]
                 "opening done → results"
             ]
         );
-        assert_eq!(seen.decisions.lock().unwrap().len(), 1, "one request");
+        assert_eq!(asked(), 5, "one request");
         // The root reads what the agent is in the middle of, not its description alone: these
         // words name no search.
-        let asked = seen.decisions.lock().unwrap()[0]["questions"]["q00"].to_string();
+        let question = seen.decisions.lock().unwrap()[4]["questions"]["q00"].to_string();
         assert!(
-            asked.contains("Waiting now for what the user says next: For the running task search (Search), now at results")
-                && asked.contains("abrir el segundo"),
-            "{asked}"
+            question.contains("Waiting now for what the user says next: For the running task search (Search), now at results")
+                && question.contains("abrir el segundo"),
+            "{question}"
         );
         // Opening is the client's: it asked the user by itself, and ran there.
         assert_eq!(approver.await.unwrap(), "open_url");
@@ -4395,7 +4472,13 @@ allow = ["research/search/*"]
             "{:?}",
             second.calls[0].result
         );
-        assert_eq!(searched.lock().unwrap().len(), 4, "four searches, no more");
+        let calls: Vec<String> = searched
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|c| c.split(':').next().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(calls, ["web", "web", "web", "web", "news", "read"]);
         // What is dictated while the search waits: the model takes it for the search, which
         // does not know what to do with it. The example hands it up, to the agent and then
         // the root, whose `[else]` types it. The search still waits.

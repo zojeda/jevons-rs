@@ -42,11 +42,14 @@ fn text_of(value: &Value) -> String {
     }
 }
 
-fn cap(text: String) -> String {
-    if text.chars().count() <= MAX_OUTPUT {
+/// The first characters of `text`: as many as the tool keeps, and never more than
+/// [`MAX_OUTPUT`].
+fn cap(text: String, config: &ToolConfig) -> String {
+    let most = config.max_output.unwrap_or(MAX_OUTPUT).min(MAX_OUTPUT);
+    if text.chars().count() <= most {
         text
     } else {
-        let mut cut: String = text.chars().take(MAX_OUTPUT).collect();
+        let mut cut: String = text.chars().take(most).collect();
         cut.push('…');
         cut
     }
@@ -160,7 +163,7 @@ pub async fn run(config: &ToolConfig, args: Map<String, Value>) -> Result<Value,
                 .await
                 .map_err(|_| format!("{program} did not finish within {} s", timeout.as_secs()))?
                 .map_err(|e| e.to_string())?;
-            let stdout = cap(String::from_utf8_lossy(&output.stdout).into_owned());
+            let stdout = cap(String::from_utf8_lossy(&output.stdout).into_owned(), config);
             if !output.status.success() {
                 let stderr: String = String::from_utf8_lossy(&output.stderr)
                     .chars()
@@ -196,7 +199,7 @@ pub async fn run(config: &ToolConfig, args: Map<String, Value>) -> Result<Value,
             }
             let response = request.send().await.map_err(|e| e.to_string())?;
             let status = response.status();
-            let text = cap(response.text().await.unwrap_or_default());
+            let text = cap(response.text().await.unwrap_or_default(), config);
             if !status.is_success() {
                 return Err(format!(
                     "{status}: {}",
@@ -638,8 +641,23 @@ arguments = { text = "Text" }
         let args: Map<String, Value> = [("text".to_string(), json!("hello; rm -rf /"))]
             .into_iter()
             .collect();
-        let result = run(&echo, args).await.unwrap();
+        let result = run(&echo, args.clone()).await.unwrap();
         assert_eq!(result["output"], "hello; rm -rf / $(not run)\n");
+        // A tool keeps as much of its output as its settings say, and never more than the
+        // limit every tool has.
+        let short = ToolConfig {
+            max_output: Some(5),
+            ..echo.clone()
+        };
+        assert_eq!(run(&short, args.clone()).await.unwrap()["output"], "hello…");
+        let long = ToolConfig {
+            max_output: Some(usize::MAX),
+            ..echo
+        };
+        assert_eq!(
+            cap("x".repeat(MAX_OUTPUT + 1), &long).chars().count(),
+            MAX_OUTPUT + 1
+        );
     }
 
     #[tokio::test]

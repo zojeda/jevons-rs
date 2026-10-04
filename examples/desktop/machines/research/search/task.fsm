@@ -1,13 +1,15 @@
-// A web search, its answer in the bubble, and the results opened on request. The task waits in
-// `results` for what the user says next; after two quiet minutes it ends.
+// A search of the web or the news, its answer in the bubble, and its results read or opened on
+// request. The task waits in `results` for what the user says next; after two quiet minutes it
+// ends.
 fsm Search {
     timer quiet = 120000 -> quiet
 
     [*] --> searching
 
-    state searching: "Searching the web for what the user asked"
+    state searching: "Searching the web or the news for what the user asked"
     state answering: "Answering from the search results, in the bubble"
-    state results: "The answer and its numbered results are in the bubble, and it waits for what the user says about them: to open one (\"open the second one\", \"abrir el segundo\"), to search for something else, or that they are done"
+    state results: "The answer and its numbered results are in the bubble, and it waits for what the user says about them: to open one (\"open the second one\", \"abrir el segundo\"), to have one read (\"leeme el primero\"), to search for something else, or that they are done"
+    state reading: "Reading one of the results and saying what it says, in the bubble"
     state opening: "Opening one of the results in the browser"
 
     searching --> answering
@@ -15,12 +17,19 @@ fsm Search {
     answering --> results
     answering --> [*] : failed
 
-    results --> opening : said [the user wants one of the results opened]
-    // "Search …" or "Busca …" searches again with no model, as it starts the task ([guards.again]
-    // in task.toml); said another way, the model reads the guard's criterion.
+    results --> opening : said [the user wants one of the results opened in the browser]
+    // "Leeme …", "resumime …" or "read …" reads a result with no model ([guards.read] in
+    // task.toml); said another way, the model reads the guard's criterion.
+    results --> reading : said [read]
+    // "Search …", "Busca …" or "Noticias de …" searches again with no model, as it starts the
+    // task ([guards.again]).
     results --> searching : said [again]
     results --> [*] : said [the user is done with these results, or talks about something else]
     results --> [*] : quiet
+
+    // What the page says is in the bubble; the results are still there for the next one.
+    reading --> results
+    reading --> results : failed
 
     // Opening asks first: declined or failed, the results are still there.
     opening --> results

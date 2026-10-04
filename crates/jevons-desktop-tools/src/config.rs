@@ -66,6 +66,11 @@ pub struct ToolConfig {
     /// Seconds before a call gives up.
     #[serde(default = "twenty")]
     pub timeout_s: u64,
+    /// `command` and `http`: the most characters kept of the output or the answer's body
+    /// (20,000 by default, and at most): a page read for a model to summarize has to fit
+    /// its context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output: Option<usize>,
     /// Ask in the bubble before each call (the default). Only the settings can turn it off.
     #[serde(default = "yes")]
     pub confirm: bool,
@@ -111,11 +116,21 @@ pub fn placeholders(text: &str) -> Vec<String> {
     while let Some(start) = rest.find('{') {
         let is_env = start > 0 && rest[..start].ends_with('$');
         rest = &rest[start + 1..];
-        let Some(end) = rest.find('}') else { break };
-        if !is_env {
-            out.push(rest[..end].to_string());
+        // A name between the braces: a JSON body's own braces hold anything but.
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        let named = !name.is_empty() && rest[name.len()..].starts_with('}');
+        if is_env {
+            // `${env:NAME}` is not an argument's.
+            if let Some(end) = rest.find('}') {
+                rest = &rest[end + 1..];
+            }
+        } else if named {
+            rest = &rest[name.len() + 1..];
+            out.push(name);
         }
-        rest = &rest[end + 1..];
     }
     out
 }
@@ -210,6 +225,17 @@ unconfirmed = ["read_file"]
         assert!(error.contains("{title}"), "{error}");
         assert!(config.mcp["fs"].confirm, "servers ask by default");
         assert_eq!(placeholders("Bearer ${env:TOKEN} {id}"), ["id"]);
+        // A JSON body's braces are text; the names inside them are placeholders.
+        assert_eq!(
+            placeholders(r#"{"query": "{query}", "filters": {"topic": "{topic}"}, "n": 5}"#),
+            ["query", "topic"]
+        );
+        let post: ToolConfig = toml::from_str(
+            "kind = \"http\"\ndescription = \"Searches\"\nurl = \"https://x/search\"\n\
+             body = '{\"query\": \"{query}\", \"max_results\": 5}'\narguments = { query = \"What\" }",
+        )
+        .unwrap();
+        assert_eq!(post.check(), Ok(()));
         let shell = "[tools.x]\nkind = \"shell\"\ndescription = \"\"";
         assert!(toml::from_str::<Registered>(shell).is_err());
     }

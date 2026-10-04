@@ -24,8 +24,9 @@ client's for its own ([desk](../jevons-desktop-core/desk.md)).
 `[tools.<name>]` registers a built-in tool, and `[mcp.<name>]` an MCP server. A `kind` other than
 `command`, `http` or `open` fails to parse. A built-in tool without its `program` (`command`) or
 `url` (`http`, `open`), or with a `{placeholder}` that names none of its `arguments`, stays out of
-the set, and the log says why. `${env:NAME}` is not a placeholder, and is that environment
-variable, or nothing when it is unset.
+the set, and the log says why. A placeholder is a name in braces (letters, digits and `_`):
+other braces, such as a JSON body's own, are text. `${env:NAME}` is not a placeholder, and is
+that environment variable, or nothing when it is unset.
 
 Tests: `tools_and_mcp_servers_parse_and_check_their_placeholders`, `environment_variables_fill_in_and_missing_ones_are_empty`, `a_set_knows_its_tools_and_resolves_them_by_reference`
 
@@ -77,9 +78,10 @@ Tests: none yet
 ### R7 Output is capped
 
 A `command`'s standard output and an `http` body keep their first 20,000 characters, followed by
-`…`.
+`…`. A tool's `max_output` keeps fewer (it never keeps more): a page read for a model to
+summarize has to fit the model's context.
 
-Tests: none yet
+Tests: `a_command_runs_without_a_shell_and_reports_its_output`
 
 ### R8 MCP servers start, list their tools and answer calls
 

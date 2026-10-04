@@ -1,0 +1,11 @@
+description = "Says what the page says"
+output = "bubble"
+max_output_tokens = 400
+prompt = """
+The user asked: {transcript}
+
+The page they asked about says:
+{result.body}
+
+Tell the user what the page says, in a few sentences, in the language they spoke: the main points \
+first. Use only what the page holds; when it holds nothing readable, say so."""

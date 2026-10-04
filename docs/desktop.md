@@ -114,14 +114,18 @@ fsm Search {
     [*] --> searching
     searching --> answering
     answering --> results
-    results --> opening : said [the user wants one of the results opened]
+    results --> opening : said [the user wants one of the results opened in the browser]
+    results --> reading : said [read]
     results --> searching : said [again]
     results --> [*] : said [the user is done with these results, or talks about something else]
     results --> [*] : quiet
+    reading --> results
     opening --> results
     opening --> results : denied
 }
 ```
+
+`searching` is a decision of its own, between the web and the news: words that name the news choose it by rule, and the model reads the two descriptions otherwise. `reading` fetches a result and says what it says ("leeme el segundo").
 
 - **Starting one:** an agent's state whose folder is a task starts it and is done at once, so the task runs beside its agent, which is free for the next take. Several run side by side (`search-1`, `search-2`).
 - **Between takes** the task waits in its state. What you say next goes the same way as any take: the root chooses the agent (which is a choice only while it has something to do with the take: a rule that lets it start something, or a task that waits), the agent chooses among its own transitions and its waiting tasks, and the task chosen takes it as its own `said`. One request asks all three. The decision model takes a transition by its guard's sentence (or by the target state's description), with rules first; when it is unsure, a `said` stays where it was, so an unsure take never moves a task on. With `unsure = "parent"` in `task.toml` or `agent.toml` (the example sets both), the machine that stays hands the words to the one above, which takes them as if it were not there: what you dictate while a search waits ends at the root's `[else]` and is typed, in the same single request. Two quiet minutes (`timer`) end this one.
@@ -135,7 +139,7 @@ fsm Search {
 - **After a restart** a task that waited is still there: jevons keeps the tasks that run in `~/jevons/machines/machines.json` and brings them back when it starts and its models answer. A timer starts over, for its whole time. Work that ran when the app stopped is not run again: its state takes `failed`, so nothing is searched, typed or opened twice. A task whose files you changed meanwhile is ended (the Machines tab says so), since its states may no longer mean what they did. The file holds what you said and what the screen showed, so it is in the data folder, not the settings repository, and **Clear history** removes it.
 - **The Machines tab** lists what runs (the root, each agent and its tasks), draws any machine's diagram with the state it is in, each edge coloured by what decides it (the event alone, rules, or the decision model), and shows the transitions taken (by rules, by the model and its probability, or a stay). Each task has its **Cancel**, and **Cancel all tasks** ends them all, as **Cancel the tasks that run** in the tray menu does. A question a take waits on is answered no first, so a cancel never waits for you. The bubble shows where a running task is.
 
-[examples/desktop/machines](../examples/desktop/machines) has the `research` agent with its search task, the tools to register and the two lines that add it to the root.
+[examples/desktop/machines](../examples/desktop/machines) has the `research` agent with its search task (the web and the news through a search API, and a result read through a page reader), the tools to register and the two lines that add it to the root.
 
 `AGENTS.md` in the folder is the full reference: every field, placeholders such as `{selection}` and `{chat.messages}`, investigations, tools, agents and the rules the loader enforces. [examples/desktop/flows](../examples/desktop/flows) is the built-in tree.
 
@@ -218,7 +222,7 @@ arguments = { room = "The room, such as kitchen" }
 
 - **Built-in tools:**
   - `command` runs a program directly, never through a shell, with each argument as its own element. Only a few basic environment variables and the ones you list reach it, and it has a time limit.
-  - `http` sends a request. Arguments are URL-encoded in the address and JSON-escaped in the body, and `${env:NAME}` keeps secrets out of files.
+  - `http` sends a request. Arguments are URL-encoded in the address and JSON-escaped in the body, and `${env:NAME}` keeps secrets out of files. `max_output` keeps fewer characters of the answer than the 20,000 every tool keeps, for a page a model is to read.
   - `open` opens an address or file with the default application.
 - **MCP servers** start in the background when the app starts and list their tools, which then check the flow files and fill `TOOLS.md` in the flows folder. The model knows an MCP tool as `server__tool`, because tool names cannot hold a colon.
 - **Arguments** of a tool node come from `generate` (the language model writes the value), `choose` and `noul` (all of them in one decision read), and `value` (text with placeholders). With `output = "next"`, the node's single branch gets the result as `{result}`.
