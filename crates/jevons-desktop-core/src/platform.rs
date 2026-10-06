@@ -319,6 +319,20 @@ pub enum HotkeyEvent {
     Released(u32),
 }
 
+/// A machine that runs, as the tray menu lists it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MachineEntry {
+    /// Which of the machines that run it is: what showing or cancelling it names.
+    pub id: u64,
+    /// `/` for the root, an agent's folder, or a task's name such as `search-2`.
+    pub label: String,
+    pub state: String,
+    /// The events it waits for in that state.
+    pub waiting: Vec<String>,
+    /// A task, listed under the agent that started it.
+    pub task: bool,
+}
+
 /// The tray menu's contents.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MenuModel {
@@ -342,6 +356,8 @@ pub struct MenuModel {
     pub conversation: bool,
     /// Whether a task runs, or a machine is away from its first state: something to cancel.
     pub tasks: bool,
+    /// The machines that run: the root, then each agent followed by its tasks.
+    pub machines: Vec<MachineEntry>,
 }
 
 /// What a tray menu item asks for.
@@ -353,8 +369,12 @@ pub enum MenuCommand {
     CancelTake,
     /// Ends every task, and answers a question one of them waits on no.
     CancelTasks,
+    /// Ends one task, by its id among the machines that run.
+    CancelOneTask(u64),
     /// Shows the waiting task's conversation in the bubble again.
     ShowConversation,
+    /// Opens the Machines tab on one of the machines that run.
+    ShowMachine(u64),
     /// Opens the folder with the logs and take traces.
     OpenLogsFolder,
     /// Starts every take at this top-level branch, or at the root.

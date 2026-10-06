@@ -25,17 +25,18 @@ Tests: `a_tuning_event_makes_tuning_active_and_notifies_once`
 
 The menu holds: **Start dictation** or **Stop dictation**, **Start live dictation** or **Stop
 live dictation**, **Cancel the current take** (while one runs), **Cancel the tasks that run**
-(while one does), **Show the task's conversation** (while a task waits with one), **Start takes at** (the root or
+(while one does), **Show the task's conversation** (while a task waits with one), **Machines**
+(R28), **Start takes at** (the root or
 each top-level branch), **Show context inspector**, **Live feedback**, **Pause context capture**,
 **Record an automation…** or **Stop recording**, **Automations** (per automation: its
 description, **Run** and **Run step by step** when approved or **Review and approve…** when not,
 and **Record it again…**; **None yet: record one** when empty; **Open the automations folder**),
 **Reload the flow tree**, **Open settings folder**, **Reset settings to the defaults…**, **Open
 logs and traces**, **Clear history** (**Logs…**, **Take traces…**, **Recorded interfaces…**,
-**Recordings…**, **All of it…**) and **Quit**. Reset and Clear history are disabled while a take,
+**Recordings…**, **Tasks that run…**, **All of it…**) and **Quit**. Reset and Clear history are disabled while a take,
 an automation or a recording runs.
 
-Tests: `menu_ids_map_to_commands`
+Tests: `menu_ids_map_to_commands`, `the_machines_menu_names_each_machine_s_state_and_counts_the_tasks`
 
 ### R3 A left click on the tray icon toggles dictation
 
@@ -279,3 +280,20 @@ reached that task. A take that does anything else is waited for. The menu item i
 a task runs or a machine is away from its first state.
 
 Tests: `menu_ids_map_to_commands`
+
+### R28 The tray menu lists the machines that run
+
+The **Machines** submenu lists what runs: the root, then each agent followed by the tasks it
+started, each line with its name (`/`, the agent's folder, `search-2`) and the state it is in.
+Its title says how many tasks run ("Machines · 2 tasks run"), and before anything has run it
+holds **Nothing runs yet**. A click on the root or an agent opens the window on the Machines tab
+with that machine's diagram ([ui](ui.md) R18). A task opens to what it waits for ("Waits for
+said, timeout", or "Working" in a state that waits for nothing), **Show in the Machines tab**,
+which does the same for the task and, when it is the task the bubble follows and no take runs,
+brings its conversation back (R25), and **Cancel**, which ends that task as its **Cancel** in
+the Machines tab does (R22, R27). The menu follows the machines as they move: when a take starts
+or reaches a task, at each state a task enters, when a take or a timer ends, on a cancel, and
+when the tasks come back after a restart (R26). Showing a machine changes nothing about where
+the next take goes.
+
+Tests: `the_tray_menu_lists_each_agent_with_its_tasks_under_it`, `the_machines_menu_names_each_machine_s_state_and_counts_the_tasks`, `menu_ids_map_to_commands`, `a_machine_picked_in_the_tray_shows_in_the_machines_tab`

@@ -20,8 +20,8 @@ use jevons_desktop_core::interface;
 use jevons_desktop_core::look::{Looks, PathCache};
 use jevons_desktop_core::platform::{
     AudioDevice, AudioSource, Binding, CaptureHandle, ContextInspector, ContextProvider,
-    DeliveryOutcome, HotkeyAction, HotkeyEvent, MenuCommand, MenuModel, Recorder, RecordingHandle,
-    TextSink, TrayBackend, UiActor, UiElement, WindowEntry,
+    DeliveryOutcome, HotkeyAction, HotkeyEvent, MachineEntry, MenuCommand, MenuModel, Recorder,
+    RecordingHandle, TextSink, TrayBackend, UiActor, UiElement, WindowEntry,
 };
 use jevons_desktop_core::reader::Reader;
 use jevons_desktop_core::recorded::RecordedTree;
@@ -30,7 +30,7 @@ use jevons_desktop_core::xpath::selector::Candidate;
 use jevons_desktop_protocol::desk::Desk;
 use jevons_desktop_server::client::Routes;
 use jevons_desktop_server::flow::extract;
-use jevons_desktop_server::flow::machine::runtime::Runtime as Machines;
+use jevons_desktop_server::flow::machine::runtime::{Runtime as Machines, View as MachinesView};
 use jevons_desktop_server::flow::tools::ToolHost;
 use jevons_desktop_server::flow::walk::{self, FlowStep};
 use jevons_desktop_server::flow::{Catalog, FlowError, FlowTree, defaults};
@@ -145,6 +145,8 @@ pub enum Command {
     TimerStale(u64),
     /// Tasks ended outside a take: the tray menu and the window follow.
     TasksChanged,
+    /// A take moved a machine: the tray menu lists where each one is now.
+    MachinesMoved,
     /// The user says which candidate a machine's unsure decision was for.
     AnswerDecision {
         instance: u64,
@@ -471,6 +473,12 @@ pub struct View {
     pub bubble: BubbleScroll,
     /// The machines that run across takes, for the Machines tab.
     pub machines: Arc<Machines>,
+    /// A machine was picked in the tray menu: the window shows the Machines tab, until
+    /// another tab is picked there.
+    pub machines_tab: bool,
+    /// The machine picked in the tray menu, which the Machines tab shows until another is
+    /// picked there, or another tab is.
+    pub open_machine: Option<u64>,
     /// The Context tab's workbench: the last extract it tried and what it found.
     pub trial: Option<TrialView>,
     /// Whether a trial is under way.
@@ -484,6 +492,24 @@ pub struct View {
     /// The automations library: name, description, and whether this version is approved.
     pub automations: Vec<(String, String, bool)>,
     pub quit: bool,
+}
+
+/// The machines that run as the tray menu lists them: the root, then each agent followed by
+/// the tasks it started.
+fn machine_entries(running: &MachinesView) -> Vec<MachineEntry> {
+    running
+        .stack
+        .iter()
+        .filter(|machine| machine.parent.is_none())
+        .flat_map(|machine| std::iter::once(machine).chain(running.tasks(machine.id)))
+        .map(|machine| MachineEntry {
+            id: machine.id,
+            label: machine.label(),
+            state: machine.state.clone(),
+            waiting: machine.waiting.clone(),
+            task: machine.parent.is_some(),
+        })
+        .collect()
 }
 
 /// An extract the Context tab's workbench tries or saves.
@@ -918,6 +944,7 @@ impl Agent {
             (view.start.clone(), view.context_paused)
         };
         let live = self.active.as_ref().is_some_and(|a| a.live);
+        let running = self.session.view();
         let menu = MenuModel {
             busy: self.active.is_some() || self.running.is_some(),
             dictating: self.active.as_ref().is_some_and(|a| !a.live),
@@ -934,7 +961,8 @@ impl Agent {
                 .map(|a| (a.name, a.description, a.approved))
                 .collect(),
             conversation: self.thread.is_some(),
-            tasks: !self.session.view().at_rest(),
+            tasks: !running.at_rest(),
+            machines: machine_entries(&running),
         };
         self.view().automations = menu.automations.clone();
         if let Some(tray) = &mut self.tray {
@@ -1161,24 +1189,7 @@ impl Agent {
             }
             Command::AutomationFinished(trace) => self.automation_finished(*trace),
             Command::Session(event) => self.session_event(event),
-            Command::CancelOneTask(id) => {
-                if self.thread_task == Some(id) {
-                    self.end_conversation();
-                }
-                // A take of that task that waits on a question holds the machines: the
-                // answer is no, and the task ends once the take has.
-                if self.session.view().focus == Some(id) {
-                    self.confirmed(false);
-                }
-                let session = self.session.clone();
-                let commands = self.commands.clone();
-                tokio::spawn(async move {
-                    if let Some(ended) = session.cancel_task(id).await {
-                        tracing::info!(%ended, "Cancelled a task");
-                    }
-                    let _ = commands.send(Command::TasksChanged);
-                });
-            }
+            Command::CancelOneTask(id) => self.cancel_task(id),
             Command::CancelTask => self.cancel_tasks(),
             Command::AnswerDecision { instance, label } => {
                 let session = self.session.clone();
@@ -1193,6 +1204,7 @@ impl Agent {
                 self.publish_menu();
                 self.repaint();
             }
+            Command::MachinesMoved => self.publish_menu(),
             Command::ReloadRuntime => self.runtime.apply(&self.config, &self.config_file),
             Command::RuntimeChanged => {
                 let status = self.runtime.status();
@@ -1201,12 +1213,13 @@ impl Agent {
                     // The tasks kept the last time jevons ran: the first time, and nothing
                     // after it.
                     let session = self.session.clone();
-                    let repaint = self.repaint.clone();
+                    let commands = self.commands.clone();
                     tokio::spawn(async move {
                         for note in session.restore().await {
                             tracing::info!(%note, "Brought the machines back");
                         }
-                        repaint();
+                        // The tray menu lists them, and the window draws them.
+                        let _ = commands.send(Command::TasksChanged);
                     });
                 }
                 if self.active.is_none() {
@@ -1278,6 +1291,41 @@ impl Agent {
         self.repaint();
     }
 
+    /// Opens the window on the Machines tab, at the machine `id`. The task the bubble follows
+    /// brings its conversation back with it.
+    fn show_machine(&mut self, id: u64) {
+        {
+            let mut view = self.view();
+            view.show_window = true;
+            view.machines_tab = true;
+            view.open_machine = Some(id);
+        }
+        if self.thread_task == Some(id) {
+            self.show_conversation();
+        }
+        self.repaint();
+    }
+
+    /// Ends one task.
+    fn cancel_task(&mut self, id: u64) {
+        if self.thread_task == Some(id) {
+            self.end_conversation();
+        }
+        // A take of that task that waits on a question holds the machines: the answer is
+        // no, and the task ends once the take has.
+        if self.session.view().focus == Some(id) {
+            self.confirmed(false);
+        }
+        let session = self.session.clone();
+        let commands = self.commands.clone();
+        tokio::spawn(async move {
+            if let Some(ended) = session.cancel_task(id).await {
+                tracing::info!(%ended, "Cancelled a task");
+            }
+            let _ = commands.send(Command::TasksChanged);
+        });
+    }
+
     /// The task is over: its conversation goes, and the bubble with it when it only rested
     /// there.
     fn end_conversation(&mut self) {
@@ -1318,7 +1366,9 @@ impl Agent {
                 self.publish_menu();
             }
             MenuCommand::CancelTasks => self.cancel_tasks(),
+            MenuCommand::CancelOneTask(id) => self.cancel_task(id),
             MenuCommand::ShowConversation => self.show_conversation(),
+            MenuCommand::ShowMachine(id) => self.show_machine(id),
             MenuCommand::OpenLogsFolder => {
                 let dir = crate::config::user_dir();
                 let _ = std::fs::create_dir_all(dir.join("traces"));
@@ -2535,6 +2585,7 @@ impl Agent {
         let view = self.view.clone();
         let mut tray = self.tray.clone();
         let repaint = self.repaint.clone();
+        let commands = self.commands.clone();
         tokio::spawn(async move {
             // The bubble animates the running stage on its own clock.
             let mut tick = tokio::time::interval(Duration::from_millis(120));
@@ -2573,6 +2624,10 @@ impl Agent {
                         {
                             feedback.join(thread);
                         }
+                    }
+                    // A task started, was reached or changed state: the tray menu follows.
+                    if matches!(update, Update::Task { .. } | Update::State(_)) {
+                        let _ = commands.send(Command::MachinesMoved);
                     }
                     let state = match update {
                         Update::Level(bands) => Some(TrayState::Listening {
@@ -3718,6 +3773,74 @@ pub fn open_folder(dir: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tray_menu_lists_each_agent_with_its_tasks_under_it() {
+        use jevons_desktop_server::flow::machine::Level;
+        use jevons_desktop_server::flow::machine::runtime::Running;
+        use jevons_desktop_server::flow::tree::NodeId;
+        let machine = |id, folder: &str, state: &str, parent: Option<u64>, number| Running {
+            machine: NodeId(0),
+            folder: folder.into(),
+            name: String::new(),
+            level: match (parent, folder) {
+                (Some(_), _) => Level::Task,
+                (None, "/") => Level::Root,
+                (None, _) => Level::Agent,
+            },
+            state: state.into(),
+            since_ms: 0,
+            waiting: if parent.is_some() && state == "results" {
+                vec!["said".into(), "timeout".into()]
+            } else {
+                Vec::new()
+            },
+            id,
+            generation: 0,
+            parent,
+            number,
+            unsure: None,
+        };
+        // As the server keeps them: the root, the agents, then the tasks as they started.
+        let running = MachinesView {
+            stack: vec![
+                machine(1, "/", "idle", None, 0),
+                machine(2, "dictation", "idle", None, 0),
+                machine(3, "research", "idle", None, 0),
+                machine(7, "research/search", "results", Some(3), 1),
+                machine(9, "research/search", "reading", Some(3), 2),
+            ],
+            ..MachinesView::default()
+        };
+        let entries = machine_entries(&running);
+        let lines: Vec<(u64, &str, &str, bool)> = entries
+            .iter()
+            .map(|e| (e.id, e.label.as_str(), e.state.as_str(), e.task))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                (1, "/", "idle", false),
+                (2, "dictation", "idle", false),
+                (3, "research", "idle", false),
+                (7, "search-1", "results", true),
+                (9, "search-2", "reading", true),
+            ]
+        );
+        assert_eq!(entries[3].waiting, ["said", "timeout"]);
+        // An agent's tasks follow it, wherever the server keeps them.
+        let mut mixed = running.clone();
+        mixed.stack.swap(1, 2);
+        let labels: Vec<String> = machine_entries(&mixed)
+            .into_iter()
+            .map(|e| e.label)
+            .collect();
+        assert_eq!(
+            labels,
+            ["/", "research", "search-1", "search-2", "dictation"]
+        );
+        assert!(machine_entries(&MachinesView::default()).is_empty());
+    }
 
     #[test]
     fn feedback_shows_phrases_as_heard_and_the_outcome_at_the_end() {

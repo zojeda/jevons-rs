@@ -177,7 +177,10 @@ The Machines tab shows where the app is (`agent › task › state`, or the root
 **Cancel all tasks**, disabled while everything is at rest. A **Running** card lists the root,
 each agent and, under it, the tasks it runs (`search-1`), each with its state and the events it
 waits for; a task has its own **Cancel**. Selecting a row shows that machine's diagram, and the
-task the latest take reached shows otherwise; a machine can also be picked by folder. The diagram
+task the latest take reached shows otherwise; a machine can also be picked by folder. A machine
+picked in the tray menu ([app](app.md) R28) shows the window on this tab, whichever tab was
+open, with that machine's diagram: the tab stays until another tab is picked, and the machine
+shows while it runs, until another is picked here or another tab is. The diagram
 draws states as boxes where the layout puts them, start and end dots, choice diamonds, and an
 arrowhead and label per edge. Each edge is a curve, coloured by what decides it (the event
 alone, rules, rules and then the model, the model), with a legend below the diagram. The current state of the machine shown is marked and its latest
@@ -187,7 +190,7 @@ probability; a click answers the decision with that candidate. Each state shows 
 `loop`, `run`, `decide`, `machine`) or `waits`. A tree whose root is a decision says it has no
 machines.
 
-Tests: `the_machines_page_draws_the_built_in_root_machine`, `a_running_task_shows_under_its_agent_with_its_state_and_can_be_cancelled`
+Tests: `the_machines_page_draws_the_built_in_root_machine`, `a_running_task_shows_under_its_agent_with_its_state_and_can_be_cancelled`, `a_machine_picked_in_the_tray_shows_in_the_machines_tab`
 
 ### R19 A state in full and the latest transitions
 

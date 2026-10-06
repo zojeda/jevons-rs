@@ -60,6 +60,14 @@ impl Ctx {
     pub fn send(&self, command: Command) {
         let _ = self.commands.send(command);
     }
+
+    /// Another tab was picked: the machine picked in the tray menu no longer shows, as a
+    /// machine picked in the Machines tab is forgotten with it.
+    pub fn leave_machine(&self) {
+        let mut view = self.view.lock().expect("the view lock");
+        view.machines_tab = false;
+        view.open_machine = None;
+    }
 }
 
 /// Runs the window on this (the main) thread until Quit. `start` runs once the event loop exists,
@@ -1428,9 +1436,13 @@ mod tests {
         assert!(text.contains("not started"), "{text}");
     }
 
-    #[test]
-    fn a_running_task_shows_under_its_agent_with_its_state_and_can_be_cancelled() {
-        use crate::agent::Command;
+    /// An agent whose task waits, as one take left them: the root handed the take to the
+    /// agent, which started the task. No model is asked.
+    fn a_task_that_waits() -> (
+        jevons_desktop_server::pipeline::Env,
+        Arc<jevons_desktop_server::flow::machine::runtime::Runtime>,
+        tokio::sync::mpsc::UnboundedSender<jevons_desktop_server::pipeline::Update>,
+    ) {
         use jevons_desktop_server::flow::Memory;
         use jevons_desktop_server::flow::machine::runtime::Runtime as Machines;
         use jevons_desktop_server::pipeline::{Env, Settings, TakeStart};
@@ -1458,8 +1470,6 @@ mod tests {
             &Catalog::default(),
         ));
         assert!(tree.is_valid(), "{:?}", tree.errors);
-        // One take goes from the root to the agent, which starts the task; the task waits. No
-        // model is asked.
         let machines = Arc::new(Machines::new());
         let env = Env {
             routes: jevons_desktop_server::client::Routes::default(),
@@ -1489,10 +1499,17 @@ mod tests {
             "{:?}",
             trace.notes
         );
+        (env, machines, updates)
+    }
 
+    #[test]
+    fn a_running_task_shows_under_its_agent_with_its_state_and_can_be_cancelled() {
+        use crate::agent::Command;
+        use jevons_desktop_server::pipeline::TakeStart;
+        let (env, machines, updates) = a_task_that_waits();
         let folder = std::env::temp_dir().join(format!("jevons-ui-task-{}", std::process::id()));
         let mut state = view(&folder);
-        state.flows = tree;
+        state.flows = env.flows.clone();
         state.machines = machines.clone();
         let (mut doc, _) = machines_doc_with(state);
         // What runs: the root, the agent, and the agent's task under it.
@@ -1588,6 +1605,93 @@ mod tests {
             }
         }
         assert_eq!(asked, [task]);
+    }
+
+    #[test]
+    fn a_machine_picked_in_the_tray_shows_in_the_machines_tab() {
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        let (env, machines, _updates) = a_task_that_waits();
+        let (helper, task) = (machines.view().stack[1].id, machines.view().stack[2].id);
+        let folder = std::env::temp_dir().join(format!("jevons-ui-pick-{}", std::process::id()));
+        let state = |open: Option<u64>| {
+            let mut state = view(&folder);
+            state.flows = env.flows.clone();
+            state.machines = machines.clone();
+            state.open_machine = open;
+            state
+        };
+        let showing =
+            |doc: &DioxusDocument| texts(doc, ".fsm-run[data-showing=\"true\"] .fsm-run-name");
+        let current =
+            |doc: &DioxusDocument| texts(doc, ".fsm-state[data-current=\"true\"] .fsm-name");
+        // The agent was picked: its diagram shows, at its state, not the task the take reached.
+        let (mut doc, _) = machines_doc_with(state(Some(helper)));
+        assert_eq!(
+            (showing(&doc), current(&doc)),
+            (vec!["helper".into()], vec!["idle".into()])
+        );
+        // Another machine picked in the tab shows from then on.
+        click_text(&mut doc, ".fsm-run", "task-1");
+        assert_eq!(
+            (showing(&doc), current(&doc)),
+            (vec!["task-1".into()], vec!["waiting".into()])
+        );
+        // A task picked shows; a machine that no longer runs leaves the tab as it is otherwise.
+        let (doc, _) = machines_doc_with(state(Some(task)));
+        assert_eq!(showing(&doc), ["task-1"]);
+        let (doc, _) = machines_doc_with(state(Some(task + 100)));
+        assert_eq!(showing(&doc), ["task-1"]);
+
+        // The whole window: the Machines tab shows whichever tab was open (Context, at first),
+        // and stays while machines are picked in it, until another tab is picked.
+        let mut window = state(Some(helper));
+        window.machines_tab = true;
+        let shared = Arc::new(Mutex::new(window));
+        let (commands, _received) = tokio::sync::mpsc::unbounded_channel();
+        // The App is the root, as in the window: a wake renders it again.
+        let mut vdom = VirtualDom::new(app::App);
+        vdom.insert_any_root_context(Box::new(Ctx {
+            view: shared.clone(),
+            commands,
+        }));
+        let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("style.css"));
+        doc.set_viewport(Viewport::new(1200, 3000, 1.0, ColorScheme::Dark));
+        doc.initial_build();
+        doc.poll(None);
+        doc.resolve(0.0);
+        let tab =
+            |doc: &DioxusDocument| texts(doc, ".topbar .dx-tabs-trigger[data-state=\"active\"]");
+        assert_eq!(
+            (tab(&doc), showing(&doc)),
+            (vec!["Machines".into()], vec!["helper".into()])
+        );
+        click_text(&mut doc, ".fsm-run", "task-1");
+        // The agent wakes the window, as it does on every take.
+        doc.vdom.mark_dirty(ScopeId::APP);
+        doc.poll(None);
+        assert_eq!(
+            (tab(&doc), showing(&doc)),
+            (vec!["Machines".into()], vec!["task-1".into()])
+        );
+        // Context was the tab open before: picking it goes back to it.
+        click_text(&mut doc, ".topbar .dx-tabs-trigger", "Context");
+        assert_eq!(tab(&doc), ["Context"]);
+        assert!(doc.query_selector(".fsm-run").unwrap().is_none());
+        assert!(!shared.lock().unwrap().machines_tab);
+        // The machine picked in the tray went with the tab, as one picked in the tab does.
+        shared.lock().unwrap().open_machine = Some(helper);
+        shared.lock().unwrap().machines_tab = true;
+        doc.vdom.mark_dirty(ScopeId::APP);
+        doc.poll(None);
+        assert_eq!(showing(&doc), ["helper"]);
+        click_text(&mut doc, ".topbar .dx-tabs-trigger", "Takes");
+        assert_eq!(shared.lock().unwrap().open_machine, None);
+        click_text(&mut doc, ".topbar .dx-tabs-trigger", "Machines");
+        assert_eq!(
+            (tab(&doc), showing(&doc)),
+            (vec!["Machines".into()], vec!["task-1".into()])
+        );
     }
 
     /// The route of a Slack reply through the built-in dictate branch, three decisions deep.

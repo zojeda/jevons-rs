@@ -342,6 +342,11 @@ pub fn MachinesPage(rev: u64) -> Element {
     let view = ctx.view.lock().expect("the view lock");
     let machines: Machines = view.machines.view();
     let tree: Arc<FlowTree> = machines.tree.clone().unwrap_or_else(|| view.flows.clone());
+    // The machine picked in the tray menu, while it runs and until another is picked here.
+    let asked = view
+        .open_machine
+        .and_then(|id| machines.running(id))
+        .map(|r| (r.id, r.folder.clone()));
     drop(view);
 
     let nodes = machine_nodes(&tree);
@@ -378,11 +383,18 @@ pub fn MachinesPage(rev: u64) -> Element {
     }
     // The running machine that shows: the one picked while it runs, else the task the latest
     // take reached.
-    let shown = instance()
-        .filter(|id| machines.running(*id).is_some())
+    // What was picked here is read either way: a render that does not read it would not
+    // follow the next pick.
+    let (here, folder) = (instance(), picked());
+    let shown = asked
+        .as_ref()
+        .map(|(id, _)| *id)
+        .or(here.filter(|id| machines.running(*id).is_some()))
         .or(machines.focus);
     // Its folder, unless another machine was picked; the root when nothing runs but it.
-    let current_folder = picked()
+    let current_folder = asked
+        .map(|(_, folder)| folder)
+        .or(folder)
         .filter(|p| nodes.iter().any(|n| n.label() == p))
         .or_else(|| {
             shown
@@ -442,11 +454,12 @@ pub fn MachinesPage(rev: u64) -> Element {
             Level::Agent => "agent",
             Level::Task => "task",
         };
-        let cancel = ctx.clone();
+        let (pick, cancel) = (ctx.clone(), ctx.clone());
         rsx! {
             div { key: "run-{id}", class: "fsm-run", "data-level": level,
                 "data-showing": if showing == Some(id) { "true" } else { "false" },
                 onclick: move |_| {
+                    pick.view.lock().expect("the view lock").open_machine = None;
                     picked.set(Some(folder.clone()));
                     instance.set(Some(id));
                 },
@@ -548,9 +561,13 @@ pub fn MachinesPage(rev: u64) -> Element {
                         {badge("built-in", "secondary")}
                     }
                     Select { value: Some(node.label().to_string()), choices,
-                        onchange: move |v: Option<String>| {
-                            picked.set(v);
-                            instance.set(None);
+                        onchange: {
+                            let ctx = ctx.clone();
+                            move |v: Option<String>| {
+                                ctx.view.lock().expect("the view lock").open_machine = None;
+                                picked.set(v);
+                                instance.set(None);
+                            }
                         } }
                 }
             }
