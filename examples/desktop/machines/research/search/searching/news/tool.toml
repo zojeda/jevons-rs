@@ -1,0 +1,11 @@
+# Reads only: the settings let news_search run without asking.
+description = "The news: what happened lately, today's or this week's events, the latest about a place, a person, a team or a company, sports results"
+tool = "news_search"
+output = "none"
+
+# Words that name news, or a time that is now, choose the news with no model.
+[prefer]
+transcript = "(?i)\\b(noticias?|news|novedades|[uú]ltim[ao]s?|latest|hoy|today|ayer|yesterday|esta semana|this week|recientes?|qu[eé] pas[oó])\\b"
+
+[args.query]
+generate = "A news search query for what the user asks about: the subject and the place, in their language, a few words long, with no words such as news, noticias or search."

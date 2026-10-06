@@ -12,7 +12,7 @@
 //! value never changes what the expression means.
 
 pub mod eval;
-pub mod parse;
+pub use jevons_desktop_protocol::xpath as parse;
 pub mod selector;
 
 pub use eval::{Document, EvalError, Limits, Node, Value, Variables};

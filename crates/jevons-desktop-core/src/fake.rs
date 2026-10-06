@@ -3,8 +3,13 @@
 use crate::context::{ContextSnapshot, Privacy};
 use crate::levels::Meter;
 use crate::platform::{
-    AudioDevice, AudioEvent, AudioSource, CaptureHandle, ContextProvider, DeliveryOutcome,
-    DeliveryRequest, PlatformError, SAMPLE_RATE, SinkCapabilities, TextSink,
+    AudioDevice, AudioEvent, AudioSource, CaptureHandle, Chord, ContextInspector, ContextProvider,
+    DeliveryOutcome, DeliveryRequest, PlatformError, SAMPLE_RATE, SinkCapabilities, TextSink,
+    UiAction, UiElement, WindowEntry,
+};
+use crate::recorded::{
+    Deed, DemonstratedStep, Demonstration, RecordedElement, RecordedInspector, RecordedTree,
+    RecordedWindow,
 };
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -162,4 +167,117 @@ impl TextSink for RecordingSink {
         self.recorded.lock().unwrap().clipboard = Some(text.into());
         Ok(())
     }
+}
+
+fn el(role: &str, name: &str, children: Vec<RecordedElement>) -> RecordedElement {
+    RecordedElement {
+        element: UiElement {
+            role: role.into(),
+            name: name.into(),
+            ..UiElement::default()
+        },
+        children,
+    }
+}
+
+/// A chat app as the context investigator sees it: wrappers, a channel header and a message
+/// list, with a mail window it may not read behind it.
+pub fn slack_inspector() -> Arc<dyn ContextInspector> {
+    let messages = el(
+        "List",
+        "Messages in general",
+        vec![
+            el(
+                "ListItem",
+                "",
+                vec![
+                    el("Text", "Ana", vec![]),
+                    el("Text", "Launch moved to Friday", vec![]),
+                ],
+            ),
+            el(
+                "ListItem",
+                "",
+                vec![el("Text", "Bo", vec![]), el("Text", "Thanks!", vec![])],
+            ),
+        ],
+    );
+    let body = el(
+        "Group",
+        "",
+        vec![el(
+            "Group",
+            "",
+            vec![el("Heading", "general", vec![]), messages],
+        )],
+    );
+    let tree = RecordedTree {
+        windows: vec![
+            RecordedWindow {
+                window: WindowEntry {
+                    id: "w-slack".into(),
+                    app: "slack.exe".into(),
+                    title: "general - Acme".into(),
+                    front: true,
+                },
+                children: vec![
+                    el("Pane", "", vec![body]),
+                    el("Edit", "Message #general", vec![]),
+                ],
+            },
+            RecordedWindow {
+                window: WindowEntry {
+                    id: "w-mail".into(),
+                    app: "outlook.exe".into(),
+                    title: "Inbox".into(),
+                    front: false,
+                },
+                children: vec![el("Text", "Secret mail", vec![])],
+            },
+        ],
+    };
+    Arc::new(RecordedInspector::new(tree))
+}
+
+/// Selecting a channel, typing into the composer, and pressing Enter, over the Slack
+/// fixture.
+pub fn slack_demonstration() -> (Demonstration, String, String) {
+    let tree: RecordedTree =
+        serde_json::from_str(include_str!("../../../examples/desktop/trees/slack.json")).unwrap();
+    let inspector = RecordedInspector::new(tree.clone());
+    let flat = inspector.subtree("w-slack", 64, 10_000).unwrap();
+    let id = |role: &str, name: &str| {
+        flat.iter()
+            .find(|(_, e)| e.role == role && e.name == name)
+            .map(|(_, e)| e.id.clone())
+            .unwrap()
+    };
+    let random = id("TreeItem", "random");
+    let composer = id("Edit", "Message #general");
+    let demonstration = Demonstration {
+        steps: vec![
+            DemonstratedStep {
+                tree: tree.clone(),
+                deed: Deed::Act {
+                    target: random.clone(),
+                    action: UiAction::Click,
+                },
+            },
+            DemonstratedStep {
+                tree: tree.clone(),
+                deed: Deed::Act {
+                    target: composer.clone(),
+                    action: UiAction::TypeText("lunch is ready".into()),
+                },
+            },
+            DemonstratedStep {
+                tree: tree.clone(),
+                deed: Deed::Press {
+                    chord: Chord::parse("enter").unwrap(),
+                },
+            },
+        ],
+        end: tree,
+    };
+    (demonstration, random, composer)
 }

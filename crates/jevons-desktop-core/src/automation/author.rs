@@ -17,11 +17,11 @@
 
 use super::check::{self, CheckReport};
 use super::library::{self, Automation, MANIFEST_FILE, SCRIPT_FILE};
-use crate::client::{ChatMessage, ChatReply, ChatRequest, Client};
 use crate::recorded::Deed;
 use crate::recording::Recording;
 use crate::recording::bundle::{describe, slug};
 use crate::xpath::selector::literal;
+use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -523,20 +523,23 @@ fn prompt(recording: &Recording) -> String {
     text
 }
 
+/// A language model the author plans with. The app gives it the one generation is routed to.
+pub trait Planner: Send + Sync {
+    /// The answer to `prompt` under `instruction`, as JSON that fits `schema`; `None` when
+    /// the model cannot answer.
+    fn plan<'a>(
+        &'a self,
+        instruction: &'a str,
+        prompt: String,
+        schema: Value,
+    ) -> BoxFuture<'a, Option<String>>;
+}
+
 /// Asks the model for a plan; `None` when it cannot answer.
-pub async fn ask(client: &Client, model: &str, recording: &Recording) -> Option<Plan> {
-    let request = ChatRequest {
-        model: model.to_string(),
-        messages: vec![
-            ChatMessage::text("system", INSTRUCTION),
-            ChatMessage::text("user", prompt(recording)),
-        ],
-        ..ChatRequest::default()
-    }
-    .answer_schema(schema(recording));
-    let ChatReply::Text(answer) = client.chat(&request, |_| {}).await.ok()? else {
-        return None;
-    };
+pub async fn ask(planner: &dyn Planner, recording: &Recording) -> Option<Plan> {
+    let answer = planner
+        .plan(INSTRUCTION, prompt(recording), schema(recording))
+        .await?;
     let value: Value = serde_json::from_str(&answer).ok()?;
     Some(read_plan(recording, &value))
 }
@@ -569,15 +572,15 @@ fn build(
 /// is a new version of that automation, which then needs approving again. It blocks on the
 /// checks' dry runs.
 pub async fn author(
-    client: Option<(&Client, &str)>,
+    planner: Option<&dyn Planner>,
     recording: &Recording,
     recording_name: &str,
     library: &Path,
     replacing: Option<&str>,
 ) -> Result<Authored, String> {
     let fixture = format!("{recording_name}.json");
-    if let Some((client, model)) = client
-        && let Some(plan) = ask(client, model, recording).await
+    if let Some(planner) = planner
+        && let Some(plan) = ask(planner, recording).await
     {
         let (automation, report) =
             build(recording, &plan, library, &fixture, replacing).map_err(|e| e.to_string())?;
@@ -624,7 +627,7 @@ mod tests {
 
     /// The Slack demonstration as a recording: select random, type the message, press enter.
     fn recording() -> Recording {
-        let (demonstration, _, _) = crate::recorded::tests::slack_demonstration();
+        let (demonstration, _, _) = crate::fake::slack_demonstration();
         let targets = [
             "TreeItem \"random\" #C03RANDOM33",
             "Edit \"Message #general\"",
@@ -799,10 +802,28 @@ mod tests {
                 "step_3": {"label": "sending it"},
             },
         });
-        let (client, seen) =
-            crate::flow::agent::tests::chat_server(vec![json!(plan.to_string())]).await;
+        /// A model that answers with one plan, and keeps what it was asked.
+        struct Scripted {
+            answer: String,
+            asked: std::sync::Mutex<Vec<(String, Value)>>,
+        }
+        impl Planner for Scripted {
+            fn plan<'a>(
+                &'a self,
+                _: &'a str,
+                prompt: String,
+                schema: Value,
+            ) -> BoxFuture<'a, Option<String>> {
+                self.asked.lock().unwrap().push((prompt, schema));
+                Box::pin(async move { Some(self.answer.clone()) })
+            }
+        }
+        let model = Scripted {
+            answer: plan.to_string(),
+            asked: Default::default(),
+        };
         let dir = library("model");
-        let authored = author(Some((&client, "jev")), &recording, "take", &dir, None)
+        let authored = author(Some(&model), &recording, "take", &dir, None)
             .await
             .unwrap();
         assert!(authored.planned, "{:#?}", authored.report);
@@ -812,9 +833,11 @@ mod tests {
             authored.automation.manifest.args.keys().collect::<Vec<_>>(),
             ["channel", "message"]
         );
-        let request = seen.lock().unwrap()[0].clone();
-        assert_eq!(request["response_format"]["type"], "json_schema");
-        assert!(request.to_string().contains("Step 1 in slack.exe"));
+        // The model was asked once, about the steps, for an answer in a schema.
+        let asked = model.asked.lock().unwrap();
+        assert_eq!(asked.len(), 1);
+        assert!(asked[0].0.contains("Step 1 in slack.exe"), "{}", asked[0].0);
+        assert_eq!(asked[0].1["type"], "object");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

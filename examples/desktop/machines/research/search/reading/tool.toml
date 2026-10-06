@@ -1,0 +1,8 @@
+# Reads only: the settings let read_page run without asking. What it returns goes to `summary`,
+# which says it in the bubble.
+tool = "read_page"
+output = "next"
+
+[args.url]
+generate = """
+The address of the result the user wants read, copied exactly from these results: {searching}"""

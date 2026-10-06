@@ -361,7 +361,7 @@ pub fn dry_run(
 mod tests {
     use super::*;
     use crate::automation::library::Automation;
-    use crate::recorded::tests::slack_demonstration;
+    use crate::fake::slack_demonstration;
     use serde_json::json;
 
     const MANIFEST: &str = r#"

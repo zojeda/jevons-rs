@@ -1,0 +1,22 @@
+# A search of the web or the news that the user can follow up on: "Busca las noticias de Paraná",
+# then "leeme la segunda", "open the first one" or "search for the weather instead", until they
+# are done or stop talking to it.
+description = "The user asks to look something up on the internet: the web or the news."
+# A follow-up the model is unsure about leaves the task where it is, and goes back to the agent,
+# which takes it as if this search were not there. How sure the model must be is its provider's
+# to say; `min_probability` here would say otherwise.
+unsure = "parent"
+# Everything this task may call: the searches and the reader only read, opening a result asks
+# first.
+tools = ["web_search", "news_search", "read_page", "open_url"]
+
+# From the results, another search: by rule when the words start as those that start the task do
+# ("Search …", "Busca …", "Noticias de …"), otherwise when the model reads it so.
+[guards.again]
+prefer = { transcript = "(?i)^\\W*(?:(?:ah|eh|ey|oh|ok|okay|bueno|dale|che|a ver|y|entonces|ahora|por favor|please|now|so|and)\\W+){0,2}(?:(?:search|b[uú]sc[aá](?:r|me|lo|la|los|las|nos|melo|mela)?)\\b|(?:(?:dame|decime|contame|mostrame|quiero|give me|show me|tell me)\\W+)?(?:(?:the|las|los)\\W+)?(?:(?:latest|[uú]ltimas)\\W+)?(?:noticias|news)\\b)" }
+criterion = "The user asks to search for something else"
+
+# From the results, reading one: by rule on "leeme …", "resumime …", "qué dice …", "read …".
+[guards.read]
+prefer = { transcript = "(?i)\\b(le[eé]me|le[eé](?:r|lo|la)?|resum[ií](?:me|r|lo|la)?|qu[eé] dice|read|summari[sz]e)\\b" }
+criterion = "The user wants to know what one of the results says: to have it read or summarized"

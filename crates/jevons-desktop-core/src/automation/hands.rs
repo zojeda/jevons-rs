@@ -236,7 +236,8 @@ impl Hands {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recorded::{ReplayActor, tests::slack_demonstration};
+    use crate::fake::slack_demonstration;
+    use crate::recorded::ReplayActor;
 
     fn hands(apps: &[&str]) -> (Hands, Arc<ReplayActor>, String, String) {
         let (demonstration, random, composer) = slack_demonstration();

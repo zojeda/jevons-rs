@@ -1,7 +1,7 @@
 //! `automation.toml`: what an automation is for, the applications it may touch, its arguments,
 //! the shape of its answer, and the recorded demonstrations it must replay before it is approved.
 
-use crate::flow::shape::{Shape, is_identifier};
+use jevons_desktop_protocol::shape::{Shape, is_identifier};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

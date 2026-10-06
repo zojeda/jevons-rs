@@ -1,3 +1,0 @@
-# Runs one of the automations you recorded, chosen by what you said, with its arguments filled
-# from it: "post to random that lunch is ready".
-description = "The user asks to run one of their saved automations: a task jevons learned from a recording, such as posting a message, filing a ticket or filling a form."

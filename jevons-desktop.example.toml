@@ -1,38 +1,9 @@
-# jevons-desktop settings. The Settings panel writes this file; every field is optional.
+# The jevons desktop app's settings: dictation, what a take may read, and automations. The
+# Settings panel writes this file; every field is optional.
 # Default location: the platform configuration folder (for example
 # %APPDATA%\jevons\config\jevons-desktop.toml or ~/.config/jevons/jevons-desktop.toml).
-# The flow tree that routes each take is in the flows folder next to it; set flows_dir to move it.
-# flows_dir = "D:/jevons/flows"
-
-[server]
-# "embedded" loads the models in the app; "remote" uses a jevons server elsewhere.
-mode = "embedded"
-# Serve the API to other clients. When false, the API listens on an ephemeral loopback port
-# with a key only the app knows.
-expose = false
-bind = "127.0.0.1"
-port = 8080
-# The key other clients send when exposed. Prefer TYPESAFE_API_KEY; never commit a key.
-# api_key = ""
-remote_url = "http://127.0.0.1:8080"
-# remote_key = ""
-
-[models]
-# Where models live (default: ~/jevons/models, such as C:\Users\<you>\jevons\models).
-# folder = "D:/models"
-# Load an existing jevons-rs settings file instead of the selections below.
-# runtime_config = "jevons.toml"
-realtime = true
-
-# Unset services use the first downloaded catalog model that serves them: DiffusionGemma for
-# generative and decision, Parakeet for speech. Or choose a model on disk:
-# [models.generative]
-# path = "D:/models/diffusiongemma/diffusiongemma-26B-A4B-it-Q4_K_M.gguf"
-# mmproj = "D:/models/diffusiongemma/mmproj-diffusiongemma-26b-a4b-f16.gguf"
-# [models.decision]
-# path = "D:/models/diffusiongemma/diffusiongemma-26B-A4B-it-Q4_K_M.gguf"
-# [models.speech]
-# path = "D:/models/parakeet-tdt-0.6b-v3"
+# The server's settings (providers, models, the flows folder, tools) are in jevons-server.toml,
+# next to it.
 
 [dictation]
 # Push-to-talk (and the branch hotkeys); the take runs when you finish.
@@ -61,13 +32,11 @@ read_clipboard = false
 # "is Slack open, and what did Ana say?"), allow it and list the applications:
 read_other_windows = false
 # readable_apps = ["slack.exe", "chrome.exe"]
-# For debugging: write every decision and generation request and its response, whole, to
-# ~/jevons/logs/api.log. They hold what you say and your screen's text; keys are never written.
-log_api = false
 
-# Tools flow nodes may call (tool.toml, agent.toml). Flow files can use these, never add them.
-# Each asks in the bubble before it runs unless confirm = false here. {argument} takes a call's
-# argument; ${env:NAME} an environment variable, for secrets.
+# Tools that run on this machine, which flow nodes may call (tool.toml, loop.toml). Flow files
+# can use these, never add them. Each asks in the bubble before it runs unless confirm = false
+# here, whatever the server asks; `allow` keeps a tool to the flow nodes it names. {argument}
+# takes a call's argument; ${env:NAME} an environment variable.
 # [tools.search]
 # kind = "open"                       # open | command | http
 # description = "Searches the web for a query"
@@ -75,16 +44,8 @@ log_api = false
 # arguments = { query = "What to search for" }
 # confirm = false
 #
-# [tools.lights]
-# kind = "http"
-# description = "Turns on the lights of a room"
-# method = "POST"
-# url = "http://homeassistant.local:8123/api/services/light/turn_on"
-# headers = { Authorization = "Bearer ${env:HA_TOKEN}" }
-# body = '{"entity_id": "light.{room}"}'
-# arguments = { room = "The room, such as kitchen" }
-#
-# MCP servers, started on demand over standard input and output; their tools are server:tool.
+# MCP servers that run on this machine, started on demand over standard input and output; their
+# tools are server:tool.
 # [mcp.fs]
 # command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "C:/Users/me/notes"]
 # unconfirmed = ["read_file", "list_directory"]   # these run without asking

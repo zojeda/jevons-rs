@@ -3,7 +3,7 @@
 //! `.taplo.toml` (validation for editors). The guides are updated until someone edits them.
 
 use super::manifest::Manifest;
-use crate::flow::defaults::{InitReport, write_guarded};
+use crate::guarded::{InitReport, write_guarded};
 use std::path::Path;
 
 /// The guide to the library, written into it.

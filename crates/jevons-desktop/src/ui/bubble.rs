@@ -3,12 +3,16 @@
 //! through, so dictation keeps going to the application underneath, except while it shows an
 //! answer (with Copy, Insert and Close) or asks before a tool runs (Run or Cancel, also Enter
 //! and Esc). An answer opens a larger bubble, renders its Markdown, scrolls with the wheel and
-//! stays until Close (or the next take).
+//! stays until Close (or the next take). While a task waits for what the user says next, that
+//! larger bubble is its conversation: the earlier turns stay above the one being said. The larger
+//! bubble follows its newest text, as a chat does, until the user scrolls up; a button then goes
+//! back to it, blinking while more arrives.
 
 use super::{Ctx, markdown};
-use crate::agent::{BubbleAction, Command, Feedback, StageView};
+use crate::agent::{BubbleAction, BubbleScroll, Command, Feedback, StageView, Turn};
+use blitz_dom::BaseDocument;
 use dioxus::prelude::*;
-use jevons_desktop_core::pipeline::StageKind;
+use jevons_desktop_server::pipeline::StageKind;
 
 /// Where the bubble's arrow points: its distance from the bubble's left edge in logical pixels,
 /// and whether the icon is below the bubble (a taskbar at the bottom of the screen); and the
@@ -33,7 +37,10 @@ pub fn Bubble() -> Element {
     let anchor = use_context::<Anchor>();
     // An answer shown as plain, selectable text instead of its formatting.
     let selecting = use_signal(|| false);
-    let feedback = ctx.view.lock().expect("the view lock").feedback.clone();
+    let (feedback, scroll) = {
+        let view = ctx.view.lock().expect("the view lock");
+        (view.feedback.clone(), view.bubble)
+    };
     let Some(f) = feedback else {
         return rsx! { div { class: "bubble" } };
     };
@@ -71,6 +78,10 @@ pub fn Bubble() -> Element {
         div { class: "bubble-head",
             span { class: "bubble-dot", style: "opacity: {glow:.2}" }
             span { class: "bubble-status", "{f.status}" }
+            // Where a task is, while one runs (the root alone is no task).
+            if f.state.contains(" › ") {
+                span { class: "bubble-state", "{f.state}" }
+            }
         }
     };
     let tail_top = (!anchor.icon_below).then(|| tail.clone());
@@ -93,8 +104,12 @@ pub fn Bubble() -> Element {
             }
         };
     }
+    let newest = to_newest(&ctx, &f, scroll);
+    if f.task {
+        return conversation(&ctx, &f, selecting, head, newest, tail_top, tail_bottom);
+    }
     if f.answer {
-        return answer(&ctx, &f, selecting, head, tail_top, tail_bottom);
+        return answer(&ctx, &f, selecting, head, newest, tail_top, tail_bottom);
     }
     let quiet = f.heard.is_empty() && f.partial.is_empty();
     rsx! {
@@ -139,7 +154,7 @@ fn stage_row(index: usize, stage: &StageView, frame: u64) -> Element {
         StageKind::Writing => "write",
         StageKind::Answering => "answer",
         StageKind::Calling => "call",
-        StageKind::Agent => "agent",
+        StageKind::Loop => "loop",
     };
     let state = match stage.ok {
         None => "running",
@@ -219,13 +234,11 @@ fn answer(
     f: &Feedback,
     selecting: Signal<bool>,
     head: Element,
+    newest: Option<Element>,
     tail_top: Option<Element>,
     tail_bottom: Option<Element>,
 ) -> Element {
-    let (copy, raw, insert, close) = (ctx.clone(), ctx.clone(), ctx.clone(), ctx.clone());
-    let can_insert = f.window.is_some();
     let tail = if tail_bottom.is_some() { "down" } else { "up" };
-    let mut toggle = selecting;
     let select = selecting();
     rsx! {
         div { class: "bubble", "data-state": "answer",
@@ -242,21 +255,165 @@ fn answer(
                     {markdown::render(&f.output)}
                 }
             }
+            {newest}
             if f.done {
-                div { class: "bubble-actions",
-                    button { class: "bubble-button", onclick: move |_| close.send(Command::Bubble(BubbleAction::Close)), "Close" }
-                    if can_insert {
-                        button { class: "bubble-button", onclick: move |_| insert.send(Command::Bubble(BubbleAction::Insert)), "Insert" }
-                    }
-                    button { class: "bubble-button", "data-on": if select { "true" } else { "false" },
-                        onclick: move |_| toggle.set(!select),
-                        if select { "Done selecting" } else { "Select text" }
-                    }
-                    button { class: "bubble-button", onclick: move |_| raw.send(Command::Bubble(BubbleAction::Copy { raw: true })), "Copy raw" }
-                    button { class: "bubble-button", "data-primary": "true", onclick: move |_| copy.send(Command::Bubble(BubbleAction::Copy { raw: false })), "Copy" }
-                }
+                {actions(ctx, selecting, f.window.is_some(), true)}
             }
             {tail_bottom}
         }
+    }
+}
+
+/// The way back to the newest text, while the user has scrolled up from it. It blinks while
+/// text arrives below, and stays lit once some has.
+fn to_newest(ctx: &Ctx, f: &Feedback, scroll: BubbleScroll) -> Option<Element> {
+    if !scroll.away {
+        return None;
+    }
+    let lit = scroll.fresh && (!f.animating() || (f.frame / 3).is_multiple_of(2));
+    let ctx = ctx.clone();
+    Some(rsx! {
+        button { class: "bubble-newest", title: "Go to the newest text",
+            "data-fresh": if scroll.fresh { "true" } else { "false" },
+            "data-lit": if lit { "true" } else { "false" },
+            onclick: move |_| {
+                ctx.view.lock().expect("the view lock").bubble.jump = true;
+                super::wake();
+            },
+            svg { width: "14", height: "14", view_box: "0 0 14 14",
+                path { d: "M3 5L7 9.5L11 5", stroke: if lit { "#0e0e0e" } else { "#22e6f2" }, stroke_width: "2", fill: "none" }
+            }
+            if scroll.fresh {
+                span { "New" }
+            }
+        }
+    })
+}
+
+/// What to do with the text a finished bubble holds: Close always, the rest when there is
+/// `text` to copy or insert.
+fn actions(ctx: &Ctx, selecting: Signal<bool>, can_insert: bool, text: bool) -> Element {
+    let (copy, raw, insert, close) = (ctx.clone(), ctx.clone(), ctx.clone(), ctx.clone());
+    let mut toggle = selecting;
+    let select = selecting();
+    rsx! {
+        div { class: "bubble-actions",
+            button { class: "bubble-button", onclick: move |_| close.send(Command::Bubble(BubbleAction::Close)), "Close" }
+            if text && can_insert {
+                button { class: "bubble-button", onclick: move |_| insert.send(Command::Bubble(BubbleAction::Insert)), "Insert" }
+            }
+            if text {
+                button { class: "bubble-button", "data-on": if select { "true" } else { "false" },
+                    onclick: move |_| toggle.set(!select),
+                    if select { "Done selecting" } else { "Select text" }
+                }
+                button { class: "bubble-button", onclick: move |_| raw.send(Command::Bubble(BubbleAction::Copy { raw: true })), "Copy raw" }
+                button { class: "bubble-button", "data-primary": "true", onclick: move |_| copy.send(Command::Bubble(BubbleAction::Copy { raw: false })), "Copy" }
+            }
+        }
+    }
+}
+
+/// An earlier turn: what the user said, then the answer, or how the turn ended.
+fn past_turn(index: usize, turn: &Turn) -> Element {
+    rsx! {
+        div { key: "turn-{index}", class: "bubble-turn", "data-turn": "past",
+            if !turn.heard.is_empty() {
+                div { class: "bubble-said", "{turn.heard}" }
+            }
+            if turn.answer && !turn.output.is_empty() {
+                {markdown::render(&turn.output)}
+            } else {
+                div { class: "bubble-outcome", "data-failed": if turn.failed { "true" } else { "false" },
+                    if turn.output.is_empty() { "{turn.status}" } else { "→ {turn.output}" }
+                }
+            }
+        }
+    }
+}
+
+/// A task's conversation: the earlier turns, then the take being said or its outcome.
+fn conversation(
+    ctx: &Ctx,
+    f: &Feedback,
+    selecting: Signal<bool>,
+    head: Element,
+    newest: Option<Element>,
+    tail_top: Option<Element>,
+    tail_bottom: Option<Element>,
+) -> Element {
+    let tail = if tail_bottom.is_some() { "down" } else { "up" };
+    let select = selecting();
+    let text = f.latest_output();
+    let quiet = f.heard.is_empty() && f.partial.is_empty();
+    rsx! {
+        div { class: "bubble", "data-state": "answer",
+            "data-tail": tail,
+            {tail_top}
+            {head}
+            div { class: "bubble-answer bubble-thread",
+                if select {
+                    textarea { class: "bubble-select", value: "{text}" }
+                } else {
+                    {f.turns.iter().enumerate().map(|(i, turn)| past_turn(i, turn))}
+                    div { class: "bubble-turn", "data-turn": "latest",
+                        if !quiet {
+                            div { class: "bubble-said",
+                                span { "{f.heard}" }
+                                if !f.partial.is_empty() {
+                                    span { class: "bubble-partial",
+                                        if f.heard.is_empty() { "{f.partial.trim_start()}" } else { " {f.partial.trim_start()}" }
+                                    }
+                                }
+                            }
+                        } else if !f.done {
+                            div { class: "bubble-hint", "Speak: the task is listening." }
+                        }
+                        if f.answer {
+                            {markdown::render(&f.output)}
+                        } else if !f.output.is_empty() {
+                            div { class: "bubble-outcome", "→ {f.output}" }
+                        }
+                        if !f.done && !f.stages.is_empty() {
+                            div { class: "bubble-stages",
+                                {f.stages.iter().rev().take(3).collect::<Vec<_>>().into_iter().rev().enumerate().map(|(i, stage)| stage_row(i, stage, f.frame))}
+                            }
+                        }
+                        if f.done && !f.answer && f.output.is_empty() {
+                            div { class: "bubble-outcome", "data-failed": if f.failed { "true" } else { "false" }, "{f.status}" }
+                        }
+                    }
+                }
+            }
+            {newest}
+            if f.done {
+                {actions(ctx, selecting, f.window.is_some(), !text.is_empty())}
+            }
+            {tail_bottom}
+        }
+    }
+}
+
+/// How far the bubble's text is scrolled and how far it can be, once the document is laid out;
+/// `None` when the bubble shows no text to scroll.
+pub fn scroll(doc: &mut BaseDocument) -> Option<(f64, f64)> {
+    doc.resolve(0.0);
+    let text = doc.query_selector(".bubble-answer").ok()??;
+    let node = doc.get_node(text)?;
+    Some((
+        node.scroll_offset.y,
+        f64::from(node.final_layout.scroll_height()).max(0.0),
+    ))
+}
+
+/// Scrolls the bubble's text to its end (Blitz has no `scrollIntoView`).
+pub fn scroll_to_newest(doc: &mut BaseDocument) {
+    let Some((_, end)) = scroll(doc) else {
+        return;
+    };
+    if let Ok(Some(text)) = doc.query_selector(".bubble-answer")
+        && let Some(node) = doc.get_node_mut(text)
+    {
+        node.scroll_offset.y = end;
     }
 }

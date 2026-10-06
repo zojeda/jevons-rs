@@ -1,0 +1,7 @@
+# Risky: it opens the browser. The settings keep confirm on, so the bubble asks first; declining
+# goes back to the results (`denied` in task.fsm).
+tool = "open_url"
+
+[args.url]
+generate = """
+The address of the result the user wants opened, copied exactly from these results: {searching}"""

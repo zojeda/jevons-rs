@@ -1,16 +1,17 @@
 //! The flow tree: its nodes, the problems of the flows folder, and new branches drafted from the
-//! current context.
+//! current context: under a decision, or as a state of an agent or a task.
 
 use super::Ctx;
 use super::components::{Choice, Icon, Select, badge, icon};
 use crate::agent::{Command, open_folder};
 use dioxus::prelude::*;
-use jevons_desktop_core::flow::guard::{When, draft_when};
-use jevons_desktop_core::flow::spec::Select as Selecting;
-use jevons_desktop_core::flow::tree::{Node, NodeId, NodeSpec};
-use jevons_desktop_core::flow::{FlowTree, Kind, defaults};
+use jevons_desktop_server::flow::guard::{When, draft_when};
+use jevons_desktop_server::flow::machine::{self, Level};
+use jevons_desktop_server::flow::spec::Select as Selecting;
+use jevons_desktop_server::flow::tree::{Node, NodeId, NodeSpec};
+use jevons_desktop_server::flow::{FlowTree, Kind, defaults};
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// What the tree view needs to draw a node and its branches.
@@ -25,11 +26,12 @@ struct TreeState {
 
 fn kind_name(kind: Kind) -> &'static str {
     match kind {
+        Kind::Machine => "machine",
         Kind::Decide => "decide",
         Kind::Generate => "generate",
         Kind::Transcript => "transcript",
         Kind::Tool => "tool",
-        Kind::Agent => "agent",
+        Kind::Loop => "loop",
         Kind::Run => "run",
     }
 }
@@ -283,11 +285,70 @@ fn details(tree: &FlowTree, path: &str, builtin: bool, dir: &Path) -> Element {
     }
 }
 
+/// Whether a new branch may go under `node`: a decision, or an agent or a task, whose state
+/// it becomes. Not a shared folder, whose branches others take, nor the root machine, whose
+/// states are agents.
+fn takes_branches(node: &Node) -> bool {
+    if node.path.starts_with('_') {
+        return false;
+    }
+    match node.kind() {
+        Kind::Decide => true,
+        Kind::Machine => matches!(node.level(), Some(Level::Agent | Level::Task)),
+        _ => false,
+    }
+}
+
+/// Creates the branch `name` under `parent` in the flows folder `dir`: its folder with the
+/// node file `file_name` holding `text`. Under a machine the branch is a state, and the
+/// machine's diagram gets its transitions: entered on `said` from the state the machine waits
+/// in, and back when its work is done. The node file made.
+fn create_branch(
+    dir: &Path,
+    tree: &FlowTree,
+    parent: &str,
+    name: &str,
+    file_name: &str,
+    text: &str,
+) -> Result<PathBuf, String> {
+    let node = tree
+        .find(parent)
+        .map(|id| tree.node(id))
+        .filter(|node| takes_branches(node))
+        .ok_or_else(|| format!("{parent} takes no branches"))?;
+    let folder = dir.join(parent).join(name);
+    if folder.exists() {
+        return Err(format!("{} already exists", folder.display()));
+    }
+    // The diagram first: one that cannot take the state leaves nothing behind.
+    let diagram = match node.kind() {
+        Kind::Machine => {
+            let file = dir.join(machine::diagram_file(&node.file));
+            let before = std::fs::read_to_string(&file)
+                .map_err(|e| format!("Cannot read {}: {e}", file.display()))?;
+            let after = machine::add_state(&before, name)
+                .map_err(|e| format!("{}: {}", file.display(), e.join("; ")))?;
+            Some((file, after))
+        }
+        _ => None,
+    };
+    let file = folder.join(file_name);
+    std::fs::create_dir_all(&folder)
+        .and_then(|()| std::fs::write(&file, text))
+        .map_err(|e| format!("Cannot create {}: {e}", file.display()))?;
+    if let Some((diagram, after)) = diagram {
+        std::fs::write(&diagram, after)
+            .map_err(|e| format!("Cannot write {}: {e}", diagram.display()))?;
+    }
+    Ok(file)
+}
+
 #[component]
 pub fn FlowsPage(rev: u64) -> Element {
     let _ = rev;
     let ctx = use_context::<Ctx>();
-    let mut parent = use_signal(|| "dictate".to_string());
+    // The decision or machine a new branch goes under; the first that takes one until picked.
+    let mut parent = use_signal(|| None::<String>);
     let mut name = use_signal(String::new);
     // What creating a branch did: Ok with what to do next, or the error.
     let mut message = use_signal(|| None::<Result<String, String>>);
@@ -311,35 +372,43 @@ pub fn FlowsPage(rev: u64) -> Element {
 
     let builtin = tree.source == defaults::BUILTIN;
 
-    let parent_path = parent();
     let id = name();
     let valid = !id.is_empty()
         && id
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
-    let parent_ok = tree
-        .find(&parent_path)
-        .is_some_and(|p| tree.node(p).kind() == Kind::Decide);
-    // The decisions a new branch can go under (not shared folders, whose branches others take).
-    let decisions: Vec<Choice> = tree
+    // Where a new branch can go: the decisions, and the agents and tasks, whose state it is.
+    let parents: Vec<Choice> = tree
         .nodes()
         .iter()
-        .filter(|n| n.kind() == Kind::Decide && !n.path.starts_with('_'))
+        .filter(|n| takes_branches(n))
         .map(|n| Choice {
             value: Some(n.path.clone()),
-            label: if n.path.is_empty() {
-                "/ (the root)".into()
-            } else {
-                n.path.clone()
+            label: match (n.path.is_empty(), n.level()) {
+                (true, _) => "/ (the root)".into(),
+                (_, Some(Level::Agent)) => format!("{} (an agent: a new state)", n.path),
+                (_, Some(Level::Task)) => format!("{} (a task: a new state)", n.path),
+                _ => n.path.clone(),
             },
         })
         .collect();
+    let parent_path = parent()
+        .or_else(|| parents.first().and_then(|c| c.value.clone()))
+        .unwrap_or_default();
+    let parent_node = tree
+        .find(&parent_path)
+        .map(|p| tree.node(p))
+        .filter(|n| takes_branches(n));
+    let parent_ok = parent_node.is_some();
+    let as_state = parent_node.is_some_and(|n| n.kind() == Kind::Machine);
     let shared = tree.nodes().iter().any(|n| n.path.starts_with("_actions/"));
     let draft = context.as_ref().map(|c| {
         let title = if c.window.title.is_empty() { c.app.process_name.clone() } else { c.window.title.clone() };
         if shared {
+            // A decision's branch has a priority among its siblings; a state has none.
+            let priority = if as_state { "" } else { "priority = 10\n" };
             format!(
-                "description = {title:?}\npriority = 10\nbranches = \"_actions\"\ninstructions = \"Describe how text should read here.\"\n\n{}",
+                "description = {title:?}\n{priority}branches = \"_actions\"\ninstructions = \"Describe how text should read here.\"\n\n{}",
                 draft_when(c)
             )
         } else {
@@ -354,6 +423,8 @@ pub fn FlowsPage(rev: u64) -> Element {
     let open_dir = dir.clone();
     let reload = ctx.clone();
     let fold_tree = tree.clone();
+    let create_tree = tree.clone();
+    let create_parent = parent_path.clone();
 
     rsx! {
         div { class: "spread",
@@ -402,29 +473,24 @@ pub fn FlowsPage(rev: u64) -> Element {
                         let create_ctx = ctx.clone();
                         let dir = dir.clone();
                         let text = draft.clone();
+                        let (tree, under) = (create_tree.clone(), create_parent.clone());
                         rsx! {
                             p { class: "muted", "Matches {context.app.process_name} · {context.window.title}" }
                             div { class: "row",
-                                Select { value: Some(parent_path.clone()), choices: decisions.clone(),
-                                    onchange: move |v: Option<String>| parent.set(v.unwrap_or_default()) }
+                                Select { value: Some(parent_path.clone()), choices: parents.clone(),
+                                    onchange: move |v: Option<String>| parent.set(v) }
                                 input { class: "dx-input", placeholder: "branch name, such as slack", value: "{id}",
                                     oninput: move |e| name.set(e.value()) }
                                 button { class: "dx-button", "data-style": "accent", "data-size": "sm", disabled: !valid || !parent_ok,
                                     onclick: move |_| {
-                                        let folder = dir.join(parent()).join(name());
-                                        let file = folder.join(file_name);
-                                        message.set(Some(if folder.exists() {
-                                            Err(format!("{} already exists", folder.display()))
-                                        } else {
-                                            match std::fs::create_dir_all(&folder).and_then(|()| std::fs::write(&file, &text)) {
-                                                Ok(()) => {
-                                                    create_ctx.send(Command::ReloadFlows);
-                                                    open_folder(&folder);
-                                                    Ok(format!("Created {}: describe it and adjust its guard", file.display()))
-                                                }
-                                                Err(e) => Err(format!("Cannot create {}: {e}", file.display())),
+                                        let made = create_branch(&dir, &tree, &under, &name(), file_name, &text);
+                                        message.set(Some(made.map(|file| {
+                                            create_ctx.send(Command::ReloadFlows);
+                                            if let Some(folder) = file.parent() {
+                                                open_folder(folder);
                                             }
-                                        }));
+                                            format!("Created {}: describe it and adjust its guard", file.display())
+                                        })));
                                     },
                                     "Create"
                                 }
@@ -432,7 +498,13 @@ pub fn FlowsPage(rev: u64) -> Element {
                             if !id.is_empty() && !valid {
                                 p { class: "error-text", "A branch name uses lowercase letters, digits, - and _ only." }
                             } else {
-                                p { class: "muted", "Under the decision chosen on the left, as a folder named in lowercase letters, digits, - and _." }
+                                p { class: "muted",
+                                    if as_state {
+                                        "A state of the machine chosen on the left, entered on what the user says from the state it waits in, as a folder named in lowercase letters, digits, - and _. Its diagram gets the two transitions."
+                                    } else {
+                                        "Under the decision chosen on the left, as a folder named in lowercase letters, digits, - and _."
+                                    }
+                                }
                             }
                             pre { class: "code", "{draft}" }
                         }
@@ -483,5 +555,87 @@ pub fn FlowsPage(rev: u64) -> Element {
         if let Some(path) = (state.selected)() {
             {details(&tree, &path, builtin, &dir)}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jevons_desktop_server::flow::{Catalog, Disk};
+
+    const TREE: &[(&str, &str)] = &[
+        ("root.toml", ""),
+        (
+            "root.fsm",
+            "fsm App {\n    [*] --> idle\n    idle --> main : said\n    main --> idle\n}\n",
+        ),
+        ("main/agent.toml", "description = \"Main\""),
+        (
+            "main/agent.fsm",
+            "fsm Main {\n    [*] --> idle\n    idle --> type : said\n    type --> idle\n}\n",
+        ),
+        ("main/type/decide.toml", "description = \"Types it\""),
+        (
+            "main/type/plain/transcript.toml",
+            "description = \"As said\"",
+        ),
+    ];
+
+    #[test]
+    fn a_branch_is_created_under_a_decision_or_as_a_state_of_a_machine() {
+        let dir = std::env::temp_dir().join(format!("jevons-ui-branch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for (file, text) in TREE {
+            let file = dir.join(file);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, text).unwrap();
+        }
+        let load = || FlowTree::load(&Disk::new(&dir), &Catalog::default());
+        let tree = load();
+        assert!(tree.is_valid(), "{:?}", tree.errors);
+        // Where a branch may go: the decision and the agent, never the root machine.
+        let takes: Vec<&str> = tree
+            .nodes()
+            .iter()
+            .filter(|n| takes_branches(n))
+            .map(|n| n.path.as_str())
+            .collect();
+        assert_eq!(takes, ["main", "main/type"]);
+        let text = "description = \"Replies in Slack\"\noutput = \"target\"\n";
+        // Under a decision: a folder with its node file, and nothing else changes.
+        let file = create_branch(&dir, &tree, "main/type", "slack", "generate.toml", text).unwrap();
+        assert_eq!(file, dir.join("main/type/slack/generate.toml"));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+        // As a state of the agent: its diagram enters it from where the agent waits.
+        let file = create_branch(&dir, &tree, "main", "reply", "generate.toml", text).unwrap();
+        assert_eq!(file, dir.join("main/reply/generate.toml"));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("main/agent.fsm")).unwrap(),
+            "fsm Main {\n    [*] --> idle\n    idle --> type : said\n    type --> idle\n    idle --> reply : said\n    reply --> idle\n}\n"
+        );
+        // The folder as it is now loads, with the new state's work.
+        let tree = load();
+        assert!(tree.is_valid(), "{:?}", tree.errors);
+        let main = tree
+            .node(tree.find("main").unwrap())
+            .machine
+            .clone()
+            .unwrap();
+        assert!(main.diagram.working.contains("reply"));
+        // A folder that is there, a state the machine has, and the root are refused, and
+        // leave the diagram as it was.
+        let before = std::fs::read_to_string(dir.join("main/agent.fsm")).unwrap();
+        let refused = |parent: &str, name: &str| {
+            create_branch(&dir, &tree, parent, name, "generate.toml", text).unwrap_err()
+        };
+        assert!(refused("main", "reply").ends_with("already exists"));
+        assert!(refused("main", "idle").ends_with("idle is already a state of Main"));
+        assert!(!dir.join("main/idle").exists());
+        assert_eq!(refused("", "more"), " takes no branches");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("main/agent.fsm")).unwrap(),
+            before
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

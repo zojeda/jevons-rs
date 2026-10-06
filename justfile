@@ -35,9 +35,14 @@ clippy:
 test *args:
     cargo test --workspace --locked "$@"
 
-# Run the standard formatting, lint, and test checks without loading a model.
+# Check that specs/ matches the code: cited tests exist, every crate has a spec, the index is whole.
 [group('Code quality')]
-verify: fmt-check clippy test
+check-specs:
+    python3 scripts/check-specs.py --report
+
+# Run the standard formatting, lint, spec and test checks without loading a model.
+[group('Code quality')]
+verify: fmt-check clippy check-specs test
 
 # Build API documentation without opening a browser.
 [group('Documentation')]

@@ -8,7 +8,7 @@ use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use jevons_desktop_core::history::History;
 use jevons_desktop_core::icons::{self, FRAME, TrayState};
 use jevons_desktop_core::platform::{
-    Binding, HotkeyAction, HotkeyEvent, MenuCommand, MenuModel, TrayBackend,
+    Binding, HotkeyAction, HotkeyEvent, MachineEntry, MenuCommand, MenuModel, TrayBackend,
 };
 use std::time::Instant;
 use tao::event::{Event, StartCause};
@@ -196,12 +196,15 @@ fn run(commands: UnboundedSender<Command>, ready: std::sync::mpsc::Sender<Result
                     state = new;
                 }
             }
-            Event::UserEvent(TrayMessage::Menu(model)) => {
+            // The machines' moves publish the menu often: it is built again only when it
+            // differs.
+            Event::UserEvent(TrayMessage::Menu(model)) if model != menu => {
                 menu = model;
                 if let Some(tray) = &tray {
                     tray.set_menu(Some(Box::new(build_menu(&menu))));
                 }
             }
+            Event::UserEvent(TrayMessage::Menu(_)) => {}
             Event::UserEvent(TrayMessage::Hotkeys(bindings)) => {
                 let Some(manager) = &hotkeys else {
                     let _ = commands.send(Command::HotkeysRegistered {
@@ -275,6 +278,64 @@ fn run(commands: UnboundedSender<Command>, ready: std::sync::mpsc::Sender<Result
             *control_flow = ControlFlow::Wait;
         }
     });
+}
+
+/// A machine's line in the menu: what it is called and the state it is in.
+fn machine_line(entry: &MachineEntry) -> String {
+    format!("{} · {}", entry.label, entry.state)
+}
+
+/// The Machines submenu's title: how many tasks run shows without opening it.
+fn machines_title(machines: &[MachineEntry]) -> String {
+    match machines.iter().filter(|m| m.task).count() {
+        0 => "Machines".into(),
+        1 => "Machines · 1 task runs".into(),
+        tasks => format!("Machines · {tasks} tasks run"),
+    }
+}
+
+/// What runs: the root and each agent, a click on which shows it in the Machines tab, and
+/// under each agent its tasks, each with what it waits for and what to do with it.
+fn machines_menu(machines: &[MachineEntry]) -> Submenu {
+    let menu = Submenu::with_id("machines", machines_title(machines), true);
+    for entry in machines {
+        let line = machine_line(entry);
+        if !entry.task {
+            let _ = menu.append(&MenuItem::with_id(
+                format!("machine:{}", entry.id),
+                line,
+                true,
+                None,
+            ));
+            continue;
+        }
+        let task = Submenu::with_id(format!("task:{}", entry.id), format!("    {line}"), true);
+        let waits = if entry.waiting.is_empty() {
+            "Working".to_string()
+        } else {
+            format!("Waits for {}", entry.waiting.join(", "))
+        };
+        let _ = task.append_items(&[
+            &MenuItem::with_id(format!("waits:{}", entry.id), waits, false, None),
+            &MenuItem::with_id(
+                format!("machine:{}", entry.id),
+                "Show in the Machines tab",
+                true,
+                None,
+            ),
+            &MenuItem::with_id(format!("end:{}", entry.id), "Cancel", true, None),
+        ]);
+        let _ = menu.append(&task);
+    }
+    if machines.is_empty() {
+        let _ = menu.append(&MenuItem::with_id(
+            "machines-none",
+            "Nothing runs yet",
+            false,
+            None,
+        ));
+    }
+    menu
 }
 
 fn build_menu(model: &MenuModel) -> Menu {
@@ -363,6 +424,7 @@ fn build_menu(model: &MenuModel) -> Menu {
         &MenuItem::with_id("clear:traces", "Take traces…", true, None),
         &MenuItem::with_id("clear:trees", "Recorded interfaces…", true, None),
         &MenuItem::with_id("clear:recordings", "Recordings…", true, None),
+        &MenuItem::with_id("clear:machines", "Tasks that run…", true, None),
         &PredefinedMenuItem::separator(),
         &MenuItem::with_id("clear:all", "All of it…", true, None),
     ]);
@@ -375,6 +437,19 @@ fn build_menu(model: &MenuModel) -> Menu {
         &MenuItem::with_id("toggle", dictation, !model.live, None),
         &MenuItem::with_id("live", live, !model.dictating, None),
         &MenuItem::with_id("cancel", "Cancel the current take", model.busy, None),
+        &MenuItem::with_id(
+            "cancel:tasks",
+            "Cancel the tasks that run",
+            model.tasks,
+            None,
+        ),
+        &MenuItem::with_id(
+            "conversation",
+            "Show the task's conversation",
+            model.conversation,
+            None,
+        ),
+        &machines_menu(&model.machines),
         &start,
         &PredefinedMenuItem::separator(),
         &MenuItem::with_id("inspector", "Show context inspector", true, None),
@@ -428,6 +503,12 @@ fn menu_command(id: &str) -> Option<MenuCommand> {
         }
         "live" => MenuCommand::ToggleLiveDictation,
         "cancel" => MenuCommand::CancelTake,
+        "cancel:tasks" => MenuCommand::CancelTasks,
+        "conversation" => MenuCommand::ShowConversation,
+        machine if machine.starts_with("machine:") => {
+            MenuCommand::ShowMachine(machine[8..].parse().ok()?)
+        }
+        end if end.starts_with("end:") => MenuCommand::CancelOneTask(end[4..].parse().ok()?),
         "logs" => MenuCommand::OpenLogsFolder,
         "inspector" => MenuCommand::ShowInspector,
         "pause" => MenuCommand::ToggleContextPause,
@@ -440,6 +521,7 @@ fn menu_command(id: &str) -> Option<MenuCommand> {
         "clear:traces" => MenuCommand::ClearHistory(vec![History::Traces]),
         "clear:trees" => MenuCommand::ClearHistory(vec![History::Trees]),
         "clear:recordings" => MenuCommand::ClearHistory(vec![History::Recordings]),
+        "clear:machines" => MenuCommand::ClearHistory(vec![History::Machines]),
         "quit" => MenuCommand::Quit,
         other => {
             let branch = other.strip_prefix("start:")?;
@@ -453,6 +535,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_machines_menu_names_each_machine_s_state_and_counts_the_tasks() {
+        let entry = |id, label: &str, state: &str, task| MachineEntry {
+            id,
+            label: label.into(),
+            state: state.into(),
+            waiting: Vec::new(),
+            task,
+        };
+        let root = entry(1, "/", "idle", false);
+        let agent = entry(2, "research", "idle", false);
+        let first = entry(3, "search-1", "results", true);
+        let second = entry(4, "search-2", "reading", true);
+        assert_eq!(machine_line(&first), "search-1 · results");
+        assert_eq!(machine_line(&root), "/ · idle");
+        assert_eq!(machines_title(&[]), "Machines");
+        assert_eq!(machines_title(&[root.clone(), agent.clone()]), "Machines");
+        assert_eq!(
+            machines_title(&[root.clone(), agent.clone(), first.clone()]),
+            "Machines · 1 task runs"
+        );
+        assert_eq!(
+            machines_title(&[root, agent, first, second]),
+            "Machines · 2 tasks run"
+        );
+    }
+
+    #[test]
     fn menu_ids_map_to_commands() {
         assert_eq!(menu_command("toggle"), Some(MenuCommand::ToggleDictation));
         assert_eq!(menu_command("start:"), Some(MenuCommand::StartAt(None)));
@@ -461,7 +570,28 @@ mod tests {
             Some(MenuCommand::StartAt(Some("ask".into())))
         );
         assert_eq!(menu_command("start"), None);
+        assert_eq!(
+            menu_command("conversation"),
+            Some(MenuCommand::ShowConversation)
+        );
         assert_eq!(menu_command("feedback"), Some(MenuCommand::ToggleFeedback));
+        assert_eq!(menu_command("cancel"), Some(MenuCommand::CancelTake));
+        assert_eq!(menu_command("cancel:tasks"), Some(MenuCommand::CancelTasks));
+        // A machine that runs is named by its id; a line that only says what a task waits
+        // for, or the submenu itself, asks for nothing.
+        assert_eq!(
+            menu_command("machine:12"),
+            Some(MenuCommand::ShowMachine(12))
+        );
+        assert_eq!(menu_command("end:12"), Some(MenuCommand::CancelOneTask(12)));
+        assert_eq!(menu_command("machine:search"), None);
+        assert_eq!(menu_command("waits:12"), None);
+        assert_eq!(menu_command("task:12"), None);
+        assert_eq!(menu_command("machines"), None);
+        assert_eq!(
+            menu_command("clear:machines"),
+            Some(MenuCommand::ClearHistory(vec![History::Machines]))
+        );
         assert_eq!(menu_command("record"), Some(MenuCommand::ToggleRecording));
         assert_eq!(
             menu_command("run:slack-post"),

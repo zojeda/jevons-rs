@@ -1,0 +1,5 @@
+# Where to search: the news for what happened lately, the web for the rest. Words that name news
+# choose with no model (news/tool.toml); otherwise the decision model reads the two descriptions.
+description = "Searching the web or the news for what the user asked"
+question = "Where should this be looked up?"
+fallback = "web"

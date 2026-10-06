@@ -1,0 +1,13 @@
+output = "bubble"
+max_output_tokens = 400
+prompt = """
+The user asked: {transcript}
+
+Search results (JSON):
+{searching}
+
+Answer from the results in a few sentences, in the language the user spoke. Then list the results \
+that matter, numbered in the order given, each with its title, its date when it has one, and its \
+address, so the user can ask for one by its number. Use only what the results hold: \
+when they hold none, say the search found nothing and suggest other words, and never list a result \
+that is not in them."""

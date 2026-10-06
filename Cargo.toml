@@ -15,11 +15,15 @@ jevons-burn = { path = "crates/jevons-burn" }
 jevons-core = { path = "crates/jevons-core" }
 jevons-decision = { path = "crates/jevons-decision" }
 jevons-desktop-core = { path = "crates/jevons-desktop-core" }
+jevons-desktop-protocol = { path = "crates/jevons-desktop-protocol" }
+jevons-desktop-server = { path = "crates/jevons-desktop-server" }
+jevons-desktop-tools = { path = "crates/jevons-desktop-tools" }
 jevons-diffusion = { path = "crates/jevons-diffusion" }
 jevons-formats = { path = "crates/jevons-formats" }
 jevons-gemma4-diffusion = { path = "crates/jevons-gemma4-diffusion" }
 jevons-generative = { path = "crates/jevons-generative" }
 jevons-kernels = { path = "crates/jevons-kernels" }
+jevons-machine = { path = "crates/jevons-machine" }
 jevons-models = { path = "crates/jevons-models", default-features = false }
 jevons-nemotron-diffusion = { path = "crates/jevons-nemotron-diffusion" }
 jevons-parakeet = { path = "crates/jevons-parakeet" }
@@ -68,6 +72,9 @@ enigo = "0.6"
 global-hotkey = "0.8"
 globset = "0.4"
 notify = "8"
+# Task state machines in jevons-desktop: the Mermaid-like `.fsm` parser and model only (no egui
+# editor, no Node.js layout).
+oxidate-fsm = { version = "0.1.0", default-features = false }
 # Markdown answers in the feedback bubble: the parser only (no HTML writer, no CLI).
 pulldown-cmark = { version = "0.13", default-features = false }
 regex = "1.11"
