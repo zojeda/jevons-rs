@@ -1779,12 +1779,15 @@ mod tests {
         ));
         let host = Arc::new(jevons_desktop_core::automation::host::AutomationHost::new(
             &dir,
-            jevons_desktop_core::config::AutomationSettings::default(),
+            jevons_desktop_core::config::AutomationSettings {
+                enabled: true,
+                ..Default::default()
+            },
             replay.clone(),
             replay.clone(),
         ));
         let version = host.list()[0].version.clone();
-        let mut settings = jevons_desktop_core::config::AutomationSettings::default();
+        let mut settings = host.settings();
         settings.approved.insert("open-channel".into(), version);
         settings.unconfirmed.push("open-channel".into());
         host.set_settings(settings);

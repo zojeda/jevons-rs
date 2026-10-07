@@ -45,13 +45,15 @@ impl TextTokenizer for GemmaTokenizer {
 }
 
 pub(crate) struct Gemma4 {
+    /// Before `model`: fields drop in this order, and the model's release of device memory
+    /// then covers the vision tower's buffers too.
+    images: Option<Images>,
     model: model::Model,
     tokenizer: GemmaTokenizer,
     info: ModelInfo,
     chat: ChatFormat,
     profile: PrefillProfile,
     prompt_cache: bool,
-    images: Option<Images>,
 }
 
 fn map(error: model::ModelError) -> Error {

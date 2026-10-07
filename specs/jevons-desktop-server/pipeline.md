@@ -170,7 +170,8 @@ Tests: none yet
 
 The dictation settings bind push-to-talk, live dictation (unless it is off), the inspector (when
 set) and one push-to-talk hotkey per entry of `branch_hotkeys` that starts the take at that
-branch. The automation settings bind the record hotkey (when set) and a hotkey per automation.
+branch. The automation settings bind the record hotkey (when set) and a hotkey per automation,
+and nothing while automations are off.
 Empty hotkeys bind nothing. A key chord reads as modifiers and then one key, ignoring case, and
 writes back as `ctrl+shift+k`.
 

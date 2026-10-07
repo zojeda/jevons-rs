@@ -89,12 +89,21 @@ impl AutomationHost {
         self.settings.read().expect("the settings lock").clone()
     }
 
+    /// Whether automations are on. They are coming soon: until the settings turn them on,
+    /// none is listed and none runs.
+    pub fn enabled(&self) -> bool {
+        self.settings.read().expect("the settings lock").enabled
+    }
+
     pub fn is_approved(&self, automation: &Automation) -> bool {
         automation.is_approved(&self.settings.read().expect("the settings lock").approved)
     }
 
-    /// Every automation, approved or not.
+    /// Every automation, approved or not; none while automations are off.
     pub fn list(&self) -> Vec<Listed> {
+        if !self.enabled() {
+            return Vec::new();
+        }
         let library = self.library();
         library
             .automations
@@ -140,6 +149,15 @@ impl AutomationHost {
         cancel: Arc<AtomicBool>,
         step_by_step: bool,
     ) -> RunTrace {
+        if !self.enabled() {
+            return failed(
+                name,
+                ErrorKind::Invalid,
+                "automations are coming soon: they are off until `enabled = true` under \
+                 [automation] in the settings"
+                    .into(),
+            );
+        }
         let library = self.library();
         let Some(automation) = library.get(name) else {
             return failed(
@@ -286,9 +304,13 @@ mod tests {
         let dir = library_dir("approve");
         let (demonstration, _, _) = slack_demonstration();
         let replay = Arc::new(ReplayActor::new(demonstration));
+        let on = AutomationSettings {
+            enabled: true,
+            ..AutomationSettings::default()
+        };
         let host = Arc::new(AutomationHost::new(
             &dir,
-            AutomationSettings::default(),
+            on.clone(),
             replay.clone(),
             replay.clone(),
         ));
@@ -300,11 +322,11 @@ mod tests {
         let refused = host.run("post", &args, None, Arc::new(AtomicBool::new(false)), false);
         assert_eq!(refused.error.unwrap().kind, ErrorKind::NotApproved);
         assert_eq!(replay.done(), 0);
-        let mut settings = AutomationSettings::default();
+        let mut settings = on;
         settings
             .approved
             .insert("post".into(), listed[0].version.clone());
-        host.set_settings(settings);
+        host.set_settings(settings.clone());
         // As a tool, it answers with its result alone.
         let result = host.call("post", &json!({"channel": "random"})).unwrap();
         assert_eq!(result, json!({"opened": "random"}));
@@ -313,6 +335,38 @@ mod tests {
         std::fs::write(dir.join("post/script.rhai"), "#{ opened: \"x\" }\n").unwrap();
         host.reload();
         assert!(!host.list()[0].approved);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn automations_are_off_until_the_settings_turn_them_on() {
+        let dir = library_dir("soon");
+        let (demonstration, _, _) = slack_demonstration();
+        let replay = Arc::new(ReplayActor::new(demonstration));
+        let host = Arc::new(AutomationHost::new(
+            &dir,
+            AutomationSettings::default(),
+            replay.clone(),
+            replay.clone(),
+        ));
+        // The library holds one, and the host lists none: no tool, no menu entry.
+        assert_eq!(host.library().automations.len(), 1);
+        assert!(!host.enabled() && host.list().is_empty());
+        // Approved or not, it does not run.
+        let mut settings = AutomationSettings::default();
+        let version = host.library().automations["post"].version.clone();
+        settings.approved.insert("post".into(), version);
+        host.set_settings(settings.clone());
+        let error = host
+            .call("post", &json!({"channel": "random"}))
+            .unwrap_err();
+        assert!(error.contains("coming soon"), "{error}");
+        assert_eq!(replay.done(), 0);
+        // Turned on, the same approval lets it run.
+        settings.enabled = true;
+        host.set_settings(settings);
+        assert!(host.list()[0].approved);
+        assert!(host.call("post", &json!({"channel": "random"})).is_ok());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

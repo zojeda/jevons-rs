@@ -123,3 +123,10 @@ code restricts decoding to tokens whose pieces are written in that language's sc
 the restriction.
 
 Tests: none yet
+
+### R12 A dropped model frees its memory
+
+Dropping the model returns its pooled device memory to the device, through a release guard
+(`jevons-burn` R15) that runs after its tensors are dropped.
+
+Tests: none yet

@@ -209,13 +209,15 @@ button per kind that adds one under a free name, and Remove, which sends what it
 the default), dictation (the hotkeys and their hold or toggle mode, live
 feedback, the inspector hotkey, the microphone, the language, whether to ask the decision model,
 the most tokens a generation writes), a push-to-talk hotkey per top-level branch, the record
-hotkey and one per automation, and privacy (characters per field, the clipboard, the API log). A
+hotkey and one per automation, and privacy (characters per field, the clipboard, the API log).
+While automations are off ([app](app.md) R29), their card says **Coming soon** and how to try
+them, and offers no hotkey. A
 hotkey field records the combination pressed, as an accelerator the global hotkeys accept.
 Choosing a provider for a capability asks it for its own model until one is typed, and a route
 that is what a route left out means is not written to the file. Providers and routes the
 settings would refuse show their problem in the save bar, and cannot be saved.
 
-Tests: `recorded_combinations_parse_as_global_hotkeys`, `edited_settings_mark_the_page_and_save_from_a_bar_that_shows_only_then`, `routes_edited_in_the_panel_leave_what_is_default_out_of_the_file`
+Tests: `recorded_combinations_parse_as_global_hotkeys`, `edited_settings_mark_the_page_and_save_from_a_bar_that_shows_only_then`, `routes_edited_in_the_panel_leave_what_is_default_out_of_the_file`, `the_settings_say_automations_are_coming_soon_until_they_are_turned_on`
 
 ### R21 Edits mark the page and save from a bar
 

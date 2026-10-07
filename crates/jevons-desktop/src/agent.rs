@@ -81,6 +81,14 @@ pub enum Command {
         version: String,
         yes: bool,
     },
+    /// The user's answer to starting a recording from the tray menu, which replaces this
+    /// automation when it names one.
+    RecordAnswered {
+        replacing: Option<String>,
+        yes: bool,
+    },
+    /// The user's answer to dropping the recording that runs.
+    DiscardAnswered(bool),
     /// The user's answer to resetting the settings.
     ResetAnswered(bool),
     /// The user's answer to clearing these kinds of history.
@@ -492,6 +500,31 @@ pub struct View {
     /// The automations library: name, description, and whether this version is approved.
     pub automations: Vec<(String, String, bool)>,
     pub quit: bool,
+}
+
+/// What the bubble asks before a recording starts from the tray menu: recording a new
+/// automation, or the task of `replacing` again.
+fn record_question(replacing: Option<&str>) -> PendingCall {
+    PendingCall {
+        question: match replacing {
+            Some(name) => format!("Record {name} again?"),
+            None => "Record an automation?".into(),
+        },
+        details: "jevons records what you do with the mouse and the keyboard, and the text \
+                  your takes type, until you stop it.\nIn the tray menu, Stop recording saves \
+                  it and writes the automation, and Discard the recording drops it."
+            .into(),
+        action: "Record".into(),
+    }
+}
+
+/// What the bubble asks before the recording that runs is dropped.
+fn discard_question() -> PendingCall {
+    PendingCall {
+        question: "Discard the recording?".into(),
+        details: "Nothing of it is saved, and no automation is written from it.".into(),
+        action: "Discard".into(),
+    }
 }
 
 /// The machines that run as the tray menu lists them: the root, then each agent followed by
@@ -960,6 +993,7 @@ impl Agent {
                 .into_iter()
                 .map(|a| (a.name, a.description, a.approved))
                 .collect(),
+            automations_on: self.config.automation.enabled,
             conversation: self.thread.is_some(),
             tasks: !running.at_rest(),
             machines: machine_entries(&running),
@@ -1178,6 +1212,8 @@ impl Agent {
             Command::ApprovalAnswered { name, version, yes } => {
                 self.approval_answered(&name, &version, yes)
             }
+            Command::RecordAnswered { replacing, yes } => self.record_answered(replacing, yes),
+            Command::DiscardAnswered(yes) => self.discard_answered(yes),
             Command::ResetAnswered(yes) => self.reset_answered(yes),
             Command::ClearAnswered { kinds, yes } => self.clear_answered(&kinds, yes),
             Command::AutomationProgress(label) => {
@@ -1416,7 +1452,16 @@ impl Agent {
                 if self.recording.is_some() {
                     self.stop_recording();
                 } else {
-                    self.start_recording();
+                    self.ask_to_record(None);
+                }
+            }
+            MenuCommand::DiscardRecording => {
+                if self.recording.is_some() {
+                    self.ask(
+                        discard_question(),
+                        "Enter discards it, Esc keeps recording",
+                        Command::DiscardAnswered,
+                    );
                 }
             }
             MenuCommand::OpenAutomationsFolder => {
@@ -1426,13 +1471,7 @@ impl Agent {
             }
             MenuCommand::RunAutomation(name) => self.run_automation(&name, None, false),
             MenuCommand::RunStepByStep(name) => self.run_automation(&name, None, true),
-            MenuCommand::RecordAgain(name) => {
-                self.replacing = Some(name);
-                self.start_recording();
-                if self.recording.is_none() {
-                    self.replacing = None;
-                }
-            }
+            MenuCommand::RecordAgain(name) => self.ask_to_record(Some(name)),
             MenuCommand::ApproveAutomation(name) => self.review_automation(&name),
             MenuCommand::OpenConfigFolder => {
                 if let Some(dir) = self.config_file.parent() {
@@ -1482,10 +1521,19 @@ impl Agent {
             }
             MenuCommand::Quit => {
                 self.cancel_take();
+                // The models unload before the process ends, which takes a moment, and a load
+                // in progress ends first: the icon stays until then, so the app is not started
+                // again over one still closing.
+                if matches!(
+                    self.runtime.status(),
+                    Status::Ready { .. } | Status::Loading
+                ) {
+                    self.message("Quitting once the models are unloaded…", 600);
+                }
+                self.runtime.shutdown();
                 if let Some(tray) = &self.tray {
                     tray.quit();
                 }
-                self.runtime.shutdown();
                 self.view().quit = true;
                 self.repaint();
                 return false;
@@ -2415,6 +2463,68 @@ impl Agent {
         self.show_question(reply, question, hint);
     }
 
+    /// A recording asked for from the tray menu starts once the user agrees: a click there
+    /// is easy to make by mistake, and a recording lasts until it is stopped.
+    fn ask_to_record(&mut self, replacing: Option<String>) {
+        if self.recording.is_some() {
+            self.message("A recording already runs: stop or discard it first", 5);
+            return;
+        }
+        if self.active.is_some() {
+            self.notice("Finish the current take first");
+            return;
+        }
+        self.ask(
+            record_question(replacing.as_deref()),
+            "Enter starts recording, Esc does not",
+            move |yes| Command::RecordAnswered { replacing, yes },
+        );
+    }
+
+    fn record_answered(&mut self, replacing: Option<String>, yes: bool) {
+        if !yes {
+            self.message("Nothing is recorded", 4);
+            return;
+        }
+        if self.recording.is_some() {
+            return;
+        }
+        self.replacing = replacing;
+        self.start_recording();
+        if self.recording.is_none() {
+            self.replacing = None;
+        }
+    }
+
+    /// Drops the recording that runs: nothing of it is saved, and no automation is written.
+    fn discard_answered(&mut self, yes: bool) {
+        if !yes {
+            return;
+        }
+        let Some(mut recording) = self.recording.take() else {
+            return;
+        };
+        // A note being said is for the recording that goes.
+        if self.active.as_ref().is_some_and(|a| a.note) {
+            self.cancel_take();
+        }
+        self.record_press = None;
+        self.replacing = None;
+        if let Some(handle) = recording.handle.take() {
+            handle.stop();
+        }
+        // The worker ends once the platform reports nothing more; its steps go with it.
+        tokio::task::spawn_blocking(move || {
+            if let Some(worker) = recording.worker.take() {
+                let _ = worker.join();
+            }
+        });
+        tracing::info!("Recording discarded");
+        self.set_tray(self.resting());
+        self.publish_menu();
+        self.message("The recording was discarded: nothing was saved", 5);
+    }
+
     /// Puts the default settings folder back and runs with it.
     fn reset_answered(&mut self, yes: bool) {
         if !yes {
@@ -2927,6 +3037,10 @@ impl Agent {
 
     /// Starts recording what the user does.
     fn start_recording(&mut self) {
+        // Automations are coming soon: nothing records until the settings turn them on.
+        if !self.config.automation.enabled {
+            return;
+        }
         if self.active.is_some() {
             self.notice("Finish the current take first");
             return;
@@ -3773,6 +3887,30 @@ pub fn open_folder(dir: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_recording_from_the_menu_asks_first_and_says_how_it_ends() {
+        let new = record_question(None);
+        assert_eq!(new.question, "Record an automation?");
+        assert_eq!(new.action, "Record");
+        // The question says the recording lasts until it is stopped, and both ways out.
+        assert!(
+            new.details.contains("until you stop it")
+                && new.details.contains("Stop recording")
+                && new.details.contains("Discard the recording"),
+            "{}",
+            new.details
+        );
+        let again = record_question(Some("slack-post"));
+        assert_eq!(again.question, "Record slack-post again?");
+        assert_eq!(again.details, new.details);
+        let discard = discard_question();
+        assert_eq!(
+            (discard.question.as_str(), discard.action.as_str()),
+            ("Discard the recording?", "Discard")
+        );
+        assert!(discard.details.contains("Nothing of it is saved"));
+    }
 
     #[test]
     fn the_tray_menu_lists_each_agent_with_its_tasks_under_it() {

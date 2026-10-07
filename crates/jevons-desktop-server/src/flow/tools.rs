@@ -509,7 +509,10 @@ arguments = { title = "A title" }
         )
         .unwrap();
         std::fs::write(dir.join("post/script.rhai"), "#{}\n").unwrap();
-        let mut settings = jevons_desktop_core::config::AutomationSettings::default();
+        let mut settings = jevons_desktop_core::config::AutomationSettings {
+            enabled: true,
+            ..Default::default()
+        };
         settings.allow.insert("post".into(), vec!["run".into()]);
         let host = Arc::new(jevons_desktop_core::automation::host::AutomationHost::new(
             &dir,

@@ -136,3 +136,14 @@ The `flex` feature enables Burn's CPU device. The building blocks run there with
 so model crates test their layers without a GPU.
 
 Tests: `rms_norm_scales_rows_to_unit_rms_times_weight`, `kv_cache_writes_positions_and_views_a_prefix`
+
+### R15 A release guard returns a dropped model's memory
+
+`device::ReleaseOnDrop` syncs the device, returns its unused pooled memory and syncs again when
+it is dropped. Burn queues a dropped tensor's release, so the first sync is what lets the
+cleanup free its pages. Declared as a model's last field it runs once the model's tensors are
+dropped: nothing of a dropped model stays reserved (on APUs device memory is system memory), and
+a process that ends holds none of it. A device that fails then is left as it is: the guard never
+panics.
+
+Tests: none yet

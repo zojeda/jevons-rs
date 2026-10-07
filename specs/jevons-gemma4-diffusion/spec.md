@@ -161,10 +161,12 @@ Tests: none yet
 
 ### R15 A dropped model frees its memory
 
-Dropping the model returns its pooled device memory to the device, through `release_memory`
-(`jevons-kernels` R12).
+Dropping the model returns its pooled device memory to the device, through a release guard
+(`jevons-kernels` R13) that runs after every buffer of the model is dropped: the layers, the
+embeddings, the caches, the scratch buffers and the logits. The vision tower's buffers are
+dropped before the model, so the same release covers them.
 
-Tests: none yet
+Tests: `the_release_guard_returns_what_was_dropped_before_it`
 
 ### R16 Vision projectors
 

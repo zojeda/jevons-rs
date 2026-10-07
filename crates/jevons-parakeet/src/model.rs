@@ -8,6 +8,7 @@ use crate::config::{Config, mel_config};
 use crate::decoder::Decoder;
 use crate::encoder::Encoder;
 use jevons_audio::LogMel;
+use jevons_burn::device::ReleaseOnDrop;
 use jevons_burn::weights::Loader;
 use jevons_burn::{DType, Device, Tensor, TensorData};
 use jevons_core::{
@@ -37,6 +38,9 @@ pub struct Parakeet {
     decoder: Decoder,
     /// The script decoding is restricted to.
     script: Option<Script>,
+    /// Returns the model's pooled device memory once every tensor above is dropped: it stays
+    /// the last field.
+    _release: ReleaseOnDrop,
 }
 
 fn load_error(error: impl std::fmt::Display) -> Error {
@@ -82,6 +86,7 @@ impl Parakeet {
             languages: LANGUAGES,
         };
         Ok(Self {
+            _release: ReleaseOnDrop::new(&device),
             config: model_config,
             device,
             mel: LogMel::new(mel),

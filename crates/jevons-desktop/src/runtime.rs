@@ -245,11 +245,45 @@ struct Shared {
     host: Option<Arc<Host>>,
 }
 
+/// How long [`Runtime::shutdown`] waits for the models to unload before it gives up. A load in
+/// progress ends first, and takes minutes: ending late costs little, ending in the middle of a
+/// call to the device has cost a reboot.
+const UNLOAD_LIMIT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Settings to apply, and the file they were read from.
+type Request = (DesktopConfig, PathBuf);
+
+/// The settings to apply next: the latest of those queued, since only they matter. `None` when
+/// a shutdown is queued, whatever is queued around it: the thread then ends and applies
+/// nothing more.
+fn latest(first: Request, requests: &mpsc::Receiver<Option<Request>>) -> Option<Request> {
+    let mut latest = first;
+    loop {
+        match requests.try_recv() {
+            Ok(Some(newer)) => latest = newer,
+            Ok(None) => return None,
+            Err(_) => return Some(latest),
+        }
+    }
+}
+
 /// Handle to the runtime thread.
 #[derive(Clone)]
 pub struct Runtime {
     shared: Arc<Mutex<Shared>>,
-    apply: mpsc::Sender<Option<(DesktopConfig, PathBuf)>>,
+    apply: mpsc::Sender<Option<Request>>,
+    /// Disconnects once the runtime thread has ended, the models unloaded.
+    ended: Arc<Mutex<mpsc::Receiver<()>>>,
+}
+
+/// Shuts the runtime down when dropped: a run that ends early, on an error, unloads the
+/// models all the same.
+pub struct ShutdownOnDrop(pub Runtime);
+
+impl Drop for ShutdownOnDrop {
+    fn drop(&mut self) {
+        self.0.shutdown();
+    }
 }
 
 impl Runtime {
@@ -261,12 +295,21 @@ impl Runtime {
             host: None,
         }));
         let (apply, requests) = mpsc::channel();
+        let (ending, ended) = mpsc::channel();
         let state = shared.clone();
         std::thread::Builder::new()
             .name("runtime".into())
-            .spawn(move || run(requests, state, changed))
+            .spawn(move || {
+                run(requests, state, changed);
+                // Dropped here, or by a panic above: either way the thread is over.
+                drop::<mpsc::Sender<()>>(ending);
+            })
             .expect("the runtime thread starts");
-        Self { shared, apply }
+        Self {
+            shared,
+            apply,
+            ended: Arc::new(Mutex::new(ended)),
+        }
     }
 
     /// Applies `config` (read from `file`, which relative model paths resolve against).
@@ -280,9 +323,20 @@ impl Runtime {
         self.shared.lock().expect("the runtime lock").host = Some(host);
     }
 
-    /// Unloads the models and ends the thread.
+    /// Unloads the models, ends the thread and waits for both; a load in progress ends first.
+    /// A process that exits while the device still loads or frees a model is, to the GPU
+    /// driver, a process killed mid-call: that has left HIP failing with status 719 for every
+    /// process until a reboot. It gives up after [`UNLOAD_LIMIT`], so that a device that hangs
+    /// cannot keep the app from ending.
     pub fn shutdown(&self) {
         let _ = self.apply.send(None);
+        let ended = self.ended.lock().expect("the runtime lock");
+        if let Err(mpsc::RecvTimeoutError::Timeout) = ended.recv_timeout(UNLOAD_LIMIT) {
+            tracing::warn!(
+                seconds = UNLOAD_LIMIT.as_secs(),
+                "The models did not unload in time: ending anyway"
+            );
+        }
     }
 
     pub fn status(&self) -> Status {
@@ -295,11 +349,7 @@ impl Runtime {
     }
 }
 
-fn run(
-    requests: mpsc::Receiver<Option<(DesktopConfig, PathBuf)>>,
-    shared: Arc<Mutex<Shared>>,
-    changed: impl Fn(),
-) {
+fn run(requests: mpsc::Receiver<Option<Request>>, shared: Arc<Mutex<Shared>>, changed: impl Fn()) {
     let tokio = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("runtime-io")
@@ -322,12 +372,10 @@ fn run(
     };
     let mut embedded = embedded::Embedded::default();
     let mut exposed: Option<Exposed> = None;
-    while let Ok(Some((config, file))) = requests.recv() {
-        // Only the latest settings matter.
-        let (config, file) = std::iter::from_fn(|| requests.try_recv().ok())
-            .map_while(|r| r)
-            .last()
-            .unwrap_or((config, file));
+    while let Ok(Some(first)) = requests.recv() {
+        let Some((config, file)) = latest(first, &requests) else {
+            break;
+        };
         if let Err(e) = config.check_routes() {
             tokio.block_on(embedded.unload());
             let _ = expose(&tokio, &mut exposed, &config, None, None);
@@ -428,6 +476,7 @@ fn run(
     }
     let _ = expose(&tokio, &mut exposed, &DesktopConfig::default(), None, None);
     tokio.block_on(embedded.unload());
+    tracing::info!("Runtime ended: the models are unloaded");
 }
 
 /// Adds what to do about failures the user can fix outside the app.
@@ -659,6 +708,55 @@ mod embedded {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shutdown_returns_once_the_runtime_thread_has_ended() {
+        // A run that ends early, on an error, shuts down through its guard.
+        let runtime = Runtime::start(|| {});
+        drop(ShutdownOnDrop(runtime.clone()));
+        // The thread is over by now, not on its way out: nothing listens for settings any
+        // more. Before, the process could end while the thread still unloaded the models.
+        assert!(
+            runtime.apply.send(None).is_err(),
+            "the runtime thread still runs after shutdown"
+        );
+        // Shutting down again, as an explicit call after a guard would, returns at once.
+        let again = std::time::Instant::now();
+        runtime.shutdown();
+        assert!(again.elapsed() < UNLOAD_LIMIT / 10);
+    }
+
+    #[test]
+    fn a_shutdown_queued_behind_settings_is_not_lost() {
+        let request = |name: &str| Some((DesktopConfig::default(), PathBuf::from(name)));
+        let queue = |queued: Vec<Option<Request>>| {
+            let (apply, requests) = mpsc::channel();
+            for request in queued {
+                apply.send(request).unwrap();
+            }
+            // Kept open: an empty queue is not a closed one.
+            (apply, requests)
+        };
+        let file = |next: Option<Request>| next.map(|(_, file)| file);
+        // Only the latest settings are applied.
+        let (_open, requests) = queue(vec![request("second"), request("third")]);
+        assert_eq!(
+            file(latest(request("first").unwrap(), &requests)),
+            Some(PathBuf::from("third"))
+        );
+        let (_open, requests) = queue(Vec::new());
+        assert_eq!(
+            file(latest(request("only").unwrap(), &requests)),
+            Some(PathBuf::from("only"))
+        );
+        // Settings were saved while the models loaded, then the user quit: the thread ends
+        // and loads nothing more. Before, the shutdown was taken off the queue and dropped,
+        // and the thread waited for settings for ever.
+        let (_open, requests) = queue(vec![request("saved"), None]);
+        assert!(latest(request("loading").unwrap(), &requests).is_none());
+        let (_open, requests) = queue(vec![None, request("later")]);
+        assert!(latest(request("loading").unwrap(), &requests).is_none());
+    }
 
     const ALL: Local = Local {
         speech: true,

@@ -1224,6 +1224,47 @@ mod tests {
     }
 
     #[test]
+    fn the_settings_say_automations_are_coming_soon_until_they_are_turned_on() {
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        let folder = std::env::temp_dir().join(format!("jevons-ui-soon-{}", std::process::id()));
+        let settings = |on: bool| {
+            let mut state = view(&folder);
+            state.config.automation.enabled = on;
+            let (commands, _received) = tokio::sync::mpsc::unbounded_channel();
+            let mut vdom = VirtualDom::new(app::App);
+            vdom.insert_any_root_context(Box::new(Ctx {
+                view: Arc::new(Mutex::new(state)),
+                commands,
+            }));
+            let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+            doc.add_user_agent_stylesheet(include_str!("style.css"));
+            doc.set_viewport(Viewport::new(1000, 4000, 1.0, ColorScheme::Dark));
+            doc.initial_build();
+            doc.poll(None);
+            click_text(&mut doc, ".topbar .dx-tabs-trigger", "Settings");
+            doc
+        };
+        // Off, as the defaults are: the card says so and how to try them, and offers no hotkey.
+        let doc = settings(false);
+        let card = texts(&doc, ".dx-card[data-soon=\"true\"]").join(" ");
+        assert!(
+            card.contains("Automations")
+                && card.contains("Coming soon")
+                && card.contains("enabled = true")
+                && !card.contains("Starts recording"),
+            "{card}"
+        );
+        // Turned on in the settings file: the record hotkey is there to set.
+        let doc = settings(true);
+        assert!(texts(&doc, ".dx-card[data-soon=\"true\"]").is_empty());
+        let card = texts(&doc, ".dx-card[data-soon=\"false\"]").join(" ");
+        assert!(
+            card.contains("Starts recording") && !card.contains("Coming soon"),
+            "{card}"
+        );
+    }
+
+    #[test]
     fn edited_settings_mark_the_page_and_save_from_a_bar_that_shows_only_then() {
         use blitz_traits::shell::{ColorScheme, Viewport};
         let folder = std::env::temp_dir().join(format!("jevons-ui-dirty-{}", std::process::id()));

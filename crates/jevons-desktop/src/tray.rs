@@ -15,7 +15,9 @@ use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::platform::run_return::EventLoopExtRunReturn;
 use tokio::sync::mpsc::UnboundedSender;
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+use tray_icon::menu::{
+    CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu,
+};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 /// Messages to the tray thread.
@@ -280,6 +282,10 @@ fn run(commands: UnboundedSender<Command>, ready: std::sync::mpsc::Sender<Result
     });
 }
 
+/// What the menu shows in place of the recording and automation items while automations
+/// are off.
+const AUTOMATIONS_SOON: &str = "Automations (coming soon)";
+
 /// A machine's line in the menu: what it is called and the state it is in.
 fn machine_line(entry: &MachineEntry) -> String {
     format!("{} · {}", entry.label, entry.state)
@@ -462,17 +468,32 @@ fn build_menu(model: &MenuModel) -> Menu {
             None,
         ),
         &PredefinedMenuItem::separator(),
-        &MenuItem::with_id(
-            "record",
-            if model.recording {
-                "Stop recording"
-            } else {
-                "Record an automation…"
-            },
-            !model.busy || model.recording,
-            None,
-        ),
-        &automations,
+    ]);
+    // Automations are coming soon: until the settings turn them on, one line says so.
+    let record = MenuItem::with_id(
+        "record",
+        if model.recording {
+            "Stop recording"
+        } else {
+            "Record an automation…"
+        },
+        !model.busy || model.recording,
+        None,
+    );
+    let discard = MenuItem::with_id(
+        "record:discard",
+        "Discard the recording…",
+        model.recording,
+        None,
+    );
+    let soon = MenuItem::with_id("automations-soon", AUTOMATIONS_SOON, false, None);
+    let items: &[&dyn IsMenuItem] = if model.automations_on {
+        &[&record, &discard, &automations]
+    } else {
+        &[&soon]
+    };
+    let _ = menu.append_items(items);
+    let _ = menu.append_items(&[
         &PredefinedMenuItem::separator(),
         &MenuItem::with_id("reload", "Reload the flow tree", true, None),
         &MenuItem::with_id("config", "Open settings folder", true, None),
@@ -494,6 +515,7 @@ fn menu_command(id: &str) -> Option<MenuCommand> {
     Some(match id {
         "toggle" => MenuCommand::ToggleDictation,
         "record" => MenuCommand::ToggleRecording,
+        "record:discard" => MenuCommand::DiscardRecording,
         "automations-folder" => MenuCommand::OpenAutomationsFolder,
         run if run.starts_with("run:") => MenuCommand::RunAutomation(run[4..].to_string()),
         step if step.starts_with("step:") => MenuCommand::RunStepByStep(step[5..].to_string()),
@@ -588,11 +610,17 @@ mod tests {
         assert_eq!(menu_command("waits:12"), None);
         assert_eq!(menu_command("task:12"), None);
         assert_eq!(menu_command("machines"), None);
+        // The line that says automations are coming soon asks for nothing either.
+        assert_eq!(menu_command("automations-soon"), None);
         assert_eq!(
             menu_command("clear:machines"),
             Some(MenuCommand::ClearHistory(vec![History::Machines]))
         );
         assert_eq!(menu_command("record"), Some(MenuCommand::ToggleRecording));
+        assert_eq!(
+            menu_command("record:discard"),
+            Some(MenuCommand::DiscardRecording)
+        );
         assert_eq!(
             menu_command("run:slack-post"),
             Some(MenuCommand::RunAutomation("slack-post".into()))

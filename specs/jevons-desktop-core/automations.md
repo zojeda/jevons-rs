@@ -213,3 +213,12 @@ to approve again. The result goes through every check. When the model's plan fai
 draft takes its place.
 
 Tests: `a_draft_takes_the_values_the_user_said_as_arguments_and_replays`, `a_models_plan_that_replays_is_the_one_written`, `without_a_model_the_draft_is_written_and_checked`, `the_example_recording_loads_and_its_draft_replays`
+
+### R23 Automations are off until the settings turn them on
+
+Automations are coming soon. While `[automation] enabled` is not `true`, the host lists no
+automation, so none is offered as a tool, and a run fails with `invalid` and a message that says
+so, before it reads or acts on anything, approved or not. The library is still loaded: checks,
+dry runs and the author work as they do.
+
+Tests: `automations_are_off_until_the_settings_turn_them_on`
