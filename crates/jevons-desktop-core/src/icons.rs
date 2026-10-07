@@ -57,7 +57,7 @@ impl TrayState {
             }
             Self::Recording => {
                 "jevons: recording what you do (hold the record hotkey to say what the task is; \
-                 stop from the tray menu)"
+                 stop or discard it from the tray menu)"
             }
         }
     }

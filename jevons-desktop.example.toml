@@ -53,7 +53,9 @@ read_other_windows = false
 # Automations: scripts in the library folder (`automations` next to this file), written from
 # recorded demonstrations. An automation runs only once approved in the app, which pins its
 # version here; an edited script needs approving again.
+# Coming soon: automations are off, and the tray menu says so, until `enabled = true`.
 # [automation]
+# enabled = true                                # try them: record, approve and run
 # record_hotkey = "Ctrl+Alt+R"                  # start/stop recording; hold it to add a note
 # unconfirmed = ["slack-post"]                  # these run without asking first
 # [automation.hotkeys]

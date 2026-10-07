@@ -13,6 +13,7 @@ use crate::config::Config;
 use crate::image;
 use crate::rope::Rope;
 use crate::vision::{Vision, VisionConfig};
+use jevons_burn::device::ReleaseOnDrop;
 use jevons_burn::layers::{
     KvCache, attention_mask, gated_mlp, greedy, grouped_attention, host_f32, linear, rms_norm,
     rotate_half,
@@ -67,6 +68,9 @@ pub struct Nemotron {
     #[cfg(test)]
     trace: Option<Vec<Vec<f32>>>,
     logits: Option<Tensor<2>>,
+    /// Returns the model's pooled device memory once every tensor above is dropped: it stays
+    /// the last field.
+    _release: ReleaseOnDrop,
 }
 
 fn load_error(error: impl std::fmt::Display) -> Error {
@@ -217,6 +221,7 @@ impl Nemotron {
         };
         let chat = chat_format();
         let model = Self {
+            _release: ReleaseOnDrop::new(&device),
             cos: table(cos),
             sin: table(sin),
             config: cfg,

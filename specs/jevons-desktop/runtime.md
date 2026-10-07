@@ -109,3 +109,17 @@ runtime's status with "<name> (<url>): <error>" or the loader's message, and the
 the providers that do answer are still served.
 
 Tests: none yet
+
+### R12 The process ends after the models are unloaded
+
+Shutting the runtime down unloads the models and returns once the runtime thread has ended: the
+model workers have stopped and each model has returned its device memory. A load in progress
+ends first. Quit and the headless modes (`--transcript`, `--replay`, `--serve`) shut it down
+before the process ends, also when a headless run ends early on an error. A process that ends
+while the device still loads or frees a model is, to the GPU driver, one killed in the middle of
+a call, which has left HIP failing with status 719 for every process until a reboot. The wait
+gives up after ten minutes, with a warning, so a device that hangs cannot keep the app from
+ending. A shutdown queued behind settings still to apply is not lost: the thread ends and
+applies none of them. The log says when the runtime has ended with the models unloaded.
+
+Tests: `shutdown_returns_once_the_runtime_thread_has_ended`, `a_shutdown_queued_behind_settings_is_not_lost`

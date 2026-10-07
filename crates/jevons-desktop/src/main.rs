@@ -655,6 +655,8 @@ fn replay(
     let runtime = runtime::Runtime::start(move || {
         let _ = ready.send(());
     });
+    // However the run ends, the models unload before the process does.
+    let _unload = runtime::ShutdownOnDrop(runtime.clone());
     runtime.apply(&config, &config_file);
     let routes = loop {
         changed.recv()?;
@@ -756,7 +758,6 @@ fn replay(
         [trace] => println!("{}", serde_json::to_string_pretty(trace)?),
         all => println!("{}", serde_json::to_string_pretty(all)?),
     }
-    runtime.shutdown();
     match traces.into_iter().find_map(|t| t.error) {
         Some(e) => Err(e.into()),
         None => Ok(()),
@@ -962,9 +963,19 @@ fn serve(config: DesktopConfig, config_file: PathBuf) -> Result<(), Box<dyn std:
     let runtime = runtime::Runtime::start(move || {
         let _ = ready.send(());
     });
+    // However the server ends, the models unload before the process does.
+    let _unload = runtime::ShutdownOnDrop(runtime.clone());
     let tokio = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
+    // Ctrl+C ends the server instead of killing it with the models loaded.
+    let interrupted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop = interrupted.clone();
+    tokio.spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
     let met = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let session = tokio.block_on(async {
         // Nobody is at the desk until a client connects.
@@ -1027,7 +1038,17 @@ fn serve(config: DesktopConfig, config_file: PathBuf) -> Result<(), Box<dyn std:
     let address = std::net::SocketAddr::new(config.server.bind, config.server.port);
     eprintln!("Serving desktop clients on ws://{address}/desktop");
     // The routes follow the providers for as long as the server runs.
-    while changed.recv().is_ok() {
+    loop {
+        if interrupted.load(std::sync::atomic::Ordering::Relaxed) {
+            eprintln!("Unloading the models…");
+            break;
+        }
+        match changed.recv_timeout(std::time::Duration::from_millis(250)) {
+            Ok(()) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            // The runtime thread is gone: nothing more will be served.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
         let status = runtime.status();
         eprintln!("{}", status.describe());
         session.set_routes(runtime.routes());
@@ -1038,7 +1059,6 @@ fn serve(config: DesktopConfig, config_file: PathBuf) -> Result<(), Box<dyn std:
             }
         }
     }
-    runtime.shutdown();
     Ok(())
 }
 

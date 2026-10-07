@@ -10,7 +10,7 @@ use crate::gpu::attention::{self, AttnShape};
 use crate::gpu::gemm::{self, Groups, QMatrix};
 use crate::gpu::ops::{self, Q6kTable, QkvShape};
 use crate::gpu::tune::{DeviceProfile, TuneBuffers, Tuner, Workload};
-use crate::gpu::{Buf, Gpu};
+use crate::gpu::{Buf, Gpu, ReleaseOnDrop};
 use std::time::Instant;
 
 #[derive(Debug, thiserror::Error)]
@@ -256,6 +256,9 @@ pub struct Model {
     last_hidden_rows: usize,
     /// When set, each forward records per-layer intermediate rows (diagnostics only).
     pub trace: Option<Vec<(usize, &'static str, Vec<f32>)>>,
+    /// Returns the model's pooled device memory once every buffer above is dropped: it stays
+    /// the last field.
+    _release: ReleaseOnDrop,
 }
 
 /// Row tile for the small-row expert kernel.
@@ -398,15 +401,6 @@ fn rope_table(cfg: &Config, cap: usize, full: bool) -> Vec<f32> {
         }
     }
     table
-}
-
-impl Drop for Model {
-    /// Returns the model's pooled device memory (system memory on APUs) when it is dropped.
-    fn drop(&mut self) {
-        self.layers.clear();
-        self.logits = None;
-        self.gpu.release_memory();
-    }
 }
 
 impl Model {
@@ -565,6 +559,7 @@ impl Model {
                 .map_or(0.0, |u| u.bytes_reserved as f64 / 1e9),
         );
         Ok(Self {
+            _release: ReleaseOnDrop::new(&gpu),
             dummy: gpu.upload_u32(&[0]),
             split: gemm::SplitScratch::new(),
             tuner: Tuner::new(DeviceProfile::detect(&gpu, device)),

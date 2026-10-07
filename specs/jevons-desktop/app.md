@@ -28,13 +28,15 @@ live dictation**, **Cancel the current take** (while one runs), **Cancel the tas
 (while one does), **Show the task's conversation** (while a task waits with one), **Machines**
 (R28), **Start takes at** (the root or
 each top-level branch), **Show context inspector**, **Live feedback**, **Pause context capture**,
-**Record an automation…** or **Stop recording**, **Automations** (per automation: its
+**Record an automation…** or **Stop recording**, **Discard the recording…** (while one runs),
+**Automations** (per automation: its
 description, **Run** and **Run step by step** when approved or **Review and approve…** when not,
 and **Record it again…**; **None yet: record one** when empty; **Open the automations folder**),
 **Reload the flow tree**, **Open settings folder**, **Reset settings to the defaults…**, **Open
 logs and traces**, **Clear history** (**Logs…**, **Take traces…**, **Recorded interfaces…**,
 **Recordings…**, **Tasks that run…**, **All of it…**) and **Quit**. Reset and Clear history are disabled while a take,
-an automation or a recording runs.
+an automation or a recording runs. While automations are off (R29), one disabled line,
+**Automations (coming soon)**, takes the place of the recording items and **Automations**.
 
 Tests: `menu_ids_map_to_commands`, `the_machines_menu_names_each_machine_s_state_and_counts_the_tasks`
 
@@ -127,15 +129,19 @@ Tests: none yet
 
 ### R13 Recording from the tray and the record hotkey
 
-**Record an automation…** or the record hotkey starts a recording, unless a take runs, and the
-icon turns to recording. While the record hotkey is held for half a second or more, the app
-listens: the first thing said is the task's description, and later ones are notes. A shorter tap
-during a recording stops it.
+While automations are on (R29), **Record an automation…** or the record hotkey starts a recording, unless a take runs, and the
+icon turns to recording. The menu item asks in the bubble first ("Record an automation?"),
+saying that the recording lasts until it is stopped and how it ends; Enter starts it and Esc
+does not. The record hotkey starts one at once. While the record hotkey is held for half a
+second or more, the app listens: the first thing said is the task's description, and later ones
+are notes. A shorter tap during a recording stops it. **Discard the recording…** asks, then
+drops the recording that runs: nothing of it is saved, no automation is written from it, and the
+icon leaves recording.
 Text a push-to-talk take types during the recording becomes a step. A recording with no steps is
 not saved. A saved one is written into an automation by the author, with `author_model` or the
 generative model when the runtime has one, and then goes to review.
 
-Tests: none yet
+Tests: `a_recording_from_the_menu_asks_first_and_says_how_it_ends`, `menu_ids_map_to_commands`
 
 ### R14 Approval happens in the bubble
 
@@ -161,10 +167,10 @@ Tests: none yet
 
 ### R16 Record it again
 
-**Record it again…** records the task anew and replaces the automation with the new version,
-which needs approving again.
+**Record it again…** asks first, as **Record an automation…** does (R13), then records the task
+anew and replaces the automation with the new version, which needs approving again.
 
-Tests: none yet
+Tests: `a_recording_from_the_menu_asks_first_and_says_how_it_ends`
 
 ### R17 Saved settings apply without a restart
 
@@ -234,10 +240,12 @@ Tests: none yet
 
 ### R24 Quit ends everything
 
-**Quit** cancels the take, removes the tray icon, unloads the models and closes the window.
+**Quit** cancels the take, unloads the models, removes the tray icon and closes the window.
+The process ends only once the models are unloaded
+([runtime](runtime.md) R12): the bubble says so while it waits, and the icon stays until then.
 Closing the window only hides it.
 
-Tests: none yet
+Tests: `shutdown_returns_once_the_runtime_thread_has_ended`
 
 ### R25 A waiting task's bubble is its conversation
 
@@ -297,3 +305,15 @@ when the tasks come back after a restart (R26). Showing a machine changes nothin
 the next take goes.
 
 Tests: `the_tray_menu_lists_each_agent_with_its_tasks_under_it`, `the_machines_menu_names_each_machine_s_state_and_counts_the_tasks`, `menu_ids_map_to_commands`, `a_machine_picked_in_the_tray_shows_in_the_machines_tab`
+
+### R29 Automations are coming soon
+
+Automations are off unless `[automation] enabled = true` in `jevons-desktop.toml`, which is how
+to try them. While they are off, the tray menu says **Automations (coming soon)** (R2), the
+record hotkey and the automations' hotkeys bind nothing, no recording starts, no automation is
+listed, offered to the flow tree as a `script:` tool or run
+([automations](../jevons-desktop-core/automations.md) R23), and the Settings tab says so
+([ui](ui.md) R20). The built-in `automations` agent is then no choice for the root. A change of
+the setting applies at the next start.
+
+Tests: `automations_are_off_until_the_settings_turn_them_on`, `the_record_and_automation_hotkeys_bind_from_the_settings`, `the_settings_say_automations_are_coming_soon_until_they_are_turned_on`, `menu_ids_map_to_commands`

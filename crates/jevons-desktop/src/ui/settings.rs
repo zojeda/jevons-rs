@@ -597,43 +597,58 @@ pub fn SettingsPage(rev: u64) -> Element {
             }
         }
 
-        div { class: "dx-card",
+        div { class: "dx-card", "data-soon": if d.automation.enabled { "false" } else { "true" },
             div { class: "dx-card-header",
                 div {
                     div { class: "dx-card-title", "Automations" }
                     div { class: "dx-card-description", "Record a task once, then run it again from the tray, a hotkey or by saying it" }
                 }
-            }
-            div { class: "dx-card-content",
-                div { class: "field",
-                    div { class: "stack",
-                        span { class: "field-label", "Record" }
-                        span { class: "field-hint", "Starts recording; while recording, hold it to say what the task is (or a note), tap it to finish" }
-                    }
-                    HotkeyField { value: d.automation.record_hotkey.clone().unwrap_or_default(), optional: true,
-                        onchange: move |h: String| draft.edit(|c| c.automation.record_hotkey = Some(h).filter(|h| !h.is_empty())) }
+                if !d.automation.enabled {
+                    {badge("Coming soon", "secondary")}
                 }
-                {automations.into_iter().map(|(name, description, approved)| {
-                    let value = d.automation.hotkeys.get(&name).cloned().unwrap_or_default();
-                    let key = name.clone();
-                    let hint = if approved { description } else { format!("{description} (not approved yet)") };
-                    rsx! {
-                        div { class: "field", key: "{name}",
-                            div { class: "stack",
-                                span { class: "field-label mono", "{name}" }
-                                span { class: "field-hint", "{hint}" }
-                            }
-                            HotkeyField { value, optional: true,
-                                onchange: move |h: String| draft.edit(|c| {
-                                    if h.is_empty() {
-                                        c.automation.hotkeys.remove(&key);
-                                    } else {
-                                        c.automation.hotkeys.insert(key.clone(), h);
-                                    }
-                                }) }
-                        }
+            }
+            if !d.automation.enabled {
+                div { class: "dx-card-content",
+                    p { class: "muted",
+                        "Automations are off for now: jevons records and runs none. To try them, set "
+                        span { class: "mono", "enabled = true" }
+                        " under "
+                        span { class: "mono", "[automation]" }
+                        " in jevons-desktop.toml and start jevons again."
                     }
-                })}
+                }
+            } else {
+                div { class: "dx-card-content",
+                    div { class: "field",
+                        div { class: "stack",
+                            span { class: "field-label", "Record" }
+                            span { class: "field-hint", "Starts recording; while recording, hold it to say what the task is (or a note), tap it to finish" }
+                        }
+                        HotkeyField { value: d.automation.record_hotkey.clone().unwrap_or_default(), optional: true,
+                            onchange: move |h: String| draft.edit(|c| c.automation.record_hotkey = Some(h).filter(|h| !h.is_empty())) }
+                    }
+                    {automations.into_iter().map(|(name, description, approved)| {
+                        let value = d.automation.hotkeys.get(&name).cloned().unwrap_or_default();
+                        let key = name.clone();
+                        let hint = if approved { description } else { format!("{description} (not approved yet)") };
+                        rsx! {
+                            div { class: "field", key: "{name}",
+                                div { class: "stack",
+                                    span { class: "field-label mono", "{name}" }
+                                    span { class: "field-hint", "{hint}" }
+                                }
+                                HotkeyField { value, optional: true,
+                                    onchange: move |h: String| draft.edit(|c| {
+                                        if h.is_empty() {
+                                            c.automation.hotkeys.remove(&key);
+                                        } else {
+                                            c.automation.hotkeys.insert(key.clone(), h);
+                                        }
+                                    }) }
+                            }
+                        }
+                    })}
+                }
             }
         }
 

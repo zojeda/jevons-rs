@@ -29,6 +29,10 @@ pub struct ClientConfig {
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AutomationSettings {
+    /// Automations are coming soon: until this is set, which is how to try them, the app
+    /// records, lists and runs none.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub enabled: bool,
     /// The library folder; `automations` next to this file by default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dir: Option<PathBuf>,

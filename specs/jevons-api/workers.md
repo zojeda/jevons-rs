@@ -109,9 +109,12 @@ Tests: `recordings_stream_segments_then_the_transcript`, `live_passes_return_wor
 
 `run` binds the listen address before loading any model, so a taken address fails at once. It
 serves until SIGINT or SIGTERM (Ctrl-C on systems without Unix signals), finishes pending
-requests, then waits for the worker threads to end and release their models.
+requests, then waits for the worker threads to end and release their models. Every worker is
+waited for, also after one panicked. When a model fails to load, the models loaded before it are
+dropped, and loading returns its error only once their workers have ended: a caller that then
+exits, or loads again, never does so while a model is still being freed on the device.
 
-Tests: none yet
+Tests: `joining_waits_for_every_worker_even_after_one_panicked`
 
 ### R13 Serving again keeps models loaded
 

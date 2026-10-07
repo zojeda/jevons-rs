@@ -104,7 +104,8 @@ Tests: none yet
 
 `--dry-run <name>` replays the automation against its first fixture, or the demonstration in
 `--recording <json>`, with the arguments in `--args <json>` or the fixture's. `--run <name>` runs
-an approved automation on the live interface, printing each step on standard error. Both print the
+an approved automation on the live interface, printing each step on standard error; while
+automations are off ([app](app.md) R29) it fails and says so. Both print the
 run's trace as JSON and fail with its error, its line and its column. `--library <dir>` picks the
 library. `--args` that is not a JSON object fails. The two cannot be combined.
 
@@ -142,7 +143,7 @@ Tests: `clearing_takes_kinds_of_history_or_all_of_it`
 `--serve` starts no tray and no window. It fills in what the settings folder lacks, loads the
 models routed to the app and the flows folder, and listens on the settings' `bind:port` for
 desktop clients (`ws://<bind>:<port>/desktop`), with the key the exposed API has, until the process
-is stopped. Nobody is at the desk until a client connects; `script:` tools are taken as the
+is stopped. Ctrl+C stops it after the models are unloaded ([runtime](runtime.md) R12). Nobody is at the desk until a client connects; `script:` tools are taken as the
 client's, listed once one connects. The flow tree is read again whenever a client says what tools
 it runs: until then a flow that names a client's tool has a problem. A flow tree with problems
 prints them, and the tree before it (the built-in one at first) runs until it is fixed. The API for other clients is served on the same address only when the

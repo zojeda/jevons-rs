@@ -253,14 +253,16 @@ The **Route** card walks the tree for that window by guards and rules alone, and
 
 ## Automations
 
+**Coming soon.** Automations are off for now: the tray menu says **Automations (coming soon)**, and jevons records and runs none. To try them, set `enabled = true` under `[automation]` in `jevons-desktop.toml` and start the app again. What follows describes them turned on.
+
 An automation is a task you show jevons once and then run again whenever you like: posting a message to a Slack channel, filing a ticket, filling a form. It is a small script ([Rhai](https://rhai.rs/book/)) that finds elements with XPath and acts on them. It lives in the automations library, the `automations` folder next to the settings file.
 
 ### Recording a task
 
-1. Choose **Record an automation…** in the tray menu, or press the record hotkey (Settings → Automations). The tray icon turns magenta.
+1. Choose **Record an automation…** in the tray menu and confirm in the bubble (Enter), or press the record hotkey (Settings → Automations), which starts at once. The tray icon turns magenta, and stays magenta between takes until the recording ends.
 2. Hold the record hotkey and say what the task is, such as "post a message to a Slack channel". Holding it again later adds a note ("now I pick the channel").
 3. Do the task: click, type and press keys. Push-to-talk dictation works as usual, and what it types is part of the recording.
-4. Tap the record hotkey, or choose **Stop recording**.
+4. Tap the record hotkey, or choose **Stop recording**. To drop it instead, choose **Discard the recording…**: nothing is saved and no automation is written.
 
 **What is recorded:**
 - the element under each click;

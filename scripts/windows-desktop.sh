@@ -11,7 +11,8 @@
 # untracked files included: other changes in the clone are discarded (its target/ stays). Only
 # files whose contents differ are written, so cargo rebuilds only what changed. The app goes
 # into JEVONS_WINDOWS_APP (by default %USERPROFILE%\jevons), where it is started, so a running
-# app never locks the build's own executable.
+# app never locks the build's own executable. Installing waits for a running app to be quit
+# from its tray menu; the script never kills it.
 #
 # Windows needs the MSVC Build Tools, rustup, the AMD HIP SDK and Python 3 from python.org
 # (stylo generates code with it; the Microsoft Store alias does not work).
@@ -87,7 +88,24 @@ fi
 echo "built in $(($(date +%s) - started)) s"
 [ "$mode" = --build ] && exit 0
 
-"$system/taskkill.exe" /IM jevons-desktop.exe /F >/dev/null 2>&1 || true
+# The app unloads its models when it quits from its tray menu. It is never killed: a process
+# that ends in the middle of a call to the GPU has left HIP failing (status 719) for every
+# process until a reboot.
+running() {
+    "$system/tasklist.exe" /FI "IMAGENAME eq jevons-desktop.exe" 2>/dev/null |
+        grep -q jevons-desktop.exe
+}
+if running; then
+    echo "jevons-desktop is running: quit it from its tray menu (waiting up to 15 minutes)"
+    for _ in $(seq 1 180); do
+        running || break
+        sleep 5
+    done
+    if running; then
+        echo "INSTALL STOPPED: jevons-desktop still runs; quit it from its tray menu" >&2
+        exit 1
+    fi
+fi
 mkdir -p "$app"
 # The executable stays locked for a moment after the process ends.
 for _ in $(seq 1 30); do

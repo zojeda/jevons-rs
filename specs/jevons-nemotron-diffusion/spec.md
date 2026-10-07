@@ -154,3 +154,10 @@ The Pixtral tower's output and the projector's output each stay within 3% relati
 FP32 reference. A canvas read after the image prompt meets the top-token rule of R9.
 
 Tests: `image_features_and_reads_match_the_reference_implementation`
+
+### R14 A dropped model frees its memory
+
+Dropping the model returns its pooled device memory to the device, through a release guard
+(`jevons-burn` R15) that runs after its tensors are dropped.
+
+Tests: none yet

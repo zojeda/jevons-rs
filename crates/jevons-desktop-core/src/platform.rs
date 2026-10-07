@@ -292,9 +292,12 @@ impl Binding {
         bindings
     }
 
-    /// The recording hotkey and a hotkey per automation.
+    /// The recording hotkey and a hotkey per automation; none while automations are off.
     pub fn for_automations(settings: &crate::config::AutomationSettings) -> Vec<Self> {
         let mut bindings = Vec::new();
+        if !settings.enabled {
+            return bindings;
+        }
         if let Some(accelerator) = settings.record_hotkey.clone().filter(|a| !a.is_empty()) {
             bindings.push(Self {
                 accelerator,
@@ -352,6 +355,8 @@ pub struct MenuModel {
     pub recording: bool,
     /// The automations library: name, description, and whether this version is approved.
     pub automations: Vec<(String, String, bool)>,
+    /// Whether automations are on; while they are off the menu says they are coming soon.
+    pub automations_on: bool,
     /// Whether a task waits with a conversation the bubble can show again.
     pub conversation: bool,
     /// Whether a task runs, or a machine is away from its first state: something to cancel.
@@ -389,12 +394,14 @@ pub enum MenuCommand {
     ResetSettings,
     /// Asks, then clears these kinds of history.
     ClearHistory(Vec<crate::history::History>),
-    /// Starts or stops recording a demonstration.
+    /// Asks, then starts recording a demonstration; or stops the one that runs, saving it.
     ToggleRecording,
+    /// Asks, then drops the recording that runs without saving it.
+    DiscardRecording,
     RunAutomation(String),
     /// Runs an automation asking before each of its actions.
     RunStepByStep(String),
-    /// Records the automation's task again, to replace it with a new version.
+    /// Asks, then records the automation's task again, to replace it with a new version.
     RecordAgain(String),
     /// Checks an automation, shows what it does, and pins this version when the user agrees.
     ApproveAutomation(String),
@@ -757,6 +764,7 @@ mod tests {
     #[test]
     fn the_record_and_automation_hotkeys_bind_from_the_settings() {
         let mut settings = crate::config::AutomationSettings {
+            enabled: true,
             record_hotkey: Some("Ctrl+Alt+R".into()),
             ..crate::config::AutomationSettings::default()
         };
@@ -780,6 +788,9 @@ mod tests {
             ]
         );
         assert!(Binding::for_automations(&crate::config::AutomationSettings::default()).is_empty());
+        // Automations are off until the settings turn them on: their hotkeys bind nothing.
+        settings.enabled = false;
+        assert!(Binding::for_automations(&settings).is_empty());
     }
 
     #[test]

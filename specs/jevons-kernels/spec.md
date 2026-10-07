@@ -123,3 +123,13 @@ Tests: none yet
 device memory is system memory, so a dropped model gives its memory back.
 
 Tests: `released_buffers_return_device_memory_after_cleanup`
+
+### R13 A release guard runs after what it follows
+
+`ReleaseOnDrop` releases the device's memory (R12) when it is dropped. Declared as the last
+field of what owns a model's buffers, it runs once they are all dropped, so nothing of a dropped
+model stays reserved and a process that ends holds none of it. A device that fails then is left
+as it is: the guard never panics, since a panic in a release that runs while its thread unwinds
+would abort the process in the middle of a call to the driver.
+
+Tests: `the_release_guard_returns_what_was_dropped_before_it`

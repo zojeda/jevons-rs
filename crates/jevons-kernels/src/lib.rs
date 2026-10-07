@@ -20,6 +20,26 @@ pub struct Gpu {
     pub client: Client,
 }
 
+/// Returns the device's unused pooled memory when it is dropped. Declared as the last field of
+/// what owns a model's buffers, it runs once they are all gone: nothing of a dropped model
+/// stays reserved (on APUs device memory is system memory), and a process that ends holds none
+/// of it. A device that fails here is left as it is: a panic in a release that runs while its
+/// thread unwinds would abort the process in the middle of a call to the driver.
+pub struct ReleaseOnDrop(Gpu);
+
+impl ReleaseOnDrop {
+    pub fn new(gpu: &Gpu) -> Self {
+        Self(gpu.clone())
+    }
+}
+
+impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+        let gpu = &self.0;
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gpu.release_memory()));
+    }
+}
+
 /// Raw device allocation with a logical element count for launch metadata.
 #[derive(Clone)]
 pub struct Buf {
