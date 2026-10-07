@@ -144,6 +144,8 @@ it is dropped. Burn queues a dropped tensor's release, so the first sync is what
 cleanup free its pages. Declared as a model's last field it runs once the model's tensors are
 dropped: nothing of a dropped model stays reserved (on APUs device memory is system memory), and
 a process that ends holds none of it. A device that fails then is left as it is: the guard never
-panics.
+panics. The cleanup runs also after a sync that failed. The guard logs what it did: the bytes
+the device held reserved before and after and the time taken, or a warning with the sync's error
+or what the caught panic said (`jevons-kernels` R13).
 
 Tests: none yet

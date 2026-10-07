@@ -24,7 +24,9 @@ pub struct Gpu {
 /// what owns a model's buffers, it runs once they are all gone: nothing of a dropped model
 /// stays reserved (on APUs device memory is system memory), and a process that ends holds none
 /// of it. A device that fails here is left as it is: a panic in a release that runs while its
-/// thread unwinds would abort the process in the middle of a call to the driver.
+/// thread unwinds would abort the process in the middle of a call to the driver. The log says
+/// what the device held reserved before and after, or why it released nothing: a release that
+/// failed must not read as one that ran.
 pub struct ReleaseOnDrop(Gpu);
 
 impl ReleaseOnDrop {
@@ -36,8 +38,38 @@ impl ReleaseOnDrop {
 impl Drop for ReleaseOnDrop {
     fn drop(&mut self) {
         let gpu = &self.0;
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gpu.release_memory()));
+        let started = std::time::Instant::now();
+        let released = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let before = gpu.client.memory_usage().bytes_reserved;
+            gpu.release_memory();
+            (before, gpu.client.memory_usage().bytes_reserved)
+        }));
+        let ms = started.elapsed().as_millis() as u64;
+        match released {
+            Ok((reserved_before, reserved_after)) => {
+                tracing::info!(
+                    reserved_before,
+                    reserved_after,
+                    ms,
+                    "Device memory released"
+                );
+            }
+            Err(panic) => tracing::warn!(
+                error = panic_message(&*panic),
+                ms,
+                "The device did not release a dropped model's memory"
+            ),
+        }
     }
+}
+
+/// What a caught panic said, for the log.
+pub fn panic_message(panic: &(dyn std::any::Any + Send)) -> &str {
+    panic
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("a panic without a message")
 }
 
 /// Raw device allocation with a logical element count for launch metadata.
@@ -290,5 +322,27 @@ mod cache_tests {
         assert!(!dir.join("default.db-wal").exists());
         assert!(dir.join("other.db").exists());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod release_tests {
+    use super::*;
+
+    #[test]
+    fn a_caught_panic_is_reported_with_what_it_said() {
+        let caught = |fails: fn()| std::panic::catch_unwind(fails).unwrap_err();
+        assert_eq!(
+            panic_message(&*caught(|| panic!("device sync"))),
+            "device sync"
+        );
+        // A formatted message, as `expect` on a driver error gives.
+        let formatted = caught(|| {
+            let status = std::hint::black_box(719);
+            panic!("status {status}")
+        });
+        assert_eq!(panic_message(&*formatted), "status 719");
+        let other = caught(|| std::panic::panic_any(719));
+        assert_eq!(panic_message(&*other), "a panic without a message");
     }
 }

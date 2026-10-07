@@ -14,6 +14,7 @@ cubecl = { version = "=0.11.0-pre.4", features = ["hip"] }
 # The default pliron/LLVM HIP compiler panics on BF16 kernels; hiprtc C++ works.
 cubecl-hip = { version = "=0.11.0-pre.4", default-features = false, features = ["cpp"] }
 half = "2.7"
+tracing.workspace = true
 
 [features]
 # Burn's CPU device, for unit tests of model code built on these layers.

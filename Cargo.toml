@@ -117,3 +117,5 @@ dioxus-native-dom = { path = "third_party/dioxus-native-dom" }
 blitz-dom = { path = "third_party/blitz-dom" }
 # A black text caret, invisible on the dark theme; see third_party/blitz-paint/README.jevons.md.
 blitz-paint = { path = "third_party/blitz-paint" }
+# A surface error ended the app on its main thread; see third_party/wgpu_context/README.jevons.md.
+wgpu_context = { path = "third_party/wgpu_context" }
