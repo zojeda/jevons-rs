@@ -6,7 +6,8 @@
 //! place of their neighbours (the order with the fewest crossings is kept, and neighbours in a
 //! row then swap while that leaves fewer), and edges that point back run up the right side.
 //! Parallel transitions between the same two nodes share one edge with a label each. An edge
-//! is drawn as a curve through its points ([`Edge::path`]).
+//! is drawn as a curve through its points ([`Edge::path`]). A state may be given a size of its
+//! own ([`layout_with`]), for what its host draws inside its box.
 
 use crate::engine::{DecidedBy, Decides};
 use crate::{Machine, Target};
@@ -191,12 +192,18 @@ struct Link {
 
 /// Lays `machine` out.
 pub fn layout(machine: &Machine) -> Layout {
-    arrange(machine, true)
+    layout_with(machine, &BTreeMap::new())
+}
+
+/// Lays `machine` out with the states in `sizes` drawn at their own width and height, never
+/// smaller than a state's usual box: its row and the rows after it make room.
+pub fn layout_with(machine: &Machine, sizes: &BTreeMap<String, (f32, f32)>) -> Layout {
+    arrange(machine, sizes, true)
 }
 
 /// Lays `machine` out. Without `refine`, the rows are ordered by their neighbours' average
 /// places alone, as the last of a few sweeps left them.
-fn arrange(machine: &Machine, refine: bool) -> Layout {
+fn arrange(machine: &Machine, sizes: &BTreeMap<String, (f32, f32)>, refine: bool) -> Layout {
     // Nodes: the start, the states in the order written, the choice points, the end.
     let mut keys: Vec<(String, NodeKind)> = vec![("start".into(), NodeKind::Start)];
     keys.extend(
@@ -463,7 +470,10 @@ fn arrange(machine: &Machine, refine: bool) -> Layout {
     let size = |at: usize| -> (f32, f32) {
         match keys[at].1 {
             NodeKind::Start => (START_SIZE, START_SIZE),
-            NodeKind::State => (STATE_WIDTH, STATE_HEIGHT),
+            NodeKind::State => {
+                let (width, height) = sizes.get(&keys[at].0).copied().unwrap_or_default();
+                (width.max(STATE_WIDTH), height.max(STATE_HEIGHT))
+            }
             NodeKind::Choice => (CHOICE_SIZE, CHOICE_SIZE),
             NodeKind::End => (END_SIZE, END_SIZE),
         }
@@ -693,12 +703,12 @@ mod tests {
         let m = machine(
             "fsm A {\n[*] --> s0\nstate s0\nstate s1\nstate s2\nstate s3\nstate s4\nstate s5\ns0 --> s1 : said [a]\ns0 --> s5 : said [b]\ns1 --> s2 : said [c]\ns1 --> s3 : said [d]\ns2 --> s3 : said [e]\ns2 --> s4 : said [f]\ns4 --> s5 : said [g]\ns3 --> [*] : said [h]\ns5 --> [*] : said [i]\n}",
         );
-        assert_eq!(arrange(&m, false).crossings, 2);
+        assert_eq!(arrange(&m, &BTreeMap::new(), false).crossings, 2);
         let l = layout(&m);
         assert_eq!(l.crossings, 1);
         // The rows are the same, and nothing overlaps within one.
         let rows = |l: &Layout| -> Vec<i32> { l.nodes.iter().map(|n| n.y as i32).collect() };
-        assert_eq!(rows(&l), rows(&arrange(&m, false)));
+        assert_eq!(rows(&l), rows(&arrange(&m, &BTreeMap::new(), false)));
         for a in &l.nodes {
             for b in l.nodes.iter().filter(|b| b.key != a.key && b.y == a.y) {
                 assert!(a.x + a.width <= b.x || b.x + b.width <= a.x, "{a:?} {b:?}");
@@ -829,6 +839,55 @@ mod tests {
         );
         // The end has a row of its own.
         assert!(l.nodes.iter().all(|n| n.key == "end" || n.y < y("end")));
+    }
+
+    #[test]
+    fn a_state_given_a_size_makes_room_for_it() {
+        let m = machine(
+            "fsm A {\n[*] --> a\nstate a\nstate b\nstate c\nstate d\na --> b : said [one]\na --> c : said [two]\nb --> d\nc --> d\nd --> a : said [again]\n}",
+        );
+        let plain = layout(&m);
+        let sizes = BTreeMap::from([
+            ("b".to_string(), (440.0, 300.0)),
+            ("c".into(), (10.0, 10.0)),
+        ]);
+        let l = layout_with(&m, &sizes);
+        let node = |l: &Layout, k: &str| l.node(k).unwrap().clone();
+        let b = node(&l, "b");
+        assert_eq!((b.width, b.height), (440.0, 300.0));
+        // A size smaller than a state's usual box is not taken.
+        let c = node(&l, "c");
+        assert_eq!((c.width, c.height), (STATE_WIDTH, STATE_HEIGHT));
+        // Its row makes room: its neighbour is beside it, and the next row is below it.
+        assert!(b.x + b.width <= c.x || c.x + c.width <= b.x, "{b:?} {c:?}");
+        assert!(node(&l, "d").y >= b.y + b.height);
+        assert!(l.height >= plain.height + 300.0 - STATE_HEIGHT);
+        assert!(
+            l.nodes
+                .iter()
+                .all(|n| n.x + n.width <= l.width && n.y + n.height <= l.height)
+        );
+        // The edge into it ends at its top, and the one out of it starts at its bottom.
+        let edge = |from: &str, to: &str| {
+            l.edges
+                .iter()
+                .find(|e| e.from == from && e.to == to)
+                .unwrap()
+        };
+        let into = edge("a", "b").points.last().copied().unwrap();
+        assert!(into.1 == b.y && into.0 > b.x && into.0 < b.x + b.width);
+        let out = edge("b", "d").points[0];
+        assert!(out.1 == b.y + b.height && out.0 > b.x && out.0 < b.x + b.width);
+        // The one that points back still runs up the right of everything.
+        let back = edge("d", "a");
+        assert!(back.back && back.points[1].0 > b.x + b.width);
+        // Labels stay clear of it.
+        for e in l.edges.iter().filter(|e| !e.labels.is_empty()) {
+            let (w, h) = label_size(e);
+            let (x, y) = e.label_at;
+            let clear = x + w <= b.x || b.x + b.width <= x || y + h <= b.y || b.y + b.height <= y;
+            assert!(clear, "{:?} over {b:?}", e.labels);
+        }
     }
 
     #[test]

@@ -142,10 +142,15 @@ Tests: `new_takes_arriving_while_the_takes_page_shows_rebuild_in_blitz`
 The Flows tab draws the flow tree with each branch indented under the decision that chooses it:
 each node's kind, what it does (who chooses and the fallback, or where its output goes), its guard
 and `[prefer]` rules and its priority. Shared branches say so under each decision that uses them,
-and the route of the Context tab's window is marked. Branches fold and unfold, one by one or all
-at once. Selecting a node shows its rules in full and its file, with **Open file**.
+and the route of the Context tab's window is marked: a shared branch only under the decision the
+route took it from. Branches fold and unfold, one by one or all at once. Selecting a row, by
+its label, shows its node in full: what it does, its rules, the instructions it works under,
+and its file, with **Open file**. The instructions are those the folders on the way to the row
+add, from the root down, as written: each folder's `instructions.md`, then its node file's
+`instructions`, each under the name of its file. A second click on the row takes the selection
+back.
 
-Tests: `the_flow_tree_nests_branches_folds_them_and_shows_a_node_in_full`
+Tests: `the_flow_tree_nests_branches_folds_them_and_shows_a_node_in_full`, `a_route_s_rows_are_each_under_the_decision_that_took_them`
 
 ### R16 The Flows tab reports the folder's problems
 
@@ -176,29 +181,36 @@ Tests: `a_drafted_guard_matches_the_context_it_came_from`, `a_branch_is_created_
 The Machines tab shows where the app is (`agent › task › state`, or the root's state) and
 **Cancel all tasks**, disabled while everything is at rest. A **Running** card lists the root,
 each agent and, under it, the tasks it runs (`search-1`), each with its state and the events it
-waits for; a task has its own **Cancel**. Selecting a row shows that machine's diagram, and the
-task the latest take reached shows otherwise; a machine can also be picked by folder. A machine
+waits for; a task has its own **Cancel**. Selecting a row shows that machine's diagram, and a
+machine can also be picked by folder; R34 says which machine shows otherwise. A machine
 picked in the tray menu ([app](app.md) R28) shows the window on this tab, whichever tab was
 open, with that machine's diagram: the tab stays until another tab is picked, and the machine
-shows while it runs, until another is picked here or another tab is. The diagram
+shows while it runs, until another is picked here, another tab is, or the machines move while
+the tab follows them (R34). The diagram
 draws states as boxes where the layout puts them, start and end dots, choice diamonds, and an
 arrowhead and label per edge. Each edge is a curve, coloured by what decides it (the event
 alone, rules, rules and then the model, the model), with a legend below the diagram. The current state of the machine shown is marked and its latest
 transition's label lit. When the machine shown stayed on an unsure decision, a block above the
 diagram says what was said and why nothing was taken, with a button per candidate and its
 probability; a click answers the decision with that candidate. Each state shows its work in a few words (such as `tool · web_search`,
-`loop`, `run`, `decide`, `machine`) or `waits`. A tree whose root is a decision says it has no
-machines.
+`loop`, `run`, `decide`, `machine`) or `waits`. While the current state's work runs at the
+state's own node, or in a box that is not open (R33), that line says what the take does there
+(`deciding`, `calling web_search`). It says `deciding` too while the machine itself decides
+where what was said goes: the root among its agents, an agent or a task among its transitions.
+A tree whose root is a decision says it has no machines.
 
-Tests: `the_machines_page_draws_the_built_in_root_machine`, `a_running_task_shows_under_its_agent_with_its_state_and_can_be_cancelled`, `a_machine_picked_in_the_tray_shows_in_the_machines_tab`
+Tests: `the_machines_page_draws_the_built_in_root_machine`, `a_running_task_shows_under_its_agent_with_its_state_and_can_be_cancelled`, `a_machine_picked_in_the_tray_shows_in_the_machines_tab`, `a_state_s_work_shows_its_branches_and_the_way_a_take_goes_through_them`
 
 ### R19 A state in full and the latest transitions
 
-Selecting a state shows it in full: its description, its folder (or that it has none and waits
-for an event), its transitions with their guards, and whether the machine is there now. The
-Transitions card lists the latest 40 moves first, each with what moved it.
+Selecting a state, by a click on its name, shows it in full under the diagram: its description,
+its folder (or that it has none and waits for an event), its transitions with their guards, and
+whether the machine is there now. A second click on the state takes the selection back. A state
+whose folder is a machine (an agent under the root, a task under an agent) adds a line naming
+that machine and **Show it**, which shows its diagram. The Transitions card lists the latest 40
+moves first, each with what moved it.
 
-Tests: `a_running_task_shows_under_its_agent_with_its_state_and_can_be_cancelled`
+Tests: `a_running_task_shows_under_its_agent_with_its_state_and_can_be_cancelled`, `a_state_s_work_shows_its_branches_and_the_way_a_take_goes_through_them`
 
 ### R20 Settings are edited, then applied together
 
@@ -333,3 +345,49 @@ device was lost. The renderer's own code is a patched copy
 (`third_party/wgpu_context/README.jevons.md`); the original ended the app with a panic.
 
 Tests: none yet
+
+### R33 One state's box is open on its work
+
+One state's box is open in the diagram: under its name it holds the branches of its work, the
+flow tree below the state's folder, in the Flows tab's rows cut short (R15): each node's kind
+and name, each branch under the decision that chooses it. The layout gives the open box the
+room its rows take ([jevons-machine](../jevons-machine/spec.md) R37), and the diagram's edges
+reach its sides. Among the states whose work has branches, the open one is the state the
+machine works in, else the state selected, else the latest the machine entered or left, else
+the first in the diagram.
+
+The rows carry the way a take went:
+
+- While the machine works in that state, the rows on the way so far are marked, each branch
+  taken says why (`rules`, `model 0.91`), and the row the walk is at carries `now` and what the
+  take does there (`deciding`, `writing`, `calling web_search`). These come from the stages of
+  the take's bubble (R26): a decision's stage names its node, the branches it chose among and
+  the one it took, and a tool's or a loop's stage that ended well leads on to its node's branch.
+  They show only while the take that moved the machine into the state runs.
+- After the take, the marks come from its trace: the latest take kept (R14) that moved this
+  machine and walked the state's folder. Each branch taken says why (`rules: priority 35`,
+  `model 0.91`).
+- When no take kept walked the folder, no row is marked.
+
+A branch a decision could not choose (its guard failed, or other branches were preferred) is
+dimmed. The nodes on the way start open and every other branch folded. A row's chevron folds
+and unfolds its branch, and the box grows or shrinks by its rows. A row's label selects it: a
+card under the diagram shows its node in full as the Flows tab does (R15), with the
+instructions it works under at that row, the machine's and the state's among them, and its
+file. Neither click selects a state.
+
+Tests: `a_state_s_work_shows_its_branches_and_the_way_a_take_goes_through_them`
+
+### R34 The diagram follows the machine that moved last
+
+A **Follow** switch beside the folder picker is on when the tab opens. While it is on, the
+diagram is the one of the machine that moved last, so a take carries it from the root to the
+agent it chose and on to a task. An agent that is back in its first state, with no unsure
+decision to answer, gives way to the root that called it: what is said next goes there first.
+A task that waits keeps showing. A machine picked (in the Running card, by folder, with **Show
+it** or in the tray menu) shows until the machines next move. When nothing has moved, or the
+machine that moved last no longer runs, the task the latest take reached shows, else the root.
+Turning the switch off keeps the machine shown, and a machine picked then stays until another
+is picked.
+
+Tests: `a_state_s_work_shows_its_branches_and_the_way_a_take_goes_through_them`, `a_machine_picked_in_the_tray_shows_in_the_machines_tab`, `a_running_task_shows_under_its_agent_with_its_state_and_can_be_cancelled`

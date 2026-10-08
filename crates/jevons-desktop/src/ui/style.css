@@ -497,6 +497,15 @@ p { margin: 0; }
 
 /* A route's branches: one not taken is dimmed; its rule checks unfold under it. */
 .flow-row[data-off="true"] .flow-name { color: var(--secondary-color-6); }
+/* A walk's rows in the Machines tab: where it is now, and why it took a branch. */
+.flow-row[data-now="true"] { background: var(--accent-soft); }
+.flow-now { flex-shrink: 0; padding: 0 6px; border-radius: 4px; font-size: 11px; font-weight: 600; color: var(--primary-color); background: var(--accent); }
+.flow-why { flex-shrink: 0; font-size: 11px; color: var(--accent); }
+.flow-activity { font-size: 11px; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* A node in full: the instructions each folder on the way to it adds, each under its file. */
+.flow-instructions { display: flex; flex-direction: column; gap: 8px; }
+.flow-instruction { display: flex; flex-direction: column; gap: 4px; }
+.flow-instruction .code { max-height: 220px; }
 .route-checks { margin: 2px 0 6px 34px; padding: 6px 10px; border-radius: 6px; background: var(--primary-color-2); }
 
 /* Machines: a diagram of positioned boxes over one SVG of edges, start and end dots and choice
@@ -533,6 +542,16 @@ p { margin: 0; }
 .fsm-name { color: var(--secondary-color-1); font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fsm-state[data-current="true"] .fsm-name { color: var(--accent); }
 .fsm-work { color: var(--secondary-color-5); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fsm-state[data-working="true"] .fsm-work { color: var(--accent); }
+/* A state's name and work: the whole box, or the top of an open one, whose work's branches
+   show under it as rows. */
+.fsm-head { flex: 1; display: flex; flex-direction: column; justify-content: center; min-height: 0; }
+.fsm-state[data-open="true"] { justify-content: flex-start; cursor: default; }
+.fsm-state[data-open="true"] .fsm-head { flex: none; height: 38px; cursor: pointer; }
+.fsm-inner { font-size: 12px; padding-top: 2px; border-top: 1px solid var(--primary-color-7); }
+.fsm-inner .flow-row { min-height: 26px; }
+.fsm-inner .flow-kind[data-kind] { min-width: 60px; font-size: 10px; background: var(--primary-color-2); }
+.fsm-inner .flow-row[data-now="true"] { background: var(--primary-color-2); }
 .fsm-label {
   position: absolute;
   padding: 0 4px;

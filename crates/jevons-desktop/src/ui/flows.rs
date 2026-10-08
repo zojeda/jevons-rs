@@ -1,5 +1,7 @@
 //! The flow tree: its nodes, the problems of the flows folder, and new branches drafted from the
-//! current context: under a decision, or as a state of an agent or a task.
+//! current context: under a decision, or as a state of an agent or a task. The Machines tab
+//! draws a state's work inside its box with the same rows ([`branch`]), in short, and shows a
+//! row's node with the same card ([`details`]).
 
 use super::Ctx;
 use super::components::{Choice, Icon, Select, badge, icon};
@@ -10,18 +12,158 @@ use jevons_desktop_server::flow::machine::{self, Level};
 use jevons_desktop_server::flow::spec::Select as Selecting;
 use jevons_desktop_server::flow::tree::{Node, NodeId, NodeSpec};
 use jevons_desktop_server::flow::{FlowTree, Kind, defaults};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// What the tree view needs to draw a node and its branches.
 #[derive(Clone, Copy)]
-struct TreeState {
-    /// Rows folded by their place in the tree (`parent>…>path`), so a shared branch folds
-    /// separately under each decision that uses it.
-    folded: Signal<BTreeSet<String>>,
-    /// The selected node's path.
-    selected: Signal<Option<String>>,
+pub(super) struct TreeState {
+    /// Rows folded or unfolded by hand, by their place in the tree (`parent>…>path`), so a
+    /// shared branch folds separately under each decision that uses it.
+    pub opened: Signal<BTreeMap<String, bool>>,
+    /// The selected row's place.
+    pub selected: Signal<Option<String>>,
+    /// Rows in short: a node's kind and name, and the marks of a walk.
+    pub compact: bool,
+}
+
+/// What a tree marks on its rows, by their place.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct Marks {
+    /// The rows a route went through.
+    pub route: BTreeSet<String>,
+    /// The row a walk is at, while it runs.
+    pub now: Option<String>,
+    /// The branches a decision could not choose: their guards failed.
+    pub out: BTreeSet<String>,
+    /// Why a branch was taken, such as `model 0.91`.
+    pub why: BTreeMap<String, String>,
+    /// What the walk does where it is, such as `writing` or `calling web_search`.
+    pub activity: Option<String>,
+    /// Branches off the route start folded.
+    pub folded: bool,
+}
+
+impl Marks {
+    /// Whether the row at `here`, under `at`, shows its branches: as folded or unfolded by
+    /// hand, else unless it is off a route that folds. The top of a tree starts open.
+    fn opens(&self, opened: &BTreeMap<String, bool>, here: &str, at: &str) -> bool {
+        let starts_open = !self.folded || self.route.contains(here) || at.is_empty();
+        opened.get(here).copied().unwrap_or(starts_open)
+    }
+}
+
+/// How many rows [`branch`] draws for the node `id` under the place `at`: its own, and those
+/// of the branches that show.
+pub(super) fn rows(
+    tree: &FlowTree,
+    id: NodeId,
+    at: &str,
+    marks: &Marks,
+    opened: &BTreeMap<String, bool>,
+) -> usize {
+    let node = tree.node(id);
+    let here = place(at, node);
+    if !marks.opens(opened, &here, at) {
+        return 1;
+    }
+    let below: usize = node
+        .children
+        .iter()
+        .map(|child| rows(tree, *child, &here, marks, opened))
+        .sum();
+    1 + below
+}
+
+/// A node's place in the tree, under the place `at`.
+pub(super) fn place(at: &str, node: &Node) -> String {
+    format!("{at}>{}", node.path)
+}
+
+/// The places a route went through from `top` down, with their nodes. The first node is found
+/// by its folder, and each one after it under the one before: a node that is no branch of the
+/// one before it ends the way.
+pub(super) fn way<'a>(
+    tree: &FlowTree,
+    top: NodeId,
+    nodes: impl IntoIterator<Item = &'a str>,
+) -> Vec<(NodeId, String)> {
+    let mut way: Vec<(NodeId, String)> = Vec::new();
+    for path in nodes {
+        let path = path.trim_matches('/');
+        let next = match way.last() {
+            None => below(tree, top, path),
+            Some((id, here)) => tree
+                .children(*id)
+                .find(|child| child.path == path)
+                .map(|child| (child.id, place(here, child))),
+        };
+        let Some(next) = next else { break };
+        way.push(next);
+    }
+    way
+}
+
+/// The nodes a place names from the root down: the folders above its first node, then its own.
+fn nodes_at<'a>(tree: &'a FlowTree, place: &str) -> Vec<&'a Node> {
+    let own: Vec<&str> = place.split('>').skip(1).collect();
+    let mut paths: Vec<String> = Vec::new();
+    // `a` and `a/b` are above `a/b/c`, under the root.
+    if let Some(first) = own.first().filter(|first| !first.is_empty()) {
+        paths.push(String::new());
+        let mut names: Vec<&str> = first.split('/').collect();
+        names.pop();
+        for end in 1..=names.len() {
+            paths.push(names[..end].join("/"));
+        }
+    }
+    paths.extend(own.iter().map(|path| path.to_string()));
+    paths
+        .iter()
+        .filter_map(|path| tree.find(path))
+        .map(|id| tree.node(id))
+        .collect()
+}
+
+/// The instructions `nodes` add, in their order and as written, each with the file it is in:
+/// a folder's `instructions.md`, then its node file's `instructions`.
+fn instructions(nodes: &[&Node]) -> Vec<(String, String)> {
+    let written = |text: Option<&str>| {
+        text.map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(String::from)
+    };
+    let mut out = Vec::new();
+    for node in nodes {
+        if let Some(text) = written(node.instructions_md.as_deref()) {
+            let file = if node.path.is_empty() {
+                "instructions.md".to_string()
+            } else {
+                format!("{}/instructions.md", node.path)
+            };
+            out.push((file, text));
+        }
+        if let Some(text) = written(node.spec.common().instructions) {
+            out.push((node.file.clone(), text));
+        }
+    }
+    out
+}
+
+/// The folder `path` at or under `top`, with its place: down the folders, so never a shared
+/// branch.
+fn below(tree: &FlowTree, top: NodeId, path: &str) -> Option<(NodeId, String)> {
+    let mut node = tree.node(top);
+    let mut here = place("", node);
+    while node.path != path {
+        node = tree.children(node.id).find(|child| {
+            path.strip_prefix(child.path.as_str())
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        })?;
+        here = place(&here, node);
+    }
+    Some((node.id, here))
 }
 
 fn kind_name(kind: Kind) -> &'static str {
@@ -118,7 +260,7 @@ fn file_text(builtin: bool, dir: &Path, file: &str) -> String {
 /// Every place (`parent>…>path`) of the tree, to fold or unfold them all.
 fn places(tree: &FlowTree, id: NodeId, at: &str, out: &mut Vec<String>) {
     let node = tree.node(id);
-    let here = format!("{at}>{}", node.path);
+    let here = place(at, node);
     if !node.children.is_empty() {
         out.push(here.clone());
         for child in &node.children {
@@ -127,17 +269,19 @@ fn places(tree: &FlowTree, id: NodeId, at: &str, out: &mut Vec<String>) {
     }
 }
 
-/// A node and, unless folded, its branches beneath it on a guide line.
-fn branch(
+/// A node and, unless folded, its branches beneath it on a guide line, marked as `marks` say.
+pub(super) fn branch(
     tree: &Arc<FlowTree>,
     id: NodeId,
     at: &str,
-    route: &BTreeSet<String>,
+    marks: &Marks,
     state: TreeState,
 ) -> Element {
     let node = tree.node(id);
-    let here = format!("{at}>{}", node.path);
-    let folded = state.folded.read().contains(&here);
+    let here = place(at, node);
+    let on_route = marks.route.contains(&here);
+    let open = marks.opens(&state.opened.read(), &here, at);
+    let folded = !open;
     let leaf = node.children.is_empty();
     let kind = kind_name(node.kind());
     let name = if node.name.is_empty() {
@@ -152,6 +296,7 @@ fn branch(
         .split('/')
         .next()
         .filter(|top| top.starts_with('_') && !parent_path.starts_with(*top))
+        .filter(|_| !state.compact)
         .map(String::from);
     let mut notes: Vec<String> = Vec::new();
     let when = rules(node.guard.spec());
@@ -170,34 +315,53 @@ fn branch(
     if reads > 0 {
         notes.push(format!("reads {reads}"));
     }
-    let on_route = route.contains(&node.path);
-    let selected = state.selected.read().as_deref() == Some(node.path.as_str());
-    let path = node.path.clone();
-    let place = here.clone();
-    let mut folded_set = state.folded;
+    if state.compact {
+        notes.clear();
+    }
+    let now = marks.now.as_deref() == Some(here.as_str());
+    let activity = marks.activity.clone().filter(|_| now);
+    let out = marks.out.contains(&here);
+    let why = marks.why.get(&here).cloned();
+    let selected = state.selected.read().as_deref() == Some(here.as_str());
+    let (toggled, labelled) = (here.clone(), here.clone());
+    let mut opened = state.opened;
     let mut chosen = state.selected;
-    let summary = what(node);
+    let summary = if state.compact {
+        String::new()
+    } else {
+        what(node)
+    };
     rsx! {
         div { class: "flow-node", key: "{here}",
             div { class: "flow-row",
                 "data-selected": if selected { "true" } else { "false" },
                 "data-route": if on_route { "true" } else { "false" },
+                "data-now": if now { "true" } else { "false" },
+                "data-off": if out { "true" } else { "false" },
                 if leaf {
                     span { class: "flow-spacer" }
                 } else {
                     button { class: "flow-toggle", title: if folded { "Unfold" } else { "Fold" },
                         onclick: move |_| {
-                            let mut set = folded_set.write();
-                            if !set.remove(&place) {
-                                set.insert(place.clone());
-                            }
+                            opened.write().insert(toggled.clone(), !open);
                         },
                         {icon(if folded { Icon::ChevronRight } else { Icon::ChevronDown })}
                     }
                 }
-                span { class: "flow-label", onclick: move |_| chosen.set(Some(path.clone())),
+                span { class: "flow-label",
+                    // A second click takes the selection back.
+                    onclick: move |_| chosen.set((!selected).then(|| labelled.clone())),
                     span { class: "flow-kind", "data-kind": kind, "{kind}" }
                     span { class: "flow-name", "{name}" }
+                    if now {
+                        span { class: "flow-now", "now" }
+                    }
+                    if let Some(why) = why {
+                        span { class: "flow-why", "{why}" }
+                    }
+                    if let Some(activity) = activity {
+                        span { class: "flow-activity", "{activity}" }
+                    }
                     if let Some(top) = shared {
                         span { class: "flow-shared", "shared from {top}" }
                     }
@@ -211,19 +375,21 @@ fn branch(
             }
             if !leaf && !folded {
                 div { class: "flow-children",
-                    {node.children.iter().map(|child| branch(tree, *child, &here, route, state))}
+                    {node.children.iter().map(|child| branch(tree, *child, &here, marks, state))}
                 }
             }
         }
     }
 }
 
-/// The selected node in full: what it does, its rules and its file.
-fn details(tree: &FlowTree, path: &str, builtin: bool, dir: &Path) -> Element {
-    let Some(id) = tree.find(path) else {
+/// The node of the selected row in full: what it does, its rules, the instructions it works
+/// under (those the folders on the way to its row add, from the root down), and its file.
+pub(super) fn details(tree: &FlowTree, place: &str, builtin: bool, dir: &Path) -> Element {
+    let way = nodes_at(tree, place);
+    let Some(node) = way.last().copied() else {
         return rsx! {};
     };
-    let node = tree.node(id);
+    let adds = instructions(&way);
     let kind = kind_name(node.kind());
     let when = rules(node.guard.spec());
     let prefer = rules(node.prefer.spec());
@@ -278,6 +444,18 @@ fn details(tree: &FlowTree, path: &str, builtin: bool, dir: &Path) -> Element {
                     }
                     span { class: "k", "File" }
                     span { class: "v mono", "{node.file}" }
+                }
+                if !adds.is_empty() {
+                    div { class: "flow-instructions",
+                        span { class: "muted", "The instructions it works under, from the root down" }
+                        {adds.into_iter().enumerate().map(|(i, (file, text))| rsx! {
+                            div { key: "{i}", class: "flow-instruction",
+                                span { class: "mono muted", "{file}" }
+                                pre { class: "code", "{text}" }
+                            }
+                        })}
+                    }
+                    span { class: "muted", "Its file" }
                 }
                 pre { class: "code", "{text}" }
             }
@@ -352,16 +530,25 @@ pub fn FlowsPage(rev: u64) -> Element {
     let mut name = use_signal(String::new);
     // What creating a branch did: Ok with what to do next, or the error.
     let mut message = use_signal(|| None::<Result<String, String>>);
+    let selected = use_signal(|| None::<String>);
     let state = TreeState {
-        folded: use_signal(BTreeSet::new),
-        selected: use_signal(|| None::<String>),
+        opened: use_signal(BTreeMap::new),
+        selected,
+        compact: false,
     };
     let view = ctx.view.lock().expect("the view lock");
-    let route: BTreeSet<String> = view
-        .route
-        .iter()
-        .map(|step| step.node.trim_matches('/').to_string())
-        .collect();
+    // The rows the route went through: a shared branch only under the decision that took it.
+    let marks = Marks {
+        route: way(
+            &view.flows,
+            view.flows.root(),
+            view.route.iter().map(|step| step.node.as_str()),
+        )
+        .into_iter()
+        .map(|(_, place)| place)
+        .collect(),
+        ..Marks::default()
+    };
     let dir = view.config.flows_dir(&view.config_file);
     let errors: Vec<String> = view.flow_errors.iter().map(ToString::to_string).collect();
     let notes = view.flow_notes.clone();
@@ -529,7 +716,7 @@ pub fn FlowsPage(rev: u64) -> Element {
                 }
                 div { class: "row",
                     button { class: "dx-button", "data-style": "outline", "data-size": "sm",
-                        onclick: move |_| { let mut f = state.folded; f.write().clear(); },
+                        onclick: move |_| { let mut f = state.opened; f.write().clear(); },
                         "Unfold all"
                     }
                     button { class: "dx-button", "data-style": "outline", "data-size": "sm",
@@ -539,8 +726,8 @@ pub fn FlowsPage(rev: u64) -> Element {
                             for child in &fold_tree.node(fold_tree.root()).children {
                                 places(&fold_tree, *child, &format!(">{}", fold_tree.node(fold_tree.root()).path), &mut all);
                             }
-                            let mut f = state.folded;
-                            f.set(all.into_iter().collect());
+                            let mut f = state.opened;
+                            f.set(all.into_iter().map(|place| (place, false)).collect());
                         },
                         "Fold all"
                     }
@@ -548,12 +735,12 @@ pub fn FlowsPage(rev: u64) -> Element {
             }
             div { class: "dx-card-content",
                 div { class: "flow-tree",
-                    {(!tree.nodes().is_empty()).then(|| branch(&tree, tree.root(), "", &route, state))}
+                    {(!tree.nodes().is_empty()).then(|| branch(&tree, tree.root(), "", &marks, state))}
                 }
             }
         }
-        if let Some(path) = (state.selected)() {
-            {details(&tree, &path, builtin, &dir)}
+        if let Some(place) = selected() {
+            {details(&tree, &place, builtin, &dir)}
         }
     }
 }
@@ -580,6 +767,41 @@ mod tests {
             "description = \"As said\"",
         ),
     ];
+
+    #[test]
+    fn a_route_s_rows_are_each_under_the_decision_that_took_them() {
+        let tree = FlowTree::load(&defaults::builtin(), &Catalog::default());
+        let places = |nodes: &[&str]| -> Vec<String> {
+            way(&tree, tree.root(), nodes.iter().copied())
+                .into_iter()
+                .map(|(_, place)| place)
+                .collect()
+        };
+        // From the root down: a shared branch has its place under the decision that took it.
+        assert_eq!(
+            places(&[
+                "/",
+                "dictation",
+                "dictation/dictate",
+                "dictation/dictate/terminal",
+                "_actions/insert"
+            ])
+            .last()
+            .map(String::as_str),
+            Some(">>dictation>dictation/dictate>dictation/dictate/terminal>_actions/insert")
+        );
+        // A route that starts at a branch is found by its folder.
+        assert_eq!(
+            places(&["dictation/dictate/notes", "_actions/rewrite"]),
+            [
+                ">>dictation>dictation/dictate>dictation/dictate/notes",
+                ">>dictation>dictation/dictate>dictation/dictate/notes>_actions/rewrite"
+            ]
+        );
+        // A node that is no branch of the one before it ends the way.
+        assert_eq!(places(&["dictation/dictate", "assistant/ask"]).len(), 1);
+        assert!(places(&["_actions/insert"]).is_empty());
+    }
 
     #[test]
     fn a_branch_is_created_under_a_decision_or_as_a_state_of_a_machine() {

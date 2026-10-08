@@ -26,7 +26,7 @@ It has no async code, no HTTP and no JSON: serde derives only.
 
 ## Requirements
 
-The diagram is R1 to R10 and R35; the layout, R11 to R13 and R32 to R34; the engine, R14 to R31 and R36.
+The diagram is R1 to R10 and R35; the layout, R11 to R13, R32 to R34 and R37; the engine, R14 to R31 and R36.
 
 ### R1 A diagram is one `fsm` block
 
@@ -352,3 +352,14 @@ it. A label that is no candidate is no answer: the `[else]` candidate is taken, 
 stays.
 
 Tests: `the_user_may_answer_in_the_oracle_s_place`
+
+### R37 A state can be given its own size
+
+`layout_with` takes a width and a height for any state, for what the host draws inside its box;
+a size smaller than a state's usual box is not taken. The state's row is as tall as its tallest
+node, the rows after it start below it, and its neighbours in the row sit beside it. An edge
+into the state ends at its top and one out of it starts at its bottom, an edge that points back
+still runs up the right of everything, and labels stay clear of the state (R12). `layout` is
+`layout_with` with no sizes.
+
+Tests: `a_state_given_a_size_makes_room_for_it`

@@ -1382,12 +1382,26 @@ mod tests {
             ".flow-children .flow-children > .flow-node > .flow-row .flow-name",
         );
         assert!(!nested.contains(&"terminal".to_string()), "{nested:?}");
-        // Selecting dictate showed it in full.
+        // Selecting dictate showed it in full, with the instructions the folders down to it
+        // add: the root's, then its own.
         let text = doc.root_element().text_content();
         assert!(
             text.contains("Applies when") && text.contains("dictation/dictate/decide.toml"),
             "{text}"
         );
+        let adds = names(&doc, ".flow-instruction .mono");
+        assert_eq!(
+            (
+                adds.first().map(String::as_str),
+                adds.last().map(String::as_str)
+            ),
+            (
+                Some("instructions.md"),
+                Some("dictation/dictate/instructions.md")
+            ),
+            "{adds:?}"
+        );
+        assert!(text.contains("Speech recognition"), "{text}");
     }
 
     fn machines_root() -> Element {
@@ -1658,7 +1672,7 @@ mod tests {
             let mut state = view(&folder);
             state.flows = env.flows.clone();
             state.machines = machines.clone();
-            state.open_machine = open;
+            state.open_machine = open.map(|id| crate::agent::PickedMachine::now(id, &machines));
             state
         };
         let showing =
@@ -1721,7 +1735,8 @@ mod tests {
         assert!(doc.query_selector(".fsm-run").unwrap().is_none());
         assert!(!shared.lock().unwrap().machines_tab);
         // The machine picked in the tray went with the tab, as one picked in the tab does.
-        shared.lock().unwrap().open_machine = Some(helper);
+        shared.lock().unwrap().open_machine =
+            Some(crate::agent::PickedMachine::now(helper, &machines));
         shared.lock().unwrap().machines_tab = true;
         doc.vdom.mark_dirty(ScopeId::APP);
         doc.poll(None);
@@ -1732,6 +1747,402 @@ mod tests {
         assert_eq!(
             (tab(&doc), showing(&doc)),
             (vec!["Machines".into()], vec!["task-1".into()])
+        );
+    }
+
+    /// A desk that holds the text it is given until it is let go, so a take stops in its work.
+    struct Held {
+        reached: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    }
+
+    impl jevons_desktop_protocol::desk::Desk for Held {
+        fn deliver(
+            &self,
+            _: jevons_desktop_protocol::desk::Delivery,
+        ) -> futures_util::future::BoxFuture<'_, Result<Option<DeliveryOutcome>, String>> {
+            Box::pin(async {
+                if let Some(reached) = self.reached.lock().unwrap().take() {
+                    let _ = reached.send(());
+                }
+                let release = self.release.lock().unwrap().take();
+                if let Some(release) = release {
+                    let _ = release.await;
+                }
+                Ok(None)
+            })
+        }
+
+        fn confirm(
+            &self,
+            ask: jevons_desktop_protocol::desk::Ask,
+        ) -> futures_util::future::BoxFuture<'_, bool> {
+            jevons_desktop_protocol::desk::Nobody.confirm(ask)
+        }
+
+        fn read(
+            &self,
+            read: jevons_desktop_protocol::desk::Read,
+        ) -> futures_util::future::BoxFuture<'_, jevons_desktop_protocol::extract::Extracted>
+        {
+            jevons_desktop_protocol::desk::Nobody.read(read)
+        }
+
+        fn look(
+            &self,
+            look: jevons_desktop_protocol::desk::Look,
+        ) -> futures_util::future::BoxFuture<'_, jevons_desktop_protocol::desk::Opened> {
+            jevons_desktop_protocol::desk::Nobody.look(look)
+        }
+
+        fn look_step(
+            &self,
+            session: u64,
+            tool: String,
+            arguments: serde_json::Value,
+        ) -> futures_util::future::BoxFuture<'_, jevons_desktop_protocol::desk::Looked> {
+            jevons_desktop_protocol::desk::Nobody.look_step(session, tool, arguments)
+        }
+
+        fn look_end(
+            &self,
+            session: u64,
+            remember: bool,
+        ) -> futures_util::future::BoxFuture<'_, Option<String>> {
+            jevons_desktop_protocol::desk::Nobody.look_end(session, remember)
+        }
+
+        fn tools(&self) -> jevons_desktop_protocol::desk::ClientTools {
+            jevons_desktop_protocol::desk::Nobody.tools()
+        }
+
+        fn run_tool(
+            &self,
+            reference: String,
+            arguments: serde_json::Value,
+            node: String,
+            confirm: bool,
+        ) -> futures_util::future::BoxFuture<'_, Result<serde_json::Value, String>> {
+            jevons_desktop_protocol::desk::Nobody.run_tool(reference, arguments, node, confirm)
+        }
+    }
+
+    #[test]
+    fn a_state_s_work_shows_its_branches_and_the_way_a_take_goes_through_them() {
+        use crate::agent::Feedback;
+        use jevons_desktop_server::flow::Memory;
+        use jevons_desktop_server::flow::machine::runtime::Runtime as Machines;
+        use jevons_desktop_server::pipeline::{Env, Settings, Stage, StageKind, TakeStart, Update};
+        // An agent whose one working state decides by rules alone, two decisions deep: `more`
+        // has the highest priority among the branches that apply, and there `y` is preferred.
+        let tree = Arc::new(FlowTree::load(
+            &Memory::new(
+                "test",
+                [
+                    ("root.toml", ""),
+                    ("instructions.md", "Be brief."),
+                    (
+                        "root.fsm",
+                        "fsm App {\n[*] --> idle\nidle --> helper : said\nhelper --> idle\n}",
+                    ),
+                    ("helper/agent.toml", "description = \"Helps\""),
+                    (
+                        "helper/agent.fsm",
+                        "fsm Helper {\n[*] --> idle\nidle --> work : said\nwork --> idle\n}",
+                    ),
+                    ("helper/work/decide.toml", "select = \"rules\""),
+                    (
+                        "helper/work/more/decide.toml",
+                        "description = \"More\"\npriority = 20\nselect = \"rules\"\ninstructions = \"More of it.\"",
+                    ),
+                    (
+                        "helper/work/more/x/transcript.toml",
+                        "description = \"X\"\npriority = 30",
+                    ),
+                    (
+                        "helper/work/more/y/transcript.toml",
+                        "description = \"Y\"\npriority = 20\n\n[prefer]\ntranscript = \"hello\"",
+                    ),
+                    (
+                        "helper/work/never/transcript.toml",
+                        "description = \"Never\"\npriority = 90\n\n[when]\napp = [\"nowhere.exe\"]",
+                    ),
+                    (
+                        "helper/work/other/decide.toml",
+                        "description = \"Other\"\npriority = 5\nselect = \"rules\"",
+                    ),
+                    ("helper/work/other/z/transcript.toml", "description = \"Z\""),
+                    (
+                        "helper/work/plain/transcript.toml",
+                        "description = \"Plain\"\npriority = 10",
+                    ),
+                ],
+            ),
+            &Catalog::default(),
+        ));
+        assert!(tree.is_valid(), "{:?}", tree.errors);
+        let (reached, at_the_desk) = tokio::sync::oneshot::channel();
+        let (let_go, release) = tokio::sync::oneshot::channel();
+        let machines = Arc::new(Machines::new());
+        let env = Env {
+            routes: jevons_desktop_server::client::Routes::default(),
+            flows: tree.clone(),
+            settings: Settings::default(),
+            desk: Arc::new(Held {
+                reached: Mutex::new(Some(reached)),
+                release: Mutex::new(Some(release)),
+            }),
+            investigator: None,
+            tools: None,
+            machines: machines.clone(),
+        };
+        let start = TakeStart {
+            id: 7,
+            context: ContextSnapshot::default(),
+            entry: None,
+        };
+        let mut trace = Trace::new(&start);
+        trace.transcript = "hello there".into();
+        let (updates, mut said) = tokio::sync::mpsc::unbounded_channel();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let folder = std::env::temp_dir().join(format!("jevons-ui-work-{}", std::process::id()));
+        let page = |feedback: Option<Feedback>, traces: Vec<Trace>| {
+            let mut state = view(&folder);
+            state.flows = tree.clone();
+            state.machines = machines.clone();
+            state.feedback = feedback;
+            state.traces = traces.into();
+            machines_doc_with(state).0
+        };
+        let showing =
+            |doc: &DioxusDocument| texts(doc, ".fsm-run[data-showing=\"true\"] .fsm-run-name");
+        let open = |doc: &DioxusDocument| texts(doc, ".fsm-state[data-open=\"true\"] .fsm-name");
+        let rows = |doc: &DioxusDocument, mark: &str| {
+            texts(doc, &format!(".fsm-inner .flow-row{mark} .flow-name"))
+        };
+        // The open box, and whether every row of its work lies inside it.
+        let boxed = |doc: &mut DioxusDocument| {
+            doc.resolve(0.0);
+            let state = doc
+                .query_selector(".fsm-state[data-open=\"true\"]")
+                .unwrap()
+                .unwrap();
+            let (top, size) = {
+                let node = doc.get_node(state).unwrap();
+                (node.absolute_position(0.0, 0.0).y, node.final_layout.size)
+            };
+            let inside = doc
+                .query_selector_all(".fsm-inner .flow-row")
+                .unwrap()
+                .into_iter()
+                .all(|row| {
+                    let row = doc.get_node(row).unwrap();
+                    let at = row.absolute_position(0.0, 0.0).y;
+                    at >= top && at + row.final_layout.size.height <= top + size.height
+                });
+            (size.height, inside)
+        };
+
+        // The take stops where its text is delivered: the agent is still in `work`.
+        let mut take = Box::pin(machines.take(&env, &start, None, &updates, &mut trace));
+        runtime.block_on(async {
+            tokio::select! {
+                _ = &mut take => panic!("the take ended before its text was delivered"),
+                _ = at_the_desk => {}
+            }
+        });
+        let mut feedback = Feedback {
+            take: 7,
+            working: true,
+            ..Feedback::default()
+        };
+        while let Ok(update) = said.try_recv() {
+            feedback.apply(&update);
+        }
+        // What the leaf does shows on its row.
+        feedback.apply(&Update::Stage(Stage::new(StageKind::Writing, "text")));
+        let mut doc = page(Some(feedback.clone()), Vec::new());
+        // With no machine picked, the diagram is the one of the machine that moved last.
+        assert_eq!(showing(&doc), ["helper"]);
+        assert_eq!(
+            texts(&doc, ".fsm-state[data-current=\"true\"] .fsm-name"),
+            ["work"]
+        );
+        // Its state's box is open, with no click: the branches of each decision on the way,
+        // and the others folded.
+        assert_eq!(open(&doc), ["work"]);
+        assert_eq!(
+            rows(&doc, ""),
+            ["more", "x", "y", "never", "other", "plain"]
+        );
+        assert_eq!(rows(&doc, "[data-route=\"true\"]"), ["more", "y"]);
+        assert_eq!(rows(&doc, "[data-now=\"true\"]"), ["y"]);
+        assert_eq!(texts(&doc, ".flow-now"), ["now"]);
+        assert_eq!(texts(&doc, ".flow-activity"), ["writing"]);
+        assert_eq!(texts(&doc, ".flow-why"), ["rules", "preferred"]);
+        // A branch another was preferred to, and one whose guard failed, were no candidates.
+        assert_eq!(rows(&doc, "[data-off=\"true\"]"), ["x", "never"]);
+        // The rows are short: no rules beside them.
+        assert!(
+            doc.query_selector(".fsm-inner .flow-notes")
+                .unwrap()
+                .is_none()
+        );
+        // The layout made room for the rows under the state's name.
+        let (height, inside) = boxed(&mut doc);
+        assert!(height > 48.0 + 6.0 * 26.0 && inside, "{height}");
+        // The walk is on a row, which says what it does: the state's own line stays.
+        assert_eq!(
+            texts(&doc, ".fsm-state[data-open=\"true\"] .fsm-work"),
+            ["decide"]
+        );
+        // Another take's bubble says nothing of this machine's work.
+        let other = Feedback {
+            take: 8,
+            ..feedback.clone()
+        };
+        let doc = page(Some(other), Vec::new());
+        assert_eq!(open(&doc), ["work"]);
+        assert!(rows(&doc, "[data-route=\"true\"]").is_empty());
+        assert!(texts(&doc, ".flow-now").is_empty());
+        drop(doc);
+
+        // The take ends: the agent is back in `idle`, and the diagram goes back to the root
+        // that called it, where what is said next goes first.
+        let_go.send(()).unwrap();
+        runtime.block_on(&mut take);
+        drop(take);
+        assert_eq!(trace.error, None, "{:?}", trace.notes);
+        feedback.done = true;
+        let mut doc = page(Some(feedback), vec![trace]);
+        assert_eq!(showing(&doc), ["/"]);
+        assert!(open(&doc).is_empty());
+        // The agent picked shows what its work did, as the take's trace says.
+        click_text(&mut doc, ".fsm-run", "helper");
+        assert_eq!(showing(&doc), ["helper"]);
+        assert_eq!(
+            texts(&doc, ".fsm-state[data-current=\"true\"] .fsm-name"),
+            ["idle"]
+        );
+        assert_eq!(open(&doc), ["work"]);
+        assert_eq!(rows(&doc, "[data-route=\"true\"]"), ["more", "y"]);
+        assert_eq!(rows(&doc, "[data-off=\"true\"]"), ["x", "never"]);
+        assert_eq!(
+            texts(&doc, ".flow-why"),
+            [
+                "rules: priority 20",
+                "preferred: its transcript rule passed"
+            ]
+        );
+        assert!(texts(&doc, ".flow-now").is_empty());
+        assert!(texts(&doc, ".flow-activity").is_empty());
+        // A branch off the way unfolds by its chevron; the box grows by its rows, and the
+        // click selects no state.
+        let (before, _) = boxed(&mut doc);
+        let other = doc
+            .query_selector_all(".fsm-inner .flow-row")
+            .unwrap()
+            .into_iter()
+            .find(|row| doc.get_node(*row).unwrap().text_content().contains("other"))
+            .unwrap();
+        let chevron = doc.get_node(other).unwrap().children[0];
+        click_node(&mut doc, chevron, ".flow-toggle");
+        assert!(rows(&doc, "").contains(&"z".to_string()));
+        let (after, inside) = boxed(&mut doc);
+        assert!(after == before + 26.0 && inside, "{before} {after}");
+        assert!(doc.query_selector(".fsm-detail").unwrap().is_none());
+        // A row's label shows its node in full: the instructions the folders on the way to
+        // it add, from the root down, and its file. Another row has other folders above it.
+        click_text(&mut doc, ".fsm-inner .flow-label", "transcripty");
+        assert_eq!(rows(&doc, "[data-selected=\"true\"]"), ["y"]);
+        let node = texts(&doc, ".fsm-node").join(" ");
+        assert!(
+            node.contains("helper/work/more/y")
+                && node.contains("instructions.md")
+                && node.contains("Be brief.")
+                && node.contains("helper/work/more/decide.toml")
+                && node.contains("More of it."),
+            "{node}"
+        );
+        assert!(doc.query_selector(".fsm-detail").unwrap().is_none());
+        click_text(&mut doc, ".fsm-inner .flow-label", "plain");
+        let node = texts(&doc, ".fsm-node").join(" ");
+        assert!(
+            node.contains("Be brief.") && !node.contains("More of it."),
+            "{node}"
+        );
+        // A second click takes the selection back.
+        click_text(&mut doc, ".fsm-inner .flow-label", "plain");
+        assert!(doc.query_selector(".fsm-node").unwrap().is_none());
+        // A state selected shows in full; a second click takes the selection back.
+        click_text(&mut doc, ".fsm-head", "idle");
+        assert_eq!(texts(&doc, ".fsm-detail .dx-card-title"), ["idle"]);
+        assert_eq!(open(&doc), ["work"]);
+        click_text(&mut doc, ".fsm-head", "idle");
+        assert!(doc.query_selector(".fsm-detail").unwrap().is_none());
+
+        // The root's state is an agent: its card leads to the agent's own diagram.
+        click_text(&mut doc, ".fsm-run", "/");
+        assert_eq!(showing(&doc), ["/"]);
+        assert!(open(&doc).is_empty());
+        click_text(&mut doc, ".fsm-head", "helper");
+        let text = texts(&doc, ".fsm-detail").join(" ");
+        assert!(text.contains("The agent Helper"), "{text}");
+        click(&mut doc, ".fsm-show");
+        assert_eq!(showing(&doc), ["helper"]);
+        // A machine picked holds until the machines move: after the next take the diagram is
+        // the root's again, the agent being back at rest.
+        let again = |id: u64, doc: &mut DioxusDocument| {
+            let start = TakeStart {
+                id,
+                context: ContextSnapshot::default(),
+                entry: None,
+            };
+            let mut trace = Trace::new(&start);
+            trace.transcript = "hello again".into();
+            runtime.block_on(machines.take(&env, &start, None, &updates, &mut trace));
+            assert_eq!(trace.error, None, "{:?}", trace.notes);
+            // The agent wakes the window, as it does on every update.
+            doc.vdom.mark_dirty(ScopeId::APP);
+            doc.poll(None);
+        };
+        again(8, &mut doc);
+        assert_eq!(showing(&doc), ["/"]);
+        // With Follow off, the machine picked stays.
+        click(&mut doc, ".switch-row");
+        assert_eq!(showing(&doc), ["/"]);
+        click_text(&mut doc, ".fsm-run", "helper");
+        again(9, &mut doc);
+        assert_eq!(showing(&doc), ["helper"]);
+        // Back on, the diagram follows again: the agent rests, so the root shows.
+        click(&mut doc, ".switch-row");
+        assert_eq!(showing(&doc), ["/"]);
+        drop(doc);
+
+        // With no take kept, no way is marked, and the branches' own branches stay folded.
+        let mut doc = page(None, Vec::new());
+        click_text(&mut doc, ".fsm-run", "helper");
+        assert_eq!(open(&doc), ["work"]);
+        assert_eq!(rows(&doc, ""), ["more", "never", "other", "plain"]);
+        assert!(rows(&doc, "[data-route=\"true\"]").is_empty());
+        // While the root decides which agent the next words are for, its state says so.
+        let mut deciding = Feedback {
+            take: 20,
+            working: true,
+            ..Feedback::default()
+        };
+        deciding.apply(&Update::Stage(Stage::new(
+            StageKind::Deciding,
+            "what to do",
+        )));
+        let doc = page(Some(deciding), Vec::new());
+        assert_eq!(showing(&doc), ["/"]);
+        assert_eq!(
+            texts(&doc, ".fsm-state[data-working=\"true\"] .fsm-work"),
+            ["deciding"]
         );
     }
 
