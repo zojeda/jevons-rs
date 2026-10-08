@@ -32,14 +32,7 @@ impl TextTokenizer for GemmaTokenizer {
     }
 
     fn code_piece(&self, token: i32) -> Option<String> {
-        if token < 0 || token as usize >= self.0.n_vocab() || self.0.is_control(token) {
-            return None;
-        }
-        let bytes = self.0.token_to_piece(token);
-        if !(1..=16).contains(&bytes.len()) || !bytes.iter().all(u8::is_ascii_alphanumeric) {
-            return None;
-        }
-        String::from_utf8(bytes).ok()
+        self.0.code_piece(token)
     }
 
     fn decode(&self, tokens: &[i32]) -> Result<String> {
@@ -52,13 +45,15 @@ impl TextTokenizer for GemmaTokenizer {
 }
 
 pub(crate) struct Gemma4 {
+    /// Before `model`: fields drop in this order, and the model's release of device memory
+    /// then covers the vision tower's buffers too.
+    images: Option<Images>,
     model: model::Model,
     tokenizer: GemmaTokenizer,
     info: ModelInfo,
     chat: ChatFormat,
     profile: PrefillProfile,
     prompt_cache: bool,
-    images: Option<Images>,
 }
 
 fn map(error: model::ModelError) -> Error {

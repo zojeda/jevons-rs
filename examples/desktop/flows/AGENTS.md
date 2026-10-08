@@ -1,10 +1,22 @@
-# Flow tree: how jevons routes a take
+# Flows: how jevons handles a take
 
 This folder tells jevons what to do each time the user presses a dictation hotkey and speaks.
-Every folder is a node. A take starts at the root node (or where its hotkey says), and each
-decision picks one branch folder until a leaf writes the text somewhere. Edit the files and save:
-jevons reloads the tree at once and, when a file has a problem, keeps the last good tree and shows
-the errors in its inspector.
+Every folder is a node, and three kinds of folder are state machines:
+
+- **The root** (`root.toml` and the state diagram `root.fsm`) decides which agent a take is for,
+  and nothing else. It waits in `idle`; each take is `said` there and leads to an agent's state,
+  and the root is back in `idle` at once.
+- **An agent** is a folder of the root (`agent.toml` and `agent.fsm`): `dictation`, `assistant`
+  and `automations` are built in. It runs for as long as the app, gets the take as `said`, and
+  routes it among its own states and the tasks it started. A state's folder is its work:
+  decisions pick one branch folder after another until a leaf writes the text somewhere.
+- **A task** is a folder below an agent (`task.toml` and `task.fsm`): a job with an end that
+  takes several turns, such as a search the user follows up on. An agent state whose folder is
+  a task starts one and is done at once, so the task runs beside its agent, which may start
+  another. It waits between takes, and the inspector's Machines tab shows where each one is.
+
+Edit the files and save: jevons reloads them at once and, when a file has a problem, keeps the
+last good tree and shows the errors in its inspector.
 
 Check your changes before you rely on them:
 
@@ -25,11 +37,14 @@ A node folder holds exactly one node file, whose name is its kind:
 
 | File | What it does |
 |---|---|
+| `root.toml` | The flows root's machine: states and transitions in `root.fsm` beside it, each subfolder an agent (below). Only at the root. |
+| `agent.toml` | An agent: states and transitions in `agent.fsm` beside it, each subfolder a state's work or a task. Only in a folder of the root. |
+| `task.toml` | A task: states and transitions in `task.fsm` beside it, each subfolder a state's work. Only below an agent, and never inside another task. |
 | `decide.toml` | Chooses one of its branches: the subfolders, or the folders named by `branches`. |
 | `generate.toml` | A leaf: the language model writes text, which goes to `output`. |
 | `transcript.toml` | A leaf: the words as recognized go to `output`, with no model. |
 | `tool.toml` | Calls one registered tool with arguments filled here. |
-| `agent.toml` | A tool-calling loop over registered tools, bounded by `max_steps`. |
+| `loop.toml` | A tool-calling loop over registered tools, bounded by `max_steps`. |
 | `run.toml` | Runs one of the user's approved automations, with its arguments filled from what they said. |
 
 A folder may also hold `instructions.md`: prose added to every model call at and below that
@@ -74,6 +89,25 @@ Every rule that is set must pass; a node without rules always applies.
 | `text = true` | the focused field holds text |
 | `editable = true` | the focused element accepts typing |
 | `transcript = "(?i)^translate"` | the regular expression is found in what the user said |
+| `value = "{searching.body.total}"` with one or more of the rules below | the named value passes them all |
+
+A value rule checks one named value, with no model: what an earlier state of a task wrote
+(`{state}`, or `{state.field}` for a field of a tool's result or of a structured answer), an
+extract or an investigation. A value not read yet, or missing, is empty and equals nothing.
+
+| With `value` | Passes when the value |
+|---|---|
+| `empty = true` | is missing, null, a blank text, or an empty list or object (`false`: is not) |
+| `equals = 200` | equals this text, number or boolean (a number written as text counts) |
+| `matches = "^2\\d\\d$"` | holds the regular expression, as text |
+| `above = 0`, `below = 10`, `at_least = 1`, `at_most = 5` | is a number that compares so |
+
+```toml
+# task.toml: "the search found nothing" is a rule, not a question for the model.
+[guards.nothing]
+when = { value = "{searching.body.total}", equals = 0 }
+prefer = { value = "{searching.body.total}", equals = 0 }
+```
 
 The inspector's Context tab shows every value these rules compare, for the window in front.
 
@@ -87,7 +121,7 @@ alone, as it would among all. A branch whose `[prefer]` fails stays a candidate,
 that is not said never takes a branch away.
 
 ```toml
-# ask/decide.toml: "Pregunta: ¿qué dice Paul?" is always a question for jevons.
+# assistant/agent.toml: "Pregunta: ¿qué dice Paul?" is always a question for jevons.
 [prefer]
 transcript = "(?i)^\\W*(pregunta|question)\\b"
 ```
@@ -97,6 +131,87 @@ changes (a terminal is always a place to dictate). Leave softer signals, such as
 not accept typing, to the model: the decision's state says whether the focused element accepts
 typing, and the descriptions can say what that suggests.
 
+## Machines: the root, agents, tasks and their diagrams
+
+Each machine's file says its level: `root.toml` with `root.fsm`, `agent.toml` with `agent.fsm`,
+`task.toml` with `task.fsm`. A diagram is a state diagram in [Oxidate](https://crates.io/crates/oxidate-fsm)'s language:
+
+```text
+// examples/desktop/machines/research/search in the jevons repository
+fsm Search {
+    timer quiet = 120000 -> quiet
+    [*] --> searching
+    state searching: "Searching the web for what the user asked"
+    state results: "The answer is in the bubble; waiting for what the user says about it"
+    searching --> answering
+    answering --> results
+    results --> opening : said [the user wants one of the results opened]
+    results --> [*] : said [the user is done with these results]
+    results --> [*] : quiet
+    opening --> results
+    opening --> results : denied
+}
+```
+
+- **States** are lowercase, since each one's work is the subfolder of its name (`searching/tool.toml`).
+  Entering a state runs that folder like a take would, from its node file down, and delivers its
+  leaf; a state with no folder only waits. `[*] --> name` is the first state; `--> [*]` ends the
+  machine (the root and the agents never need to: they run for as long as the app).
+- **Events:** `said` (the user spoke), `done` (the state's work finished; also a transition with
+  no event), `failed`, `denied` (the user declined a tool call the work asked about; without a
+  `denied` transition it counts as `failed`), and each `timer`'s event, which runs only while the
+  machine is in a state with a transition on it. An agent also takes `task_done` and
+  `task_failed` when a task it started ends, and reads which one as `{task.name}` and what it
+  last wrote as `{task.result}`. A failure nothing handles ends a task (its agent then takes
+  `task_failed`), or puts the root or an agent back in its first state.
+- **Where a take goes:** the root's candidates are its agents, and an agent is one only when it
+  has something it may do with the take: a transition its rules allow, or a task that waits.
+  The agent's candidates are its own `said` transitions and each task of its own that waits for
+  `said`, labelled `search-1`, `search-2`. A task chosen gets the take as its own `said`.
+- **Choosing a transition:** the transitions on the event are weighed as a decision weighs its
+  branches. The target state folder's `[when]` must pass, and its `[prefer]` chooses with no
+  model, as do a named guard's (below). Otherwise the decision model chooses by each one's
+  criterion: the guard's sentence (`[the user wants one of the results opened]`), else the target
+  folder's `description` (the diagram's state description when it has no folder). Below
+  `min_probability` it takes the transition marked `[else]`, or, on `said`, stays where it was:
+  an unsure take never moves a task on. A waiting task whose own rule prefers the words takes
+  them before its agent starts another, so "Search …" while a search waits searches again in
+  that search. With `unsure = "parent"` in its node file, the machine
+  that stays also hands what was said to the one above (a task to its agent, an agent to the
+  root), which takes it as if that machine were not there: this is how dictation keeps working
+  while a task waits. The root's question, the agent's, the task's and the first decision of the
+  work they lead to go in one request, with what the machine above would ask on the way back,
+  so a take costs one decision call.
+- **Named guards:** a one-word guard, `[search]`, is `[guards.search]` in the machine's node file, with
+  `when` (rules for it to be a candidate), `prefer` (rules that choose it) and `criterion` (what
+  the model reads), all optional.
+- **Choice points:** `choice next { [it worked] -> a  [else] -> b }`, entered as `<<next>>`,
+  choose at once, the same way; `[else]` is required.
+- **Memory:** a task's states read what earlier states wrote as `{state}` (`{searching}` is the
+  search's result) until the task ends. A result with fields keeps them: `{searching.status}` for
+  a tool's, `{state.field}` for a generation with a `[schema]`. Guards read them too (a value
+  rule, above), so a transition can depend on a result with no model call. The root and the
+  agents remember nothing between takes.
+- **Not in the diagram:** actions. Oxidate's `entry /`, `exit /` and `/ action()` are errors: the
+  work is in the folders, so what a machine can do is exactly what its states' node files say.
+
+| `root.toml`, `agent.toml` and `task.toml` field | Meaning |
+|---|---|
+| `description` | For the machine above, which enters this one by it: the root chooses an agent by its description, an agent a task by its. |
+| `question` | What the model answers when it chooses a transition; by default, which one fits, given the task and its state. |
+| `min_probability` | Below this probability (0 to 1) the model's choice is not taken. Leave it out: the decision model's provider says how sure its model must be (0.7 for the models jevons runs), since probabilities differ between models. |
+| `tools` | Every tool its states call (tool nodes, loops' tools, `script:<name>` or `script:*` for automations, `server:*`). A state that calls another is an error, so the list is all a task can do, an agent's covers its tasks', and the root's covers everything. |
+| `[guards.<name>]` | The named guards: `when`, `prefer`, `criterion`. |
+| `steps`, `samples` | System One refinement steps (1 to 8) and samples (1 to 32). |
+| `unsure` | What happens to what the user said when the machine would stay where it is: `"stay"` (the default), or `"parent"` to hand it to the machine above. Not in `root.toml`. |
+
+A state's node file keeps `description`, `[when]` and `[prefer]` (how transitions into it are
+weighed), and so does an agent's `agent.toml` for the root's choice; `priority` has no effect
+there. A machine declares no `[extract]` or `[investigate]`:
+its states' node files do. Risky work (a command, an address to open) belongs in a state of its
+own, reached only by the transitions drawn, with its tool asking first; give it a `denied`
+transition back to where the user was.
+
 ## `decide.toml`
 
 | Field | Meaning |
@@ -104,7 +219,7 @@ typing, and the descriptions can say what that suggests.
 | `question` | What the decision model answers; the branches' descriptions are the choices. |
 | `select` | `model` (default): the model chooses. `rules`: the highest `priority`, then the most specific guard; the model only breaks exact ties. |
 | `fallback` | The branch taken when no guard passes, or the model is below `min_probability` or unavailable. It is taken even if its own guard fails. |
-| `min_probability` | Below this probability (0 to 1) for the branch the model chose, run `enrich`, ask again, then take the fallback. The built-in root uses 0.7. |
+| `min_probability` | Below this probability (0 to 1) for the branch the model chose, run `enrich`, ask again, then take the fallback. |
 | `enrich` | Extract and investigation names to read only when the first answer is unsure. |
 | `branches` | Take the branches from a shared folder such as `"_actions"` instead of subfolders. |
 | `only` | With `branches`: keep only these of them. |
@@ -123,6 +238,7 @@ both in one request.
 | `output` | `target` (default): into the application the take started in. `bubble`: shown by the tray icon, with Copy and Insert. `clipboard`. `none`. |
 | `action` | With `target`: `insert` at the cursor (default), `replace` the selection, or `rewrite` the selection or whole field following what the user said. A transcript cannot rewrite. |
 | `prompt` | `generate.toml` only: the model's input. By default: the context, the investigations and what the user said. |
+| `[schema]` | `generate.toml` only: the answer's shape, written as an investigation's `schema`. The model answers in JSON, and later states read its fields: `{state.field}`. |
 
 Text goes into the target only if the same window is still in front once the user lets go of the
 keys; otherwise it waits on the clipboard.
@@ -156,7 +272,7 @@ bubble before running unless the settings say that tool may run unconfirmed; `co
 asks even then. With `output = "next"`, the node has exactly one branch folder, which receives the
 tool's result as `{result}`.
 
-## `agent.toml`
+## `loop.toml`
 
 ```toml
 description = "Questions that need looking something up before answering"
@@ -165,7 +281,7 @@ max_steps = 4                           # model turns before it must answer (1 t
 output = "bubble"
 ```
 
-The agent can always call `investigate` (below). Tool calls ask for confirmation as in
+The loop can always call `investigate` (below). Tool calls ask for confirmation as in
 `tool.toml`. `prompt` sets the task; by default it is the context and what the user said.
 
 ## Extracts
@@ -200,8 +316,10 @@ lazy = true               # read only when a node at or below uses {messages} or
 
   Names are in the user's language. Prefer classes and automation ids, which are the same in
   every language.
-- **Paths:** `//` searches below, `/` goes to children, `..` to the parent. The axes are `ancestor::`,
-  `following-sibling::`, `preceding-sibling::` and the other XPath 1.0 axes.
+- **Paths:** `//` searches below, `/` goes to children, `..` to the parent. The axes are `child::`,
+  `descendant::`, `descendant-or-self::`, `parent::`, `ancestor::`, `ancestor-or-self::`, `self::`,
+  `following-sibling::`, `preceding-sibling::` and `attribute::`. `following::` and `preceding::`
+  are errors.
 - **Positions:** `[1]` and `[last()]` count among siblings. `(//ListItem)[last()]` counts over the
   whole result, and is much faster than `//ListItem[last()]`.
 - **Functions:** XPath 1.0's functions, plus `ends-with`, `lower-case`, `upper-case`,
@@ -214,8 +332,8 @@ lazy = true               # read only when a node at or below uses {messages} or
 - **What `//` covers:** an expression that starts with `//` searches every window the extract may read (the take's own and each `scope` window). One that starts with `.//` stays in the take's window.
 - **Only in some applications:** `app = ["slack.exe"]` (process-name globs, any case) reads the
   extract only in takes from those applications; elsewhere nothing is read and its answer is
-  empty. That lets the root declare an application's extracts once for every branch below: the
-  built-in root reads Slack's `{slack_conversation}`, `{slack_messages}` and `{slack_channels}`.
+  empty. That lets a decision declare an application's extracts once for every branch below: the
+  built-in `assistant/ask` reads Slack's `{slack_conversation}`, `{slack_messages}` and `{slack_channels}`.
 - **Variables:** `$name` takes a placeholder's value, such as `//TreeItem[@name = $transcript]` or
   `$chat.name`. Values are never pasted into the expression, so they cannot change what it means.
 - **Answers:** available at this node and below as `{channels}` and `{messages}` (JSON), and
@@ -252,7 +370,7 @@ output = "bubble"                              # bubble (default), target, clipb
 - **Arguments:** yes/no arguments are answered by the decision model. The others are written by
   the language model from what the user said, following each argument's description.
 - **Before it runs:** it asks in the bubble first, unless the settings list it as unconfirmed.
-  Only automations the user approved run. The built-in tree's `run` branch runs any of them.
+  Only automations the user approved run. The built-in `automations` agent runs any of them.
 
 ## Investigations
 
@@ -285,9 +403,10 @@ Reading windows other than the one in front also needs the user's permission in 
 | `{app}`, `{window}`, `{url}`, `{field}` | where the user is |
 | `{clipboard}` | the clipboard text, when the settings allow reading it |
 | `{context}` | all of the above, described for a model |
-| `{route}` | the branches taken so far, such as `dictate/chat` |
+| `{route}` | the branches taken so far, such as `dictation/dictate/chat` |
 | `{name}`, `{name.field}` | an extract or investigation declared here or above |
-| `{result}`, `{result.field}` | below a tool or agent with `output = "next"` |
+| `{result}`, `{result.field}` | below a tool or loop with `output = "next"` |
+| `{state}` | in a machine's states: what that state's work wrote last |
 
 Write `{{` and `}}` for literal braces. `instructions.md` is plain prose: no placeholders.
 
@@ -296,7 +415,7 @@ Write `{{` and `}}` for literal braces. `instructions.md` is plain prose: no pla
 - One node file per folder; unknown fields are errors, reported with their line.
 - A decision has 1 to 128 branches, each with a `description`. `fallback` names one of them.
   If every branch has a guard, a `fallback` is required.
-- Leaves (`generate.toml`, `transcript.toml`) have no branch folders. Tools, agents and runs have
+- Leaves (`generate.toml`, `transcript.toml`) have no branch folders. Tools, loops and runs have
   one only with `output = "next"`.
 - A run node's `automations` name automations in the library.
 - `branches` names a `_` folder under this root; shared folders cannot lead back to themselves.
@@ -304,15 +423,28 @@ Write `{{` and `}}` for literal braces. `instructions.md` is plain prose: no pla
   investigations in scope. Every XPath expression parses; an error gives its column.
 - Folders nest at most 8 deep, and a path takes at most 4 model decisions: each costs a model
   call while the user waits.
-- Tool and agent nodes name registered tools, and tool arguments match the tool's schema.
+- Tool and loop nodes name registered tools, and tool arguments match the tool's schema.
+- A machine's diagram parses and checks: states lowercase, events known, every state reached and
+  with a way out, at most one `[else]` per state and event, `[else]` on every event but `said`
+  that may otherwise stay, choice points with `[else]`, timers waited for, and a way to `[*]`
+  in a task. Its subfolders are states, its named guards are used and declared, and its
+  `tools` list everything its states call.
+- Each machine is at its level: `root.toml` at the root, `agent.toml` in a folder of the root
+  (every state folder of the root is an agent), `task.toml` below an agent and never inside
+  another task.
 
-## Example: a branch for translating
+## Example: a state for translating
 
-Put it at the root, next to `dictate` and `ask`, where the model chooses by what the user wants
-(`dictate` chooses by application, with rules):
+Make it a state of the `dictation` agent, next to `dictate`, where the model chooses by what the
+user wants (`dictate` chooses by application, with rules). In `dictation/agent.fsm`:
+
+```text
+idle --> translate : said
+translate --> idle
+```
 
 ```toml
-# translate/generate.toml
+# dictation/translate/generate.toml
 description = "The user asks to translate the selected text into another language"
 action = "rewrite"
 instructions = "Translate the text into the language the user names. Output only the translation."
@@ -322,5 +454,6 @@ selection = true
 transcript = "(?i)(translate|traduc)"
 ```
 
-The guard keeps it out of the root decision unless text is selected and the user said
-"translate", so ordinary dictation never pays for it.
+The guard keeps it out of the agent's decision unless text is selected and the user said
+"translate", so ordinary dictation never pays for it. With it, the agent has two candidates and
+its question rides in the root's request: still one decision call.

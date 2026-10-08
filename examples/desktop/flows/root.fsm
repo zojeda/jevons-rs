@@ -1,0 +1,15 @@
+// The app's machine. Every take is `said` in `idle`; the decision model weighs the transitions by
+// their agents' descriptions, unless a [prefer] rule in an agent's agent.toml chooses first.
+fsm Jevons {
+    [*] --> idle
+
+    state idle: "Waiting for the user to speak"
+
+    idle --> assistant : said
+    idle --> dictation : said [else]
+    idle --> automations : said
+
+    assistant --> idle
+    dictation --> idle
+    automations --> idle
+}

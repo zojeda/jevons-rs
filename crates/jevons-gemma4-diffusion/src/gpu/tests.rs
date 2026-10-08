@@ -1181,6 +1181,34 @@ fn vision_ffn_pooling_positions_and_norms_match_reference() {
 
 #[test]
 #[ignore = "requires a HIP GPU"]
+fn the_release_guard_returns_what_was_dropped_before_it() {
+    use super::ReleaseOnDrop;
+    // As a model declares them: its buffers first, the guard last.
+    struct Owner {
+        _big: Buf,
+        _release: ReleaseOnDrop,
+    }
+    let gpu = Gpu::new(0).unwrap();
+    let reserved = || gpu.client.memory_usage().bytes_reserved;
+    let before = reserved();
+    let owner = Owner {
+        _big: gpu.zeros(256 << 20, 4),
+        _release: ReleaseOnDrop::new(&gpu),
+    };
+    gpu.sync();
+    let during = reserved();
+    drop(owner);
+    let after = reserved();
+    println!("reserved before {before} during {during} after {after}");
+    assert!(during >= before + (1 << 30));
+    assert!(
+        after < during - (1 << 29),
+        "the guard kept {after} of {during} bytes"
+    );
+}
+
+#[test]
+#[ignore = "requires a HIP GPU"]
 fn released_buffers_return_device_memory_after_cleanup() {
     let gpu = Gpu::new(0).unwrap();
     let reserved = || gpu.client.memory_usage().bytes_reserved;

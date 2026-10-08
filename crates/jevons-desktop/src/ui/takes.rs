@@ -3,10 +3,10 @@
 use super::Ctx;
 use super::components::{Collapsible, CopyButton, JsonTree, badge};
 use super::context::route_card;
+use crate::config::HotkeyMode;
 use dioxus::prelude::*;
-use jevons_desktop_core::config::HotkeyMode;
-use jevons_desktop_core::pipeline::Trace;
 use jevons_desktop_core::platform::DeliveryOutcome;
+use jevons_desktop_server::pipeline::Trace;
 
 #[component]
 pub fn TakesPage(rev: u64) -> Element {
@@ -24,7 +24,7 @@ pub fn TakesPage(rev: u64) -> Element {
         }
     };
     drop(view);
-    let folder = jevons_desktop_core::config::user_dir().join("traces");
+    let folder = crate::config::user_dir().join("traces");
 
     rsx! {
         div { class: "spread",
@@ -86,10 +86,10 @@ fn TakeItem(trace: TraceProp) -> Element {
         rows.push((
             "Transcribed",
             match path {
-                jevons_desktop_core::pipeline::TranscriptionPath::Realtime => {
+                jevons_desktop_server::pipeline::TranscriptionPath::Realtime => {
                     "live, while speaking"
                 }
-                jevons_desktop_core::pipeline::TranscriptionPath::Upload => {
+                jevons_desktop_server::pipeline::TranscriptionPath::Upload => {
                     "after speaking (upload)"
                 }
             }

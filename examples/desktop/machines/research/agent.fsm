@@ -1,0 +1,10 @@
+// The research agent. `search` is a task: entering it starts one and is done at once, so the
+// agent is back in `idle` for the next take while the search goes on.
+fsm Research {
+    [*] --> idle
+
+    state idle: "Waiting for something to search for"
+
+    idle --> search : said [search]
+    search --> idle
+}

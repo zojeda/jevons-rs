@@ -488,7 +488,7 @@ p { margin: 0; }
 }
 .flow-kind[data-kind="decide"] { color: var(--accent); background: var(--accent-soft); }
 .flow-kind[data-kind="generate"] { color: var(--success); background: var(--success-bg); }
-.flow-kind[data-kind="tool"], .flow-kind[data-kind="agent"] { color: var(--warning); background: var(--warning-bg); }
+.flow-kind[data-kind="tool"], .flow-kind[data-kind="loop"] { color: var(--warning); background: var(--warning-bg); }
 .flow-kind[data-kind="run"] { color: var(--error); background: var(--error-bg); }
 .flow-name { flex-shrink: 0; font-weight: 600; color: var(--secondary-color-1); }
 .flow-shared { flex-shrink: 0; font-size: 11px; color: var(--secondary-color-6); }
@@ -498,3 +498,58 @@ p { margin: 0; }
 /* A route's branches: one not taken is dimmed; its rule checks unfold under it. */
 .flow-row[data-off="true"] .flow-name { color: var(--secondary-color-6); }
 .route-checks { margin: 2px 0 6px 34px; padding: 6px 10px; border-radius: 6px; background: var(--primary-color-2); }
+
+/* Machines: a diagram of positioned boxes over one SVG of edges, start and end dots and choice
+   diamonds. The current state is marked with the accent, as is the latest transition's edge. */
+.flow-kind[data-kind="machine"] { color: var(--accent); background: var(--accent-soft); }
+.flow-kind[data-kind="event"] { min-width: 48px; color: var(--secondary-color-2); background: var(--primary-color-5); }
+.fsm-path { color: var(--accent); }
+/* What runs: the root, the agents, and each agent's tasks under it. */
+.fsm-runs { display: flex; flex-direction: column; gap: 2px; }
+.fsm-run { display: flex; align-items: center; gap: 10px; padding: 4px 8px; border-radius: 6px; border: 1px solid transparent; }
+.fsm-run:hover { background: var(--primary-color-5); }
+.fsm-run[data-level="task"] { margin-left: 28px; }
+.fsm-run[data-showing="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.fsm-run-name { color: var(--secondary-color-1); font-weight: 600; }
+.fsm-run .muted { flex: 1; }
+.fsm-scroll { overflow-x: auto; overflow-y: hidden; padding-bottom: 6px; }
+.fsm-canvas { position: relative; flex-shrink: 0; }
+.fsm-lines { position: absolute; left: 0; top: 0; }
+.fsm-state {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 4px 10px;
+  border: 1px solid var(--primary-color-7);
+  border-radius: 10px;
+  background: var(--primary-color-4);
+  cursor: pointer;
+  overflow: hidden;
+}
+.fsm-state:hover { border-color: var(--secondary-color-6); }
+.fsm-state[data-selected="true"] { background: var(--primary-color-5); border-color: var(--secondary-color-5); }
+.fsm-state[data-current="true"] { border: 2px solid var(--accent); background: var(--accent-soft); }
+.fsm-name { color: var(--secondary-color-1); font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fsm-state[data-current="true"] .fsm-name { color: var(--accent); }
+.fsm-work { color: var(--secondary-color-5); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fsm-label {
+  position: absolute;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--primary-color-3);
+  color: var(--secondary-color-5);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.fsm-label[data-hot="true"] { color: var(--accent); }
+.fsm-unsure { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 8px 12px; border: 1px solid var(--accent); border-radius: 10px; background: var(--accent-soft); }
+.fsm-unsure-title { color: var(--secondary-color-1); font-weight: 600; }
+.fsm-legend { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--secondary-color-5); }
+.fsm-legend-item { display: flex; align-items: center; gap: 6px; }
+.fsm-swatch { display: inline-block; width: 18px; height: 3px; border-radius: 2px; }
+.fsm-choice-name { position: absolute; color: var(--secondary-color-5); font-size: 11px; white-space: nowrap; }
+.fsm-out { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.fsm-guard { color: var(--secondary-color-2); }
+.fsm-step { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; padding: 4px 0; border-bottom: 1px solid var(--primary-color-5); }
+.fsm-step-move { color: var(--secondary-color-1); font-weight: 600; }

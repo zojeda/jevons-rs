@@ -3,9 +3,9 @@
 use super::Ctx;
 use super::components::{Collapsible, Confirm, Switch, badge, progress};
 use crate::agent::{Command, open_folder};
+use crate::config::{DesktopConfig, ModelRef};
 use dioxus::prelude::*;
 use jevons_desktop_core::catalog::{self, CatalogEntry, Service};
-use jevons_desktop_core::config::{DesktopConfig, ModelRef};
 use jevons_desktop_core::download::{Hub, Progress};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

@@ -7,8 +7,8 @@
 //! version, so an edited script needs approving again.
 
 use super::manifest::{Manifest, version_hash};
-use crate::flow::shape::Shape;
 use crate::recorded::Demonstration;
+use jevons_desktop_protocol::shape::Shape;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

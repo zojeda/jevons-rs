@@ -3335,6 +3335,37 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da220af51a1a335e9a930beaaef53d261e41ea9eecfb3d973a3ddae1a7284b9c"
 
 [[package]]
+name = "defmt"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2953bfe4f93bbd20cc71198842756f77d161884c99ebbabc41d80231ded88d1"
+dependencies = [
+ "bitflags 1.3.2",
+ "defmt-macros",
+]
+
+[[package]]
+name = "defmt-macros"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bad9c72e7ca2137e0dc3813245a0d282fd6daad32fd800af018306a9169b5fe8"
+dependencies = [
+ "defmt-parser",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "defmt-parser"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10d60334b3b2e7c9d91ef8150abfb6fa4c1c39ebbcf4a81c2e346aad939fee3e"
+dependencies = [
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "deranged"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4041,7 +4072,10 @@ version = "0.11.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "de671bd27a75a797dc9ae289ba1e77276e75e2026408aab65185384e2d5cd3f6"
 dependencies = [
+ "anstream",
+ "anstyle",
  "env_filter",
+ "jiff",
  "log",
 ]
 
@@ -6055,7 +6089,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jevons-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -6080,7 +6114,7 @@ dependencies = [
 
 [[package]]
 name = "jevons-audio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "jevons-core",
  "opuscule",
@@ -6090,7 +6124,7 @@ dependencies = [
 
 [[package]]
 name = "jevons-burn"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "burn",
  "burn-cubecl",
@@ -6099,11 +6133,12 @@ dependencies = [
  "half",
  "jevons-formats",
  "jevons-kernels",
+ "tracing",
 ]
 
 [[package]]
 name = "jevons-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "image",
  "serde",
@@ -6112,7 +6147,7 @@ dependencies = [
 
 [[package]]
 name = "jevons-decision"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "image",
@@ -6126,7 +6161,7 @@ dependencies = [
 
 [[package]]
 name = "jevons-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "active-win-pos-rs",
  "anyrender",
@@ -6142,19 +6177,27 @@ dependencies = [
  "dioxus",
  "dioxus-native",
  "enigo",
+ "futures-util",
  "global-hotkey",
  "globset",
  "jevons-api",
  "jevons-audio",
  "jevons-desktop-core",
+ "jevons-desktop-protocol",
+ "jevons-desktop-server",
+ "jevons-desktop-tools",
+ "jevons-kernels",
  "notify",
  "peniko",
  "pulldown-cmark",
  "rdev",
  "rfd",
+ "serde",
  "serde_json",
+ "sha2",
  "sysinfo",
  "tao",
+ "thiserror 2.0.20",
  "tokio",
  "toml 1.1.6+spec-1.1.0",
  "tracing",
@@ -6167,7 +6210,49 @@ dependencies = [
 
 [[package]]
 name = "jevons-desktop-core"
-version = "0.1.0"
+version = "0.2.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "directories",
+ "futures-util",
+ "globset",
+ "image",
+ "jevons-audio",
+ "jevons-desktop-protocol",
+ "jevons-desktop-tools",
+ "regex",
+ "reqwest",
+ "rhai",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.20",
+ "tokio",
+ "toml 1.1.6+spec-1.1.0",
+ "tracing",
+]
+
+[[package]]
+name = "jevons-desktop-protocol"
+version = "0.2.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "globset",
+ "regex",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
+name = "jevons-desktop-server"
+version = "0.2.0"
 dependencies = [
  "adk-agent",
  "adk-core",
@@ -6176,14 +6261,15 @@ dependencies = [
  "adk-tool",
  "axum",
  "base64 0.22.1",
- "directories",
  "futures-util",
  "globset",
- "image",
  "jevons-audio",
+ "jevons-desktop-core",
+ "jevons-desktop-protocol",
+ "jevons-desktop-tools",
+ "jevons-machine",
  "regex",
  "reqwest",
- "rhai",
  "schemars",
  "serde",
  "serde_json",
@@ -6197,8 +6283,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "jevons-desktop-tools"
+version = "0.2.0"
+dependencies = [
+ "adk-core",
+ "adk-tool",
+ "globset",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml 1.1.6+spec-1.1.0",
+ "tracing",
+]
+
+[[package]]
 name = "jevons-diffusion"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "jevons-core",
  "jevons-models",
@@ -6208,7 +6309,7 @@ dependencies = [
 
 [[package]]
 name = "jevons-formats"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "half",
  "serde",
@@ -6218,7 +6319,7 @@ dependencies = [
 
 [[package]]
 name = "jevons-gemma4-diffusion"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "cubecl",
@@ -6234,7 +6335,7 @@ dependencies = [
 
 [[package]]
 name = "jevons-generative"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "jevons-core",
  "jevons-diffusion",
@@ -6243,18 +6344,28 @@ dependencies = [
 
 [[package]]
 name = "jevons-kernels"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "cubecl",
  "cubecl-hip",
  "half",
  "jevons-formats",
+ "tracing",
+]
+
+[[package]]
+name = "jevons-machine"
+version = "0.2.0"
+dependencies = [
+ "oxidate-fsm",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
 name = "jevons-models"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "jevons-core",
  "jevons-formats",
@@ -6266,7 +6377,7 @@ dependencies = [
 
 [[package]]
 name = "jevons-nemotron-diffusion"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "jevons-burn",
  "jevons-core",
@@ -6278,7 +6389,7 @@ dependencies = [
 
 [[package]]
 name = "jevons-parakeet"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "jevons-audio",
  "jevons-burn",
@@ -6291,7 +6402,7 @@ dependencies = [
 
 [[package]]
 name = "jevons-rs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "jevons-api",
  "tokio",
@@ -6300,7 +6411,7 @@ dependencies = [
 
 [[package]]
 name = "jevons-speech"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "jevons-core",
  "jevons-models",
@@ -6309,13 +6420,50 @@ dependencies = [
 
 [[package]]
 name = "jevons-tokenizer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "jevons-core",
  "jevons-formats",
  "serde_json",
  "thiserror 2.0.20",
  "tokenizers",
+]
+
+[[package]]
+name = "jiff"
+version = "0.2.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ab1baf72f08796de0260609515130699b890ac25f30e610ad894bc5856cafdb"
+dependencies = [
+ "defmt",
+ "jiff-core",
+ "jiff-static",
+ "log",
+ "portable-atomic",
+ "portable-atomic-util",
+ "serde_core",
+]
+
+[[package]]
+name = "jiff-core"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e52fe76043ccecc9005d2305ebaadf7d7fc0cc89ca6baa10a94d6bc68c7128c"
+dependencies = [
+ "defmt",
+ "log",
+]
+
+[[package]]
+name = "jiff-static"
+version = "0.2.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "378268a1116ad67ae6228701118ac9f491d78fda38a40a1f1a9e1348de6f7212"
+dependencies = [
+ "jiff-core",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -8236,6 +8384,23 @@ name = "owo-colors"
 version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1b04fb49957986fdce4d6ee7a65027d55d4b6d2265e5848bbb507b58ccfdb6f"
+
+[[package]]
+name = "oxidate-fsm"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ddd78878853b5b5e5e8a9b725c2bdcb9d62b337e20d5bc8f0c45b985577880ca"
+dependencies = [
+ "env_logger",
+ "log",
+ "pest",
+ "pest_derive",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "pack1"
@@ -13122,10 +13287,9 @@ dependencies = [
 [[package]]
 name = "wgpu_context"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0f49e6f733fcc61e41a5ecdb36910baa5148497036784bca319289bfdca6141"
 dependencies = [
  "futures-intrusive",
+ "log",
  "wgpu 26.0.1",
 ]
 

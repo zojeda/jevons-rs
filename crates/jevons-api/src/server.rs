@@ -32,12 +32,17 @@ pub struct Workers {
 }
 
 impl Workers {
-    /// Waits for the model threads to end; drop every [`AppState`] clone first.
+    /// Waits for the model threads to end; drop every [`AppState`] clone first. Every thread
+    /// is waited for, also after one panicked: a caller that goes on to exit must not leave a
+    /// model still being freed on the device.
     pub async fn join(self) -> Result<(), Error> {
+        let mut panicked = false;
         for thread in self.threads {
-            tokio::task::spawn_blocking(move || thread.join())
-                .await?
-                .map_err(|_| "Inference worker panicked")?;
+            let ended = tokio::task::spawn_blocking(move || thread.join()).await;
+            panicked |= !matches!(ended, Ok(Ok(())));
+        }
+        if panicked {
+            return Err("Inference worker panicked".into());
         }
         Ok(())
     }
@@ -57,8 +62,26 @@ pub async fn serve(
 
 /// Loads the configured models once and starts their workers. `server.api_key` becomes the
 /// state's key; override it per listener with struct update syntax.
+///
+/// When a model fails to load, those loaded before it are dropped, and this returns once their
+/// workers have ended: the caller may exit, or load again, with none still being freed on the
+/// device.
 pub async fn load(settings: &Settings) -> Result<(AppState, Workers), Error> {
     let mut threads = Vec::new();
+    match load_into(settings, &mut threads).await {
+        Ok(state) => Ok((state, Workers { threads })),
+        Err(error) => {
+            // The queues of what did load went with the failed attempt: their workers end.
+            let _ = Workers { threads }.join().await;
+            Err(error)
+        }
+    }
+}
+
+async fn load_into(
+    settings: &Settings,
+    threads: &mut Vec<JoinHandle<()>>,
+) -> Result<AppState, Error> {
     let services = &settings.services;
     let diffusion_models = settings.diffusion_models();
     let mut engines: BTreeMap<&str, DiffusionService> = BTreeMap::new();
@@ -74,8 +97,7 @@ pub async fn load(settings: &Settings) -> Result<(AppState, Workers), Error> {
         // The generic `jev-latest` / `openjev-latest` aliases name the System One model, or the
         // only diffusion model.
         let generic = uses.contains(&"decision") || diffusion_models.len() == 1;
-        let service =
-            load_diffusion(name, &settings.models[name], &uses, generic, &mut threads).await?;
+        let service = load_diffusion(name, &settings.models[name], &uses, generic, threads).await?;
         engines.insert(name, service);
     }
     let engine = |service: &Option<crate::config::ServiceModel>| {
@@ -89,7 +111,7 @@ pub async fn load(settings: &Settings) -> Result<(AppState, Workers), Error> {
                 &speech.model,
                 &settings.models[&speech.model],
                 speech,
-                &mut threads,
+                threads,
             )
             .await?,
         ),
@@ -112,13 +134,12 @@ pub async fn load(settings: &Settings) -> Result<(AppState, Workers), Error> {
     // The state owns the only queue handles from here on: when its last clone is dropped at
     // shutdown, the workers see their queues close and their threads end.
     drop(engines);
-    let state = AppState {
+    Ok(AppState {
         generative,
         decision,
         speech,
         api_key: settings.server.api_key.clone().map(Arc::from),
-    };
-    Ok((state, Workers { threads }))
+    })
 }
 
 /// Loads a diffusion language model once for the services in `uses`.
@@ -257,6 +278,28 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::{mpsc, oneshot};
+
+    #[tokio::test]
+    async fn joining_waits_for_every_worker_even_after_one_panicked() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let ended = Arc::new(AtomicBool::new(false));
+        let slow = ended.clone();
+        let workers = Workers {
+            threads: vec![
+                std::thread::spawn(|| panic!("a worker that fails")),
+                // A model still leaving the device when the first worker is found dead.
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    slow.store(true, Ordering::SeqCst);
+                }),
+            ],
+        };
+        assert!(workers.join().await.is_err());
+        assert!(
+            ended.load(Ordering::SeqCst),
+            "join returned while a worker still ran"
+        );
+    }
 
     fn state(key: Option<&str>) -> (AppState, mpsc::Receiver<worker::Job>) {
         let (sender, receiver) = mpsc::channel(1);

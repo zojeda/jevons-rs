@@ -5,12 +5,11 @@
 
 use crate::context::{ContextSnapshot, Privacy};
 use crate::icons::TrayState;
-use schemars::JsonSchema;
+pub use jevons_desktop_protocol::delivery::{
+    Action, AudioEvent, DeliveryMethod, DeliveryOutcome, DeliveryRequest, SAMPLE_RATE,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
-
-/// The rate of [`AudioEvent::Chunk`] samples: the Realtime API's default PCM16 rate.
-pub const SAMPLE_RATE: u32 = 24_000;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlatformError {
@@ -194,18 +193,6 @@ pub struct AudioDevice {
     pub default: bool,
 }
 
-/// What an [`AudioSource`] reports while capturing.
-#[derive(Clone, Debug, PartialEq)]
-pub enum AudioEvent {
-    /// Mono PCM16 at [`SAMPLE_RATE`], about 100 ms each.
-    Chunk(Vec<i16>),
-    /// The meter bands for the latest audio, 0..=16.
-    Level([u8; 5]),
-    /// The source ended by itself (a file finished, a device went away).
-    Ended,
-    Failed(String),
-}
-
 /// Stops a capture when dropped or stopped.
 pub trait CaptureHandle: Send {
     fn stop(self: Box<Self>);
@@ -220,59 +207,6 @@ pub trait AudioSource: Send {
         device: Option<&str>,
         events: UnboundedSender<AudioEvent>,
     ) -> Result<Box<dyn CaptureHandle>, PlatformError>;
-}
-
-/// What to do with the text in the target.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Action {
-    /// Insert at the caret.
-    #[default]
-    Insert,
-    /// Replace the selection.
-    Replace,
-    /// Replace the selection, or the whole field when nothing is selected.
-    Rewrite,
-}
-
-/// How the text reaches the target.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DeliveryMethod {
-    /// Put the text on the clipboard and paste it, restoring the clipboard after.
-    #[default]
-    Paste,
-    /// Type it key by key.
-    Type,
-    /// Set the element's value through the accessibility API.
-    SetValue,
-    /// Only copy it; the user pastes.
-    Clipboard,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct DeliveryRequest {
-    pub action: Action,
-    pub text: String,
-    pub method: DeliveryMethod,
-    /// Whether the field's text must be selected first (a rewrite with nothing selected).
-    pub select_all: bool,
-    /// Characters to delete before the caret first (live dictation correcting what it typed).
-    pub erase: usize,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(tag = "outcome", rename_all = "snake_case")]
-pub enum DeliveryOutcome {
-    Delivered {
-        method: DeliveryMethod,
-    },
-    /// The text is on the clipboard for the user to paste.
-    OnClipboard {
-        reason: String,
-    },
-    /// Shown in the feedback bubble, where the user can copy or insert it.
-    Shown,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
@@ -358,9 +292,12 @@ impl Binding {
         bindings
     }
 
-    /// The recording hotkey and a hotkey per automation.
+    /// The recording hotkey and a hotkey per automation; none while automations are off.
     pub fn for_automations(settings: &crate::config::AutomationSettings) -> Vec<Self> {
         let mut bindings = Vec::new();
+        if !settings.enabled {
+            return bindings;
+        }
         if let Some(accelerator) = settings.record_hotkey.clone().filter(|a| !a.is_empty()) {
             bindings.push(Self {
                 accelerator,
@@ -385,6 +322,20 @@ pub enum HotkeyEvent {
     Released(u32),
 }
 
+/// A machine that runs, as the tray menu lists it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MachineEntry {
+    /// Which of the machines that run it is: what showing or cancelling it names.
+    pub id: u64,
+    /// `/` for the root, an agent's folder, or a task's name such as `search-2`.
+    pub label: String,
+    pub state: String,
+    /// The events it waits for in that state.
+    pub waiting: Vec<String>,
+    /// A task, listed under the agent that started it.
+    pub task: bool,
+}
+
 /// The tray menu's contents.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MenuModel {
@@ -404,6 +355,14 @@ pub struct MenuModel {
     pub recording: bool,
     /// The automations library: name, description, and whether this version is approved.
     pub automations: Vec<(String, String, bool)>,
+    /// Whether automations are on; while they are off the menu says they are coming soon.
+    pub automations_on: bool,
+    /// Whether a task waits with a conversation the bubble can show again.
+    pub conversation: bool,
+    /// Whether a task runs, or a machine is away from its first state: something to cancel.
+    pub tasks: bool,
+    /// The machines that run: the root, then each agent followed by its tasks.
+    pub machines: Vec<MachineEntry>,
 }
 
 /// What a tray menu item asks for.
@@ -413,6 +372,14 @@ pub enum MenuCommand {
     ToggleLiveDictation,
     /// Abandons the running take without delivering anything.
     CancelTake,
+    /// Ends every task, and answers a question one of them waits on no.
+    CancelTasks,
+    /// Ends one task, by its id among the machines that run.
+    CancelOneTask(u64),
+    /// Shows the waiting task's conversation in the bubble again.
+    ShowConversation,
+    /// Opens the Machines tab on one of the machines that run.
+    ShowMachine(u64),
     /// Opens the folder with the logs and take traces.
     OpenLogsFolder,
     /// Starts every take at this top-level branch, or at the root.
@@ -423,12 +390,18 @@ pub enum MenuCommand {
     ToggleFeedback,
     ReloadFlows,
     OpenConfigFolder,
-    /// Starts or stops recording a demonstration.
+    /// Asks, then puts the default settings, flow tree and automations library back.
+    ResetSettings,
+    /// Asks, then clears these kinds of history.
+    ClearHistory(Vec<crate::history::History>),
+    /// Asks, then starts recording a demonstration; or stops the one that runs, saving it.
     ToggleRecording,
+    /// Asks, then drops the recording that runs without saving it.
+    DiscardRecording,
     RunAutomation(String),
     /// Runs an automation asking before each of its actions.
     RunStepByStep(String),
-    /// Records the automation's task again, to replace it with a new version.
+    /// Asks, then records the automation's task again, to replace it with a new version.
     RecordAgain(String),
     /// Checks an automation, shows what it does, and pins this version when the user agrees.
     ApproveAutomation(String),
@@ -791,6 +764,7 @@ mod tests {
     #[test]
     fn the_record_and_automation_hotkeys_bind_from_the_settings() {
         let mut settings = crate::config::AutomationSettings {
+            enabled: true,
             record_hotkey: Some("Ctrl+Alt+R".into()),
             ..crate::config::AutomationSettings::default()
         };
@@ -814,6 +788,9 @@ mod tests {
             ]
         );
         assert!(Binding::for_automations(&crate::config::AutomationSettings::default()).is_empty());
+        // Automations are off until the settings turn them on: their hotkeys bind nothing.
+        settings.enabled = false;
+        assert!(Binding::for_automations(&settings).is_empty());
     }
 
     #[test]

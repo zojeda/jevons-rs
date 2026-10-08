@@ -1,0 +1,9 @@
+// The assistant's machine: what the user says is a question to answer.
+fsm Assistant {
+    [*] --> idle
+
+    state idle: "Waiting for a question"
+
+    idle --> ask : said
+    ask --> idle
+}

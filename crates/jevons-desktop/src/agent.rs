@@ -2,33 +2,42 @@
 //! tray and the inspector as views. It runs on its own thread; takes run on the runtime's
 //! workers so a slow generation never blocks the hotkey.
 
+use crate::config::{Capability, DesktopConfig, HotkeyMode};
 use crate::runtime::{Runtime, Status};
+use crate::settings;
 use crate::tray::Tray;
-use jevons_desktop_core::automation::author::{self, Authored};
+use jevons_desktop_core::automation::author::{self, Authored, Planner};
 use jevons_desktop_core::automation::check::CheckReport;
 use jevons_desktop_core::automation::host::AutomationHost;
 use jevons_desktop_core::automation::run::RunTrace;
-use jevons_desktop_core::config::{DesktopConfig, HotkeyMode};
+use jevons_desktop_core::confirm::{ChannelConfirmer, Confirmation};
 use jevons_desktop_core::context::ContextSnapshot;
-use jevons_desktop_core::flow::confirm::{ChannelConfirmer, Confirmation};
-use jevons_desktop_core::flow::extract::{self, Reader};
-use jevons_desktop_core::flow::investigate::Investigate;
-use jevons_desktop_core::flow::investigator::{Investigator, PathCache};
-use jevons_desktop_core::flow::tools::ToolHost;
-use jevons_desktop_core::flow::walk::{self, FlowStep};
-use jevons_desktop_core::flow::{Catalog, FlowError, FlowTree, defaults};
+use jevons_desktop_core::desk::LocalDesk;
+use jevons_desktop_core::git::Repository;
+use jevons_desktop_core::history::{self, History};
 use jevons_desktop_core::icons::TrayState;
 use jevons_desktop_core::interface;
-use jevons_desktop_core::pipeline::{self, Env, StageKind, TakeStart, Trace, Update};
+use jevons_desktop_core::look::{Looks, PathCache};
 use jevons_desktop_core::platform::{
     AudioDevice, AudioSource, Binding, CaptureHandle, ContextInspector, ContextProvider,
-    DeliveryOutcome, HotkeyAction, HotkeyEvent, MenuCommand, MenuModel, Recorder, RecordingHandle,
-    TextSink, TrayBackend, UiActor, UiElement, WindowEntry,
+    DeliveryOutcome, HotkeyAction, HotkeyEvent, MachineEntry, MenuCommand, MenuModel, Recorder,
+    RecordingHandle, TextSink, TrayBackend, UiActor, UiElement, WindowEntry,
 };
+use jevons_desktop_core::reader::Reader;
 use jevons_desktop_core::recorded::RecordedTree;
 use jevons_desktop_core::recording::{Session, bundle};
 use jevons_desktop_core::xpath::selector::Candidate;
-use std::collections::{HashMap, HashSet, VecDeque};
+use jevons_desktop_protocol::desk::Desk;
+use jevons_desktop_server::client::Routes;
+use jevons_desktop_server::flow::extract;
+use jevons_desktop_server::flow::machine::runtime::{Runtime as Machines, View as MachinesView};
+use jevons_desktop_server::flow::tools::ToolHost;
+use jevons_desktop_server::flow::walk::{self, FlowStep};
+use jevons_desktop_server::flow::{Catalog, FlowError, FlowTree, defaults};
+use jevons_desktop_server::pipeline::{self, StageKind, TakeStart, Trace, Update};
+use jevons_desktop_server::session::{Event as SessionEvent, Session as ServerSession};
+use jevons_desktop_tools::ToolSet;
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -70,6 +79,21 @@ pub enum Command {
     ApprovalAnswered {
         name: String,
         version: String,
+        yes: bool,
+    },
+    /// The user's answer to starting a recording from the tray menu, which replaces this
+    /// automation when it names one.
+    RecordAnswered {
+        replacing: Option<String>,
+        yes: bool,
+    },
+    /// The user's answer to dropping the recording that runs.
+    DiscardAnswered(bool),
+    /// The user's answer to resetting the settings.
+    ResetAnswered(bool),
+    /// The user's answer to clearing these kinds of history.
+    ClearAnswered {
+        kinds: Vec<History>,
         yes: bool,
     },
     /// What a running automation does now.
@@ -124,10 +148,29 @@ pub enum Command {
     TakeFinished(Box<Trace>),
     /// Hides the feedback bubble of a finished take, unless a newer take shows it.
     HideFeedback(u64),
+    /// A machine's timer turned out stale after its bubble showed: the bubble goes back to
+    /// what it replaced.
+    TimerStale(u64),
+    /// Tasks ended outside a take: the tray menu and the window follow.
+    TasksChanged,
+    /// A take moved a machine: the tray menu lists where each one is now.
+    MachinesMoved,
+    /// The user says which candidate a machine's unsure decision was for.
+    AnswerDecision {
+        instance: u64,
+        label: String,
+    },
     /// Hides a message, unless a newer one replaced it.
     HideMessage(u64),
     /// A take asks before calling a tool.
     ConfirmRequested(Confirmation),
+    /// A machine's timer ran out.
+    /// What the session did by itself: a timer's take.
+    Session(SessionEvent),
+    /// Ends every task, putting the flows root's machine back in its first state.
+    CancelTask,
+    /// Ends one running task, by the id the Machines tab shows it under.
+    CancelOneTask(u64),
     /// The user's answer: run the tool or not.
     Confirmed(bool),
     /// A button of the bubble's answer.
@@ -147,12 +190,15 @@ pub enum BubbleAction {
     Close,
 }
 
-/// A tool call waiting for the user in the bubble.
+/// A question waiting for the user in the bubble: a tool call, or one of the app's own.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PendingCall {
-    pub tool: String,
-    /// The arguments, as readable JSON.
-    pub arguments: String,
+    /// Such as "Run notes:create_note?".
+    pub question: String,
+    /// What it is about: a tool call's arguments as readable JSON, or the app's own lines.
+    pub details: String,
+    /// The word on the button that goes ahead, such as "Run".
+    pub action: String,
 }
 
 /// A stage of the take as the bubble shows it: running, then done.
@@ -168,6 +214,20 @@ pub struct StageView {
     pub chosen: Option<String>,
     /// `None` while it runs.
     pub ok: Option<bool>,
+}
+
+/// An earlier turn of a task's conversation: what the user said and what came of it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Turn {
+    /// What the user said; empty for a timer's turn.
+    pub heard: String,
+    /// What the task wrote: an answer's Markdown, or the text it typed.
+    pub output: String,
+    /// The output is an answer to read.
+    pub answer: bool,
+    /// How the turn ended, such as "Done" or why the task stayed where it was.
+    pub status: String,
+    pub failed: bool,
 }
 
 /// What the feedback bubble by the tray icon shows about a take.
@@ -202,9 +262,55 @@ pub struct Feedback {
     pub message: bool,
     /// Which message this is, so an older message's timer never hides a newer one.
     pub shown: u64,
+    /// Where the machines are, such as `search › answering`.
+    pub state: String,
+    /// The take belongs to a task that waits for the user: the bubble is its conversation, and
+    /// stays between turns.
+    pub task: bool,
+    /// The conversation's earlier turns, oldest first.
+    pub turns: Vec<Turn>,
 }
 
 impl Feedback {
+    /// Whether the bubble is for reading: an answer, or a task's conversation.
+    pub fn reading(&self) -> bool {
+        self.answer || self.task
+    }
+
+    /// The conversation with this take as its latest turn, for the take after it.
+    pub fn conversation(&self) -> Vec<Turn> {
+        let mut turns = self.turns.clone();
+        turns.push(Turn {
+            heard: self.heard.clone(),
+            output: self.output.clone(),
+            answer: self.answer,
+            status: self.status.clone(),
+            failed: self.failed,
+        });
+        turns
+    }
+
+    /// Joins the conversation `thread` ended with: its turns go above this take, which is
+    /// the task's next turn.
+    pub fn join(&mut self, thread: &Feedback) {
+        self.task = true;
+        self.turns = thread.conversation();
+        self.state = thread.state.clone();
+    }
+
+    /// What Copy and Insert take: this take's text, or the latest earlier turn's.
+    pub fn latest_output(&self) -> &str {
+        if !self.output.is_empty() {
+            return &self.output;
+        }
+        self.turns
+            .iter()
+            .rev()
+            .map(|t| t.output.as_str())
+            .find(|o| !o.is_empty())
+            .unwrap_or_default()
+    }
+
     /// Applies a progress update; returns whether it changed what the bubble shows.
     fn apply(&mut self, update: &Update) -> bool {
         match update {
@@ -233,7 +339,7 @@ impl Feedback {
                     StageKind::Writing => "Writing…".into(),
                     StageKind::Answering => "Answering…".into(),
                     StageKind::Calling => format!("Calling {}…", stage.label),
-                    StageKind::Agent => "Working with tools…".into(),
+                    StageKind::Loop => "Working with tools…".into(),
                 };
                 self.stages.push(StageView {
                     kind: stage.kind,
@@ -261,6 +367,9 @@ impl Feedback {
                 self.answer = true;
                 self.output.clear();
             }
+            Update::State(path) => self.state = path.clone(),
+            // Whoever holds the conversation joins it to the bubble.
+            Update::Task { .. } => {}
         }
         true
     }
@@ -301,9 +410,27 @@ impl Feedback {
             (None, None) if trace.notes.iter().any(|n| n.starts_with("Too short")) => {
                 "Too short to hold speech".into()
             }
-            (None, None) => "Done".into(),
+            // A task that was unsure what the words meant and stayed where it was says so.
+            (None, None) => trace
+                .notes
+                .iter()
+                .find(|n| n.contains(" stayed at "))
+                .cloned()
+                .unwrap_or_else(|| "Done".into()),
         };
     }
+}
+
+/// Where the bubble's text is scrolled. The window keeps it: the bubble follows its newest
+/// text until the user scrolls up.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BubbleScroll {
+    /// The user scrolled up: newer text is below, and a button goes back to it.
+    pub away: bool,
+    /// Text arrived below since.
+    pub fresh: bool,
+    /// The button was pressed: follow the newest text again.
+    pub jump: bool,
 }
 
 /// What the inspector shows; the agent writes it, the window reads it.
@@ -332,6 +459,9 @@ pub struct View {
     pub hotkey_error: Option<String>,
     pub notice: Option<String>,
     pub runtime: Option<Status>,
+    /// What serves each capability now, by its key in `[routes]`, such as
+    /// `openrouter/typesafe/jev-1.13`.
+    pub served: BTreeMap<&'static str, String>,
     pub context_backend: &'static str,
     pub sink_backend: &'static str,
     pub devices: Vec<AudioDevice>,
@@ -347,6 +477,16 @@ pub struct View {
     pub watch_context: bool,
     /// The feedback bubble's contents while a take runs and shortly after.
     pub feedback: Option<Feedback>,
+    /// Where its text is scrolled.
+    pub bubble: BubbleScroll,
+    /// The machines that run across takes, for the Machines tab.
+    pub machines: Arc<Machines>,
+    /// A machine was picked in the tray menu: the window shows the Machines tab, until
+    /// another tab is picked there.
+    pub machines_tab: bool,
+    /// The machine picked in the tray menu, which the Machines tab shows until another is
+    /// picked there, or another tab is.
+    pub open_machine: Option<u64>,
     /// The Context tab's workbench: the last extract it tried and what it found.
     pub trial: Option<TrialView>,
     /// Whether a trial is under way.
@@ -362,13 +502,56 @@ pub struct View {
     pub quit: bool,
 }
 
+/// What the bubble asks before a recording starts from the tray menu: recording a new
+/// automation, or the task of `replacing` again.
+fn record_question(replacing: Option<&str>) -> PendingCall {
+    PendingCall {
+        question: match replacing {
+            Some(name) => format!("Record {name} again?"),
+            None => "Record an automation?".into(),
+        },
+        details: "jevons records what you do with the mouse and the keyboard, and the text \
+                  your takes type, until you stop it.\nIn the tray menu, Stop recording saves \
+                  it and writes the automation, and Discard the recording drops it."
+            .into(),
+        action: "Record".into(),
+    }
+}
+
+/// What the bubble asks before the recording that runs is dropped.
+fn discard_question() -> PendingCall {
+    PendingCall {
+        question: "Discard the recording?".into(),
+        details: "Nothing of it is saved, and no automation is written from it.".into(),
+        action: "Discard".into(),
+    }
+}
+
+/// The machines that run as the tray menu lists them: the root, then each agent followed by
+/// the tasks it started.
+fn machine_entries(running: &MachinesView) -> Vec<MachineEntry> {
+    running
+        .stack
+        .iter()
+        .filter(|machine| machine.parent.is_none())
+        .flat_map(|machine| std::iter::once(machine).chain(running.tasks(machine.id)))
+        .map(|machine| MachineEntry {
+            id: machine.id,
+            label: machine.label(),
+            state: machine.state.clone(),
+            waiting: machine.waiting.clone(),
+            task: machine.parent.is_some(),
+        })
+        .collect()
+}
+
 /// An extract the Context tab's workbench tries or saves.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrialRequest {
     /// The node file that declares it (such as `ask/slack/generate.toml`); `None` for a new one.
     pub file: Option<String>,
     pub name: String,
-    pub spec: jevons_desktop_core::flow::spec::ExtractSpec,
+    pub spec: jevons_desktop_server::flow::spec::ExtractSpec,
     /// Typed rather than asked for: wait for a pause first.
     pub debounce: bool,
 }
@@ -503,6 +686,8 @@ const MESSAGE: u64 = u64::MAX;
 pub struct Agent {
     config: DesktopConfig,
     config_file: PathBuf,
+    /// The settings folder's repository, when jevons commits its own writes there.
+    repository: Option<Repository>,
     runtime: Runtime,
     tray: Option<Tray>,
     context: Box<dyn ContextProvider>,
@@ -526,6 +711,12 @@ pub struct Agent {
     replacing: Option<String>,
     /// How many messages the bubble has shown.
     messages: u64,
+    /// The bubble of the waiting task's latest turn, with the turns before it: what the next
+    /// take joins, and what the tray's Show the task's conversation brings back.
+    thread: Option<Feedback>,
+    /// The task that conversation is of: it stays while that task runs, whatever other takes
+    /// do in between.
+    thread_task: Option<u64>,
     /// The window (and tree) the Context tab's extracts were last read in.
     extracts_read: Option<String>,
     workbench: Workbench,
@@ -536,6 +727,14 @@ pub struct Agent {
     searching: bool,
     search_next: Option<String>,
     flows: Arc<FlowTree>,
+    /// The server's side of the app: it runs the takes and keeps the machines.
+    session: Arc<ServerSession>,
+    /// The tools this machine runs, from the client's settings.
+    desk_tools: Arc<ToolSet>,
+    /// Where the desk sends the tool calls to confirm.
+    confirm: mpsc::UnboundedSender<Confirmation>,
+    /// Where each timer's take shows what it is doing.
+    timer_updates: HashMap<u64, mpsc::UnboundedSender<Update>>,
     hotkeys: std::collections::HashMap<u32, HotkeyAction>,
     /// The reply to the tool call the bubble asks about.
     confirming: Option<oneshot::Sender<bool>>,
@@ -572,13 +771,45 @@ impl Agent {
         repaint: Arc<dyn Fn() + Send + Sync>,
         commands: mpsc::UnboundedSender<Command>,
     ) -> Self {
-        config.privacy.apply_api_log();
+        crate::config::log_api(config.log_api);
+        // The defaults the folder lacks, versioned: the loads below then write nothing.
+        let prepared = settings::prepare(&config_file, &config);
+        for note in &prepared.notes {
+            tracing::warn!(%note, "Settings folder");
+        }
+        let repository = prepared.repository;
         let flows_dir = config.flows_dir(&config_file);
-        let automations = automation_host(&config, &config_file, &layers, &commands);
-        let tools = Arc::new(
-            ToolHost::new(&config.tools, &config.mcp).with_automations(automations.clone()),
+        let automations = automation_host(
+            &config,
+            &config_file,
+            &layers,
+            &commands,
+            repository.as_ref(),
         );
-        let (tree, notes) = defaults::open(&flows_dir, &tools.catalog());
+        // Tool calls that need a yes are asked in the bubble.
+        let (confirm, mut asked) = mpsc::unbounded_channel::<Confirmation>();
+        let forward = commands.clone();
+        tokio::spawn(async move {
+            while let Some(confirmation) = asked.recv().await {
+                let _ = forward.send(Command::ConfirmRequested(confirmation));
+            }
+        });
+        let sink = Arc::new(Mutex::new(layers.sink));
+        let paths = Arc::new(Mutex::new(PathCache::open(PathCache::default_file())));
+        // The client's side of the app: one desk, which the server's parts reach it through.
+        let desk_tools = Arc::new(ToolSet::new(&config.desk_tools, &config.desk_mcp));
+        let desk = local_desk(
+            &config,
+            &sink,
+            &layers.inspector,
+            &paths,
+            &confirm,
+            &automations,
+            &desk_tools,
+        );
+        let tools = Arc::new(ToolHost::new(&config.tools, &config.mcp).with_desk(desk.clone()));
+        let (tree, report) = defaults::open(&flows_dir, &tools.catalog());
+        let notes = report.notes;
         let errors = tree.errors.clone();
         let flows = if tree.is_valid() {
             tree
@@ -586,6 +817,20 @@ impl Agent {
             // Nothing good to keep yet: the built-in tree runs until the folder is fixed.
             FlowTree::load(&defaults::builtin(), &Catalog::default())
         };
+        let flows = Arc::new(flows);
+        // The server's side of the app, in this process: it runs the takes, and its timers.
+        let (session, mut events) =
+            ServerSession::open(desk, flows.clone(), take_settings(&config));
+        session.set_tools(Some(tools.clone()));
+        // The tasks that run are kept in the data folder, and come back once a provider
+        // answers.
+        session.keep_machines_in(history::machines_file());
+        let forward = commands.clone();
+        tokio::spawn(async move {
+            while let Some(event) = events.recv().await {
+                let _ = forward.send(Command::Session(event));
+            }
+        });
         let watcher = watch(&flows_dir, commands.clone(), || Command::ReloadFlows);
         let library_watcher = watch(automations.dir(), commands.clone(), || {
             Command::ReloadAutomations
@@ -600,21 +845,28 @@ impl Agent {
             running: None,
             replacing: None,
             messages: 0,
+            thread: None,
+            thread_task: None,
             extracts_read: None,
             workbench: Workbench::default(),
             finding: false,
             selection: None,
             searching: false,
             search_next: None,
-            flows: Arc::new(flows),
+            flows,
+            session,
+            desk_tools,
+            confirm,
+            timer_updates: HashMap::new(),
             config,
             config_file,
+            repository,
             runtime,
             tray: layers.tray,
             context: layers.context,
             inspector: layers.inspector,
-            paths: Arc::new(Mutex::new(PathCache::open(PathCache::default_file()))),
-            sink: Arc::new(Mutex::new(layers.sink)),
+            paths,
+            sink,
             audio: layers.audio,
             hotkeys: std::collections::HashMap::new(),
             confirming: None,
@@ -630,6 +882,7 @@ impl Agent {
         {
             let mut view = agent.view.lock().expect("the view lock");
             view.flows = agent.flows.clone();
+            view.machines = agent.session.machines();
             view.flow_errors = errors;
             view.flow_notes = notes;
             view.context_backend = agent.context.name();
@@ -637,6 +890,9 @@ impl Agent {
             view.devices = agent.audio.devices();
             view.config = agent.config.clone();
             view.config_file = agent.config_file.clone();
+            if !prepared.notes.is_empty() {
+                view.notice = Some(prepared.notes.join(" "));
+            }
         }
         if let Some(tray) = &agent.tray {
             tray.hotkeys(agent.bindings());
@@ -650,15 +906,26 @@ impl Agent {
     /// Starts the MCP servers in the background; their tools then check the flows.
     fn list_tools(&self) {
         let tools = self.tools.clone();
+        let desk_tools = self.desk_tools.clone();
         let commands = self.commands.clone();
         let dir = self.config.flows_dir(&self.config_file);
+        let repository = self.repository.clone();
         tokio::spawn(async move {
-            let problems = tools.start().await;
+            // The client's MCP servers first: the host lists their tools from the desk.
+            let mut problems = desk_tools.start().await;
+            problems.extend(tools.start().await);
+            problems.extend(tools.clashes());
             for problem in &problems {
                 tracing::warn!(problem = %problem, "An MCP server is unavailable");
             }
-            if let Err(e) = defaults::write_tools_md(&dir, &tools.tools_md()) {
-                tracing::warn!(error = %e, "Cannot write TOOLS.md");
+            match defaults::write_tools_md(&dir, &tools.tools_md()) {
+                Ok(true) => commit_in_background(
+                    repository,
+                    vec![dir.join("TOOLS.md")],
+                    "List the tools the settings register in TOOLS.md".into(),
+                ),
+                Ok(false) => {}
+                Err(e) => tracing::warn!(error = %e, "Cannot write TOOLS.md"),
             }
             let _ = commands.send(Command::ToolsListed(problems));
         });
@@ -710,6 +977,7 @@ impl Agent {
             (view.start.clone(), view.context_paused)
         };
         let live = self.active.as_ref().is_some_and(|a| a.live);
+        let running = self.session.view();
         let menu = MenuModel {
             busy: self.active.is_some() || self.running.is_some(),
             dictating: self.active.as_ref().is_some_and(|a| !a.live),
@@ -725,6 +993,10 @@ impl Agent {
                 .into_iter()
                 .map(|a| (a.name, a.description, a.approved))
                 .collect(),
+            automations_on: self.config.automation.enabled,
+            conversation: self.thread.is_some(),
+            tasks: !running.at_rest(),
+            machines: machine_entries(&running),
         };
         self.view().automations = menu.automations.clone();
         if let Some(tray) = &mut self.tray {
@@ -940,6 +1212,10 @@ impl Agent {
             Command::ApprovalAnswered { name, version, yes } => {
                 self.approval_answered(&name, &version, yes)
             }
+            Command::RecordAnswered { replacing, yes } => self.record_answered(replacing, yes),
+            Command::DiscardAnswered(yes) => self.discard_answered(yes),
+            Command::ResetAnswered(yes) => self.reset_answered(yes),
+            Command::ClearAnswered { kinds, yes } => self.clear_answered(&kinds, yes),
             Command::AutomationProgress(label) => {
                 if let Some(feedback) = self.view().feedback.as_mut().filter(|f| f.take == MESSAGE)
                 {
@@ -948,19 +1224,54 @@ impl Agent {
                 self.repaint();
             }
             Command::AutomationFinished(trace) => self.automation_finished(*trace),
+            Command::Session(event) => self.session_event(event),
+            Command::CancelOneTask(id) => self.cancel_task(id),
+            Command::CancelTask => self.cancel_tasks(),
+            Command::AnswerDecision { instance, label } => {
+                let session = self.session.clone();
+                tokio::spawn(async move { session.answer(instance, label).await });
+            }
+            Command::TasksChanged => {
+                // A take that ended meanwhile may have kept the conversation of a task that
+                // is gone now.
+                if !self.session.view().in_task() {
+                    self.end_conversation();
+                }
+                self.publish_menu();
+                self.repaint();
+            }
+            Command::MachinesMoved => self.publish_menu(),
             Command::ReloadRuntime => self.runtime.apply(&self.config, &self.config_file),
             Command::RuntimeChanged => {
                 let status = self.runtime.status();
+                self.session.set_routes(self.runtime.routes());
+                if self.session.ready() {
+                    // The tasks kept the last time jevons ran: the first time, and nothing
+                    // after it.
+                    let session = self.session.clone();
+                    let commands = self.commands.clone();
+                    tokio::spawn(async move {
+                        for note in session.restore().await {
+                            tracing::info!(%note, "Brought the machines back");
+                        }
+                        // The tray menu lists them, and the window draws them.
+                        let _ = commands.send(Command::TasksChanged);
+                    });
+                }
                 if self.active.is_none() {
                     let state = match status {
                         Status::Ready { .. } | Status::Remote { .. } => TrayState::Idle,
                         Status::Failed(_) => TrayState::Error,
-                        Status::Loading => TrayState::Loading,
+                        Status::Loading | Status::WaitingForGpu { .. } => TrayState::Loading,
                         _ => TrayState::Offline,
                     };
                     self.set_tray(state);
                 }
-                self.view().runtime = Some(status);
+                let served = served(self.runtime.routes().as_ref());
+                let mut view = self.view();
+                view.runtime = Some(status);
+                view.served = served;
+                drop(view);
                 self.repaint();
             }
             Command::TakeFinished(trace) => self.finished(*trace),
@@ -991,8 +1302,85 @@ impl Agent {
                     self.repaint();
                 }
             }
+            Command::TimerStale(take) => {
+                let conversation = self.thread.clone();
+                let mut view = self.view();
+                if view.feedback.as_ref().is_some_and(|f| f.take == take) {
+                    view.feedback = conversation;
+                    drop(view);
+                    self.repaint();
+                }
+            }
         }
         true
+    }
+
+    /// Shows the waiting task's conversation in the bubble again, unless a take has it.
+    fn show_conversation(&mut self) {
+        if self.active.is_some() {
+            return;
+        }
+        let Some(conversation) = self.thread.clone() else {
+            return;
+        };
+        self.view().feedback = Some(conversation);
+        self.repaint();
+    }
+
+    /// Opens the window on the Machines tab, at the machine `id`. The task the bubble follows
+    /// brings its conversation back with it.
+    fn show_machine(&mut self, id: u64) {
+        {
+            let mut view = self.view();
+            view.show_window = true;
+            view.machines_tab = true;
+            view.open_machine = Some(id);
+        }
+        if self.thread_task == Some(id) {
+            self.show_conversation();
+        }
+        self.repaint();
+    }
+
+    /// Ends one task.
+    fn cancel_task(&mut self, id: u64) {
+        if self.thread_task == Some(id) {
+            self.end_conversation();
+        }
+        // A take of that task that waits on a question holds the machines: the answer is
+        // no, and the task ends once the take has.
+        if self.session.view().focus == Some(id) {
+            self.confirmed(false);
+        }
+        let session = self.session.clone();
+        let commands = self.commands.clone();
+        tokio::spawn(async move {
+            if let Some(ended) = session.cancel_task(id).await {
+                tracing::info!(%ended, "Cancelled a task");
+            }
+            let _ = commands.send(Command::TasksChanged);
+        });
+    }
+
+    /// The task is over: its conversation goes, and the bubble with it when it only rested
+    /// there.
+    fn end_conversation(&mut self) {
+        self.thread_task = None;
+        let Some(conversation) = self.thread.take() else {
+            return;
+        };
+        {
+            let mut view = self.view();
+            if view
+                .feedback
+                .as_ref()
+                .is_some_and(|f| f.take == conversation.take && f.done)
+            {
+                view.feedback = None;
+            }
+        }
+        self.publish_menu();
+        self.repaint();
     }
 
     fn menu(&mut self, command: MenuCommand) -> bool {
@@ -1013,8 +1401,12 @@ impl Agent {
                 self.set_tray(TrayState::Idle);
                 self.publish_menu();
             }
+            MenuCommand::CancelTasks => self.cancel_tasks(),
+            MenuCommand::CancelOneTask(id) => self.cancel_task(id),
+            MenuCommand::ShowConversation => self.show_conversation(),
+            MenuCommand::ShowMachine(id) => self.show_machine(id),
             MenuCommand::OpenLogsFolder => {
-                let dir = jevons_desktop_core::config::user_dir();
+                let dir = crate::config::user_dir();
                 let _ = std::fs::create_dir_all(dir.join("traces"));
                 open_folder(&dir);
             }
@@ -1033,6 +1425,14 @@ impl Agent {
                 if let Err(e) = config.save(&self.config_file) {
                     self.notice(&e.to_string());
                 } else {
+                    self.commit(
+                        self.settings_files(),
+                        if config.dictation.live_feedback {
+                            "Turn live feedback on"
+                        } else {
+                            "Turn live feedback off"
+                        },
+                    );
                     self.config = config;
                     self.view().config = self.config.clone();
                     self.publish_menu();
@@ -1052,7 +1452,16 @@ impl Agent {
                 if self.recording.is_some() {
                     self.stop_recording();
                 } else {
-                    self.start_recording();
+                    self.ask_to_record(None);
+                }
+            }
+            MenuCommand::DiscardRecording => {
+                if self.recording.is_some() {
+                    self.ask(
+                        discard_question(),
+                        "Enter discards it, Esc keeps recording",
+                        Command::DiscardAnswered,
+                    );
                 }
             }
             MenuCommand::OpenAutomationsFolder => {
@@ -1062,13 +1471,7 @@ impl Agent {
             }
             MenuCommand::RunAutomation(name) => self.run_automation(&name, None, false),
             MenuCommand::RunStepByStep(name) => self.run_automation(&name, None, true),
-            MenuCommand::RecordAgain(name) => {
-                self.replacing = Some(name);
-                self.start_recording();
-                if self.recording.is_none() {
-                    self.replacing = None;
-                }
-            }
+            MenuCommand::RecordAgain(name) => self.ask_to_record(Some(name)),
             MenuCommand::ApproveAutomation(name) => self.review_automation(&name),
             MenuCommand::OpenConfigFolder => {
                 if let Some(dir) = self.config_file.parent() {
@@ -1076,12 +1479,61 @@ impl Agent {
                     open_folder(dir);
                 }
             }
+            MenuCommand::ResetSettings => {
+                let question = PendingCall {
+                    question: "Reset the settings to the defaults?".into(),
+                    details: format!(
+                        "In {}: the settings (models, hotkeys, tools, approvals), the flow tree \
+                         and the automations library.\nThe earlier settings stay in the folder's \
+                         git history.",
+                        settings::folder(&self.config_file).display()
+                    ),
+                    action: "Reset".into(),
+                };
+                self.ask(
+                    question,
+                    "Enter resets them, Esc keeps them",
+                    Command::ResetAnswered,
+                );
+            }
+            MenuCommand::ClearHistory(kinds) => {
+                let question = PendingCall {
+                    question: match kinds.as_slice() {
+                        [kind] => format!("Clear {}?", kind.label()),
+                        _ => "Clear all the history?".into(),
+                    },
+                    details: kinds
+                        .iter()
+                        .map(|k| {
+                            format!(
+                                "Removes {} in {}",
+                                k.label(),
+                                k.dir(&self.config.client()).display()
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    action: "Clear".into(),
+                };
+                self.ask(question, "Enter clears it, Esc keeps it", move |yes| {
+                    Command::ClearAnswered { kinds, yes }
+                });
+            }
             MenuCommand::Quit => {
                 self.cancel_take();
+                // The models unload before the process ends, which takes a moment, and a load
+                // in progress ends first: the icon stays until then, so the app is not started
+                // again over one still closing.
+                if matches!(
+                    self.runtime.status(),
+                    Status::Ready { .. } | Status::Loading
+                ) {
+                    self.message("Quitting once the models are unloaded…", 600);
+                }
+                self.runtime.shutdown();
                 if let Some(tray) = &self.tray {
                     tray.quit();
                 }
-                self.runtime.shutdown();
                 self.view().quit = true;
                 self.repaint();
                 return false;
@@ -1594,9 +2046,15 @@ impl Agent {
         let catalog = self.tools.catalog();
         let view = self.view.clone();
         let repaint = self.repaint.clone();
+        let repository = self.repository.clone();
         tokio::task::spawn_blocking(move || {
             let saved = extract::save(&dir, &file, &request.name, &request.spec, &catalog)
                 .map(|()| format!("Saved [extract.{}] into {file}", request.name));
+            if let (Ok(message), Some(repository)) = (&saved, repository)
+                && let Err(e) = repository.commit(&[dir.join(&file)], message)
+            {
+                tracing::warn!(error = %e, "Cannot commit to the settings folder");
+            }
             view.lock().expect("the view lock").saved = Some(saved);
             repaint();
         });
@@ -1669,12 +2127,26 @@ impl Agent {
 
     /// Shows a tool call in the bubble and waits for the user.
     fn confirm_requested(&mut self, confirmation: Confirmation) {
+        let arguments = serde_json::to_string_pretty(&confirmation.arguments).unwrap_or_default();
+        tracing::info!(tool = %confirmation.tool, "Waiting for confirmation");
+        let question = PendingCall {
+            question: format!("Run {}?", confirmation.tool),
+            details: arguments,
+            action: "Run".into(),
+        };
+        self.show_question(
+            confirmation.reply,
+            question,
+            "Run this? Enter runs it, Esc cancels",
+        );
+    }
+
+    /// Shows a question in the bubble, with `hint` above it, and waits for the user.
+    fn show_question(&mut self, reply: oneshot::Sender<bool>, question: PendingCall, hint: &str) {
         if let Some(previous) = self.confirming.take() {
             let _ = previous.send(false);
         }
-        let arguments = serde_json::to_string_pretty(&confirmation.arguments).unwrap_or_default();
-        tracing::info!(tool = %confirmation.tool, "Waiting for confirmation");
-        self.confirming = Some(confirmation.reply);
+        self.confirming = Some(reply);
         {
             let mut view = self.view();
             // Automations run and are approved outside takes: they get a bubble of their own.
@@ -1683,16 +2155,9 @@ impl Agent {
                 message: true,
                 ..Feedback::default()
             });
-            feedback.status = if confirmation.tool.starts_with("Approve ") {
-                "Enter approves this version, Esc keeps it as a draft".into()
-            } else {
-                "Run this? Enter runs it, Esc cancels".into()
-            };
+            feedback.status = hint.into();
             feedback.done = false;
-            feedback.confirm = Some(PendingCall {
-                tool: confirmation.tool,
-                arguments,
-            });
+            feedback.confirm = Some(question);
         }
         if let Some(tray) = &self.tray {
             tray.hotkeys(self.bindings());
@@ -1724,7 +2189,12 @@ impl Agent {
     /// The bubble's answer buttons.
     fn bubble(&mut self, action: BubbleAction) {
         if let BubbleAction::Copy { raw } = action {
-            let Some(output) = self.view().feedback.as_ref().map(|f| f.output.clone()) else {
+            let Some(output) = self
+                .view()
+                .feedback
+                .as_ref()
+                .map(|f| f.latest_output().to_string())
+            else {
                 return;
             };
             let text = if raw {
@@ -1755,12 +2225,12 @@ impl Agent {
                     tokio::time::sleep(Duration::from_millis(300)).await;
                     let request = jevons_desktop_core::platform::DeliveryRequest {
                         action: jevons_desktop_core::platform::Action::Insert,
-                        text: feedback.output.clone(),
+                        text: feedback.latest_output().to_string(),
                         method: jevons_desktop_core::platform::DeliveryMethod::Paste,
                         select_all: false,
                         erase: 0,
                     };
-                    let outcome = pipeline::deliver_text(
+                    let outcome = jevons_desktop_core::delivery::deliver_text(
                         &sink,
                         feedback.take,
                         feedback.window.unwrap_or(0),
@@ -1811,7 +2281,7 @@ impl Agent {
                     40,
                     5000,
                 )?;
-                let dir = jevons_desktop_core::config::user_dir().join("trees");
+                let dir = crate::config::user_dir().join("trees");
                 let millis = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| d.as_millis());
@@ -1836,11 +2306,23 @@ impl Agent {
     /// Loads the flows folder again; a tree with errors is reported and the last good one kept.
     fn reload_flows(&mut self) {
         let dir = self.config.flows_dir(&self.config_file);
-        let (tree, notes) = defaults::open(&dir, &self.tools.catalog());
+        let (tree, report) = defaults::open(&dir, &self.tools.catalog());
+        let notes = report.notes.clone();
+        if report.changed().next().is_some() {
+            let mut message = format!(
+                "Write {} in the flows folder",
+                settings::list(&report.written)
+            );
+            if !report.removed.is_empty() {
+                message.push_str(&format!(", removing {}", settings::list(&report.removed)));
+            }
+            self.commit(report.changed().map(|f| dir.join(f)).collect(), &message);
+        }
         let errors = tree.errors.clone();
         if tree.is_valid() {
             tracing::info!(nodes = tree.nodes().len(), "Flow tree loaded");
             self.flows = Arc::new(tree);
+            self.session.set_flows(self.flows.clone());
         } else {
             tracing::warn!(
                 errors = errors.len(),
@@ -1862,17 +2344,36 @@ impl Agent {
             self.notice(&e.to_string());
             return;
         }
-        let hotkeys_changed = Binding::from_settings(&config.dictation)
-            != Binding::from_settings(&self.config.dictation)
+        self.commit(
+            self.settings_files(),
+            "Save the settings from the Settings panel",
+        );
+        self.adopt(config, false);
+        self.view().notice = Some(format!("Settings saved to {}", self.config_file.display()));
+        self.repaint();
+    }
+
+    /// Runs with `config`: what changed in it is applied, or everything when `anew` (the
+    /// folders were replaced, so their watchers are too).
+    fn adopt(&mut self, config: DesktopConfig, anew: bool) {
+        let hotkeys_changed = anew
+            || Binding::from_settings(&config.dictation)
+                != Binding::from_settings(&self.config.dictation)
             || Binding::for_automations(&config.automation)
                 != Binding::for_automations(&self.config.automation);
         let flows_changed =
-            config.flows_dir(&self.config_file) != self.config.flows_dir(&self.config_file);
-        let tools_changed = config.tools != self.config.tools || config.mcp != self.config.mcp;
-        let library_changed = config.automations_dir(&self.config_file)
-            != self.config.automations_dir(&self.config_file);
+            anew || config.flows_dir(&self.config_file) != self.config.flows_dir(&self.config_file);
+        let tools_changed = anew
+            || config.tools != self.config.tools
+            || config.mcp != self.config.mcp
+            || config.desk_tools != self.config.desk_tools
+            || config.desk_mcp != self.config.desk_mcp;
+        let library_changed = anew
+            || config.automations_dir(&self.config_file)
+                != self.config.automations_dir(&self.config_file);
+        let privacy_changed = config.privacy != self.config.privacy;
         self.config = config;
-        self.config.privacy.apply_api_log();
+        crate::config::log_api(self.config.log_api);
         self.automations
             .set_settings(self.config.automation.clone());
         if hotkeys_changed && let Some(tray) = &self.tray {
@@ -1886,26 +2387,197 @@ impl Agent {
         }
         if library_changed {
             let layers = (self.inspector.clone(), self.actor.clone());
-            self.automations =
-                automation_host_over(&self.config, &self.config_file, layers, &self.commands);
+            self.automations = automation_host_over(
+                &self.config,
+                &self.config_file,
+                layers,
+                &self.commands,
+                self.repository.as_ref(),
+            );
             self._library_watcher = watch(self.automations.dir(), self.commands.clone(), || {
                 Command::ReloadAutomations
             });
         }
-        if tools_changed || flows_changed || library_changed {
-            self.tools = Arc::new(
-                ToolHost::new(&self.config.tools, &self.config.mcp)
-                    .with_automations(self.automations.clone()),
-            );
+        // The desk reads within the privacy settings as they are now, and the takes run with
+        // the dictation settings as they are now.
+        // The client's own tools: their MCP servers keep running unless they changed.
+        if tools_changed {
+            self.desk_tools =
+                Arc::new(ToolSet::new(&self.config.desk_tools, &self.config.desk_mcp));
+        }
+        let desk = local_desk(
+            &self.config,
+            &self.sink,
+            &self.inspector,
+            &self.paths,
+            &self.confirm,
+            &self.automations,
+            &self.desk_tools,
+        );
+        self.session.set_desk(desk.clone());
+        self.session.set_settings(take_settings(&self.config));
+        if tools_changed || flows_changed || library_changed || privacy_changed {
+            self.tools =
+                Arc::new(ToolHost::new(&self.config.tools, &self.config.mcp).with_desk(desk));
+            self.session.set_tools(Some(self.tools.clone()));
             self.list_tools();
         }
         self.runtime.apply(&self.config, &self.config_file);
-        {
-            let mut view = self.view();
-            view.config = self.config.clone();
-            view.notice = Some(format!("Settings saved to {}", self.config_file.display()));
-        }
+        self.view().config = self.config.clone();
+        self.publish_menu();
         self.repaint();
+    }
+
+    /// Commits what jevons just wrote in the settings folder, when it is jevons' repository.
+    /// The two settings files: the client's and the server's.
+    fn settings_files(&self) -> Vec<PathBuf> {
+        vec![
+            self.config_file.clone(),
+            crate::config::server_file(&self.config_file),
+        ]
+    }
+
+    fn commit(&self, paths: Vec<PathBuf>, message: &str) {
+        commit_in_background(self.repository.clone(), paths, message.into());
+    }
+
+    /// Asks a question of the app's own in the bubble; the answer comes back as `answered`'s
+    /// command.
+    fn ask(
+        &mut self,
+        question: PendingCall,
+        hint: &str,
+        answered: impl FnOnce(bool) -> Command + Send + 'static,
+    ) {
+        if self.confirming.is_some() {
+            self.message("Answer the question in the bubble first", 5);
+            return;
+        }
+        tracing::info!(question = %question.question, "Waiting for an answer");
+        let (reply, answer) = oneshot::channel();
+        let commands = self.commands.clone();
+        tokio::spawn(async move {
+            let yes = answer.await.unwrap_or(false);
+            let _ = commands.send(answered(yes));
+        });
+        self.show_question(reply, question, hint);
+    }
+
+    /// A recording asked for from the tray menu starts once the user agrees: a click there
+    /// is easy to make by mistake, and a recording lasts until it is stopped.
+    fn ask_to_record(&mut self, replacing: Option<String>) {
+        if self.recording.is_some() {
+            self.message("A recording already runs: stop or discard it first", 5);
+            return;
+        }
+        if self.active.is_some() {
+            self.notice("Finish the current take first");
+            return;
+        }
+        self.ask(
+            record_question(replacing.as_deref()),
+            "Enter starts recording, Esc does not",
+            move |yes| Command::RecordAnswered { replacing, yes },
+        );
+    }
+
+    fn record_answered(&mut self, replacing: Option<String>, yes: bool) {
+        if !yes {
+            self.message("Nothing is recorded", 4);
+            return;
+        }
+        if self.recording.is_some() {
+            return;
+        }
+        self.replacing = replacing;
+        self.start_recording();
+        if self.recording.is_none() {
+            self.replacing = None;
+        }
+    }
+
+    /// Drops the recording that runs: nothing of it is saved, and no automation is written.
+    fn discard_answered(&mut self, yes: bool) {
+        if !yes {
+            return;
+        }
+        let Some(mut recording) = self.recording.take() else {
+            return;
+        };
+        // A note being said is for the recording that goes.
+        if self.active.as_ref().is_some_and(|a| a.note) {
+            self.cancel_take();
+        }
+        self.record_press = None;
+        self.replacing = None;
+        if let Some(handle) = recording.handle.take() {
+            handle.stop();
+        }
+        // The worker ends once the platform reports nothing more; its steps go with it.
+        tokio::task::spawn_blocking(move || {
+            if let Some(worker) = recording.worker.take() {
+                let _ = worker.join();
+            }
+        });
+        tracing::info!("Recording discarded");
+        self.set_tray(self.resting());
+        self.publish_menu();
+        self.message("The recording was discarded: nothing was saved", 5);
+    }
+
+    /// Puts the default settings folder back and runs with it.
+    fn reset_answered(&mut self, yes: bool) {
+        if !yes {
+            self.message("The settings stay as they are", 4);
+            return;
+        }
+        self.cancel_take();
+        match settings::reset(&self.config_file) {
+            Ok(report) => {
+                for note in &report.notes {
+                    tracing::info!(%note, "Settings reset");
+                }
+                tracing::info!(removed = ?report.removed, "Settings reset to the defaults");
+                self.repository = report.repository;
+                let config = DesktopConfig::load(&self.config_file).unwrap_or_default();
+                self.adopt(config, true);
+                self.message(
+                    &match &report.before {
+                        Some(before) => format!(
+                            "The settings are the defaults again. The earlier ones are commit \
+                             {before} in the settings folder's history"
+                        ),
+                        None => "The settings are the defaults again".into(),
+                    },
+                    10,
+                );
+            }
+            Err(e) => self.message(&format!("The settings were not reset: {e}"), 12),
+        }
+    }
+
+    /// Clears what the user chose, and the Takes tab with the traces.
+    fn clear_answered(&mut self, kinds: &[History], yes: bool) {
+        if !yes {
+            self.message("Nothing was cleared", 4);
+            return;
+        }
+        let cleared: Vec<String> = kinds
+            .iter()
+            .map(|kind| {
+                let cleared = history::clear(*kind, &self.config.client());
+                tracing::info!(cleared = %cleared, "History cleared");
+                cleared.to_string()
+            })
+            .collect();
+        if kinds.contains(&History::Traces) {
+            self.view().traces.clear();
+        }
+        // What is kept of the tasks goes with the tasks: they end, as when cancelled.
+        if kinds.contains(&History::Machines) {
+            self.cancel_tasks();
+        }
+        self.message(&format!("Cleared {}", cleared.join("; ")), 8);
     }
 
     /// Starts a take: push-to-talk, or live dictation when `live`. `source` is the hotkey that
@@ -1918,12 +2590,12 @@ impl Agent {
         held: bool,
         flows: Option<Arc<FlowTree>>,
     ) {
-        let Some(connection) = self.runtime.connection() else {
+        if !self.session.ready() {
             let status = self.runtime.status().describe();
             self.notice(&format!("Dictation is unavailable: {status}"));
             self.set_tray(TrayState::Error);
             return;
-        };
+        }
         let id = self.next_take;
         self.next_take += 1;
         // Read the context first, before the user's focus can move.
@@ -1941,49 +2613,16 @@ impl Agent {
             }
         };
         let (finish, finished) = oneshot::channel();
-        let dictation = &self.config.dictation;
-        let (confirm, mut asked) = mpsc::unbounded_channel::<Confirmation>();
-        let forward = self.commands.clone();
-        tokio::spawn(async move {
-            while let Some(confirmation) = asked.recv().await {
-                let _ = forward.send(Command::ConfirmRequested(confirmation));
-            }
-        });
-        let investigator = connection.models.generative.clone().map(|model| {
-            Arc::new(Investigator::new(
-                connection.client.clone(),
-                model,
-                self.inspector.clone(),
-                self.config.privacy.clone(),
-                self.paths.clone(),
-            )) as Arc<dyn Investigate>
-        });
-        let env = Env {
-            client: connection.client,
-            flows: flows.unwrap_or_else(|| self.flows.clone()),
-            settings: pipeline::Settings {
-                models: connection.models,
-                realtime: connection.realtime,
-                language: dictation.language.clone(),
-                decide: dictation.decide,
-                max_output_tokens: dictation.max_output_tokens,
-                ..pipeline::Settings::default()
-            },
-            sink: Some(self.sink.clone()),
-            investigator,
-            reader: Some(Arc::new(Reader::new(
-                self.inspector.clone(),
-                self.config.privacy.clone(),
-            ))),
-            confirmer: Some(Arc::new(ChannelConfirmer::new(confirm))),
-            tools: Some(self.tools.clone()),
-        };
         let start = TakeStart {
             id,
             context: context.clone(),
             entry: entry.or_else(|| self.view().start.clone()),
         };
         let route = self.preview(&context, start.entry.as_deref());
+        // The bubble starts with this take alone. A waiting task's conversation joins it only
+        // once the words turn out to be for that task: until then they may be dictation, and
+        // earlier turns above them would read as part of what is being said.
+        let joins = self.thread_task.zip(self.thread.clone());
         {
             let mut view = self.view();
             view.dictating = true;
@@ -2025,10 +2664,38 @@ impl Agent {
         self.set_tray(TrayState::Listening { level: 0 });
         self.publish_menu();
 
+        let updates = self.watch_updates(id, joins);
+        let commands = self.commands.clone();
+        let session = self.session.clone();
+        let task = tokio::spawn(async move {
+            let trace = if live {
+                session
+                    .live(start, audio_events, finished, &updates, flows)
+                    .await
+            } else {
+                session
+                    .take(start, audio_events, finished, &updates, flows)
+                    .await
+            };
+            let _ = commands.send(Command::TakeFinished(Box::new(trace)));
+        });
+        if let Some(active) = &mut self.active {
+            active.task = Some(task);
+        }
+        self.repaint();
+    }
+
+    /// Shows a take's progress (or a timer's) in the tray and the bubble.
+    fn watch_updates(
+        &self,
+        id: u64,
+        joins: Option<(u64, Feedback)>,
+    ) -> mpsc::UnboundedSender<Update> {
         let (updates, mut received) = mpsc::unbounded_channel();
         let view = self.view.clone();
         let mut tray = self.tray.clone();
         let repaint = self.repaint.clone();
+        let commands = self.commands.clone();
         tokio::spawn(async move {
             // The bubble animates the running stage on its own clock.
             let mut tick = tokio::time::interval(Duration::from_millis(120));
@@ -2060,6 +2727,17 @@ impl Agent {
                     let mut view = view.lock().expect("the view lock");
                     if let Some(feedback) = view.feedback.as_mut().filter(|f| f.take == id) {
                         feedback.apply(&update);
+                        // The words are for the task whose conversation waited: its earlier
+                        // turns go above this one.
+                        if let (Update::Task { instance }, Some((task, thread))) = (&update, &joins)
+                            && instance == task
+                        {
+                            feedback.join(thread);
+                        }
+                    }
+                    // A task started, was reached or changed state: the tray menu follows.
+                    if matches!(update, Update::Task { .. } | Update::State(_)) {
+                        let _ = commands.send(Command::MachinesMoved);
                     }
                     let state = match update {
                         Update::Level(bands) => Some(TrayState::Listening {
@@ -2078,7 +2756,9 @@ impl Agent {
                         Update::Stage(_)
                         | Update::Progress(_)
                         | Update::StageDone { .. }
-                        | Update::Answering => None,
+                        | Update::Answering
+                        | Update::Task { .. }
+                        | Update::State(_) => None,
                         Update::Output(text) => {
                             view.live_output.push_str(&text);
                             None
@@ -2095,19 +2775,63 @@ impl Agent {
                 repaint();
             }
         });
-        let commands = self.commands.clone();
-        let task = tokio::spawn(async move {
-            let trace = if live {
-                pipeline::run_live(&env, start, audio_events, finished, &updates).await
-            } else {
-                pipeline::run_take(&env, start, audio_events, finished, &updates).await
-            };
-            let _ = commands.send(Command::TakeFinished(Box::new(trace)));
-        });
-        if let Some(active) = &mut self.active {
-            active.task = Some(task);
+        updates
+    }
+
+    /// What the session did by itself: a machine's timer ran out, and its take runs, as a
+    /// take of its own whose work is delivered to the window the task started in.
+    /// A take the session started by itself for the machine `instance`: a timer's, or the
+    /// user's answer to an unsure decision. Its bubble shows `status` while it runs, unless
+    /// another take is in the way.
+    fn own_take(&mut self, take: u64, instance: u64, status: String) {
+        let updates = self.watch_updates(take, None);
+        self.timer_updates.insert(take, updates);
+        if self.active.is_none() {
+            // The take of the task the conversation is of joins it.
+            let thread = self
+                .thread
+                .as_ref()
+                .filter(|_| self.thread_task == Some(instance));
+            let turns = thread.map(Feedback::conversation);
+            let state = thread.map(|t| t.state.clone()).unwrap_or_default();
+            self.view().feedback = Some(Feedback {
+                take,
+                status,
+                working: true,
+                task: turns.is_some(),
+                turns: turns.unwrap_or_default(),
+                state,
+                ..Feedback::default()
+            });
+            self.repaint();
         }
-        self.repaint();
+    }
+
+    fn session_event(&mut self, event: SessionEvent) {
+        match event {
+            SessionEvent::Timer { take, due } => {
+                self.own_take(take, due.instance, format!("Timer: {}", due.event));
+            }
+            SessionEvent::Answered {
+                take,
+                instance,
+                label,
+            } => self.own_take(take, instance, format!("You chose {label}")),
+            SessionEvent::Update { take, update } => {
+                if let Some(updates) = self.timer_updates.get(&take) {
+                    let _ = updates.send(update);
+                }
+            }
+            SessionEvent::Finished(trace) => {
+                self.timer_updates.remove(&trace.take);
+                self.finished(*trace);
+            }
+            // The machine left that state meanwhile: the timer shows nothing.
+            SessionEvent::Stale { take } => {
+                self.timer_updates.remove(&take);
+                let _ = self.commands.send(Command::TimerStale(take));
+            }
+        }
     }
 
     fn stop_take(&mut self) {
@@ -2124,6 +2848,21 @@ impl Agent {
         self.set_tray(TrayState::Transcribing { frame: 0 });
         self.publish_menu();
         self.repaint();
+    }
+
+    /// Ends every task. A take that waits on a question holds the machines until it is
+    /// answered: the answer is no, so the take ends and the tasks with it.
+    fn cancel_tasks(&mut self) {
+        self.confirmed(false);
+        self.end_conversation();
+        let session = self.session.clone();
+        let commands = self.commands.clone();
+        tokio::spawn(async move {
+            if let Some(ended) = session.cancel().await {
+                tracing::info!(%ended, "Cancelled the tasks");
+            }
+            let _ = commands.send(Command::TasksChanged);
+        });
     }
 
     fn cancel_take(&mut self) {
@@ -2165,7 +2904,18 @@ impl Agent {
             }
         }
         let failed = trace.error.is_some();
-        {
+        // A task that still waits keeps its conversation in the bubble, for the next turn. The
+        // take is part of it when it reached that task; a take that went elsewhere (dictation
+        // while a search waits) is not, and leaves the conversation as it was.
+        let machines = self.session.view();
+        let waits = machines.in_task();
+        let same = machines.focus == self.thread_task;
+        let earlier = self
+            .thread
+            .as_ref()
+            .filter(|_| same)
+            .map(Feedback::conversation);
+        let conversation = {
             let mut view = self.view();
             view.dictating = false;
             view.notice = trace.error.clone().or_else(|| match &trace.delivery {
@@ -2174,14 +2924,30 @@ impl Agent {
                 }
                 _ => None,
             });
+            let mut conversation = None;
             if let Some(feedback) = view.feedback.as_mut().filter(|f| f.take == trace.take) {
                 feedback.finish(&trace);
+                if waits {
+                    // The task's earlier turns, whether or not they joined while the take
+                    // ran; another task's are not this one's.
+                    feedback.turns = earlier.clone().unwrap_or_default();
+                    feedback.task = true;
+                    feedback.state = machines.path();
+                    conversation = Some(feedback.clone());
+                } else {
+                    // No task waits for what comes next: the take stands alone, and a
+                    // conversation that ended with it, or that it was no part of, is not
+                    // shown.
+                    feedback.task = false;
+                    feedback.turns.clear();
+                }
                 // Long enough to read the outcome, errors longer; an answer stays until Close
-                // (or the next take), since reading it may take a while.
-                let shown = match (failed, feedback.answer) {
-                    (true, _) => Some(8),
-                    (false, true) => None,
-                    (false, false) => Some(4),
+                // (or the next take), since reading it may take a while, and so does the
+                // conversation of a task that waits.
+                let shown = match (waits, failed, feedback.answer) {
+                    (true, _, _) | (false, false, true) => None,
+                    (false, true, _) => Some(8),
+                    (false, false, false) => Some(4),
                 };
                 if let Some(seconds) = shown {
                     let commands = self.commands.clone();
@@ -2191,9 +2957,33 @@ impl Agent {
                         let _ = commands.send(Command::HideFeedback(take));
                     });
                 }
+            } else if waits {
+                // The turn had no bubble of its own (a timer during another take): it joins
+                // the conversation all the same.
+                let mut turn = Feedback {
+                    take: trace.take,
+                    task: true,
+                    turns: earlier.unwrap_or_default(),
+                    state: machines.path(),
+                    ..Feedback::default()
+                };
+                turn.finish(&trace);
+                conversation = Some(turn);
             }
             view.traces.push_front(trace);
             view.traces.truncate(HISTORY);
+            conversation
+        };
+        if waits {
+            self.thread = conversation;
+            self.thread_task = machines.focus;
+        } else if !self
+            .thread_task
+            .is_some_and(|task| machines.running(task).is_some())
+        {
+            // Its task is over.
+            self.thread = None;
+            self.thread_task = None;
         }
         self.set_tray(if failed {
             TrayState::Error
@@ -2247,6 +3037,10 @@ impl Agent {
 
     /// Starts recording what the user does.
     fn start_recording(&mut self) {
+        // Automations are coming soon: nothing records until the settings turn them on.
+        if !self.config.automation.enabled {
+            return;
+        }
         if self.active.is_some() {
             self.notice("Finish the current take first");
             return;
@@ -2314,15 +3108,21 @@ impl Agent {
         let recordings = self.config.recordings_dir();
         let library = self.automations.dir().to_path_buf();
         let replacing = self.replacing.take();
-        let author_with = self.runtime.connection().and_then(|c| {
-            let model = self
-                .config
-                .automation
-                .author_model
-                .clone()
-                .or(c.models.generative.clone())?;
-            Some((c.client, model))
-        });
+        // The author writes with the generation route's provider, and its model unless the
+        // settings name another of that provider's.
+        let author_with = self
+            .runtime
+            .routes()
+            .and_then(|routes| routes.generation)
+            .map(|route| RoutePlanner {
+                model: self
+                    .config
+                    .automation
+                    .author_model
+                    .clone()
+                    .unwrap_or(route.model),
+                client: route.client,
+            });
         tokio::spawn(async move {
             let into = library.clone();
             let finished = tokio::task::spawn_blocking(move || {
@@ -2356,10 +3156,8 @@ impl Agent {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let client = author_with
-                .as_ref()
-                .map(|(client, model)| (client, model.as_str()));
-            let authored = author::author(client, &done, &name, &library, replacing.as_deref())
+            let planner = author_with.as_ref().map(|p| p as &dyn Planner);
+            let authored = author::author(planner, &done, &name, &library, replacing.as_deref())
                 .await
                 .map(Box::new);
             let _ = commands.send(Command::Authored(authored));
@@ -2397,6 +3195,13 @@ impl Agent {
             planned = authored.planned,
             ok = authored.report.ok(),
             "Automation written"
+        );
+        self.commit(
+            vec![authored.automation.dir.clone()],
+            &format!(
+                "Write the automation {} from a recording",
+                authored.automation.name
+            ),
         );
         self.automations.reload();
         self.list_tools();
@@ -2452,12 +3257,6 @@ impl Agent {
             .filter_map(|f| f.trace.as_ref().and_then(|t| t.replayed))
             .map(|(done, _)| done)
             .sum();
-        let arguments = serde_json::json!({
-            "applications": summary.apps,
-            "does": does,
-            "replays": format!("{replayed} recorded steps"),
-            "version": report.version,
-        });
         if self.confirming.is_some() {
             // A take waits on its own confirmation: leave it be, and approve later.
             self.notice(&format!(
@@ -2466,19 +3265,27 @@ impl Agent {
             ));
             return;
         }
-        let (reply, answer) = oneshot::channel();
-        let commands = self.commands.clone();
+        let question = PendingCall {
+            question: format!("Approve {}?", report.name),
+            details: format!(
+                "In: {}\nDoes: {}\nReplays {replayed} recorded steps\nVersion: {}",
+                summary.apps.join(", "),
+                if does.is_empty() {
+                    "reads only".to_string()
+                } else {
+                    does.join(", ")
+                },
+                report.version
+            ),
+            action: "Approve".into(),
+        };
         let name = report.name.clone();
         let version = report.version.clone();
-        tokio::spawn(async move {
-            let yes = answer.await.unwrap_or(false);
-            let _ = commands.send(Command::ApprovalAnswered { name, version, yes });
-        });
-        self.confirm_requested(Confirmation {
-            tool: format!("Approve {}?", report.name),
-            arguments,
-            reply,
-        });
+        self.ask(
+            question,
+            "Enter approves this version, Esc keeps it as a draft",
+            move |yes| Command::ApprovalAnswered { name, version, yes },
+        );
     }
 
     fn approval_answered(&mut self, name: &str, version: &str, yes: bool) {
@@ -2491,6 +3298,10 @@ impl Agent {
         }
         match DesktopConfig::approve(&self.config_file, name, version) {
             Ok(saved) => {
+                self.commit(
+                    self.settings_files(),
+                    &format!("Approve the automation {name} ({version})"),
+                );
                 self.config.automation.approved = saved.automation.approved;
                 self.automations
                     .set_settings(self.config.automation.clone());
@@ -2530,7 +3341,7 @@ impl Agent {
         }
         // Say the arguments: a take through a one-node tree that runs this automation.
         let tree = FlowTree::load(
-            &jevons_desktop_core::flow::Memory::new(
+            &jevons_desktop_server::flow::Memory::new(
                 "automation",
                 [(
                     "run.toml",
@@ -2712,9 +3523,9 @@ impl Agent {
     /// Listens while the record hotkey is held, and transcribes what the user said for the
     /// recording.
     fn begin_note(&mut self, source: u32) {
-        let Some(connection) = self.runtime.connection() else {
+        if !self.session.ready() {
             return;
-        };
+        }
         let (audio, audio_events) = mpsc::unbounded_channel();
         let capture = match self
             .audio
@@ -2729,22 +3540,6 @@ impl Agent {
         let id = self.next_take;
         self.next_take += 1;
         let (finish, finished) = oneshot::channel();
-        let dictation = &self.config.dictation;
-        let env = Env {
-            client: connection.client,
-            flows: self.flows.clone(),
-            settings: pipeline::Settings {
-                models: connection.models,
-                realtime: connection.realtime,
-                language: dictation.language.clone(),
-                ..pipeline::Settings::default()
-            },
-            sink: None,
-            investigator: None,
-            reader: None,
-            confirmer: None,
-            tools: None,
-        };
         let describing = self
             .recording
             .as_ref()
@@ -2781,6 +3576,7 @@ impl Agent {
         }
         self.set_tray(TrayState::Listening { level: 0 });
         let commands = self.commands.clone();
+        let session = self.session.clone();
         let task = tokio::spawn(async move {
             let (updates, _) = mpsc::unbounded_channel();
             let start = TakeStart {
@@ -2788,8 +3584,9 @@ impl Agent {
                 context: ContextSnapshot::default(),
                 entry: None,
             };
-            let said =
-                pipeline::transcribe_only(&env, start, audio_events, finished, &updates).await;
+            let said = session
+                .transcribe(start, audio_events, finished, &updates)
+                .await;
             let _ = commands.send(Command::RecordingNote(said));
         });
         if let Some(active) = &mut self.active {
@@ -2835,9 +3632,107 @@ impl Agent {
     }
 }
 
+/// Commits what jevons wrote in the settings folder, off the agent thread, when it is jevons'
+/// repository.
+/// The name of what serves each capability, by its key in `[routes]`.
+fn served(routes: Option<&Routes>) -> BTreeMap<&'static str, String> {
+    let Some(routes) = routes else {
+        return BTreeMap::new();
+    };
+    [
+        (Capability::Speech, &routes.speech),
+        (Capability::Realtime, &routes.realtime),
+        (Capability::Decision, &routes.decision),
+        (Capability::Generation, &routes.generation),
+    ]
+    .into_iter()
+    .filter_map(|(capability, route)| Some((capability.key(), route.as_ref()?.name())))
+    .collect()
+}
+
+/// The automation author's model: the generation route's provider, asked for an answer in a
+/// schema.
+struct RoutePlanner {
+    client: jevons_desktop_server::client::Client,
+    model: String,
+}
+
+impl Planner for RoutePlanner {
+    fn plan<'a>(
+        &'a self,
+        instruction: &'a str,
+        prompt: String,
+        schema: serde_json::Value,
+    ) -> futures_util::future::BoxFuture<'a, Option<String>> {
+        use jevons_desktop_server::client::{ChatMessage, ChatReply, ChatRequest};
+        Box::pin(async move {
+            let request = ChatRequest {
+                model: self.model.clone(),
+                messages: vec![
+                    ChatMessage::text("system", instruction),
+                    ChatMessage::text("user", prompt),
+                ],
+                ..ChatRequest::default()
+            }
+            .answer_schema(schema);
+            match self.client.chat(&request, |_| {}).await.ok()? {
+                ChatReply::Text(answer) => Some(answer),
+                _ => None,
+            }
+        })
+    }
+}
+
+/// The client's desk over this machine's layers: it types through the sink, reads the
+/// interface within the privacy settings, asks in the bubble and runs the library's
+/// automations.
+fn local_desk(
+    config: &DesktopConfig,
+    sink: &Arc<Mutex<Box<dyn TextSink>>>,
+    inspector: &Arc<dyn ContextInspector>,
+    paths: &Arc<Mutex<PathCache>>,
+    confirm: &mpsc::UnboundedSender<Confirmation>,
+    automations: &Arc<AutomationHost>,
+    tools: &Arc<ToolSet>,
+) -> Arc<dyn Desk> {
+    let privacy = &config.privacy;
+    let reader = Reader::new(inspector.clone(), privacy.clone());
+    let looks = Looks::new(inspector.clone(), privacy.clone(), paths.clone());
+    Arc::new(
+        LocalDesk::default()
+            .with_sink(sink.clone())
+            .with_reader(Arc::new(reader))
+            .with_looks(Arc::new(looks))
+            .with_confirmer(Arc::new(ChannelConfirmer::new(confirm.clone())))
+            .with_automations(automations.clone())
+            .with_tools(tools.clone()),
+    )
+}
+
+/// What a take runs with, of the client's settings.
+fn take_settings(config: &DesktopConfig) -> pipeline::Settings {
+    pipeline::Settings {
+        language: config.dictation.language.clone(),
+        decide: config.dictation.decide,
+        max_output_tokens: config.dictation.max_output_tokens,
+        ..pipeline::Settings::default()
+    }
+}
+
+fn commit_in_background(repository: Option<Repository>, paths: Vec<PathBuf>, message: String) {
+    let Some(repository) = repository.filter(|_| !paths.is_empty()) else {
+        return;
+    };
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) = repository.commit(&paths, &message) {
+            tracing::warn!(error = %e, "Cannot commit to the settings folder");
+        }
+    });
+}
+
 /// Writes an automation run's trace next to the take traces.
 fn save_run(trace: &RunTrace) {
-    let dir = jevons_desktop_core::config::user_dir().join("traces");
+    let dir = crate::config::user_dir().join("traces");
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis());
@@ -2855,7 +3750,7 @@ const SAVED_TRACES: usize = 200;
 
 /// Writes `trace` to `~/jevons/traces` as JSON, keeping the newest [`SAVED_TRACES`].
 fn save_trace(trace: &Trace) {
-    let dir = jevons_desktop_core::config::user_dir().join("traces");
+    let dir = crate::config::user_dir().join("traces");
     let turn = trace.turn.map_or(String::new(), |t| format!("-turn{t}"));
     let file = dir.join(format!(
         "{}-take{}{turn}.json",
@@ -2888,12 +3783,21 @@ fn save_trace(trace: &Trace) {
 fn watch(
     dir: &std::path::Path,
     commands: mpsc::UnboundedSender<Command>,
-    command: impl Fn() -> Command + Send + 'static,
+    command: impl Fn() -> Command + Send + Sync + 'static,
 ) -> Option<notify::RecommendedWatcher> {
     use notify::Watcher;
+    // A burst of changes (a reset, a checkout, an editor saving) sends one command, a moment
+    // after the first change.
+    let pending = Arc::new(AtomicBool::new(false));
+    let command = Arc::new(command);
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        if event.is_ok_and(|e| !e.kind.is_access()) {
-            let _ = commands.send(command());
+        if event.is_ok_and(|e| !e.kind.is_access()) && !pending.swap(true, Ordering::AcqRel) {
+            let (pending, commands, command) = (pending.clone(), commands.clone(), command.clone());
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(250));
+                pending.store(false, Ordering::Release);
+                let _ = commands.send(command());
+            });
         }
     })
     .ok()?;
@@ -2908,12 +3812,14 @@ fn automation_host(
     config_file: &std::path::Path,
     layers: &Layers,
     commands: &mpsc::UnboundedSender<Command>,
+    repository: Option<&Repository>,
 ) -> Arc<AutomationHost> {
     automation_host_over(
         config,
         config_file,
         (layers.inspector.clone(), layers.actor.clone()),
         commands,
+        repository,
     )
 }
 
@@ -2922,12 +3828,21 @@ fn automation_host_over(
     config_file: &std::path::Path,
     (inspector, actor): (Arc<dyn ContextInspector>, Arc<dyn UiActor>),
     commands: &mpsc::UnboundedSender<Command>,
+    repository: Option<&Repository>,
 ) -> Arc<AutomationHost> {
     let dir = config.automations_dir(config_file);
     match jevons_desktop_core::automation::defaults::init(&dir) {
         Ok(report) => {
             for note in report.notes {
                 tracing::info!(%note, "Automations library");
+            }
+            if !report.written.is_empty() {
+                let message = format!(
+                    "Write {} in the automations library",
+                    settings::list(&report.written)
+                );
+                let written = report.written.iter().map(|f| dir.join(f)).collect();
+                commit_in_background(repository.cloned(), written, message);
             }
         }
         Err(e) => {
@@ -2974,6 +3889,98 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_recording_from_the_menu_asks_first_and_says_how_it_ends() {
+        let new = record_question(None);
+        assert_eq!(new.question, "Record an automation?");
+        assert_eq!(new.action, "Record");
+        // The question says the recording lasts until it is stopped, and both ways out.
+        assert!(
+            new.details.contains("until you stop it")
+                && new.details.contains("Stop recording")
+                && new.details.contains("Discard the recording"),
+            "{}",
+            new.details
+        );
+        let again = record_question(Some("slack-post"));
+        assert_eq!(again.question, "Record slack-post again?");
+        assert_eq!(again.details, new.details);
+        let discard = discard_question();
+        assert_eq!(
+            (discard.question.as_str(), discard.action.as_str()),
+            ("Discard the recording?", "Discard")
+        );
+        assert!(discard.details.contains("Nothing of it is saved"));
+    }
+
+    #[test]
+    fn the_tray_menu_lists_each_agent_with_its_tasks_under_it() {
+        use jevons_desktop_server::flow::machine::Level;
+        use jevons_desktop_server::flow::machine::runtime::Running;
+        use jevons_desktop_server::flow::tree::NodeId;
+        let machine = |id, folder: &str, state: &str, parent: Option<u64>, number| Running {
+            machine: NodeId(0),
+            folder: folder.into(),
+            name: String::new(),
+            level: match (parent, folder) {
+                (Some(_), _) => Level::Task,
+                (None, "/") => Level::Root,
+                (None, _) => Level::Agent,
+            },
+            state: state.into(),
+            since_ms: 0,
+            waiting: if parent.is_some() && state == "results" {
+                vec!["said".into(), "timeout".into()]
+            } else {
+                Vec::new()
+            },
+            id,
+            generation: 0,
+            parent,
+            number,
+            unsure: None,
+        };
+        // As the server keeps them: the root, the agents, then the tasks as they started.
+        let running = MachinesView {
+            stack: vec![
+                machine(1, "/", "idle", None, 0),
+                machine(2, "dictation", "idle", None, 0),
+                machine(3, "research", "idle", None, 0),
+                machine(7, "research/search", "results", Some(3), 1),
+                machine(9, "research/search", "reading", Some(3), 2),
+            ],
+            ..MachinesView::default()
+        };
+        let entries = machine_entries(&running);
+        let lines: Vec<(u64, &str, &str, bool)> = entries
+            .iter()
+            .map(|e| (e.id, e.label.as_str(), e.state.as_str(), e.task))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                (1, "/", "idle", false),
+                (2, "dictation", "idle", false),
+                (3, "research", "idle", false),
+                (7, "search-1", "results", true),
+                (9, "search-2", "reading", true),
+            ]
+        );
+        assert_eq!(entries[3].waiting, ["said", "timeout"]);
+        // An agent's tasks follow it, wherever the server keeps them.
+        let mut mixed = running.clone();
+        mixed.stack.swap(1, 2);
+        let labels: Vec<String> = machine_entries(&mixed)
+            .into_iter()
+            .map(|e| e.label)
+            .collect();
+        assert_eq!(
+            labels,
+            ["/", "research", "search-1", "search-2", "dictation"]
+        );
+        assert!(machine_entries(&MachinesView::default()).is_empty());
+    }
+
+    #[test]
     fn feedback_shows_phrases_as_heard_and_the_outcome_at_the_end() {
         let mut feedback = Feedback {
             take: 1,
@@ -2989,7 +3996,7 @@ mod tests {
             (feedback.heard.as_str(), feedback.partial.as_str()),
             ("Hola a todos.", "")
         );
-        feedback.apply(&Update::Stage(jevons_desktop_core::pipeline::Stage {
+        feedback.apply(&Update::Stage(jevons_desktop_server::pipeline::Stage {
             kind: StageKind::Deciding,
             label: "what to do".into(),
             choices: vec!["ask".into(), "dictate".into()],
@@ -3001,7 +4008,7 @@ mod tests {
             chosen: Some("dictate".into()),
             ok: true,
         });
-        feedback.apply(&Update::Stage(jevons_desktop_core::pipeline::Stage::new(
+        feedback.apply(&Update::Stage(jevons_desktop_server::pipeline::Stage::new(
             StageKind::Investigating,
             "conversation",
         )));
@@ -3048,6 +4055,74 @@ mod tests {
         assert!(feedback.answer);
         assert_eq!(feedback.status, "Answer");
         assert_eq!(feedback.output, "What time is it");
+    }
+
+    #[test]
+    fn a_waiting_task_s_turns_stay_in_the_bubble_for_the_next_take() {
+        let take = |id| {
+            Trace::new(&TakeStart {
+                id,
+                context: ContextSnapshot::default(),
+                entry: None,
+            })
+        };
+        // The task answers and waits: its bubble is the conversation's first turn.
+        let mut first = Feedback {
+            take: 1,
+            task: true,
+            ..Feedback::default()
+        };
+        let mut trace = take(1);
+        trace.transcript = "Buscar máquinas de estados".into();
+        trace.output = "1. **Máquina de estados**".into();
+        trace.delivery = Some(DeliveryOutcome::Shown);
+        first.finish(&trace);
+        assert!(first.reading());
+        // The next take joins it. Unsure of the words, the task stays, and the bubble says so
+        // under the answer, which Copy and Insert still take.
+        let mut second = Feedback {
+            take: 2,
+            task: true,
+            turns: first.conversation(),
+            ..Feedback::default()
+        };
+        let mut trace = take(2);
+        trace.transcript = "Y eso otro".into();
+        trace
+            .notes
+            .push("Search stayed at results: unsure (end 0.58): stayed".into());
+        second.finish(&trace);
+        assert!(second.reading() && !second.answer);
+        assert_eq!(
+            second.status,
+            "Search stayed at results: unsure (end 0.58): stayed"
+        );
+        assert_eq!(second.turns.len(), 1);
+        assert_eq!(second.turns[0].heard, "Buscar máquinas de estados");
+        assert!(second.turns[0].answer);
+        assert_eq!(second.latest_output(), "1. **Máquina de estados**");
+        // The take after starts alone, whatever waits: only words that reach the task join
+        // its conversation, with its turns above them.
+        let mut third = Feedback {
+            take: 3,
+            ..Feedback::default()
+        };
+        assert!(third.turns.is_empty() && !third.task);
+        third.join(&second);
+        assert!(third.task);
+        assert_eq!(third.turns.len(), 2);
+        // It sees both turns, in order.
+        let turns = second.conversation();
+        assert_eq!(
+            turns.iter().map(|t| t.heard.as_str()).collect::<Vec<_>>(),
+            ["Buscar máquinas de estados", "Y eso otro"]
+        );
+        assert_eq!(turns[1].status, second.status);
+        // Outside a task a take that writes nothing is not for reading, and ends with Done.
+        let mut plain = Feedback::default();
+        plain.finish(&take(3));
+        assert!(!plain.reading());
+        assert_eq!(plain.status, "Done");
     }
 
     #[test]

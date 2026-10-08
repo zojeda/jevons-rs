@@ -1,0 +1,22 @@
+# The research agent: it searches the web and the news, reads a result for you, and routes what
+# you say next to the search that waits. Copy this folder into your flows folder and add it to
+# root.fsm (see the README).
+description = """
+The user asks to look something up on the internet: the web, or the news and what happened lately \
+("search for …", "busca …", "buscame …", "noticias de …"), or says something about a search whose \
+results are shown: to open one of them ("open the second one", "abrir el segundo"), to have one \
+read ("leeme el primero", "what does the second one say"), to search for something else, or that \
+they are done with it."""
+# Everything its tasks may call.
+tools = ["web_search", "news_search", "read_page", "open_url"]
+# Words that are for none of its searches, and start none, go back to the root, which takes them
+# as if this agent were not there: dictation keeps working while a search waits.
+unsure = "parent"
+
+# A search starts only when the words start with a search word ("Search", "Busca", "Buscar",
+# "Buscá", "Buscame") or ask for news ("Noticias de …", "Dame las últimas noticias …", "Latest
+# news …"), after at most two words of lead-in ("Ah, buscame …"), chosen with no model. Any other
+# take is for this agent only while one of its searches waits.
+[guards.search]
+when = { transcript = "(?i)^\\W*(?:(?:ah|eh|ey|oh|ok|okay|bueno|dale|che|a ver|y|entonces|ahora|por favor|please|now|so|and)\\W+){0,2}(?:(?:search|b[uú]sc[aá](?:r|me|lo|la|los|las|nos|melo|mela)?)\\b|(?:(?:dame|decime|contame|mostrame|quiero|give me|show me|tell me)\\W+)?(?:(?:the|las|los)\\W+)?(?:(?:latest|[uú]ltimas)\\W+)?(?:noticias|news)\\b)" }
+prefer = { transcript = "(?i)^\\W*(?:(?:ah|eh|ey|oh|ok|okay|bueno|dale|che|a ver|y|entonces|ahora|por favor|please|now|so|and)\\W+){0,2}(?:(?:search|b[uú]sc[aá](?:r|me|lo|la|los|las|nos|melo|mela)?)\\b|(?:(?:dame|decime|contame|mostrame|quiero|give me|show me|tell me)\\W+)?(?:(?:the|las|los)\\W+)?(?:(?:latest|[uú]ltimas)\\W+)?(?:noticias|news)\\b)" }

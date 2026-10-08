@@ -8,8 +8,11 @@ The workspace is layered: the API on top, three services, the diffusion layer th
 
 | Layer | Crate | Responsibility |
 | --- | --- | --- |
-| Desktop | `jevons-desktop` | The tray dictation binary: tray and hotkey thread, agent, inspector and settings window, CPAL microphone, per-OS context and text input, the embedded or remote runtime ([guide](desktop.md)) |
-| | `jevons-desktop-core` | Platform-free desktop behaviour: the platform traits, context snapshots, the flow tree (node files, guards, validation, the walker), the take pipeline, the typed API client, gestures, paste safety, tray frames, the model catalog and downloads |
+| Desktop | `jevons-desktop` | The tray dictation binary: tray and hotkey thread, agent, inspector and settings window, CPAL microphone, per-OS context and text input, the embedded runtime and the routes to other providers ([guide](desktop.md)) |
+| | `jevons-desktop-server` | What is done with a take, with no platform code: the flow tree (node files, guards, validation, the walker), the machines' host, the take pipeline, the typed API client with its routes, the forwarder, the server's settings |
+| | `jevons-desktop-core` | The platform-free client: the platform traits, the desk the server calls (delivery and paste safety, confirmations, extract reads, investigations' elements), XPath over accessibility trees, automations, recording, the client's settings, tray frames, the model catalog and downloads |
+| | `jevons-desktop-tools` | The tools either side runs from its settings: programs, HTTP requests, addresses opened, MCP servers |
+| | `jevons-desktop-protocol` | What the server and the client say to each other: context snapshots, delivery, extracts and their grammar, shapes, the `Desk` trait |
 | API | `jevons-api` | Routes, authentication, settings, the wire formats, the model workers and Realtime sessions; `load` starts the workers, `serve` serves them on a listener, and `run` does both for the server |
 | | `jevons-rs` | The server binary (`main.rs`: logging, then `jevons_api::run`) |
 | Services | `jevons-generative` | Free-form answers: chat framing, the answer budget, an optional thought, streaming with stop-sequence holdback (`Generate`) |
@@ -32,7 +35,9 @@ The project was previously named `llama-cpp-system-one`, after its original llam
 | Crate | Modules |
 | --- | --- |
 | `jevons-desktop` | `agent`, `tray`, `audio`, `runtime`, `platform::{windows}`, `ui::{context, takes, flows, settings, models, bubble}` |
-| `jevons-desktop-core` | `platform`, `context`, `flow::{spec, guard, tree, walk, frame, shape, template, defaults, investigate}`, `pipeline`, `client::{realtime, responses, systemone, transcriptions}`, `config`, `gesture`, `delivery`, `levels`, `icons`, `catalog`, `download`, `fake` |
+| `jevons-desktop-server` | `flow::{spec, guard, tree, walk, frame, template, defaults, investigate, investigator, tools, machine}`, `pipeline`, `client::{realtime, responses, systemone, transcriptions, route, log}`, `forward`, `config` |
+| `jevons-desktop-core` | `platform`, `desk`, `delivery`, `confirm`, `reader`, `look`, `xpath`, `automation`, `recording`, `config`, `git`, `history`, `levels`, `icons`, `catalog`, `download`, `fake` |
+| `jevons-desktop-protocol` | `context`, `delivery`, `extract`, `xpath`, `shape`, `desk` |
 | `jevons-api` | `http`, `handlers`, `middleware`, `error`, `config`, `server`, `realtime`, `openai::{request, response, audio, realtime, error}`, `system_one::{request, compiler, response, error}`, `workers::{diffusion, speech}` |
 | `jevons-generative` | `generate`, `request` |
 | `jevons-decision` | `read`, `request`, `probability` |
@@ -49,10 +54,10 @@ The project was previously named `llama-cpp-system-one`, after its original llam
 
 Put each change in the layer it belongs to:
 - **Wire formats and HTTP policy** go in `jevons-api`: OpenAI and System One validation and rendering, status codes, auth, queues.
-- **Service policy** goes in its service crate: chat framing and streaming, read orchestration, windowing and segments. Services take typed requests and return typed results, with no HTTP, JSON or async code.
+- **Service policy** goes in its service crate: chat framing and streaming, read orchestration, windowing and segments. Services take typed requests and return typed results, with no HTTP or async code. They use JSON only as data (tool arguments, schemas and structured answers) and in their CLIs, never to parse request bodies.
 - **What Generative and Decision share** goes in `jevons-diffusion`: token generation, decoding modes, the prompt cache discipline.
 - **Architecture specifics** (chat markers, image encoding, weights) go in the model implementation.
-- **Desktop behaviour** shared by every OS (pipeline, flow tree, gestures, tray states) goes in `jevons-desktop-core`; only the implementations of its platform traits go in `jevons-desktop/src/platform`.
+- **Desktop behaviour** shared by every OS goes in `jevons-desktop-server` when it is about what to do with a take (pipeline, flow tree, machines, inference) and in `jevons-desktop-core` when it happens at the user's desk (delivery, reading the screen, automations, tray states). Neither depends on the other: what crosses is in `jevons-desktop-protocol`. Only the implementations of the platform traits go in `jevons-desktop/src/platform`.
 
 The diffusion engine talks to the model through the `DiffusionModel` trait in `jevons-core/src/model.rs`. The service unit tests drive it with the scripted `FakeModel` from `jevons_diffusion::fake`, so sampling and framing are tested without a GPU. Router tests exercise the HTTP contract with scripted workers. We keep model ownership on a dedicated worker thread and blocking inference off Tokio executor threads. The workspace contains no unsafe code: the library crates forbid it, and CubeCL kernels launch in checked mode. See the [CubeCL backend guide](cubecl.md) for kernel tests and design.
 
@@ -67,7 +72,7 @@ cargo test --workspace --locked
 ```
 
 GitHub Actions runs two workflows:
-- `release.yml` checks the whole workspace on pull requests and pushes to `main`, then publishes each push to `main` as a release (`v0.1.<run>`) with both binaries.
+- `release.yml` checks the whole workspace on pull requests and pushes to `main`, then publishes each push to `main` as a release (`v0.2.<run>`) with both binaries.
 - `desktop.yml` lints and tests the desktop crates on pushes to `dev` and `main` and on pull requests that touch them. It then builds `jevons-desktop` for Windows (with its `.pdb`) and Linux, and uploads each package as a run artifact, kept 30 days. Start it by hand from the Actions tab (*Run workflow*).
 
 Neither workflow needs a GPU: the HIP libraries load at run time, and `.github/hipconfig.rs` pins the binding layout (`JEVONS_HIP_VERSION`).
@@ -76,11 +81,11 @@ Neither workflow needs a GPU: the HIP libraries load at run time, and `.github/h
 
 | Build | Package |
 |-------|---------|
-| Push to `dev` | `jevons-desktop-0.1.0-dev.57.g065def7-windows-x86_64-hip-rocm7.2.zip` |
-| Pull request 12 | `jevons-desktop-0.1.0-pr12.58.g065def7-linux-x86_64-hip-rocm7.2.tar.gz` |
-| Release `v0.1.88` | `jevons-rs-0.1.88-windows-x86_64-hip-rocm7.2.zip` |
+| Push to `dev` | `jevons-desktop-0.2.0-dev.57.g065def7-windows-x86_64-hip-rocm7.2.zip` |
+| Pull request 12 | `jevons-desktop-0.2.0-pr12.58.g065def7-linux-x86_64-hip-rocm7.2.tar.gz` |
+| Release `v0.2.88` | `jevons-rs-0.2.88-windows-x86_64-hip-rocm7.2.zip` |
 
-A release's version is its tag; other builds are pre-releases of the workspace version, with the branch, run number and commit. The backend is the GPU runtime compiled in and the driver release it needs, taken from `JEVONS_HIP_VERSION` (7.2.53211 is ROCm 7.2). Inside, `jevons-desktop.exe` becomes `jevons-desktop-0.1.0-dev.57.g065def7-windows-x86_64-hip-rocm7.2.exe`, and a release's `jevons-rs` and `jevons-desktop` carry the same suffix; local builds keep the short names. The `.pdb` keeps its linker name, `jevons_desktop.pdb`, which is the one the executable looks for. Both build matrices have a `backend` column (only `hip` today): a CUDA or WGPU build is another row with its setup step, once a Cargo feature selects that backend, plus its name in `package-name.sh`.
+A release's version is its tag; other builds are pre-releases of the workspace version, with the branch, run number and commit. The backend is the GPU runtime compiled in and the driver release it needs, taken from `JEVONS_HIP_VERSION` (7.2.53211 is ROCm 7.2). Inside, `jevons-desktop.exe` becomes `jevons-desktop-0.2.0-dev.57.g065def7-windows-x86_64-hip-rocm7.2.exe`, and a release's `jevons-rs` and `jevons-desktop` carry the same suffix; local builds keep the short names. The `.pdb` keeps its linker name, `jevons_desktop.pdb`, which is the one the executable looks for. Both build matrices have a `backend` column (only `hip` today): a CUDA or WGPU build is another row with its setup step, once a Cargo feature selects that backend, plus its name in `package-name.sh`.
 
 For inference changes, set `DIFFUSION_MODEL` (and `DIFFUSION_MMPROJ` for the image test) and the [ROCm/WSL environment](build.md#rocmhip), then run the model tests. Run each in its own process: every test loads the 17.7 GB model, and on APUs that memory is system memory.
 

@@ -1,0 +1,9 @@
+// Dictation's machine: what the user says is text for the application.
+fsm Dictation {
+    [*] --> idle
+
+    state idle: "Waiting for words to type"
+
+    idle --> dictate : said
+    dictate --> idle
+}

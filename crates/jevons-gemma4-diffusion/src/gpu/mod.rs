@@ -5,7 +5,7 @@ pub mod ops;
 pub mod tune;
 pub mod vision;
 
-pub use jevons_kernels::{Buf, Gpu, Hip, cache_dir, gemm};
+pub use jevons_kernels::{Buf, Gpu, Hip, ReleaseOnDrop, cache_dir, gemm};
 
 #[cfg(test)]
 mod tests;

@@ -8,29 +8,33 @@
 //! and prints its trace. `--check-flows` and `--init-flows` check and prepare a flows folder.
 //! `--xpath <expr>` prints what an expression selects in the interface (or in `--tree`).
 //! `--check-automations`, `--dry-run <name>` and `--run <name>` check, replay and run the
-//! automations library.
+//! automations library. `--reset-settings` puts the default settings folder back (its git
+//! history keeps the earlier one), and `--clear <what>` clears logs, traces and recordings.
 #![forbid(unsafe_code)]
 // A tray app: no console window on Windows. Logs go to a file; --replay output can be redirected.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod agent;
 mod audio;
+mod config;
 mod hold;
 mod platform;
 mod runtime;
+mod settings;
 mod tray;
 mod tuning;
 mod ui;
 
+use crate::config::{DesktopConfig, default_config_file};
 use agent::{Agent, Command, Layers, View};
 use clap::Parser;
-use jevons_desktop_core::config::{DesktopConfig, default_config_file};
 use jevons_desktop_core::context::ContextSnapshot;
 use jevons_desktop_core::fake::FileAudioSource;
-use jevons_desktop_core::flow::{FlowTree, defaults};
-use jevons_desktop_core::pipeline::{self, Env, TakeStart};
-use jevons_desktop_core::platform::AudioSource;
-use std::path::PathBuf;
+use jevons_desktop_core::history::{self, History};
+use jevons_desktop_core::platform::{AudioSource, MenuCommand};
+use jevons_desktop_server::flow::{FlowTree, defaults};
+use jevons_desktop_server::pipeline::{self, TakeStart};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 
@@ -43,9 +47,10 @@ struct Args {
     /// Run one take from an audio file instead of the microphone, print its trace and exit.
     #[arg(long, value_name = "AUDIO", conflicts_with = "transcript")]
     replay: Option<PathBuf>,
-    /// Run one take from this text as if it had been said, print its trace and exit.
+    /// Run one take from this text as if it had been said, print its trace and exit. Repeat it
+    /// for several takes in a row: they share the machines, so a task waits between them.
     #[arg(long, value_name = "TEXT")]
-    transcript: Option<String>,
+    transcript: Vec<String>,
     /// The context for --replay or --transcript, as a snapshot JSON file.
     #[arg(long, value_name = "JSON")]
     context: Option<PathBuf>,
@@ -105,12 +110,63 @@ struct Args {
     /// With --author: replace this automation (a new version, to approve again).
     #[arg(long, value_name = "NAME")]
     replace: Option<String>,
+    /// Put the default settings, flow tree and automations library back in the settings
+    /// folder, and exit. Its git history keeps what was there. Quit the tray app first, or use
+    /// its menu instead.
+    #[arg(long)]
+    reset_settings: bool,
+    /// Serve desktop clients and nothing else: no tray and no window. It loads the settings,
+    /// the models routed to it and the flows folder, and listens on the settings' address
+    /// (`ws://<bind>:<port>/desktop`) until it is stopped.
+    #[arg(long, conflicts_with_all = ["replay", "transcript", "server"])]
+    serve: bool,
+    /// With --replay or --transcript: run the take on the jevons server at this address, such
+    /// as `ws://127.0.0.1:8080/desktop`, instead of in this process. This side still reads
+    /// the screen and, with --deliver, types.
+    #[arg(long, value_name = "URL")]
+    server: Option<String>,
+    /// The key the server at --server asks for; `TYPESAFE_API_KEY` when left out.
+    #[arg(long, value_name = "KEY", requires = "server")]
+    key: Option<String>,
+    /// Clear history and exit: `logs`, `traces` (of takes and automation runs), `trees`
+    /// (recorded interfaces), `recordings` (demonstrations), `machines` (the tasks kept across
+    /// restarts) or `all`; several separated by commas.
+    #[arg(long, value_name = "WHAT", value_enum, value_delimiter = ',')]
+    clear: Vec<Clear>,
+    /// Check that GPU `INDEX` lets this process in, and exit. The app runs a copy of itself
+    /// with this before it first loads models, to wait for a GPU that does not answer yet.
+    #[arg(long, value_name = "INDEX", hide = true)]
+    probe_gpu: Option<usize>,
+}
+
+/// What `--clear` clears.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum Clear {
+    Logs,
+    Traces,
+    Trees,
+    Recordings,
+    Machines,
+    All,
+}
+
+impl Clear {
+    fn kinds(self) -> &'static [History] {
+        match self {
+            Self::Logs => &[History::Logs],
+            Self::Traces => &[History::Traces],
+            Self::Trees => &[History::Trees],
+            Self::Recordings => &[History::Recordings],
+            Self::Machines => &[History::Machines],
+            Self::All => &History::ALL,
+        }
+    }
 }
 
 impl Args {
     fn headless(&self) -> bool {
         self.replay.is_some()
-            || self.transcript.is_some()
+            || !self.transcript.is_empty()
             || self.check_flows.is_some()
             || self.init_flows.is_some()
             || self.xpath.is_some()
@@ -118,11 +174,18 @@ impl Args {
             || self.dry_run.is_some()
             || self.run.is_some()
             || self.author.is_some()
+            || self.reset_settings
+            || !self.clear.is_empty()
+            || self.serve
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+    // Before the log is opened: the app asks a copy of itself, which leaves the app's log alone.
+    if let Some(index) = args.probe_gpu {
+        return runtime::probe_gpu(index);
+    }
     let filter = || {
         tracing_subscriber::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| "info,wgpu_hal=warn,wgpu_core=warn,naga=warn".into())
@@ -154,7 +217,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::error!(thread = thread.name().unwrap_or("unnamed"), %info, %backtrace, "Panic");
     }));
     let config_file = args.config.clone().unwrap_or_else(default_config_file);
+    // Before loading the settings: a reset also mends a file that does not load.
+    if args.reset_settings {
+        return reset_settings(&config_file);
+    }
     let config = DesktopConfig::load(&config_file)?;
+    if !args.clear.is_empty() {
+        return clear_history(&args.clear, &config);
+    }
     let folder = |dir: &Option<PathBuf>| {
         dir.clone()
             .unwrap_or_else(|| config.flows_dir(&config_file))
@@ -168,6 +238,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for file in &report.written {
             println!("wrote {}", dir.join(file).display());
         }
+        for file in &report.removed {
+            println!("removed {}", dir.join(file).display());
+        }
+        commit_written(
+            &config_file,
+            report.changed().map(|f| dir.join(f)).collect(),
+            "Write the built-in flow tree (--init-flows)",
+        );
         for note in &report.notes {
             println!("note: {note}");
         }
@@ -188,8 +266,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(recording) = &args.author {
         return author_automation(&args, recording, &config, &config_file);
     }
-    if args.replay.is_some() || args.transcript.is_some() {
-        return replay(&args, config, config_file);
+    if args.replay.is_some() || !args.transcript.is_empty() {
+        return match &args.server {
+            Some(url) => replay_on(&args, url, &config, &config_file),
+            None => replay(&args, config, config_file),
+        };
+    }
+    if args.serve {
+        return serve(config, config_file);
     }
     desktop(config, config_file)
 }
@@ -347,6 +431,14 @@ fn author_automation(
             &library,
             args.replace.as_deref(),
         ))?;
+    commit_written(
+        config_file,
+        vec![authored.automation.dir.clone()],
+        &format!(
+            "Write the automation {} from a recording (--author)",
+            authored.automation.name
+        ),
+    );
     let report = &authored.report;
     println!(
         "wrote {} ({}): {}",
@@ -451,10 +543,19 @@ fn check_flows(
         Arc::new(jevons_desktop_core::platform::Unsupported),
         Arc::new(jevons_desktop_core::platform::Unsupported),
     ));
-    let catalog = jevons_desktop_core::flow::tools::ToolHost::new(&config.tools, &config.mcp)
+    let desk = jevons_desktop_core::desk::LocalDesk::default()
         .with_automations(automations)
-        .catalog();
-    let tree = FlowTree::load(&jevons_desktop_core::flow::Disk::new(dir), &catalog);
+        .with_tools(Arc::new(jevons_desktop_tools::ToolSet::new(
+            &config.desk_tools,
+            &config.desk_mcp,
+        )));
+    let tools = jevons_desktop_server::flow::tools::ToolHost::new(&config.tools, &config.mcp)
+        .with_desk(Arc::new(desk));
+    for clash in tools.clashes() {
+        eprintln!("{clash}");
+    }
+    let catalog = tools.catalog();
+    let tree = FlowTree::load(&jevons_desktop_server::flow::Disk::new(dir), &catalog);
     for error in &tree.errors {
         eprintln!("{error}");
     }
@@ -476,16 +577,75 @@ fn check_flows(
         dir.display(),
         tree.nodes().len()
     );
+    // Where the decision model may be asked, and where it never is.
+    for (machine, decides) in tree.decided() {
+        match &decides.event {
+            Some(event) => println!("{machine} · {} on {event}: {}", decides.at, decides.by),
+            None => println!("{machine} · {}: {}", decides.at, decides.by),
+        }
+    }
     Ok(())
 }
 
-/// `~/jevons/logs/jevons-desktop.log`; the previous run's log is kept next to it.
+/// `~/jevons/logs/jevons-desktop.log`; the previous run's log is kept next to it. It is opened
+/// to append, so clearing the logs can empty it while the app writes.
 fn log_file() -> Option<std::fs::File> {
-    let dir = jevons_desktop_core::config::user_dir().join("logs");
+    let dir = crate::config::user_dir().join("logs");
     std::fs::create_dir_all(&dir).ok()?;
-    let file = dir.join("jevons-desktop.log");
+    let file = dir.join(history::DESKTOP_LOG);
     let _ = std::fs::rename(&file, dir.join("jevons-desktop.previous.log"));
-    std::fs::File::create(file).ok()
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(file)
+        .ok()
+}
+
+/// `--reset-settings`: the defaults back in the settings folder.
+fn reset_settings(config_file: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let report = crate::settings::reset(config_file).map_err(|e| e.to_string())?;
+    if !report.removed.is_empty() {
+        println!("removed {}", report.removed.join(", "));
+    }
+    println!(
+        "{}: the default settings, flow tree and automations library{}",
+        report.dir.display(),
+        if report.repository.is_some() {
+            ", committed"
+        } else {
+            ""
+        }
+    );
+    for note in &report.notes {
+        println!("note: {note}");
+    }
+    Ok(())
+}
+
+/// `--clear`: each kind of history asked for, once.
+fn clear_history(what: &[Clear], config: &DesktopConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let kinds: std::collections::BTreeSet<History> =
+        what.iter().flat_map(|w| w.kinds()).copied().collect();
+    let mut failed = false;
+    for kind in kinds {
+        let cleared = history::clear(kind, &config.client());
+        println!("{cleared} in {}", cleared.dir.display());
+        failed |= !cleared.failed.is_empty();
+    }
+    if failed {
+        return Err("some files could not be removed; see above".into());
+    }
+    Ok(())
+}
+
+/// Commits files a headless command wrote in the settings folder, when it is jevons' repository.
+fn commit_written(config_file: &std::path::Path, paths: Vec<PathBuf>, message: &str) {
+    let dir = crate::settings::folder(config_file);
+    if let Some(repository) = jevons_desktop_core::git::Repository::open(dir)
+        && let Err(e) = repository.commit(&paths, message)
+    {
+        eprintln!("note: cannot commit to the settings folder: {e}");
+    }
 }
 
 /// One headless take, from audio or text, for scripted end-to-end checks.
@@ -494,7 +654,7 @@ fn replay(
     config: DesktopConfig,
     config_file: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    config.privacy.apply_api_log();
+    crate::config::log_api(config.log_api);
     let context: ContextSnapshot = match &args.context {
         Some(file) => serde_json::from_str(&std::fs::read_to_string(file)?)?,
         None => ContextSnapshot::default(),
@@ -503,13 +663,25 @@ fn replay(
     let runtime = runtime::Runtime::start(move || {
         let _ = ready.send(());
     });
+    // However the run ends, the models unload before the process does.
+    let _unload = runtime::ShutdownOnDrop(runtime.clone());
     runtime.apply(&config, &config_file);
-    let connection = loop {
+    let routes = loop {
         changed.recv()?;
         match runtime.status() {
             runtime::Status::Loading => continue,
-            status => match runtime.connection() {
-                Some(connection) => break connection,
+            status @ runtime::Status::WaitingForGpu { .. } => {
+                eprintln!("note: {}", status.describe());
+                continue;
+            }
+            status => match runtime.routes() {
+                Some(routes) => {
+                    // A provider that does not answer leaves its capabilities out.
+                    if matches!(status, runtime::Status::Failed(_)) {
+                        eprintln!("note: {}", status.describe());
+                    }
+                    break routes;
+                }
                 None => return Err(status.describe().into()),
             },
         }
@@ -517,23 +689,17 @@ fn replay(
     let tokio = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    // Headless runs list the MCP servers' tools and the automations, but never run one.
-    let automations = Arc::new(jevons_desktop_core::automation::host::AutomationHost::new(
-        &config.automations_dir(&config_file),
-        config.automation.clone(),
-        Arc::new(jevons_desktop_core::platform::Unsupported),
-        Arc::new(jevons_desktop_core::platform::Unsupported),
-    ));
+    let desk = headless_desk(args, &config, &config_file)?;
     let tools = Arc::new(
-        jevons_desktop_core::flow::tools::ToolHost::new(&config.tools, &config.mcp)
-            .with_automations(automations)
+        jevons_desktop_server::flow::tools::ToolHost::new(&config.tools, &config.mcp)
+            .with_desk(desk.clone())
             .dry_run(),
     );
     for problem in tokio.block_on(tools.start()) {
         eprintln!("note: {problem}");
     }
-    let (flows, notes) = defaults::open(&config.flows_dir(&config_file), &tools.catalog());
-    for note in notes {
+    let (flows, report) = defaults::open(&config.flows_dir(&config_file), &tools.catalog());
+    for note in report.notes {
         eprintln!("note: {note}");
     }
     if !flows.is_valid() {
@@ -542,68 +708,25 @@ fn replay(
         }
         return Err("the flow tree has problems; see above".into());
     }
-    let inspector: Arc<dyn jevons_desktop_core::platform::ContextInspector> = match &args.tree {
-        Some(file) => Arc::new(jevons_desktop_core::recorded::RecordedInspector::load(
-            file,
-        )?),
-        None => platform::context_inspector(),
-    };
-    let investigator = connection.models.generative.clone().map(|model| {
-        Arc::new(jevons_desktop_core::flow::investigator::Investigator::new(
-            connection.client.clone(),
-            model,
-            inspector.clone(),
-            config.privacy.clone(),
-            Arc::default(),
-        )) as Arc<dyn jevons_desktop_core::flow::investigate::Investigate>
-    });
-    let reader = Arc::new(jevons_desktop_core::flow::extract::Reader::new(
-        inspector,
-        config.privacy.clone(),
-    ));
     let dictation = &config.dictation;
-    let env = Env {
-        client: connection.client,
-        flows: Arc::new(flows),
-        settings: pipeline::Settings {
-            models: connection.models,
-            realtime: connection.realtime,
-            language: dictation.language.clone(),
-            decide: dictation.decide,
-            max_output_tokens: dictation.max_output_tokens,
-            ..pipeline::Settings::default()
-        },
-        sink: args
-            .deliver
-            .then(|| Arc::new(Mutex::new(platform::text_sink()))),
-        investigator,
-        reader: Some(reader),
-        // Headless runs never run a tool that asks first, and run no tool at all.
-        confirmer: None,
-        tools: Some(tools),
+    let settings = pipeline::Settings {
+        language: dictation.language.clone(),
+        decide: dictation.decide,
+        max_output_tokens: dictation.max_output_tokens,
+        ..pipeline::Settings::default()
     };
-    let trace = tokio.block_on(async {
+    let flows = Arc::new(flows);
+    let traces = tokio.block_on(async {
+        // The server's side, in this process. Headless runs never run a tool that asks
+        // first, and run no tool at all.
+        let (session, _events) =
+            jevons_desktop_server::session::Session::open(desk, flows, settings);
+        session.set_routes(Some(routes));
+        session.set_tools(Some(tools));
         let (updates, mut live) = mpsc::unbounded_channel();
         let printer = tokio::spawn(async move {
             while let Some(update) = live.recv().await {
-                match update {
-                    pipeline::Update::Delta(text) | pipeline::Update::Output(text) => {
-                        eprint!("{text}")
-                    }
-                    pipeline::Update::Stage(stage) => {
-                        let choices = if stage.choices.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" ({})", stage.choices.join(", "))
-                        };
-                        eprintln!("\n· {:?} {}{choices}", stage.kind, stage.label);
-                    }
-                    pipeline::Update::StageDone { detail, chosen, ok } => {
-                        let chosen = chosen.map_or(String::new(), |c| format!("{c} "));
-                        eprintln!("  {} {chosen}{detail}", if ok { "✓" } else { "✗" });
-                    }
-                    _ => {}
-                }
+                print_update(&update);
             }
             eprintln!();
         });
@@ -612,8 +735,9 @@ fn replay(
             context,
             entry: args.flow.clone(),
         };
-        let trace = match (&args.replay, &args.transcript) {
-            (Some(audio), _) => {
+        let mut traces = Vec::new();
+        match &args.replay {
+            Some(audio) => {
                 let (events, received) = mpsc::unbounded_channel();
                 let mut source = FileAudioSource {
                     file: audio.to_path_buf(),
@@ -621,22 +745,349 @@ fn replay(
                 };
                 let capture = source.start(None, events)?;
                 let (_finish, finished) = oneshot::channel();
-                let trace = pipeline::run_take(&env, start, received, finished, &updates).await;
+                traces.push(
+                    session
+                        .take(start, received, finished, &updates, None)
+                        .await,
+                );
                 capture.stop();
-                trace
             }
-            (None, Some(text)) => pipeline::run_transcript(&env, start, text, &updates).await,
-            (None, None) => unreachable!("replay runs with audio or a transcript"),
-        };
+            None => {
+                for (id, text) in (1..).zip(&args.transcript) {
+                    let start = TakeStart {
+                        id,
+                        ..start.clone()
+                    };
+                    traces.push(session.transcript(start, text, &updates).await);
+                }
+            }
+        }
         drop(updates);
         let _ = printer.await;
-        Ok::<_, Box<dyn std::error::Error>>(trace)
+        Ok::<_, Box<dyn std::error::Error>>(traces)
     })?;
-    println!("{}", serde_json::to_string_pretty(&trace)?);
-    runtime.shutdown();
-    match trace.error {
+    match traces.as_slice() {
+        [trace] => println!("{}", serde_json::to_string_pretty(trace)?),
+        all => println!("{}", serde_json::to_string_pretty(all)?),
+    }
+    match traces.into_iter().find_map(|t| t.error) {
         Some(e) => Err(e.into()),
         None => Ok(()),
+    }
+}
+
+/// The client's side of a headless take: the interface is read within the privacy settings
+/// (from `--tree` when given), the text is typed only with --deliver, there is no one to
+/// confirm a tool, and no tool runs. The library's automations and the client's own tools are
+/// listed all the same, so flows that name them load.
+fn headless_desk(
+    args: &Args,
+    config: &DesktopConfig,
+    config_file: &Path,
+) -> Result<Arc<dyn jevons_desktop_protocol::desk::Desk>, Box<dyn std::error::Error>> {
+    let automations = Arc::new(jevons_desktop_core::automation::host::AutomationHost::new(
+        &config.automations_dir(config_file),
+        config.automation.clone(),
+        Arc::new(jevons_desktop_core::platform::Unsupported),
+        Arc::new(jevons_desktop_core::platform::Unsupported),
+    ));
+    let inspector: Arc<dyn jevons_desktop_core::platform::ContextInspector> = match &args.tree {
+        Some(file) => Arc::new(jevons_desktop_core::recorded::RecordedInspector::load(
+            file,
+        )?),
+        None => platform::context_inspector(),
+    };
+    let reader =
+        jevons_desktop_core::reader::Reader::new(inspector.clone(), config.privacy.clone());
+    let looks =
+        jevons_desktop_core::look::Looks::new(inspector, config.privacy.clone(), Arc::default());
+    let mut desk = jevons_desktop_core::desk::LocalDesk::default()
+        .with_reader(Arc::new(reader))
+        .with_looks(Arc::new(looks))
+        .with_automations(automations)
+        .with_tools(Arc::new(jevons_desktop_tools::ToolSet::new(
+            &config.desk_tools,
+            &config.desk_mcp,
+        )))
+        .dry_run();
+    if args.deliver {
+        desk = desk.with_sink(Arc::new(Mutex::new(platform::text_sink())));
+    }
+    Ok(Arc::new(desk))
+}
+
+/// Says on stderr what a headless take is doing.
+fn print_update(update: &pipeline::Update) {
+    match update {
+        pipeline::Update::Delta(text) | pipeline::Update::Output(text) => eprint!("{text}"),
+        pipeline::Update::Stage(stage) => {
+            let choices = if stage.choices.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", stage.choices.join(", "))
+            };
+            eprintln!("\n· {:?} {}{choices}", stage.kind, stage.label);
+        }
+        pipeline::Update::StageDone { detail, chosen, ok } => {
+            let chosen = chosen.as_ref().map_or(String::new(), |c| format!("{c} "));
+            eprintln!("  {} {chosen}{detail}", if *ok { "✓" } else { "✗" });
+        }
+        pipeline::Update::State(path) => eprintln!("\n▸ {path}"),
+        _ => {}
+    }
+}
+
+/// Runs headless takes on the server at `url`: this side sends each take and attends to what
+/// the server asks of the desk, and prints the traces the server sends back.
+fn replay_on(
+    args: &Args,
+    url: &str,
+    config: &DesktopConfig,
+    config_file: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use jevons_desktop_protocol::delivery::AudioEvent;
+    use jevons_desktop_protocol::take::TakeSettings;
+    use jevons_desktop_protocol::wire::{Said, ToClient, ToServer, VERSION, attend};
+    let context: ContextSnapshot = match &args.context {
+        Some(file) => serde_json::from_str(&std::fs::read_to_string(file)?)?,
+        None => ContextSnapshot::default(),
+    };
+    // The client's tools are listed for the server's flows, and none runs.
+    let desk = headless_desk(args, config, config_file)?;
+    let key = args
+        .key
+        .clone()
+        .or_else(|| std::env::var("TYPESAFE_API_KEY").ok());
+    let dictation = &config.dictation;
+    let settings = TakeSettings {
+        language: dictation.language.clone(),
+        decide: dictation.decide,
+        max_output_tokens: dictation.max_output_tokens,
+    };
+    let tokio = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let traces = tokio.block_on(async {
+        let link = jevons_desktop_protocol::socket::connect(url).await?;
+        let tools = desk.tools();
+        let (say, mut hear) = attend(desk, link);
+        say.send(ToServer::Hello {
+            version: VERSION,
+            key,
+            tools,
+            settings,
+        })?;
+        match hear.recv().await {
+            Some(ToClient::Welcome { .. }) => {}
+            Some(ToClient::Closed { why }) => return Err(why.into()),
+            _ => return Err(format!("{url} did not answer as a jevons server").into()),
+        }
+        // Each take's trace, once the server sends it; what it says on the way is printed.
+        let mut traces: Vec<serde_json::Value> = Vec::new();
+        let mut takes = Vec::new();
+        match &args.replay {
+            Some(audio) => {
+                say.send(ToServer::Take {
+                    take: 1,
+                    context,
+                    entry: args.flow.clone(),
+                    said: Said::Take,
+                })?;
+                let (events, mut captured) = mpsc::unbounded_channel();
+                let mut source = FileAudioSource {
+                    file: audio.to_path_buf(),
+                    paced: true,
+                };
+                let capture = source.start(None, events)?;
+                let sending = say.clone();
+                tokio::spawn(async move {
+                    while let Some(event) = captured.recv().await {
+                        // The meter is this side's; the server needs the sound.
+                        if matches!(event, AudioEvent::Level(_)) {
+                            continue;
+                        }
+                        let _ = sending.send(ToServer::Audio { take: 1, event });
+                    }
+                    capture.stop();
+                });
+                takes.push(1);
+            }
+            None => {
+                for (take, text) in (1..).zip(&args.transcript) {
+                    takes.push(take);
+                    // One after the other: a task waits between them.
+                    say.send(ToServer::Transcript {
+                        take,
+                        context: context.clone(),
+                        entry: args.flow.clone(),
+                        text: text.clone(),
+                    })?;
+                    traces.push(trace_of(&mut hear, take).await?);
+                }
+            }
+        }
+        for take in takes.into_iter().skip(traces.len()) {
+            traces.push(trace_of(&mut hear, take).await?);
+        }
+        eprintln!();
+        Ok::<_, Box<dyn std::error::Error>>(traces)
+    })?;
+    match traces.as_slice() {
+        [trace] => println!("{}", serde_json::to_string_pretty(trace)?),
+        all => println!("{}", serde_json::to_string_pretty(all)?),
+    }
+    match traces.iter().find_map(|t| t["error"].as_str()) {
+        Some(e) => Err(e.into()),
+        None => Ok(()),
+    }
+}
+
+/// Waits for take `take`'s trace from the server, printing what the take does meanwhile.
+async fn trace_of(
+    hear: &mut mpsc::UnboundedReceiver<jevons_desktop_protocol::wire::ToClient>,
+    take: u64,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    use jevons_desktop_protocol::wire::ToClient;
+    loop {
+        match hear.recv().await {
+            Some(ToClient::Update { update, .. }) => print_update(&update),
+            Some(ToClient::Trace { take: of, trace }) if of == take => return Ok(trace),
+            Some(ToClient::Closed { why }) => return Err(why.into()),
+            Some(_) => {}
+            None => return Err("the server closed the connection".into()),
+        }
+    }
+}
+
+/// The server alone: no tray and no window. It serves desktop clients on the settings'
+/// address until the process is stopped.
+fn serve(config: DesktopConfig, config_file: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    use jevons_desktop_protocol::desk::Nobody;
+    use jevons_desktop_server::flow::tools::ToolHost;
+    use jevons_desktop_server::serve::Host;
+    use jevons_desktop_server::session::Session;
+    crate::config::log_api(config.log_api);
+    // The defaults the folder lacks: the flows folder is the server's to read.
+    for note in settings::prepare(&config_file, &config).notes {
+        eprintln!("note: {note}");
+    }
+    let (ready, changed) = std::sync::mpsc::channel();
+    let runtime = runtime::Runtime::start(move || {
+        let _ = ready.send(());
+    });
+    // However the server ends, the models unload before the process does.
+    let _unload = runtime::ShutdownOnDrop(runtime.clone());
+    let tokio = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    // Ctrl+C ends the server instead of killing it with the models loaded.
+    let interrupted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop = interrupted.clone();
+    tokio.spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+    let met = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let session = tokio.block_on(async {
+        // Nobody is at the desk until a client connects.
+        let builtin = FlowTree::load(
+            &defaults::builtin(),
+            &jevons_desktop_server::flow::Catalog::default(),
+        );
+        let (session, events) = Session::open(
+            Arc::new(Nobody),
+            Arc::new(builtin),
+            pipeline::Settings::default(),
+        );
+        let tools = Arc::new(ToolHost::new(&config.tools, &config.mcp).with_desk(session.desk()));
+        for problem in tools.start().await {
+            eprintln!("note: {problem}");
+        }
+        // The flow tree is checked against the tools known now. The client's are known once
+        // one says hello, and the tree is read again then: until then a flow that names one
+        // of them does not load, and the built-in tree runs.
+        let dir = config.flows_dir(&config_file);
+        let load = {
+            let (session, tools) = (session.clone(), tools.clone());
+            move || {
+                // The automations are the client's: with none connected, `script:` tools are
+                // taken as there.
+                let mut catalog = tools.catalog();
+                catalog.servers.entry("script".into()).or_insert(false);
+                let (flows, report) = defaults::open(&dir, &catalog);
+                for note in report.notes {
+                    eprintln!("note: {note}");
+                }
+                if flows.is_valid() {
+                    session.set_flows(Arc::new(flows));
+                } else {
+                    for error in &flows.errors {
+                        eprintln!("{error}");
+                    }
+                    eprintln!(
+                        "note: the flow tree has problems: the tree before it runs until it is fixed"
+                    );
+                }
+            }
+        };
+        load();
+        session.set_tools(Some(tools));
+        // The tasks that run are kept in the data folder. They come back once a client has
+        // said hello (the host does it: the flow tree is checked against the client's tools
+        // by then) and a provider answers.
+        session.keep_machines_in(history::machines_file());
+        let host = Host::new(session.clone(), events, config.exposed_key());
+        let greeted = met.clone();
+        host.when_greeted(Arc::new(move || {
+            load();
+            greeted.store(true, std::sync::atomic::Ordering::Relaxed);
+        }));
+        runtime.serve(host);
+        session
+    });
+    runtime.apply(&config, &config_file);
+    let address = std::net::SocketAddr::new(config.server.bind, config.server.port);
+    eprintln!("Serving desktop clients on ws://{address}/desktop");
+    // The routes follow the providers for as long as the server runs.
+    loop {
+        if interrupted.load(std::sync::atomic::Ordering::Relaxed) {
+            eprintln!("Unloading the models…");
+            break;
+        }
+        match changed.recv_timeout(std::time::Duration::from_millis(250)) {
+            Ok(()) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            // The runtime thread is gone: nothing more will be served.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+        let status = runtime.status();
+        eprintln!("{}", status.describe());
+        session.set_routes(runtime.routes());
+        // A client came before a provider answered: its tasks come back now.
+        if session.ready() && met.load(std::sync::atomic::Ordering::Relaxed) {
+            for note in tokio.block_on(session.restore()) {
+                eprintln!("note: {note}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Ends the app as Quit does when the window's thread ends, however it ends: the agent cancels
+/// the take and removes the tray icon, and the models unload before the process does. A panic on
+/// that thread, such as a renderer's, would otherwise end the process with the models loaded,
+/// which to the GPU driver is a process killed in the middle of a call.
+struct QuitOnDrop {
+    commands: mpsc::UnboundedSender<Command>,
+    runtime: runtime::Runtime,
+}
+
+impl Drop for QuitOnDrop {
+    fn drop(&mut self) {
+        // After Quit the agent is gone and this reaches nobody.
+        let _ = self.commands.send(Command::Menu(MenuCommand::Quit));
+        self.runtime.shutdown();
     }
 }
 
@@ -644,6 +1095,14 @@ fn replay(
 fn desktop(config: DesktopConfig, config_file: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let view = Arc::new(Mutex::new(View::default()));
     let (commands, received) = mpsc::unbounded_channel::<Command>();
+    let runtime_commands = commands.clone();
+    let runtime = runtime::Runtime::start(move || {
+        let _ = runtime_commands.send(Command::RuntimeChanged);
+    });
+    let _quit = QuitOnDrop {
+        commands: commands.clone(),
+        runtime: runtime.clone(),
+    };
     let agent_view = view.clone();
     let agent_commands = commands.clone();
     ui::run(view, commands, move || {
@@ -655,6 +1114,7 @@ fn desktop(config: DesktopConfig, config_file: PathBuf) -> Result<(), Box<dyn st
             repaint,
             agent_commands,
             received,
+            runtime,
         ) {
             tracing::error!(error = %e, "Cannot start the agent");
         }
@@ -668,6 +1128,7 @@ fn start_agent(
     repaint: Arc<dyn Fn() + Send + Sync>,
     commands: mpsc::UnboundedSender<Command>,
     received: mpsc::UnboundedReceiver<Command>,
+    runtime: runtime::Runtime,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     hold::start();
     let tray = match tray::spawn(commands.clone()) {
@@ -681,10 +1142,6 @@ fn start_agent(
             None
         }
     };
-    let runtime_commands = commands.clone();
-    let runtime = runtime::Runtime::start(move || {
-        let _ = runtime_commands.send(Command::RuntimeChanged);
-    });
     std::thread::Builder::new()
         .name("agent".into())
         .spawn(move || {
@@ -723,6 +1180,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_panic_on_the_windows_thread_quits_the_agent_and_unloads_the_models() {
+        let (commands, mut received) = mpsc::unbounded_channel::<Command>();
+        let runtime = runtime::Runtime::start(|| {});
+        let quit = QuitOnDrop {
+            commands,
+            runtime: runtime.clone(),
+        };
+        // As the bubble's renderer did, on the thread that runs the windows.
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _quit = quit;
+            panic!("failed to get surface texture: Other");
+        }));
+        assert!(panicked.is_err());
+        assert!(matches!(
+            received.try_recv(),
+            Ok(Command::Menu(MenuCommand::Quit))
+        ));
+        assert!(
+            runtime.has_ended(),
+            "the runtime thread still runs after the panic"
+        );
+    }
+
+    #[test]
     fn flow_commands_take_an_optional_folder() {
         let bare = Args::try_parse_from(["jevons-desktop", "--init-flows"]).unwrap();
         assert_eq!(bare.init_flows, Some(None));
@@ -730,5 +1211,19 @@ mod tests {
         assert_eq!(dir.check_flows, Some(Some(PathBuf::from("D:/flows"))));
         let neither = Args::try_parse_from(["jevons-desktop"]).unwrap();
         assert!(!neither.headless());
+    }
+
+    #[test]
+    fn clearing_takes_kinds_of_history_or_all_of_it() {
+        let some = Args::try_parse_from(["jevons-desktop", "--clear", "logs,traces"]).unwrap();
+        assert_eq!(some.clear, [Clear::Logs, Clear::Traces]);
+        assert!(some.headless());
+        let all = Args::try_parse_from(["jevons-desktop", "--clear", "all"]).unwrap();
+        assert_eq!(all.clear[0].kinds(), History::ALL);
+        let tasks = Args::try_parse_from(["jevons-desktop", "--clear", "machines"]).unwrap();
+        assert_eq!(tasks.clear[0].kinds(), [History::Machines]);
+        assert!(Args::try_parse_from(["jevons-desktop", "--clear", "models"]).is_err());
+        let reset = Args::try_parse_from(["jevons-desktop", "--reset-settings"]).unwrap();
+        assert!(reset.headless());
     }
 }

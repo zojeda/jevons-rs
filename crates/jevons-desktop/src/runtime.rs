@@ -1,30 +1,39 @@
-//! Where inference runs: the models loaded in this process (served over HTTP on loopback, and
-//! to other clients when exposed), or a remote jevons server.
+//! Where inference runs: each capability goes to the provider its route names. The embedded
+//! provider is the models loaded in this process, served over HTTP on loopback to this app
+//! alone; the others are servers elsewhere. When the API is exposed, a forwarder serves other
+//! clients what the routes serve.
 //!
-//! The runtime thread owns a Tokio runtime and the loaded models. Applying new settings only
-//! rebinds the listener when the models did not change, so exposing the API or changing its
-//! port keeps the models in memory.
+//! The runtime thread owns a Tokio runtime, the loaded models and the forwarder. Exposing the
+//! API or changing its port only rebinds the forwarder, so the models stay in memory.
 
-use jevons_desktop_core::client::Client;
-use jevons_desktop_core::config::{DesktopConfig, Mode, ModelRef, Models};
-use jevons_desktop_core::pipeline::ServiceModels;
+use crate::config::{Capability, DesktopConfig, ModelRef, Models, Provider, ProviderKind};
+use jevons_desktop_server::client::{Client, Profile, Route, Routes};
+use jevons_desktop_server::forward::{self, Forwarder};
+use jevons_desktop_server::serve::Host;
+use std::collections::BTreeMap;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Status {
-    /// No models are selected.
+    /// Nothing serves any capability: no models are selected, and no route goes elsewhere.
     NoModels,
-    Loading,
-    /// The embedded API is serving on `base_url`; `exposed` when other clients may use it.
-    #[cfg_attr(not(feature = "embedded"), allow(dead_code))]
-    Ready {
-        base_url: String,
-        exposed: bool,
+    /// The GPU does not let a new process in yet (HIP status 719): the app asks again until
+    /// it does. `advice` once that has lasted long enough to say what the user can do.
+    WaitingForGpu {
+        advice: bool,
     },
-    /// Using a remote server.
+    Loading,
+    /// The app's models are loaded. `api` is where other clients reach the API, when it is
+    /// exposed.
+    Ready {
+        api: Option<String>,
+    },
+    /// Every capability served is on a provider elsewhere.
     Remote {
-        url: String,
+        providers: Vec<String>,
+        api: Option<String>,
     },
     Failed(String),
 }
@@ -34,10 +43,11 @@ impl Status {
     pub fn label(&self) -> &'static str {
         match self {
             Self::NoModels => "No models",
+            Self::WaitingForGpu { .. } => "Waiting for the GPU",
             Self::Loading => "Loading models",
-            Self::Ready { exposed: true, .. } => "Serving the API",
+            Self::Ready { api: Some(_) } | Self::Remote { api: Some(_), .. } => "Serving the API",
             Self::Ready { .. } => "Ready",
-            Self::Remote { .. } => "Remote server",
+            Self::Remote { .. } => "Remote providers",
             Self::Failed(_) => "Failed",
         }
     }
@@ -45,36 +55,395 @@ impl Status {
     pub fn describe(&self) -> String {
         match self {
             Self::NoModels => "No models yet: download them in the Models tab".into(),
+            Self::WaitingForGpu { advice: false } => {
+                "The GPU does not take new work yet (HIP status 719): trying again every few \
+                 seconds…"
+                    .into()
+            }
+            Self::WaitingForGpu { advice: true } => {
+                "The GPU still does not take new work (HIP status 719): trying again every few \
+                 seconds. If it stays so, restart the graphics driver (Win+Ctrl+Shift+B on \
+                 Windows) or the computer."
+                    .into()
+            }
             Self::Loading => "Loading models…".into(),
-            Self::Ready {
-                base_url,
-                exposed: true,
-            } => format!("Serving the API on {base_url}"),
-            Self::Ready { .. } => "Models loaded (API private to this app)".into(),
-            Self::Remote { url } => format!("Using {url}"),
+            Self::Ready { api: Some(api) } => format!("Serving the API on {api}"),
+            Self::Ready { api: None } => "Models loaded (API private to this app)".into(),
+            Self::Remote {
+                providers,
+                api: Some(api),
+            } => format!("Using {}; serving the API on {api}", providers.join(", ")),
+            Self::Remote { providers, .. } => format!("Using {}", providers.join(", ")),
             Self::Failed(e) => format!("Failed: {e}"),
+        }
+    }
+
+    /// Where other clients reach the API, while it is exposed.
+    pub fn api(&self) -> Option<&str> {
+        match self {
+            Self::Ready { api } | Self::Remote { api, .. } => api.as_deref(),
+            _ => None,
         }
     }
 }
 
-/// What the pipeline needs to reach the runtime.
+/// A provider that answers: how to reach it, and the model it names for each capability
+/// (a route that names its own model needs none of them).
 #[derive(Clone, Debug)]
-pub struct Connection {
+pub struct Served {
     pub client: Client,
-    pub models: ServiceModels,
+    pub speech: Option<String>,
+    pub decision: Option<String>,
+    pub generation: Option<String>,
+    /// Whether it streams speech (Realtime).
     pub realtime: bool,
+}
+
+impl Served {
+    /// A server that does not say what it serves: its routes name their models.
+    fn unnamed(client: Client) -> Self {
+        Self {
+            client,
+            speech: None,
+            decision: None,
+            generation: None,
+            realtime: true,
+        }
+    }
+
+    fn model(&self, capability: Capability) -> Option<String> {
+        match capability {
+            Capability::Speech => self.speech.clone(),
+            Capability::Realtime => self.speech.clone().filter(|_| self.realtime),
+            Capability::Decision => self.decision.clone(),
+            Capability::Generation => self.generation.clone(),
+        }
+    }
+}
+
+/// Each capability's route over the providers that answer: the route's own model, else the
+/// one its provider names. A capability whose provider does not answer, or names no model for
+/// it, is not served.
+pub fn routes(config: &DesktopConfig, served: &BTreeMap<String, Served>) -> Routes {
+    let route = |capability: Capability| {
+        let to = config.route(capability)?;
+        let provider = config.provider(&to.provider)?;
+        let server = served.get(&to.provider)?;
+        Some(Route {
+            client: server.client.clone(),
+            model: to.model.or_else(|| server.model(capability))?,
+            provider: to.provider,
+            profile: Profile::of(&provider),
+        })
+    };
+    Routes {
+        speech: route(Capability::Speech),
+        realtime: route(Capability::Realtime),
+        decision: route(Capability::Decision),
+        generation: route(Capability::Generation),
+    }
+}
+
+/// The providers the routes use, by name.
+fn used(config: &DesktopConfig) -> BTreeMap<String, Provider> {
+    Capability::ALL
+        .iter()
+        .filter_map(|capability| {
+            let name = config.route(*capability)?.provider;
+            let provider = config.provider(&name)?;
+            Some((name, provider))
+        })
+        .collect()
+}
+
+/// The capabilities routed to the models loaded in this app: only their models are loaded.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Local {
+    pub speech: bool,
+    pub realtime: bool,
+    pub decision: bool,
+    pub generation: bool,
+}
+
+impl Local {
+    pub fn of(config: &DesktopConfig) -> Self {
+        let embedded = |capability: Capability| {
+            config
+                .route(capability)
+                .and_then(|route| config.provider(&route.provider))
+                .is_some_and(|provider| provider.kind == ProviderKind::Embedded)
+        };
+        Self {
+            speech: embedded(Capability::Speech) || embedded(Capability::Realtime),
+            realtime: embedded(Capability::Realtime),
+            decision: embedded(Capability::Decision),
+            generation: embedded(Capability::Generation),
+        }
+    }
+
+    fn any(self) -> bool {
+        self.speech || self.decision || self.generation
+    }
+}
+
+/// What listens on `bind:port`: the forwarder for other clients while the API is exposed, and
+/// the desktop endpoint while the app serves desktop clients.
+struct Exposed {
+    address: SocketAddr,
+    key: Option<String>,
+    forwarder: Forwarder,
+    /// Whether the API is served, and whether desktop clients are.
+    serves: (bool, bool),
+    stop: tokio::sync::oneshot::Sender<()>,
+    task: tokio::task::JoinHandle<std::io::Result<()>>,
+}
+
+/// Serves `routes` to other clients when the settings expose the API, and desktop clients when
+/// there is a `host` for them; stops listening when there is neither. A listener with the same
+/// address, key and purpose is kept, with the routes as they are now. Returns where the API is.
+fn expose(
+    tokio: &tokio::runtime::Runtime,
+    exposed: &mut Option<Exposed>,
+    config: &DesktopConfig,
+    routes: Option<&Routes>,
+    host: Option<Arc<Host>>,
+) -> Result<Option<String>, String> {
+    let address = SocketAddr::new(config.server.bind, config.server.port);
+    let key = config.exposed_key();
+    let routes = routes.filter(|_| config.server.expose);
+    let serves = (routes.is_some(), host.is_some());
+    let keep = exposed.as_ref().is_some_and(|e| {
+        serves != (false, false) && e.address == address && e.key == key && e.serves == serves
+    });
+    if !keep && let Some(old) = exposed.take() {
+        let _ = old.stop.send(());
+        let _ = tokio.block_on(old.task);
+    }
+    if serves == (false, false) {
+        return Ok(None);
+    }
+    if exposed.is_none() {
+        let listener = tokio
+            .block_on(tokio::net::TcpListener::bind(address))
+            .map_err(|e| format!("Cannot listen on {address}: {e}"))?;
+        // Without a key the exposed API is open, as jevons-rs is without one.
+        let forwarder = Forwarder::new(key.clone());
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio.spawn(jevons_desktop_server::serve::listen(
+            listener,
+            serves.0.then(|| forwarder.clone()),
+            host,
+            async {
+                let _ = stopped.await;
+            },
+        ));
+        tracing::info!(%address, api = serves.0, desktop = serves.1, "Listening");
+        *exposed = Some(Exposed {
+            address,
+            key,
+            forwarder,
+            serves,
+            stop,
+            task,
+        });
+    }
+    let Some(routes) = routes else {
+        return Ok(None);
+    };
+    let serving = exposed.as_ref().expect("the forwarder listens");
+    serving.forwarder.route(forward::targets(routes));
+    Ok(Some(format!("http://{address}")))
 }
 
 struct Shared {
     status: Status,
-    connection: Option<Connection>,
+    routes: Option<Routes>,
+    /// What serves desktop clients, when the app does.
+    host: Option<Arc<Host>>,
+}
+
+/// How long [`Runtime::shutdown`] waits for the models to unload before it gives up. A load in
+/// progress ends first, and takes minutes: ending late costs little, ending in the middle of a
+/// call to the device has cost a reboot.
+const UNLOAD_LIMIT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Settings to apply, and the file they were read from.
+type Request = (DesktopConfig, PathBuf);
+
+/// The settings to apply next: the latest of those queued, since only they matter. `None` when
+/// a shutdown is queued, whatever is queued around it: the thread then ends and applies
+/// nothing more.
+fn latest(first: Request, requests: &mpsc::Receiver<Option<Request>>) -> Option<Request> {
+    let mut latest = first;
+    loop {
+        match requests.try_recv() {
+            Ok(Some(newer)) => latest = newer,
+            Ok(None) => return None,
+            Err(_) => return Some(latest),
+        }
+    }
+}
+
+/// How long a GPU that does not answer is left alone before it is asked again.
+const GPU_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long the wait lasts before the status also says what the user can do about it. The
+/// driver has cleared by itself within about two minutes whenever it cleared at all.
+const GPU_PATIENCE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// How long one check of a GPU may take before it counts as no answer.
+const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// What a check of a GPU found, before the first model is loaded.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Probe {
+    /// It lets a new process in.
+    Ready,
+    /// It does not, yet: what it answered.
+    Busy(String),
+    /// The check failed some other way; loading the models says what is wrong.
+    Unknown,
+}
+
+/// Reads the outcome of a check that ran in a process of its own. HIP status 719 is what the
+/// AMD driver answers to a new process for a while after any process moved gigabytes of GPU
+/// memory: a process that is already in keeps working, and the driver clears by itself or
+/// with a restart of the graphics driver.
+fn classify(success: bool, errors: &str) -> Probe {
+    if success {
+        return Probe::Ready;
+    }
+    match errors.lines().find(|line| line.contains("status: 719")) {
+        Some(line) => Probe::Busy(line.trim().to_string()),
+        None => Probe::Unknown,
+    }
+}
+
+/// Whether GPU `index` answers, for the copy of this program that [`probe`] starts: it ends
+/// with a failure, and the driver's status in what it prints, when the device does not.
+pub fn probe_gpu(index: usize) -> Result<(), Box<dyn std::error::Error>> {
+    embedded::probe_gpu(index).map_err(Into::into)
+}
+
+/// Asks a copy of this program whether each of `devices` lets a new process in. A process of
+/// its own, since a process the GPU refused may not get the device later.
+fn probe(devices: &[usize]) -> Probe {
+    for index in devices {
+        let found = probe_in_a_process(*index);
+        if found != Probe::Ready {
+            return found;
+        }
+    }
+    Probe::Ready
+}
+
+fn probe_in_a_process(index: usize) -> Probe {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    let Ok(program) = std::env::current_exe() else {
+        return Probe::Unknown;
+    };
+    let mut command = Command::new(program);
+    command
+        .arg("--probe-gpu")
+        .arg(index.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flashes up.
+    }
+    let Ok(mut child) = command.spawn() else {
+        return Probe::Unknown;
+    };
+    let errors = child.stderr.take();
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(mut errors) = errors {
+            let _ = errors.read_to_string(&mut text);
+        }
+        text
+    });
+    let started = std::time::Instant::now();
+    let ended = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if started.elapsed() < PROBE_LIMIT => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    let text = reader.join().unwrap_or_default();
+    match ended {
+        Some(status) => classify(status.success(), &text),
+        None => Probe::Busy("the check did not finish".into()),
+    }
+}
+
+/// How a wait for the GPU ended.
+#[derive(Debug, PartialEq)]
+enum Waited {
+    /// The GPU answers, or the check cannot tell: the models load.
+    Ready,
+    /// A shutdown came first.
+    Ended,
+    /// Newer settings came first: they are applied in place of those that waited.
+    Newer(Box<Request>),
+}
+
+/// Asks `probe` until the GPU lets a new process in, `every` so often, and tells `waiting` how
+/// long that has lasted each time it does not. A shutdown or newer settings end the wait at
+/// once: quitting never waits for a GPU.
+fn wait_for_gpu(
+    mut probe: impl FnMut() -> Probe,
+    requests: &mpsc::Receiver<Option<Request>>,
+    every: std::time::Duration,
+    mut waiting: impl FnMut(std::time::Duration),
+) -> Waited {
+    let started = std::time::Instant::now();
+    loop {
+        let Probe::Busy(answer) = probe() else {
+            return Waited::Ready;
+        };
+        tracing::warn!(%answer, "The GPU does not take a new process yet");
+        waiting(started.elapsed());
+        match requests.recv_timeout(every) {
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Ok(Some(newer)) => {
+                return match latest(newer, requests) {
+                    Some(request) => Waited::Newer(Box::new(request)),
+                    None => Waited::Ended,
+                };
+            }
+            Ok(None) | Err(mpsc::RecvTimeoutError::Disconnected) => return Waited::Ended,
+        }
+    }
 }
 
 /// Handle to the runtime thread.
 #[derive(Clone)]
 pub struct Runtime {
     shared: Arc<Mutex<Shared>>,
-    apply: mpsc::Sender<Option<(DesktopConfig, PathBuf)>>,
+    apply: mpsc::Sender<Option<Request>>,
+    /// Disconnects once the runtime thread has ended, the models unloaded.
+    ended: Arc<Mutex<mpsc::Receiver<()>>>,
+}
+
+/// Shuts the runtime down when dropped: a run that ends early, on an error, unloads the
+/// models all the same.
+pub struct ShutdownOnDrop(pub Runtime);
+
+impl Drop for ShutdownOnDrop {
+    fn drop(&mut self) {
+        self.0.shutdown();
+    }
 }
 
 impl Runtime {
@@ -82,15 +451,25 @@ impl Runtime {
     pub fn start(changed: impl Fn() + Send + 'static) -> Self {
         let shared = Arc::new(Mutex::new(Shared {
             status: Status::NoModels,
-            connection: None,
+            routes: None,
+            host: None,
         }));
         let (apply, requests) = mpsc::channel();
+        let (ending, ended) = mpsc::channel();
         let state = shared.clone();
         std::thread::Builder::new()
             .name("runtime".into())
-            .spawn(move || run(requests, state, changed))
+            .spawn(move || {
+                run(requests, state, changed);
+                // Dropped here, or by a panic above: either way the thread is over.
+                drop::<mpsc::Sender<()>>(ending);
+            })
             .expect("the runtime thread starts");
-        Self { shared, apply }
+        Self {
+            shared,
+            apply,
+            ended: Arc::new(Mutex::new(ended)),
+        }
     }
 
     /// Applies `config` (read from `file`, which relative model paths resolve against).
@@ -98,35 +477,52 @@ impl Runtime {
         let _ = self.apply.send(Some((config.clone(), file.to_path_buf())));
     }
 
-    /// Unloads the models and ends the thread.
+    /// Serves desktop clients through `host` on the settings' address, from the next time
+    /// settings are applied.
+    pub fn serve(&self, host: Arc<Host>) {
+        self.shared.lock().expect("the runtime lock").host = Some(host);
+    }
+
+    /// Unloads the models, ends the thread and waits for both; a load in progress ends first.
+    /// A process that exits while the device still loads or frees a model is, to the GPU
+    /// driver, a process killed mid-call: that has left HIP failing with status 719 for every
+    /// process until a reboot. It gives up after [`UNLOAD_LIMIT`], so that a device that hangs
+    /// cannot keep the app from ending.
     pub fn shutdown(&self) {
         let _ = self.apply.send(None);
+        let ended = self.ended.lock().expect("the runtime lock");
+        if let Err(mpsc::RecvTimeoutError::Timeout) = ended.recv_timeout(UNLOAD_LIMIT) {
+            tracing::warn!(
+                seconds = UNLOAD_LIMIT.as_secs(),
+                "The models did not unload in time: ending anyway"
+            );
+        }
+    }
+
+    /// Whether the runtime thread has ended.
+    #[cfg(test)]
+    pub fn has_ended(&self) -> bool {
+        let ended = self.ended.lock().expect("the runtime lock");
+        matches!(ended.try_recv(), Err(mpsc::TryRecvError::Disconnected))
     }
 
     pub fn status(&self) -> Status {
         self.shared.lock().expect("the runtime lock").status.clone()
     }
 
-    pub fn connection(&self) -> Option<Connection> {
-        self.shared
-            .lock()
-            .expect("the runtime lock")
-            .connection
-            .clone()
+    /// Each capability's route, once any provider answers.
+    pub fn routes(&self) -> Option<Routes> {
+        self.shared.lock().expect("the runtime lock").routes.clone()
     }
 }
 
-fn run(
-    requests: mpsc::Receiver<Option<(DesktopConfig, PathBuf)>>,
-    shared: Arc<Mutex<Shared>>,
-    changed: impl Fn(),
-) {
+fn run(requests: mpsc::Receiver<Option<Request>>, shared: Arc<Mutex<Shared>>, changed: impl Fn()) {
     let tokio = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("runtime-io")
         .build()
         .expect("the Tokio runtime builds");
-    let set = |status: Status, connection: Option<Connection>| {
+    let set = |status: Status, routes: Option<Routes>| {
         let status = match status {
             Status::Failed(e) => Status::Failed(explain(e)),
             other => other,
@@ -137,72 +533,152 @@ fn run(
         }
         let mut shared = shared.lock().expect("the runtime lock");
         shared.status = status;
-        shared.connection = connection;
+        shared.routes = routes;
         drop(shared);
         changed();
     };
     let mut embedded = embedded::Embedded::default();
-    while let Ok(Some((config, file))) = requests.recv() {
-        // Only the latest settings matter.
-        let (config, file) = std::iter::from_fn(|| requests.try_recv().ok())
-            .map_while(|r| r)
-            .last()
-            .unwrap_or((config, file));
-        match config.server.mode {
-            Mode::Remote => {
-                tokio.block_on(embedded.unload());
-                let key = config
-                    .server
-                    .remote_key
-                    .clone()
-                    .or_else(|| std::env::var("TYPESAFE_API_KEY").ok());
-                let client = Client::new(&config.server.remote_url, key);
-                let url = client.base().to_string();
-                match tokio.block_on(client.health()) {
-                    Ok(health) => {
-                        let models = ServiceModels {
-                            speech: health.services.speech,
-                            decision: health.services.decision,
-                            generative: health.services.generative,
-                        };
-                        let connection = Connection {
-                            client,
-                            models,
-                            realtime: true,
-                        };
-                        set(Status::Remote { url }, Some(connection));
-                    }
-                    Err(e) => set(Status::Failed(e.to_string()), None),
-                }
-            }
-            Mode::Embedded => {
-                let catalog_file = file.parent().unwrap_or(Path::new(".")).join("models.toml");
-                let (catalog, _) = jevons_desktop_core::catalog::load(&catalog_file);
-                let folder = config.models_folder();
-                let models = config.models.with_defaults(&folder, &catalog);
-                let settings = match runtime_settings(&models, &file) {
-                    Ok(Some(text)) => text,
-                    Ok(None) => {
-                        tokio.block_on(embedded.unload());
-                        set(Status::NoModels, None);
-                        continue;
-                    }
-                    Err(e) => {
-                        set(Status::Failed(e), None);
-                        continue;
-                    }
-                };
+    let mut exposed: Option<Exposed> = None;
+    // A process the GPU let in stays in: only the first load asks.
+    let mut gpu_answered = false;
+    // Settings that arrived while the GPU was waited for.
+    let mut next: Option<Request> = None;
+    loop {
+        let first = match next.take() {
+            Some(request) => request,
+            None => match requests.recv() {
+                Ok(Some(request)) => request,
+                _ => break,
+            },
+        };
+        let Some((config, file)) = latest(first, &requests) else {
+            break;
+        };
+        if let Err(e) = config.check_routes() {
+            tokio.block_on(embedded.unload());
+            let _ = expose(&tokio, &mut exposed, &config, None, None);
+            set(Status::Failed(e), None);
+            continue;
+        }
+        // What does not answer is said, and the capabilities on the providers that do still
+        // run.
+        let mut failures: Vec<String> = Vec::new();
+        let mut served: BTreeMap<String, Served> = BTreeMap::new();
+        let mut local = false;
+        let providers = used(&config);
+        // The models in this app: only those of the capabilities routed here are loaded.
+        let wanted = Local::of(&config);
+        let settings = if wanted.any() {
+            let catalog_file = file.parent().unwrap_or(Path::new(".")).join("models.toml");
+            let (catalog, _) = jevons_desktop_core::catalog::load(&catalog_file);
+            let folder = config.models_folder();
+            let models = crate::config::with_downloaded(&config.models, &folder, &catalog);
+            runtime_settings(&models, &file, wanted).unwrap_or_else(|e| {
+                failures.push(e);
+                None
+            })
+        } else {
+            None
+        };
+        match settings {
+            Some(settings) => {
                 if embedded.needs_load(&settings) {
+                    if !gpu_answered {
+                        let devices = embedded::devices(&settings, &file);
+                        let mut said = None;
+                        let waited = wait_for_gpu(
+                            || probe(&devices),
+                            &requests,
+                            GPU_RETRY,
+                            |lasted| {
+                                let advice = lasted >= GPU_PATIENCE;
+                                if said != Some(advice) {
+                                    said = Some(advice);
+                                    set(Status::WaitingForGpu { advice }, None);
+                                }
+                            },
+                        );
+                        match waited {
+                            Waited::Ready => gpu_answered = true,
+                            Waited::Ended => break,
+                            Waited::Newer(request) => {
+                                next = Some(*request);
+                                continue;
+                            }
+                        }
+                    }
                     set(Status::Loading, None);
                 }
-                match embedded.apply(&tokio, &settings, &file, &config) {
-                    Ok((status, connection)) => set(status, Some(connection)),
-                    Err(e) => set(Status::Failed(e), None),
+                match embedded.apply(&tokio, &settings, &file) {
+                    Ok(server) => {
+                        local = true;
+                        for (name, provider) in &providers {
+                            if provider.kind == ProviderKind::Embedded {
+                                served.insert(name.clone(), server.clone());
+                            }
+                        }
+                    }
+                    Err(e) => failures.push(e),
                 }
             }
+            None => tokio.block_on(embedded.unload()),
         }
+        // The servers elsewhere: a jevons server says which model serves each capability.
+        let mut elsewhere = Vec::new();
+        for (name, provider) in &providers {
+            let Some(url) = provider.url() else {
+                continue;
+            };
+            let client = Client::new(&url, provider.key());
+            let server = if provider.kind == ProviderKind::Jevons {
+                match tokio.block_on(client.health()) {
+                    Ok(health) => Served {
+                        speech: health.services.speech,
+                        decision: health.services.decision,
+                        generation: health.services.generative,
+                        ..Served::unnamed(client)
+                    },
+                    Err(e) => {
+                        failures.push(format!("{name} ({url}): {e}"));
+                        continue;
+                    }
+                }
+            } else {
+                Served::unnamed(client)
+            };
+            elsewhere.push(format!("{name} ({url})"));
+            served.insert(name.clone(), server);
+        }
+        let routes = routes(&config, &served);
+        let any = routes.speech.is_some()
+            || routes.realtime.is_some()
+            || routes.decision.is_some()
+            || routes.generation.is_some();
+        let routes = any.then_some(routes);
+        // Other clients get what the routes serve, on the address the settings expose.
+        let host = shared.lock().expect("the runtime lock").host.clone();
+        let api =
+            expose(&tokio, &mut exposed, &config, routes.as_ref(), host).unwrap_or_else(|e| {
+                failures.push(e);
+                None
+            });
+        let status = if !failures.is_empty() {
+            Status::Failed(failures.join("; "))
+        } else if !any {
+            Status::NoModels
+        } else if local {
+            Status::Ready { api }
+        } else {
+            Status::Remote {
+                providers: elsewhere,
+                api,
+            }
+        };
+        set(status, routes);
     }
+    let _ = expose(&tokio, &mut exposed, &DesktopConfig::default(), None, None);
     tokio.block_on(embedded.unload());
+    tracing::info!("Runtime ended: the models are unloaded");
 }
 
 /// Adds what to do about failures the user can fix outside the app.
@@ -223,8 +699,13 @@ fn explain(error: String) -> String {
     }
 }
 
-/// The jevons-rs settings for the selected models, or `None` when none is selected.
-pub fn runtime_settings(models: &Models, file: &Path) -> Result<Option<String>, String> {
+/// The jevons-rs settings for the selected models of the capabilities `wanted` here, or `None`
+/// when there is none. A `runtime_config` file is loaded as it is.
+pub fn runtime_settings(
+    models: &Models,
+    file: &Path,
+    wanted: Local,
+) -> Result<Option<String>, String> {
     if let Some(path) = &models.runtime_config {
         let path = if path.is_relative() {
             file.parent().unwrap_or(Path::new(".")).join(path)
@@ -256,16 +737,17 @@ pub fn runtime_settings(models: &Models, file: &Path) -> Result<Option<String>, 
         names.push((model.clone(), name.clone()));
         name
     };
-    for (service, model) in [
-        ("generative", &models.generative),
-        ("decision", &models.decision),
-        ("speech", &models.speech),
+    for (service, model, wanted_here) in [
+        ("generative", &models.generative, wanted.generation),
+        ("decision", &models.decision, wanted.decision),
+        ("speech", &models.speech, wanted.speech),
     ] {
-        if let Some(model) = model {
+        if let Some(model) = model.as_ref().filter(|_| wanted_here) {
             let mut entry = toml::Table::new();
             entry.insert("model".into(), name_for(model).into());
             if service == "speech" {
-                entry.insert("realtime".into(), models.realtime.into());
+                let realtime = models.realtime && wanted.realtime;
+                entry.insert("realtime".into(), realtime.into());
             }
             services.insert(service.into(), entry.into());
         }
@@ -280,13 +762,11 @@ pub fn runtime_settings(models: &Models, file: &Path) -> Result<Option<String>, 
 
 #[cfg(feature = "embedded")]
 mod embedded {
-    use super::{Connection, Status};
+    use super::Served;
     use jevons_api::config::Settings;
     use jevons_api::{AppState, Workers};
-    use jevons_desktop_core::client::Client;
-    use jevons_desktop_core::config::DesktopConfig;
-    use jevons_desktop_core::pipeline::ServiceModels;
-    use std::net::{IpAddr, SocketAddr};
+    use jevons_desktop_server::client::Client;
+    use std::net::SocketAddr;
     use std::path::Path;
     use std::sync::Arc;
     use tokio::sync::oneshot;
@@ -298,10 +778,10 @@ mod embedded {
         workers: Workers,
     }
 
+    /// The embedded API's listener: a loopback port and a key only this app knows.
     struct Listener {
         address: SocketAddr,
-        exposed: bool,
-        key: Option<String>,
+        key: String,
         stop: oneshot::Sender<()>,
         task: JoinHandle<std::io::Result<()>>,
     }
@@ -310,6 +790,22 @@ mod embedded {
     pub struct Embedded {
         loaded: Option<Loaded>,
         listener: Option<Listener>,
+    }
+
+    /// The GPUs the models of `settings` load on. None when the settings do not parse:
+    /// loading them says so.
+    pub fn devices(settings: &str, file: &Path) -> Vec<usize> {
+        let mut devices: Vec<usize> = Settings::parse(settings, file)
+            .map(|parsed| parsed.models.values().map(|m| m.main_gpu).collect())
+            .unwrap_or_default();
+        devices.sort_unstable();
+        devices.dedup();
+        devices
+    }
+
+    /// Opens GPU `index` as loading a model does first.
+    pub fn probe_gpu(index: usize) -> Result<(), String> {
+        jevons_kernels::Gpu::new(index).map(drop)
     }
 
     impl Embedded {
@@ -334,13 +830,14 @@ mod embedded {
             }
         }
 
+        /// Loads the models of `settings` unless they are loaded, and serves them to this
+        /// app alone. The listener keeps its port and key while the models stay.
         pub fn apply(
             &mut self,
             tokio: &tokio::runtime::Runtime,
             settings: &str,
             file: &Path,
-            config: &DesktopConfig,
-        ) -> Result<(Status, Connection), String> {
+        ) -> Result<Served, String> {
             if self.needs_load(settings) {
                 tokio.block_on(self.unload());
                 let parsed = Settings::parse(settings, file).map_err(|e| e.to_string())?;
@@ -353,95 +850,65 @@ mod embedded {
                     workers,
                 });
             }
-            let server = &config.server;
-            let exposed_address = SocketAddr::new(server.bind, server.port);
-            let exposed_key = config.exposed_key();
-            let keep = self.listener.as_ref().is_some_and(|l| {
-                if server.expose {
-                    l.exposed && l.address == exposed_address && l.key == exposed_key
-                } else {
-                    // A private listener keeps its port and key while it runs.
-                    !l.exposed
-                }
-            });
-            if !keep {
-                tokio.block_on(self.stop_listener());
-                let (address, key) = if server.expose {
-                    // Without a key the exposed API is open, as jevons-rs is without one.
-                    (exposed_address, exposed_key)
-                } else {
-                    let key = format!(
-                        "{}{}",
-                        uuid::Uuid::new_v4().simple(),
-                        uuid::Uuid::new_v4().simple()
-                    );
-                    (SocketAddr::from(([127, 0, 0, 1], 0)), Some(key))
-                };
-                let loaded = self.loaded.as_ref().expect("the models are loaded");
+            let loaded = self.loaded.as_ref().expect("the models are loaded");
+            if self.listener.is_none() {
+                let key = format!(
+                    "{}{}",
+                    uuid::Uuid::new_v4().simple(),
+                    uuid::Uuid::new_v4().simple()
+                );
+                let address = SocketAddr::from(([127, 0, 0, 1], 0));
                 let listener = tokio
                     .block_on(tokio::net::TcpListener::bind(address))
                     .map_err(|e| format!("Cannot listen on {address}: {e}"))?;
                 let address = listener.local_addr().map_err(|e| e.to_string())?;
                 let state = AppState {
-                    api_key: key.as_deref().map(Arc::from),
+                    api_key: Some(Arc::from(key.as_str())),
                     ..loaded.state.clone()
                 };
                 let (stop, stopped) = oneshot::channel::<()>();
                 let task = tokio.spawn(jevons_api::serve(listener, state, async {
                     let _ = stopped.await;
                 }));
-                tracing::info!(%address, exposed = server.expose, "Serving the embedded API");
+                tracing::info!(%address, "Serving the embedded API to this app");
                 self.listener = Some(Listener {
                     address,
-                    exposed: server.expose,
                     key,
                     stop,
                     task,
                 });
             }
-            Ok(self.connection())
-        }
-
-        fn connection(&self) -> (Status, Connection) {
             let listener = self.listener.as_ref().expect("the listener runs");
-            let state = &self.loaded.as_ref().expect("the models are loaded").state;
-            let host = match listener.address.ip() {
-                IpAddr::V4(ip) if ip.is_unspecified() => IpAddr::from([127, 0, 0, 1]),
-                IpAddr::V6(ip) if ip.is_unspecified() => IpAddr::from([127, 0, 0, 1]),
-                ip => ip,
-            };
-            let base_url = format!("http://{}", SocketAddr::new(host, listener.address.port()));
-            let connection = Connection {
-                client: Client::new(&base_url, listener.key.clone()),
-                models: ServiceModels {
-                    speech: state.speech.as_ref().map(|s| s.model_id.clone()),
-                    decision: state.decision.as_ref().map(|s| s.model_id.clone()),
-                    generative: state.generative.as_ref().map(|s| s.model_id.clone()),
-                },
+            let state = &loaded.state;
+            Ok(Served {
+                client: Client::new(
+                    &format!("http://{}", listener.address),
+                    Some(listener.key.clone()),
+                ),
+                speech: state.speech.as_ref().map(|s| s.model_id.clone()),
+                decision: state.decision.as_ref().map(|s| s.model_id.clone()),
+                generation: state.generative.as_ref().map(|s| s.model_id.clone()),
                 realtime: state.speech.as_ref().is_some_and(|s| s.realtime),
-            };
-            let exposed_url = format!("http://{}", listener.address);
-            let status = Status::Ready {
-                base_url: if listener.exposed {
-                    exposed_url
-                } else {
-                    base_url
-                },
-                exposed: listener.exposed,
-            };
-            (status, connection)
+            })
         }
     }
 }
 
 #[cfg(not(feature = "embedded"))]
 mod embedded {
-    use super::{Connection, Status};
-    use jevons_desktop_core::config::DesktopConfig;
+    use super::Served;
     use std::path::Path;
 
     #[derive(Default)]
     pub struct Embedded {}
+
+    pub fn devices(_: &str, _: &Path) -> Vec<usize> {
+        Vec::new()
+    }
+
+    pub fn probe_gpu(_: usize) -> Result<(), String> {
+        Ok(())
+    }
 
     impl Embedded {
         pub fn needs_load(&self, _: &str) -> bool {
@@ -455,9 +922,11 @@ mod embedded {
             _: &tokio::runtime::Runtime,
             _: &str,
             _: &Path,
-            _: &DesktopConfig,
-        ) -> Result<(Status, Connection), String> {
-            Err("this build has no embedded runtime; use a remote server".into())
+        ) -> Result<Served, String> {
+            Err(
+                "this build has no embedded runtime: route every capability to another provider"
+                    .into(),
+            )
         }
     }
 }
@@ -465,6 +934,129 @@ mod embedded {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_gpu_that_answers_719_is_asked_again_until_it_lets_a_process_in() {
+        let refused = "the memory pools are sized against the device's capacity: DriverError \
+                       { op: \"hipMemGetInfo\", status: 719 }";
+        // Only the driver's "not yet" is waited for: a check that fails another way goes on
+        // to the load, which says what is wrong.
+        assert_eq!(classify(true, ""), Probe::Ready);
+        assert_eq!(
+            classify(
+                false,
+                &format!("thread 'DSD-0-0' panicked at runtime.rs:111:18:\n{refused}\n")
+            ),
+            Probe::Busy(refused.into())
+        );
+        assert_eq!(
+            classify(false, "Error: HIP device 0: NoDevice"),
+            Probe::Unknown
+        );
+        let every = std::time::Duration::from_millis(1);
+        let (_open, requests) = mpsc::channel::<Option<Request>>();
+        let mut answers = vec![
+            Probe::Ready,
+            Probe::Busy("719".into()),
+            Probe::Busy("719".into()),
+        ];
+        let mut told = 0;
+        let waited = wait_for_gpu(|| answers.pop().unwrap(), &requests, every, |_| told += 1);
+        assert_eq!(waited, Waited::Ready);
+        assert_eq!((told, answers.len()), (2, 0));
+        let mut told = 0;
+        let waited = wait_for_gpu(|| Probe::Unknown, &requests, every, |_| told += 1);
+        assert_eq!((waited, told), (Waited::Ready, 0));
+    }
+
+    #[test]
+    fn quitting_or_newer_settings_end_a_wait_for_the_gpu_at_once() {
+        let busy = || Probe::Busy("719".into());
+        // Long enough that only a request can end the wait within the test.
+        let every = std::time::Duration::from_secs(600);
+        let request = |name: &str| Some((DesktopConfig::default(), PathBuf::from(name)));
+        let (apply, requests) = mpsc::channel();
+        apply.send(None).unwrap();
+        assert_eq!(wait_for_gpu(busy, &requests, every, |_| {}), Waited::Ended);
+        // The latest of the settings that came meanwhile replace those that waited.
+        apply.send(request("second")).unwrap();
+        apply.send(request("third")).unwrap();
+        match wait_for_gpu(busy, &requests, every, |_| {}) {
+            Waited::Newer(request) => assert_eq!(request.1, PathBuf::from("third")),
+            other => panic!("{other:?}"),
+        }
+        // A shutdown queued behind them still ends everything.
+        apply.send(request("fourth")).unwrap();
+        apply.send(None).unwrap();
+        assert_eq!(wait_for_gpu(busy, &requests, every, |_| {}), Waited::Ended);
+        // The thread that sends is gone: nothing more will come.
+        drop(apply);
+        assert_eq!(wait_for_gpu(busy, &requests, every, |_| {}), Waited::Ended);
+        // What the user reads while it lasts, and what to do once it has lasted.
+        let first = Status::WaitingForGpu { advice: false }.describe();
+        let later = Status::WaitingForGpu { advice: true }.describe();
+        assert!(
+            first.contains("719") && !first.contains("Win+Ctrl+Shift+B"),
+            "{first}"
+        );
+        assert!(later.contains("Win+Ctrl+Shift+B"), "{later}");
+    }
+
+    #[test]
+    fn shutdown_returns_once_the_runtime_thread_has_ended() {
+        // A run that ends early, on an error, shuts down through its guard.
+        let runtime = Runtime::start(|| {});
+        drop(ShutdownOnDrop(runtime.clone()));
+        // The thread is over by now, not on its way out: nothing listens for settings any
+        // more. Before, the process could end while the thread still unloaded the models.
+        assert!(
+            runtime.apply.send(None).is_err(),
+            "the runtime thread still runs after shutdown"
+        );
+        // Shutting down again, as an explicit call after a guard would, returns at once.
+        let again = std::time::Instant::now();
+        runtime.shutdown();
+        assert!(again.elapsed() < UNLOAD_LIMIT / 10);
+    }
+
+    #[test]
+    fn a_shutdown_queued_behind_settings_is_not_lost() {
+        let request = |name: &str| Some((DesktopConfig::default(), PathBuf::from(name)));
+        let queue = |queued: Vec<Option<Request>>| {
+            let (apply, requests) = mpsc::channel();
+            for request in queued {
+                apply.send(request).unwrap();
+            }
+            // Kept open: an empty queue is not a closed one.
+            (apply, requests)
+        };
+        let file = |next: Option<Request>| next.map(|(_, file)| file);
+        // Only the latest settings are applied.
+        let (_open, requests) = queue(vec![request("second"), request("third")]);
+        assert_eq!(
+            file(latest(request("first").unwrap(), &requests)),
+            Some(PathBuf::from("third"))
+        );
+        let (_open, requests) = queue(Vec::new());
+        assert_eq!(
+            file(latest(request("only").unwrap(), &requests)),
+            Some(PathBuf::from("only"))
+        );
+        // Settings were saved while the models loaded, then the user quit: the thread ends
+        // and loads nothing more. Before, the shutdown was taken off the queue and dropped,
+        // and the thread waited for settings for ever.
+        let (_open, requests) = queue(vec![request("saved"), None]);
+        assert!(latest(request("loading").unwrap(), &requests).is_none());
+        let (_open, requests) = queue(vec![None, request("later")]);
+        assert!(latest(request("loading").unwrap(), &requests).is_none());
+    }
+
+    const ALL: Local = Local {
+        speech: true,
+        realtime: true,
+        decision: true,
+        generation: true,
+    };
 
     fn model(path: &str) -> Option<ModelRef> {
         Some(ModelRef {
@@ -483,9 +1075,8 @@ mod tests {
             realtime: false,
             ..Models::default()
         };
-        let text = runtime_settings(&models, Path::new("/c/jevons-desktop.toml"))
-            .unwrap()
-            .unwrap();
+        let file = Path::new("/c/jevons-desktop.toml");
+        let text = runtime_settings(&models, file, ALL).unwrap().unwrap();
         let table: toml::Table = toml::from_str(&text).unwrap();
         assert_eq!(table["models"].as_table().unwrap().len(), 2);
         assert_eq!(
@@ -508,9 +1099,184 @@ mod tests {
     #[test]
     fn no_selected_model_means_no_runtime() {
         assert_eq!(
-            runtime_settings(&Models::default(), Path::new("x.toml")).unwrap(),
+            runtime_settings(&Models::default(), Path::new("x.toml"), ALL).unwrap(),
             None
         );
+    }
+
+    fn config(text: &str) -> DesktopConfig {
+        let config: DesktopConfig = toml::from_str(text).unwrap();
+        assert_eq!(config.check_routes(), Ok(()));
+        config
+    }
+
+    const ELSEWHERE: &str = r#"
+[providers.openrouter]
+kind = "openrouter"
+min_probability = 0.6
+
+[providers.box]
+kind = "jevons"
+
+[routes]
+decision = { provider = "openrouter", model = "typesafe/jev-1.13" }
+generation = { provider = "box" }
+"#;
+
+    #[test]
+    fn only_the_models_of_capabilities_routed_here_are_loaded() {
+        // Decisions and generation go elsewhere: the language model is not loaded.
+        let wanted = Local::of(&config(ELSEWHERE));
+        assert_eq!(
+            wanted,
+            Local {
+                speech: true,
+                realtime: true,
+                decision: false,
+                generation: false
+            }
+        );
+        let models = Models {
+            generative: model("/m/gemma"),
+            decision: model("/m/gemma"),
+            speech: model("/m/parakeet"),
+            ..Models::default()
+        };
+        let file = Path::new("/c/jevons-desktop.toml");
+        let text = runtime_settings(&models, file, wanted).unwrap().unwrap();
+        let table: toml::Table = toml::from_str(&text).unwrap();
+        assert_eq!(table["models"].as_table().unwrap().len(), 1);
+        let services = table["services"].as_table().unwrap();
+        assert_eq!(services.keys().collect::<Vec<_>>(), ["speech"]);
+        assert_eq!(services["speech"]["realtime"].as_bool(), Some(true));
+        // With every capability elsewhere, nothing is.
+        let none = Local::of(&config(
+            "[providers.box]\nkind = \"jevons\"\n[routes]\nspeech = { provider = \"box\" }\n\
+             decision = { provider = \"box\" }\ngeneration = { provider = \"box\" }\n",
+        ));
+        assert_eq!(none, Local::default());
+        assert_eq!(runtime_settings(&models, file, none).unwrap(), None);
+        // By default all of them are here.
+        assert_eq!(Local::of(&DesktopConfig::default()), ALL);
+    }
+
+    #[test]
+    fn exposing_the_api_serves_what_the_routes_serve_until_it_is_turned_off() {
+        let tokio = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let free = || {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let mut config = DesktopConfig::default();
+        config.server.expose = true;
+        config.server.port = free();
+        let route = |model: &str| Routes {
+            decision: Some(Route::ours(
+                Client::new("http://127.0.0.1:1", None),
+                "box",
+                model,
+            )),
+            ..Routes::default()
+        };
+        let health = |api: &str| tokio.block_on(Client::new(api, None).health());
+        let mut exposed = None;
+        // Private: nothing listens, and there is no address to give.
+        config.server.expose = false;
+        let api = expose(&tokio, &mut exposed, &config, Some(&route("jev")), None).unwrap();
+        assert!(api.is_none() && exposed.is_none());
+        // Exposed: other clients see what the routes serve.
+        config.server.expose = true;
+        let api = expose(&tokio, &mut exposed, &config, Some(&route("jev")), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(api, format!("http://127.0.0.1:{}", config.server.port));
+        assert_eq!(
+            health(&api).unwrap().services.decision.as_deref(),
+            Some("jev")
+        );
+        // New routes are served by the same listener.
+        expose(&tokio, &mut exposed, &config, Some(&route("gemma")), None).unwrap();
+        assert_eq!(
+            health(&api).unwrap().services.decision.as_deref(),
+            Some("gemma")
+        );
+        // Another port moves it.
+        let old = api;
+        config.server.port = free();
+        let api = expose(&tokio, &mut exposed, &config, Some(&route("gemma")), None)
+            .unwrap()
+            .unwrap();
+        assert!(health(&old).is_err());
+        assert!(health(&api).is_ok());
+        // An address that is taken says so.
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut elsewhere = config.clone();
+        elsewhere.server.port = taken.local_addr().unwrap().port();
+        let mut second = None;
+        let error = expose(&tokio, &mut second, &elsewhere, Some(&route("jev")), None).unwrap_err();
+        assert!(error.starts_with("Cannot listen on 127.0.0.1:"), "{error}");
+        // With nothing served, or turned off, it stops.
+        assert_eq!(expose(&tokio, &mut exposed, &config, None, None), Ok(None));
+        assert!(exposed.is_none() && health(&api).is_err());
+    }
+
+    #[test]
+    fn each_route_takes_its_own_model_or_the_one_its_provider_names() {
+        let client = |port: u16| Client::new(&format!("http://127.0.0.1:{port}"), None);
+        let served = BTreeMap::from([
+            (
+                "embedded".to_string(),
+                Served {
+                    speech: Some("parakeet".into()),
+                    decision: Some("gemma".into()),
+                    generation: Some("gemma".into()),
+                    realtime: true,
+                    client: client(1),
+                },
+            ),
+            ("openrouter".to_string(), Served::unnamed(client(2))),
+            (
+                "box".to_string(),
+                Served {
+                    generation: Some("nemotron".into()),
+                    ..Served::unnamed(client(3))
+                },
+            ),
+        ]);
+        let config = config(ELSEWHERE);
+        let all = routes(&config, &served);
+        let named = |route: &Option<Route>| route.as_ref().map(Route::name);
+        assert_eq!(named(&all.speech).as_deref(), Some("embedded/parakeet"));
+        assert_eq!(named(&all.realtime).as_deref(), Some("embedded/parakeet"));
+        assert_eq!(
+            named(&all.decision).as_deref(),
+            Some("openrouter/typesafe/jev-1.13")
+        );
+        assert_eq!(named(&all.generation).as_deref(), Some("box/nemotron"));
+        assert_eq!(all.generation.unwrap().client.base(), "http://127.0.0.1:3");
+        // Each route carries its provider's profile, with what the settings set of it.
+        let decision = all.decision.unwrap().profile;
+        assert_eq!(
+            (
+                decision.steps,
+                decision.max_questions,
+                decision.min_probability
+            ),
+            (false, Some(8), 0.6)
+        );
+        assert_eq!(all.speech.unwrap().profile, Profile::ours());
+        // A provider that does not answer leaves its capabilities unserved, and so does one
+        // that names no model for them; speech that does not stream leaves Realtime off.
+        let mut partial = served.clone();
+        partial.remove("openrouter");
+        partial.get_mut("box").unwrap().generation = None;
+        partial.get_mut("embedded").unwrap().realtime = false;
+        let left = routes(&config, &partial);
+        assert!(left.decision.is_none() && left.generation.is_none());
+        assert!(left.speech.is_some() && left.realtime.is_none());
     }
 
     #[cfg(feature = "embedded")]
@@ -522,7 +1288,7 @@ mod tests {
             ..Models::default()
         };
         let file = Path::new("/c/jevons-desktop.toml");
-        let text = runtime_settings(&models, file).unwrap().unwrap();
+        let text = runtime_settings(&models, file, ALL).unwrap().unwrap();
         let settings = jevons_api::config::Settings::parse(&text, file).unwrap();
         assert!(settings.services.speech.unwrap().realtime);
     }

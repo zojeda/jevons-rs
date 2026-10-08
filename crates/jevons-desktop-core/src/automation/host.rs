@@ -6,9 +6,7 @@ use super::engine::{Confirm, Progress};
 use super::library::{Automation, Library};
 use super::run::{self, AutomationError, ErrorKind, RunEnv, RunTrace};
 use crate::config::AutomationSettings;
-use crate::flow::investigate::Progress as Told;
 use crate::platform::{ContextInspector, UiActor};
-use adk_core::{Tool, ToolContext, async_trait};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -91,12 +89,21 @@ impl AutomationHost {
         self.settings.read().expect("the settings lock").clone()
     }
 
+    /// Whether automations are on. They are coming soon: until the settings turn them on,
+    /// none is listed and none runs.
+    pub fn enabled(&self) -> bool {
+        self.settings.read().expect("the settings lock").enabled
+    }
+
     pub fn is_approved(&self, automation: &Automation) -> bool {
         automation.is_approved(&self.settings.read().expect("the settings lock").approved)
     }
 
-    /// Every automation, approved or not.
+    /// Every automation, approved or not; none while automations are off.
     pub fn list(&self) -> Vec<Listed> {
+        if !self.enabled() {
+            return Vec::new();
+        }
         let library = self.library();
         library
             .automations
@@ -142,6 +149,15 @@ impl AutomationHost {
         cancel: Arc<AtomicBool>,
         step_by_step: bool,
     ) -> RunTrace {
+        if !self.enabled() {
+            return failed(
+                name,
+                ErrorKind::Invalid,
+                "automations are coming soon: they are off until `enabled = true` under \
+                 [automation] in the settings"
+                    .into(),
+            );
+        }
         let library = self.library();
         let Some(automation) = library.get(name) else {
             return failed(
@@ -215,22 +231,32 @@ impl AutomationHost {
         }
     }
 
-    /// `script:<name>` tools for the named automations (`*` for all).
-    pub fn tools(self: &Arc<Self>, wanted: &str) -> Vec<Arc<dyn Tool>> {
-        self.library()
-            .automations
-            .values()
-            .filter(|a| wanted == "*" || a.name == wanted)
-            .map(|a| {
-                Arc::new(ScriptTool {
-                    host: self.clone(),
-                    automation: a.name.clone(),
-                    name: format!("{SERVER}__{}", a.name),
-                    description: a.manifest.description.clone(),
-                    parameters: a.manifest.parameters(),
-                }) as Arc<dyn Tool>
-            })
-            .collect()
+    /// Runs an approved automation as a tool: its answer alone, which is what the bubble or
+    /// the next node reads. It blocks: call it off the async workers.
+    pub fn call(&self, name: &str, arguments: &Value) -> Result<Value, String> {
+        let arguments = arguments.as_object().cloned().unwrap_or_default();
+        let step_by_step = self
+            .step_next
+            .swap(false, std::sync::atomic::Ordering::Relaxed);
+        let trace = self.run(
+            name,
+            &arguments,
+            None,
+            Arc::new(AtomicBool::new(false)),
+            step_by_step,
+        );
+        match &trace.error {
+            None => Ok(match trace.result.clone() {
+                Some(Value::Null) | None => json!({"done": true}),
+                Some(result) => result,
+            }),
+            Some(error) => Err(match (error.line, error.column) {
+                (Some(line), Some(column)) => {
+                    format!("{} (script.rhai:{line}:{column})", error.message)
+                }
+                _ => error.message.clone(),
+            }),
+        }
     }
 }
 
@@ -250,73 +276,11 @@ fn failed(name: &str, kind: ErrorKind, message: String) -> RunTrace {
     }
 }
 
-/// An automation as a tool.
-struct ScriptTool {
-    host: Arc<AutomationHost>,
-    automation: String,
-    /// `script__<automation>`, as the model names it.
-    name: String,
-    description: String,
-    parameters: Value,
-}
-
-#[async_trait]
-impl Tool for ScriptTool {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn description(&self) -> &str {
-        &self.description
-    }
-
-    fn parameters_schema(&self) -> Option<Value> {
-        Some(self.parameters.clone())
-    }
-
-    async fn execute(&self, _: Arc<dyn ToolContext>, args: Value) -> adk_core::Result<Value> {
-        let host = self.host.clone();
-        let name = self.automation.clone();
-        let arguments = args.as_object().cloned().unwrap_or_default();
-        let trace = tokio::task::spawn_blocking(move || {
-            let step_by_step = host
-                .step_next
-                .swap(false, std::sync::atomic::Ordering::Relaxed);
-            host.run(
-                &name,
-                &arguments,
-                None,
-                Arc::new(AtomicBool::new(false)),
-                step_by_step,
-            )
-        })
-        .await
-        .map_err(|e| adk_core::AdkError::tool(e.to_string()))?;
-        match &trace.error {
-            // The answer alone: it is what the bubble or the next node reads.
-            None => Ok(match trace.result.clone() {
-                Some(Value::Null) | None => json!({"done": true}),
-                Some(result) => result,
-            }),
-            Some(error) => Err(adk_core::AdkError::tool(match (error.line, error.column) {
-                (Some(line), Some(column)) => {
-                    format!("{} (script.rhai:{line}:{column})", error.message)
-                }
-                _ => error.message.clone(),
-            })),
-        }
-    }
-}
-
-/// Turns a flow step's progress callback into an automation's.
-pub fn progress_of(told: Option<Told>) -> Option<Progress> {
-    told.map(|told| Arc::new(move |label: &str| told(label)) as Progress)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recorded::{ReplayActor, tests::slack_demonstration};
+    use crate::fake::slack_demonstration;
+    use crate::recorded::ReplayActor;
 
     fn library_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("jevons-host-{name}-{}", std::process::id()));
@@ -335,14 +299,18 @@ mod tests {
         dir
     }
 
-    #[tokio::test]
-    async fn only_approved_versions_run_and_tools_carry_their_arguments() {
+    #[test]
+    fn only_approved_versions_run_and_tools_carry_their_arguments() {
         let dir = library_dir("approve");
         let (demonstration, _, _) = slack_demonstration();
         let replay = Arc::new(ReplayActor::new(demonstration));
+        let on = AutomationSettings {
+            enabled: true,
+            ..AutomationSettings::default()
+        };
         let host = Arc::new(AutomationHost::new(
             &dir,
-            AutomationSettings::default(),
+            on.clone(),
             replay.clone(),
             replay.clone(),
         ));
@@ -354,24 +322,51 @@ mod tests {
         let refused = host.run("post", &args, None, Arc::new(AtomicBool::new(false)), false);
         assert_eq!(refused.error.unwrap().kind, ErrorKind::NotApproved);
         assert_eq!(replay.done(), 0);
-        let mut settings = AutomationSettings::default();
+        let mut settings = on;
         settings
             .approved
             .insert("post".into(), listed[0].version.clone());
-        host.set_settings(settings);
-        let tools = host.tools("*");
-        assert_eq!(tools[0].name(), "script__post");
-        let ctx: Arc<dyn ToolContext> = Arc::new(adk_tool::SimpleToolContext::new("test"));
-        let result = tools[0]
-            .execute(ctx, json!({"channel": "random"}))
-            .await
-            .unwrap();
+        host.set_settings(settings.clone());
+        // As a tool, it answers with its result alone.
+        let result = host.call("post", &json!({"channel": "random"})).unwrap();
         assert_eq!(result, json!({"opened": "random"}));
         assert_eq!(replay.done(), 1);
         // Editing the script unpins it.
         std::fs::write(dir.join("post/script.rhai"), "#{ opened: \"x\" }\n").unwrap();
         host.reload();
         assert!(!host.list()[0].approved);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn automations_are_off_until_the_settings_turn_them_on() {
+        let dir = library_dir("soon");
+        let (demonstration, _, _) = slack_demonstration();
+        let replay = Arc::new(ReplayActor::new(demonstration));
+        let host = Arc::new(AutomationHost::new(
+            &dir,
+            AutomationSettings::default(),
+            replay.clone(),
+            replay.clone(),
+        ));
+        // The library holds one, and the host lists none: no tool, no menu entry.
+        assert_eq!(host.library().automations.len(), 1);
+        assert!(!host.enabled() && host.list().is_empty());
+        // Approved or not, it does not run.
+        let mut settings = AutomationSettings::default();
+        let version = host.library().automations["post"].version.clone();
+        settings.approved.insert("post".into(), version);
+        host.set_settings(settings.clone());
+        let error = host
+            .call("post", &json!({"channel": "random"}))
+            .unwrap_err();
+        assert!(error.contains("coming soon"), "{error}");
+        assert_eq!(replay.done(), 0);
+        // Turned on, the same approval lets it run.
+        settings.enabled = true;
+        host.set_settings(settings);
+        assert!(host.list()[0].approved);
+        assert!(host.call("post", &json!({"channel": "random"})).is_ok());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

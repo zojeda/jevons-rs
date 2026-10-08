@@ -1,7 +1,7 @@
 //! The window: a top bar with the tabs, the page, and a status bar with the live text.
 
 use super::components::badge;
-use super::{Ctx, context, flows, models, settings, takes};
+use super::{Ctx, context, flows, machines, models, settings, takes};
 use crate::runtime::Status;
 use dioxus::prelude::*;
 
@@ -10,14 +10,16 @@ enum Tab {
     Context,
     Takes,
     Flows,
+    Machines,
     Settings,
     Models,
 }
 
-const TABS: [(Tab, &str); 5] = [
+const TABS: [(Tab, &str); 6] = [
     (Tab::Context, "Context"),
     (Tab::Takes, "Takes"),
     (Tab::Flows, "Flows"),
+    (Tab::Machines, "Machines"),
     (Tab::Settings, "Settings"),
     (Tab::Models, "Models"),
 ];
@@ -40,8 +42,17 @@ pub fn App() -> Element {
 
     let mut view = ctx.view.lock().expect("the view lock");
     draft.follow(&view.config);
+    // A machine picked in the tray menu shows in the Machines tab, whichever tab was open,
+    // until another tab is picked here. The tab is read either way: a render that does not
+    // read it would not follow the next pick.
+    let picked = tab();
+    let shown = if view.machines_tab {
+        Tab::Machines
+    } else {
+        picked
+    };
     // The agent reads the focused window twice a second while the Context tab shows it.
-    view.watch_context = tab() == Tab::Context && !frozen();
+    view.watch_context = shown == Tab::Context && !frozen();
     let (label, status, status_style) = match &view.runtime {
         Some(status @ Status::Ready { .. }) | Some(status @ Status::Remote { .. }) => {
             (status.label(), status.describe(), "success")
@@ -59,8 +70,8 @@ pub fn App() -> Element {
         .trim_start_matches("jevons: ")
         .to_string();
     let verb = |mode| match mode {
-        jevons_desktop_core::config::HotkeyMode::Hold => "hold",
-        jevons_desktop_core::config::HotkeyMode::Toggle => "press",
+        crate::config::HotkeyMode::Hold => "hold",
+        crate::config::HotkeyMode::Toggle => "press",
     };
     let hotkey = format!(
         "{} {}",
@@ -88,7 +99,14 @@ pub fn App() -> Element {
                 div { class: "brand",
                     span { class: "brand-name", "jevons" }
                     if to_models {
-                        button { class: "badge-button", onclick: move |_| tab.set(Tab::Models),
+                        button { class: "badge-button",
+                            onclick: {
+                                let ctx = ctx.clone();
+                                move |_| {
+                                    ctx.leave_machine();
+                                    tab.set(Tab::Models);
+                                }
+                            },
                             {badge(&format!("{label}: open Models"), status_style)}
                         }
                     } else {
@@ -102,8 +120,19 @@ pub fn App() -> Element {
                     {TABS.iter().map(|&(t, label)| rsx! {
                         button {
                             class: "dx-tabs-trigger",
-                            "data-state": if tab() == t { "active" } else { "inactive" },
-                            onclick: move |_| tab.set(t),
+                            "data-state": if shown == t { "active" } else { "inactive" },
+                            onclick: {
+                                let ctx = ctx.clone();
+                                move |_| {
+                                    if t == Tab::Machines {
+                                        // Its tab, picked by hand: the machine stays.
+                                        ctx.view.lock().expect("the view lock").machines_tab = false;
+                                    } else {
+                                        ctx.leave_machine();
+                                    }
+                                    tab.set(t);
+                                }
+                            },
                             "{label}"
                             if t == Tab::Settings && unsaved {
                                 span { class: "tab-dot", title: "Unsaved settings" }
@@ -113,16 +142,17 @@ pub fn App() -> Element {
                 }
             }
             div { class: "page",
-                "data-dirty": if tab() == Tab::Settings && unsaved { "true" } else { "false" },
-                match tab() {
+                "data-dirty": if shown == Tab::Settings && unsaved { "true" } else { "false" },
+                match shown {
                     Tab::Context => rsx! { context::ContextPage { rev, frozen } },
                     Tab::Takes => rsx! { takes::TakesPage { rev } },
                     Tab::Flows => rsx! { flows::FlowsPage { rev } },
+                    Tab::Machines => rsx! { machines::MachinesPage { rev } },
                     Tab::Settings => rsx! { settings::SettingsPage { rev } },
                     Tab::Models => rsx! { models::ModelsPage { rev } },
                 }
             }
-            if tab() == Tab::Settings && unsaved {
+            if shown == Tab::Settings && unsaved {
                 {settings::footer(&ctx, draft)}
             }
             if let Some(text) = hearing {
