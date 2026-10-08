@@ -22,6 +22,8 @@ pub fn cache_dir() -> PathBuf {
 /// dropped model stays reserved (on APUs device memory is system memory) and a process that
 /// ends holds none of it. A device that fails here is left as it is: a panic in a release that
 /// runs while its thread unwinds would abort the process in the middle of a call to the driver.
+/// The log says what the device held reserved before and after, or why it released nothing: a
+/// release that failed must not read as one that ran.
 pub struct ReleaseOnDrop(Device);
 
 impl ReleaseOnDrop {
@@ -33,11 +35,37 @@ impl ReleaseOnDrop {
 impl Drop for ReleaseOnDrop {
     fn drop(&mut self) {
         let device = &self.0;
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = device.sync();
+        let started = std::time::Instant::now();
+        let reserved = || device.memory_pool_usage().map(|usage| usage.bytes_reserved);
+        let released = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let before = reserved();
+            // The cleanup runs also after a sync that failed: it frees what it can.
+            let queued = device.sync();
             device.memory_cleanup();
-            let _ = device.sync();
+            let freed = device.sync();
+            queued.and(freed).map(|()| (before, reserved()))
         }));
+        let ms = started.elapsed().as_millis() as u64;
+        match released {
+            Ok(Ok((reserved_before, reserved_after))) => {
+                tracing::info!(
+                    ?reserved_before,
+                    ?reserved_after,
+                    ms,
+                    "Device memory released"
+                );
+            }
+            Ok(Err(error)) => tracing::warn!(
+                %error,
+                ms,
+                "The device did not release a dropped model's memory"
+            ),
+            Err(panic) => tracing::warn!(
+                error = jevons_kernels::panic_message(&*panic),
+                ms,
+                "The device did not release a dropped model's memory"
+            ),
+        }
     }
 }
 

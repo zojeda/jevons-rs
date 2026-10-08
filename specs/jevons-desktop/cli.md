@@ -168,3 +168,13 @@ back are printed as R4 prints them: the same traces as in one process. A server 
 the client fails the command with its reason.
 
 Tests: `a_take_over_a_stream_is_the_take_run_directly`
+
+### R17 `--probe-gpu <index>` checks that a GPU answers
+
+`--probe-gpu <index>` opens that GPU as loading a model does first, and exits: with success
+when the device lets the process in, and with a failure and the driver's status on standard
+error when it does not. It reads no settings and opens no log. It is hidden from `--help`: the
+app runs it in a copy of itself before it first loads models ([runtime](runtime.md) R13). In a
+build without the embedded runtime it succeeds without checking anything.
+
+Tests: none yet

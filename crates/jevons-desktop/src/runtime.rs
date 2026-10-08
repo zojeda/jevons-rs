@@ -19,6 +19,11 @@ use std::sync::{Arc, Mutex, mpsc};
 pub enum Status {
     /// Nothing serves any capability: no models are selected, and no route goes elsewhere.
     NoModels,
+    /// The GPU does not let a new process in yet (HIP status 719): the app asks again until
+    /// it does. `advice` once that has lasted long enough to say what the user can do.
+    WaitingForGpu {
+        advice: bool,
+    },
     Loading,
     /// The app's models are loaded. `api` is where other clients reach the API, when it is
     /// exposed.
@@ -38,6 +43,7 @@ impl Status {
     pub fn label(&self) -> &'static str {
         match self {
             Self::NoModels => "No models",
+            Self::WaitingForGpu { .. } => "Waiting for the GPU",
             Self::Loading => "Loading models",
             Self::Ready { api: Some(_) } | Self::Remote { api: Some(_), .. } => "Serving the API",
             Self::Ready { .. } => "Ready",
@@ -49,6 +55,17 @@ impl Status {
     pub fn describe(&self) -> String {
         match self {
             Self::NoModels => "No models yet: download them in the Models tab".into(),
+            Self::WaitingForGpu { advice: false } => {
+                "The GPU does not take new work yet (HIP status 719): trying again every few \
+                 seconds…"
+                    .into()
+            }
+            Self::WaitingForGpu { advice: true } => {
+                "The GPU still does not take new work (HIP status 719): trying again every few \
+                 seconds. If it stays so, restart the graphics driver (Win+Ctrl+Shift+B on \
+                 Windows) or the computer."
+                    .into()
+            }
             Self::Loading => "Loading models…".into(),
             Self::Ready { api: Some(api) } => format!("Serving the API on {api}"),
             Self::Ready { api: None } => "Models loaded (API private to this app)".into(),
@@ -267,6 +284,149 @@ fn latest(first: Request, requests: &mpsc::Receiver<Option<Request>>) -> Option<
     }
 }
 
+/// How long a GPU that does not answer is left alone before it is asked again.
+const GPU_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long the wait lasts before the status also says what the user can do about it. The
+/// driver has cleared by itself within about two minutes whenever it cleared at all.
+const GPU_PATIENCE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// How long one check of a GPU may take before it counts as no answer.
+const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// What a check of a GPU found, before the first model is loaded.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Probe {
+    /// It lets a new process in.
+    Ready,
+    /// It does not, yet: what it answered.
+    Busy(String),
+    /// The check failed some other way; loading the models says what is wrong.
+    Unknown,
+}
+
+/// Reads the outcome of a check that ran in a process of its own. HIP status 719 is what the
+/// AMD driver answers to a new process for a while after any process moved gigabytes of GPU
+/// memory: a process that is already in keeps working, and the driver clears by itself or
+/// with a restart of the graphics driver.
+fn classify(success: bool, errors: &str) -> Probe {
+    if success {
+        return Probe::Ready;
+    }
+    match errors.lines().find(|line| line.contains("status: 719")) {
+        Some(line) => Probe::Busy(line.trim().to_string()),
+        None => Probe::Unknown,
+    }
+}
+
+/// Whether GPU `index` answers, for the copy of this program that [`probe`] starts: it ends
+/// with a failure, and the driver's status in what it prints, when the device does not.
+pub fn probe_gpu(index: usize) -> Result<(), Box<dyn std::error::Error>> {
+    embedded::probe_gpu(index).map_err(Into::into)
+}
+
+/// Asks a copy of this program whether each of `devices` lets a new process in. A process of
+/// its own, since a process the GPU refused may not get the device later.
+fn probe(devices: &[usize]) -> Probe {
+    for index in devices {
+        let found = probe_in_a_process(*index);
+        if found != Probe::Ready {
+            return found;
+        }
+    }
+    Probe::Ready
+}
+
+fn probe_in_a_process(index: usize) -> Probe {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    let Ok(program) = std::env::current_exe() else {
+        return Probe::Unknown;
+    };
+    let mut command = Command::new(program);
+    command
+        .arg("--probe-gpu")
+        .arg(index.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flashes up.
+    }
+    let Ok(mut child) = command.spawn() else {
+        return Probe::Unknown;
+    };
+    let errors = child.stderr.take();
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(mut errors) = errors {
+            let _ = errors.read_to_string(&mut text);
+        }
+        text
+    });
+    let started = std::time::Instant::now();
+    let ended = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if started.elapsed() < PROBE_LIMIT => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    let text = reader.join().unwrap_or_default();
+    match ended {
+        Some(status) => classify(status.success(), &text),
+        None => Probe::Busy("the check did not finish".into()),
+    }
+}
+
+/// How a wait for the GPU ended.
+#[derive(Debug, PartialEq)]
+enum Waited {
+    /// The GPU answers, or the check cannot tell: the models load.
+    Ready,
+    /// A shutdown came first.
+    Ended,
+    /// Newer settings came first: they are applied in place of those that waited.
+    Newer(Box<Request>),
+}
+
+/// Asks `probe` until the GPU lets a new process in, `every` so often, and tells `waiting` how
+/// long that has lasted each time it does not. A shutdown or newer settings end the wait at
+/// once: quitting never waits for a GPU.
+fn wait_for_gpu(
+    mut probe: impl FnMut() -> Probe,
+    requests: &mpsc::Receiver<Option<Request>>,
+    every: std::time::Duration,
+    mut waiting: impl FnMut(std::time::Duration),
+) -> Waited {
+    let started = std::time::Instant::now();
+    loop {
+        let Probe::Busy(answer) = probe() else {
+            return Waited::Ready;
+        };
+        tracing::warn!(%answer, "The GPU does not take a new process yet");
+        waiting(started.elapsed());
+        match requests.recv_timeout(every) {
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Ok(Some(newer)) => {
+                return match latest(newer, requests) {
+                    Some(request) => Waited::Newer(Box::new(request)),
+                    None => Waited::Ended,
+                };
+            }
+            Ok(None) | Err(mpsc::RecvTimeoutError::Disconnected) => return Waited::Ended,
+        }
+    }
+}
+
 /// Handle to the runtime thread.
 #[derive(Clone)]
 pub struct Runtime {
@@ -339,6 +499,13 @@ impl Runtime {
         }
     }
 
+    /// Whether the runtime thread has ended.
+    #[cfg(test)]
+    pub fn has_ended(&self) -> bool {
+        let ended = self.ended.lock().expect("the runtime lock");
+        matches!(ended.try_recv(), Err(mpsc::TryRecvError::Disconnected))
+    }
+
     pub fn status(&self) -> Status {
         self.shared.lock().expect("the runtime lock").status.clone()
     }
@@ -372,7 +539,18 @@ fn run(requests: mpsc::Receiver<Option<Request>>, shared: Arc<Mutex<Shared>>, ch
     };
     let mut embedded = embedded::Embedded::default();
     let mut exposed: Option<Exposed> = None;
-    while let Ok(Some(first)) = requests.recv() {
+    // A process the GPU let in stays in: only the first load asks.
+    let mut gpu_answered = false;
+    // Settings that arrived while the GPU was waited for.
+    let mut next: Option<Request> = None;
+    loop {
+        let first = match next.take() {
+            Some(request) => request,
+            None => match requests.recv() {
+                Ok(Some(request)) => request,
+                _ => break,
+            },
+        };
         let Some((config, file)) = latest(first, &requests) else {
             break;
         };
@@ -405,6 +583,30 @@ fn run(requests: mpsc::Receiver<Option<Request>>, shared: Arc<Mutex<Shared>>, ch
         match settings {
             Some(settings) => {
                 if embedded.needs_load(&settings) {
+                    if !gpu_answered {
+                        let devices = embedded::devices(&settings, &file);
+                        let mut said = None;
+                        let waited = wait_for_gpu(
+                            || probe(&devices),
+                            &requests,
+                            GPU_RETRY,
+                            |lasted| {
+                                let advice = lasted >= GPU_PATIENCE;
+                                if said != Some(advice) {
+                                    said = Some(advice);
+                                    set(Status::WaitingForGpu { advice }, None);
+                                }
+                            },
+                        );
+                        match waited {
+                            Waited::Ready => gpu_answered = true,
+                            Waited::Ended => break,
+                            Waited::Newer(request) => {
+                                next = Some(*request);
+                                continue;
+                            }
+                        }
+                    }
                     set(Status::Loading, None);
                 }
                 match embedded.apply(&tokio, &settings, &file) {
@@ -590,6 +792,22 @@ mod embedded {
         listener: Option<Listener>,
     }
 
+    /// The GPUs the models of `settings` load on. None when the settings do not parse:
+    /// loading them says so.
+    pub fn devices(settings: &str, file: &Path) -> Vec<usize> {
+        let mut devices: Vec<usize> = Settings::parse(settings, file)
+            .map(|parsed| parsed.models.values().map(|m| m.main_gpu).collect())
+            .unwrap_or_default();
+        devices.sort_unstable();
+        devices.dedup();
+        devices
+    }
+
+    /// Opens GPU `index` as loading a model does first.
+    pub fn probe_gpu(index: usize) -> Result<(), String> {
+        jevons_kernels::Gpu::new(index).map(drop)
+    }
+
     impl Embedded {
         pub fn needs_load(&self, settings: &str) -> bool {
             self.loaded.as_ref().is_none_or(|l| l.settings != settings)
@@ -684,6 +902,14 @@ mod embedded {
     #[derive(Default)]
     pub struct Embedded {}
 
+    pub fn devices(_: &str, _: &Path) -> Vec<usize> {
+        Vec::new()
+    }
+
+    pub fn probe_gpu(_: usize) -> Result<(), String> {
+        Ok(())
+    }
+
     impl Embedded {
         pub fn needs_load(&self, _: &str) -> bool {
             false
@@ -708,6 +934,73 @@ mod embedded {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_gpu_that_answers_719_is_asked_again_until_it_lets_a_process_in() {
+        let refused = "the memory pools are sized against the device's capacity: DriverError \
+                       { op: \"hipMemGetInfo\", status: 719 }";
+        // Only the driver's "not yet" is waited for: a check that fails another way goes on
+        // to the load, which says what is wrong.
+        assert_eq!(classify(true, ""), Probe::Ready);
+        assert_eq!(
+            classify(
+                false,
+                &format!("thread 'DSD-0-0' panicked at runtime.rs:111:18:\n{refused}\n")
+            ),
+            Probe::Busy(refused.into())
+        );
+        assert_eq!(
+            classify(false, "Error: HIP device 0: NoDevice"),
+            Probe::Unknown
+        );
+        let every = std::time::Duration::from_millis(1);
+        let (_open, requests) = mpsc::channel::<Option<Request>>();
+        let mut answers = vec![
+            Probe::Ready,
+            Probe::Busy("719".into()),
+            Probe::Busy("719".into()),
+        ];
+        let mut told = 0;
+        let waited = wait_for_gpu(|| answers.pop().unwrap(), &requests, every, |_| told += 1);
+        assert_eq!(waited, Waited::Ready);
+        assert_eq!((told, answers.len()), (2, 0));
+        let mut told = 0;
+        let waited = wait_for_gpu(|| Probe::Unknown, &requests, every, |_| told += 1);
+        assert_eq!((waited, told), (Waited::Ready, 0));
+    }
+
+    #[test]
+    fn quitting_or_newer_settings_end_a_wait_for_the_gpu_at_once() {
+        let busy = || Probe::Busy("719".into());
+        // Long enough that only a request can end the wait within the test.
+        let every = std::time::Duration::from_secs(600);
+        let request = |name: &str| Some((DesktopConfig::default(), PathBuf::from(name)));
+        let (apply, requests) = mpsc::channel();
+        apply.send(None).unwrap();
+        assert_eq!(wait_for_gpu(busy, &requests, every, |_| {}), Waited::Ended);
+        // The latest of the settings that came meanwhile replace those that waited.
+        apply.send(request("second")).unwrap();
+        apply.send(request("third")).unwrap();
+        match wait_for_gpu(busy, &requests, every, |_| {}) {
+            Waited::Newer(request) => assert_eq!(request.1, PathBuf::from("third")),
+            other => panic!("{other:?}"),
+        }
+        // A shutdown queued behind them still ends everything.
+        apply.send(request("fourth")).unwrap();
+        apply.send(None).unwrap();
+        assert_eq!(wait_for_gpu(busy, &requests, every, |_| {}), Waited::Ended);
+        // The thread that sends is gone: nothing more will come.
+        drop(apply);
+        assert_eq!(wait_for_gpu(busy, &requests, every, |_| {}), Waited::Ended);
+        // What the user reads while it lasts, and what to do once it has lasted.
+        let first = Status::WaitingForGpu { advice: false }.describe();
+        let later = Status::WaitingForGpu { advice: true }.describe();
+        assert!(
+            first.contains("719") && !first.contains("Win+Ctrl+Shift+B"),
+            "{first}"
+        );
+        assert!(later.contains("Win+Ctrl+Shift+B"), "{later}");
+    }
 
     #[test]
     fn shutdown_returns_once_the_runtime_thread_has_ended() {

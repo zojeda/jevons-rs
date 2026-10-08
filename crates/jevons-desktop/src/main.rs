@@ -31,7 +31,7 @@ use clap::Parser;
 use jevons_desktop_core::context::ContextSnapshot;
 use jevons_desktop_core::fake::FileAudioSource;
 use jevons_desktop_core::history::{self, History};
-use jevons_desktop_core::platform::AudioSource;
+use jevons_desktop_core::platform::{AudioSource, MenuCommand};
 use jevons_desktop_server::flow::{FlowTree, defaults};
 use jevons_desktop_server::pipeline::{self, TakeStart};
 use std::path::{Path, PathBuf};
@@ -133,6 +133,10 @@ struct Args {
     /// restarts) or `all`; several separated by commas.
     #[arg(long, value_name = "WHAT", value_enum, value_delimiter = ',')]
     clear: Vec<Clear>,
+    /// Check that GPU `INDEX` lets this process in, and exit. The app runs a copy of itself
+    /// with this before it first loads models, to wait for a GPU that does not answer yet.
+    #[arg(long, value_name = "INDEX", hide = true)]
+    probe_gpu: Option<usize>,
 }
 
 /// What `--clear` clears.
@@ -178,6 +182,10 @@ impl Args {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+    // Before the log is opened: the app asks a copy of itself, which leaves the app's log alone.
+    if let Some(index) = args.probe_gpu {
+        return runtime::probe_gpu(index);
+    }
     let filter = || {
         tracing_subscriber::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| "info,wgpu_hal=warn,wgpu_core=warn,naga=warn".into())
@@ -662,6 +670,10 @@ fn replay(
         changed.recv()?;
         match runtime.status() {
             runtime::Status::Loading => continue,
+            status @ runtime::Status::WaitingForGpu { .. } => {
+                eprintln!("note: {}", status.describe());
+                continue;
+            }
             status => match runtime.routes() {
                 Some(routes) => {
                     // A provider that does not answer leaves its capabilities out.
@@ -1062,10 +1074,35 @@ fn serve(config: DesktopConfig, config_file: PathBuf) -> Result<(), Box<dyn std:
     Ok(())
 }
 
+/// Ends the app as Quit does when the window's thread ends, however it ends: the agent cancels
+/// the take and removes the tray icon, and the models unload before the process does. A panic on
+/// that thread, such as a renderer's, would otherwise end the process with the models loaded,
+/// which to the GPU driver is a process killed in the middle of a call.
+struct QuitOnDrop {
+    commands: mpsc::UnboundedSender<Command>,
+    runtime: runtime::Runtime,
+}
+
+impl Drop for QuitOnDrop {
+    fn drop(&mut self) {
+        // After Quit the agent is gone and this reaches nobody.
+        let _ = self.commands.send(Command::Menu(MenuCommand::Quit));
+        self.runtime.shutdown();
+    }
+}
+
 /// The tray, the agent and the inspector window.
 fn desktop(config: DesktopConfig, config_file: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let view = Arc::new(Mutex::new(View::default()));
     let (commands, received) = mpsc::unbounded_channel::<Command>();
+    let runtime_commands = commands.clone();
+    let runtime = runtime::Runtime::start(move || {
+        let _ = runtime_commands.send(Command::RuntimeChanged);
+    });
+    let _quit = QuitOnDrop {
+        commands: commands.clone(),
+        runtime: runtime.clone(),
+    };
     let agent_view = view.clone();
     let agent_commands = commands.clone();
     ui::run(view, commands, move || {
@@ -1077,6 +1114,7 @@ fn desktop(config: DesktopConfig, config_file: PathBuf) -> Result<(), Box<dyn st
             repaint,
             agent_commands,
             received,
+            runtime,
         ) {
             tracing::error!(error = %e, "Cannot start the agent");
         }
@@ -1090,6 +1128,7 @@ fn start_agent(
     repaint: Arc<dyn Fn() + Send + Sync>,
     commands: mpsc::UnboundedSender<Command>,
     received: mpsc::UnboundedReceiver<Command>,
+    runtime: runtime::Runtime,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     hold::start();
     let tray = match tray::spawn(commands.clone()) {
@@ -1103,10 +1142,6 @@ fn start_agent(
             None
         }
     };
-    let runtime_commands = commands.clone();
-    let runtime = runtime::Runtime::start(move || {
-        let _ = runtime_commands.send(Command::RuntimeChanged);
-    });
     std::thread::Builder::new()
         .name("agent".into())
         .spawn(move || {
@@ -1143,6 +1178,30 @@ fn start_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_panic_on_the_windows_thread_quits_the_agent_and_unloads_the_models() {
+        let (commands, mut received) = mpsc::unbounded_channel::<Command>();
+        let runtime = runtime::Runtime::start(|| {});
+        let quit = QuitOnDrop {
+            commands,
+            runtime: runtime.clone(),
+        };
+        // As the bubble's renderer did, on the thread that runs the windows.
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _quit = quit;
+            panic!("failed to get surface texture: Other");
+        }));
+        assert!(panicked.is_err());
+        assert!(matches!(
+            received.try_recv(),
+            Ok(Command::Menu(MenuCommand::Quit))
+        ));
+        assert!(
+            runtime.has_ended(),
+            "the runtime thread still runs after the panic"
+        );
+    }
 
     #[test]
     fn flow_commands_take_an_optional_folder() {

@@ -6133,6 +6133,7 @@ dependencies = [
  "half",
  "jevons-formats",
  "jevons-kernels",
+ "tracing",
 ]
 
 [[package]]
@@ -6185,6 +6186,7 @@ dependencies = [
  "jevons-desktop-protocol",
  "jevons-desktop-server",
  "jevons-desktop-tools",
+ "jevons-kernels",
  "notify",
  "peniko",
  "pulldown-cmark",
@@ -6349,6 +6351,7 @@ dependencies = [
  "cubecl-hip",
  "half",
  "jevons-formats",
+ "tracing",
 ]
 
 [[package]]
@@ -13284,10 +13287,9 @@ dependencies = [
 [[package]]
 name = "wgpu_context"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0f49e6f733fcc61e41a5ecdb36910baa5148497036784bca319289bfdca6141"
 dependencies = [
  "futures-intrusive",
+ "log",
  "wgpu 26.0.1",
 ]
 

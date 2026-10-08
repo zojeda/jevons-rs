@@ -115,11 +115,39 @@ Tests: none yet
 Shutting the runtime down unloads the models and returns once the runtime thread has ended: the
 model workers have stopped and each model has returned its device memory. A load in progress
 ends first. Quit and the headless modes (`--transcript`, `--replay`, `--serve`) shut it down
-before the process ends, also when a headless run ends early on an error. A process that ends
+before the process ends, also when a headless run ends early on an error, and so does the tray
+app when the thread that runs its windows ends by itself, as with a panic
+([app](app.md) R24). A process that ends
 while the device still loads or frees a model is, to the GPU driver, one killed in the middle of
-a call, which has left HIP failing with status 719 for every process until a reboot. The wait
-gives up after ten minutes, with a warning, so a device that hangs cannot keep the app from
-ending. A shutdown queued behind settings still to apply is not lost: the thread ends and
+a call. That is one way HIP has been left failing with status 719 for every new process; it
+also fails so after a clean exit (R13), so this requirement removes a cause, not the failure.
+The wait gives up after ten minutes, with a warning, so a device that hangs cannot keep the app
+from ending. A shutdown queued behind settings still to apply is not lost: the thread ends and
 applies none of them. The log says when the runtime has ended with the models unloaded.
 
-Tests: `shutdown_returns_once_the_runtime_thread_has_ended`, `a_shutdown_queued_behind_settings_is_not_lost`
+Tests: `shutdown_returns_once_the_runtime_thread_has_ended`, `a_shutdown_queued_behind_settings_is_not_lost`, `a_panic_on_the_windows_thread_quits_the_agent_and_unloads_the_models`
+
+### R13 The first load waits for a GPU that does not answer yet
+
+For a while after any process moved gigabytes of GPU memory, the AMD driver answers HIP status
+719 to a process that asks for the device anew, while a process that already has it keeps
+working. The failure clears by itself within minutes, or with a restart of the graphics driver.
+Whether a process that was refused can get the device later is not known, so the check runs in
+a process of its own.
+
+So before the embedded runtime first loads models, the app asks a copy of itself
+(`--probe-gpu`, [cli](cli.md) R17) whether each GPU the models load on lets a new process in.
+While the answer is status 719 it loads nothing, reports "The GPU does not take new work yet
+(HIP status 719): trying again every few seconds…", and asks again every five seconds. After
+two minutes the report also says what the user can do: restart the graphics driver
+(Win+Ctrl+Shift+B on Windows) or the computer. It never gives up, so the models load by
+themselves once the driver answers. A check that fails any other way, or that cannot run, does
+not wait: loading reports what is wrong (R3). A check that does not finish in a minute counts
+as no answer.
+
+A shutdown ends the wait at once, and so do newer settings, which are applied in place of those
+that waited (R8). Once a GPU has answered, later loads in the same process do not ask again.
+The tray icon stays on loading while the app waits, and the headless modes print the report
+and go on waiting.
+
+Tests: `a_gpu_that_answers_719_is_asked_again_until_it_lets_a_process_in`, `quitting_or_newer_settings_end_a_wait_for_the_gpu_at_once`

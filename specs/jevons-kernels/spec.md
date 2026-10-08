@@ -130,6 +130,8 @@ Tests: `released_buffers_return_device_memory_after_cleanup`
 field of what owns a model's buffers, it runs once they are all dropped, so nothing of a dropped
 model stays reserved and a process that ends holds none of it. A device that fails then is left
 as it is: the guard never panics, since a panic in a release that runs while its thread unwinds
-would abort the process in the middle of a call to the driver.
+would abort the process in the middle of a call to the driver. The guard logs what it did: the
+bytes the device held reserved before and after and the time taken, or a warning with what the
+caught panic said. A release that failed never reads, in the log, as one that ran.
 
-Tests: `the_release_guard_returns_what_was_dropped_before_it`
+Tests: `the_release_guard_returns_what_was_dropped_before_it`, `a_caught_panic_is_reported_with_what_it_said`

@@ -1262,7 +1262,7 @@ impl Agent {
                     let state = match status {
                         Status::Ready { .. } | Status::Remote { .. } => TrayState::Idle,
                         Status::Failed(_) => TrayState::Error,
-                        Status::Loading => TrayState::Loading,
+                        Status::Loading | Status::WaitingForGpu { .. } => TrayState::Loading,
                         _ => TrayState::Offline,
                     };
                     self.set_tray(state);

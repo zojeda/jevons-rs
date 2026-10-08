@@ -10,10 +10,11 @@ description = "Context-aware dictation from the tray, over the jevons runtime."
 default = ["embedded"]
 # Load the models in the app (pulls in the inference stack). Without it, only a remote jevons
 # server can be used.
-embedded = ["dep:jevons-api"]
+embedded = ["dep:jevons-api", "dep:jevons-kernels"]
 
 [dependencies]
 jevons-api = { workspace = true, optional = true }
+jevons-kernels = { workspace = true, optional = true }
 jevons-audio.workspace = true
 jevons-desktop-core = { workspace = true, features = ["testing"] }
 jevons-desktop-protocol = { workspace = true, features = ["client"] }

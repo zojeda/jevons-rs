@@ -245,7 +245,11 @@ The process ends only once the models are unloaded
 ([runtime](runtime.md) R12): the bubble says so while it waits, and the icon stays until then.
 Closing the window only hides it.
 
-Tests: `shutdown_returns_once_the_runtime_thread_has_ended`
+When the thread that runs the windows ends by itself, as with a panic in a renderer, the app
+ends as Quit does: the agent is told to quit, and the process ends only once the models are
+unloaded.
+
+Tests: `shutdown_returns_once_the_runtime_thread_has_ended`, `a_panic_on_the_windows_thread_quits_the_agent_and_unloads_the_models`
 
 ### R25 A waiting task's bubble is its conversation
 

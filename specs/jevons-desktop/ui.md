@@ -322,3 +322,14 @@ button says "New": it blinks while the take still runs and stays lit after. Scro
 end hides the button and follows the newest text again.
 
 Tests: `a_waiting_task_s_bubble_shows_its_turns_and_goes_back_to_the_newest`
+
+### R32 A frame that cannot be presented is skipped
+
+When a window's surface gives no texture for a frame, the frame is skipped and the app goes on:
+the log says so once, and once more when frames are presented again. A surface that was lost or
+is out of date is configured again. A lost GPU device does not come back: that window shows
+nothing more until the app starts again, the tray menu still works, and the log says why the
+device was lost. The renderer's own code is a patched copy
+(`third_party/wgpu_context/README.jevons.md`); the original ended the app with a panic.
+
+Tests: none yet
