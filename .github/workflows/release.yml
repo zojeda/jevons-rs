@@ -1,7 +1,7 @@
 name: Release
 
 # Every push to main is checked, built for Linux and Windows, and published as a release
-# (tag v0.1.<run number>). Pull requests run the same check and builds without publishing.
+# (tag v0.2.<run number>). Pull requests run the same check and builds without publishing.
 # The binaries load ROCm/HIP at run time; see the release notes.
 on:
   push:
@@ -63,7 +63,7 @@ jobs:
             backend: hip
     runs-on: ${{ matrix.os }}
     env:
-      VERSION: 0.1.${{ github.run_number }}
+      VERSION: 0.2.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
       - name: Name the build
@@ -128,7 +128,7 @@ jobs:
     # Only pushes to main publish; `act` runs the build jobs locally without publishing.
     if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && !github.event.act }}
     env:
-      VERSION: 0.1.${{ github.run_number }}
+      VERSION: 0.2.${{ github.run_number }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/download-artifact@v4
