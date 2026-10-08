@@ -3,10 +3,22 @@
 //! transitions. The diagram is laid out by
 //! `flow::machine::layout`: edges, start and end dots and choice diamonds in one SVG (no SVG
 //! text, which Blitz may not draw), states and labels as positioned boxes.
+//!
+//! One state's box is open: the branches of its work, the flow tree under its folder, show
+//! inside it in the Flows tab's rows, with the way a take went through them marked. The marks
+//! come from the bubble's stages while the take runs ([`live_marks`]), and from the take's
+//! trace once it ended ([`traced_marks`]). The layout makes room for the open box.
+//!
+//! A row selected shows its node in full under the diagram, as the Flows tab does: the
+//! instructions it works under and its file.
+//!
+//! The diagram follows the machine that moved last, unless Follow is off: a take carries it
+//! from the root to an agent to a task, and back to the root once the agent rests.
 
 use super::Ctx;
-use super::components::{Choice as Option_, Select, badge};
-use crate::agent::Command;
+use super::components::{Choice as Option_, Select, Switch, badge};
+use super::flows::{self, Marks, TreeState};
+use crate::agent::{Command, StageView};
 use dioxus::prelude::*;
 use jevons_desktop_server::flow::machine::layout::{self, Edge, Layout, NodeKind, Placed};
 use jevons_desktop_server::flow::machine::runtime::{Running, Step, View as Machines};
@@ -14,7 +26,10 @@ use jevons_desktop_server::flow::machine::{
     self, Condition, DecidedBy, Decides, Level, Loaded, Target,
 };
 use jevons_desktop_server::flow::tree::{FlowTree, Node, NodeSpec};
+use jevons_desktop_server::flow::walk::FlowStep;
 use jevons_desktop_server::flow::{Kind, defaults};
+use jevons_desktop_server::pipeline::StageKind;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// The edges' colours: the theme's quiet line, and the accent for the latest transition.
@@ -41,6 +56,12 @@ fn by_colour(by: Option<DecidedBy>) -> (&'static str, &'static str) {
 const LABEL: usize = jevons_desktop_server::flow::machine::layout::LABEL_CHARS;
 /// The transitions the history card lists.
 const HISTORY: usize = 40;
+/// The label of the stage in which the root decides which agent a take is for.
+const ROOT_DECIDES: &str = "what to do";
+/// An open state's box: its width, a row's height, and the room around its rows.
+const OPEN_WIDTH: f32 = 420.0;
+const OPEN_ROW: f32 = 26.0;
+const OPEN_ROOM: f32 = 8.0;
 
 fn shorten(text: &str, most: usize) -> String {
     if text.chars().count() <= most {
@@ -77,6 +98,130 @@ fn work_of<'a>(tree: &'a FlowTree, machine: &Node, state: &str) -> Option<&'a No
     tree.children(machine.id).find(|c| c.name == state)
 }
 
+/// The first of `stages` of a kind and a label.
+fn stage_at(stages: &[StageView], kind: StageKind, label: &str) -> Option<usize> {
+    stages
+        .iter()
+        .position(|s| s.kind == kind && s.label == label)
+}
+
+/// The marks of a walk still under way from `work` down, as far as the bubble's stages say. A
+/// decision's stage carries its node's name, the branches it chose among, the one it took and
+/// why; a tool's or a loop's that ended well leads on to the node's branch. The walk is at the last
+/// node they lead to, doing what the stage still open says.
+fn live_marks(tree: &FlowTree, work: &Node, stages: &[StageView]) -> Marks {
+    let mut marks = Marks {
+        folded: true,
+        ..Marks::default()
+    };
+    let (mut node, mut here) = (work, flows::place("", work));
+    marks.route.insert(here.clone());
+    let mut rest = stages;
+    loop {
+        let (at, next) = match &node.spec {
+            NodeSpec::Decide(_) => {
+                let Some(at) = stage_at(rest, StageKind::Deciding, &node.name) else {
+                    break;
+                };
+                let stage = &rest[at];
+                // A decision with no branch that applies lists none, and takes its fallback.
+                if !stage.choices.is_empty() {
+                    let dropped = tree
+                        .children(node.id)
+                        .filter(|child| !stage.choices.contains(&child.name))
+                        .map(|child| flows::place(&here, child));
+                    marks.out.extend(dropped);
+                }
+                let taken = stage
+                    .chosen
+                    .as_ref()
+                    .and_then(|chosen| tree.children(node.id).find(|child| child.name == *chosen));
+                if let Some(child) = taken.filter(|_| !stage.detail.is_empty()) {
+                    // The model's answer comes as its probability alone.
+                    let why = match stage.detail.parse::<f64>() {
+                        Ok(_) => format!("model {}", stage.detail),
+                        Err(_) => stage.detail.clone(),
+                    };
+                    marks.why.insert(flows::place(&here, child), why);
+                }
+                (at, taken)
+            }
+            NodeSpec::Tool(_) | NodeSpec::Loop(_) => {
+                let stage = match &node.spec {
+                    NodeSpec::Tool(t) => stage_at(rest, StageKind::Calling, &t.tool),
+                    _ => stage_at(rest, StageKind::Loop, &node.name),
+                };
+                let Some(at) = stage else { break };
+                let branch = tree.children(node.id).next();
+                (at, branch.filter(|_| rest[at].ok == Some(true)))
+            }
+            _ => break,
+        };
+        let Some(child) = next else { break };
+        rest = &rest[at + 1..];
+        here = flows::place(&here, child);
+        marks.route.insert(here.clone());
+        node = child;
+    }
+    marks.now = Some(here);
+    marks.activity = doing(stages);
+    marks
+}
+
+/// What a take does now, from its stage still open: `deciding`, `writing`,
+/// `calling web_search`.
+fn doing(stages: &[StageView]) -> Option<String> {
+    let open = stages.iter().rev().find(|s| s.ok.is_none())?;
+    let what = match open.kind {
+        StageKind::Deciding => "deciding".to_string(),
+        StageKind::Investigating => format!("reading {}", open.label),
+        StageKind::Writing => "writing".into(),
+        StageKind::Answering => "answering".into(),
+        StageKind::Calling => format!("calling {}", open.label),
+        StageKind::Loop => "working with tools".into(),
+    };
+    Some(if open.detail.is_empty() {
+        what
+    } else {
+        format!("{what} · {}", open.detail)
+    })
+}
+
+/// The marks of a walk that ended, from its take's route: the nodes from `work` down in the
+/// order the walk entered them, the branches each decision could not choose (their guards
+/// failed, or others were preferred), and why it took the one it took. `None` when the route
+/// never reached `work`.
+fn traced_marks(tree: &FlowTree, work: &Node, route: &[FlowStep]) -> Option<Marks> {
+    let entered = |step: &FlowStep| step.kind != Kind::Machine && step.node == work.label();
+    let walk = &route[route.iter().rposition(entered)?..];
+    let mut marks = Marks {
+        folded: true,
+        ..Marks::default()
+    };
+    let way = flows::way(tree, work.id, walk.iter().map(|step| step.node.as_str()));
+    for ((id, here), step) in way.iter().zip(walk) {
+        marks.route.insert(here.clone());
+        // With a preferred branch, a decision chooses among the preferred ones only.
+        let preferred = step.branches.iter().any(|b| b.preferred);
+        for child in tree.children(*id) {
+            let below = flows::place(here, child);
+            if step
+                .branches
+                .iter()
+                .any(|b| b.name == child.name && !(b.passed && (b.preferred || !preferred)))
+            {
+                marks.out.insert(below.clone());
+            }
+            if step.chosen.as_deref() == Some(child.name.as_str())
+                && let Some(how) = &step.how
+            {
+                marks.why.insert(below, how.clone());
+            }
+        }
+    }
+    Some(marks)
+}
+
 /// The machine nodes of the tree: the root first, then by folder.
 fn machine_nodes(tree: &FlowTree) -> Vec<&Node> {
     let mut nodes: Vec<&Node> = tree
@@ -94,17 +239,44 @@ fn holds(edge: &Edge, transition: Option<usize>) -> bool {
     transition.is_some_and(|t| edge.transitions.contains(&t))
 }
 
+/// Where the machine shown is.
+#[derive(Clone, Copy)]
+struct Here<'a> {
+    /// Its state, while it runs.
+    state: Option<&'a str>,
+    /// What that state's own node does now, while its work runs.
+    working: Option<&'a str>,
+    /// Its latest transition.
+    hot: Option<usize>,
+}
+
+/// The state whose box is open: the branches of its work show inside it, with `marks` on
+/// their rows.
+#[derive(Clone, Copy)]
+struct Open<'a> {
+    state: &'a str,
+    work: &'a Node,
+    marks: &'a Marks,
+    rows: TreeState,
+}
+
 /// The diagram: edges and dots in one SVG, states and labels as boxes over it. Each edge is
-/// coloured by what decides it, from `decisions`.
+/// coloured by what decides it, from `decisions`. The `open` state's box holds its work's
+/// branches under its name, and the current state's says what its work does while it runs.
 fn diagram(
-    tree: &FlowTree,
+    tree: &Arc<FlowTree>,
     machine: &Node,
     layout: &Layout,
     decisions: &[Decides],
-    current: Option<&str>,
-    hot: Option<usize>,
+    here: Here,
+    open: Option<Open>,
     mut selected: Signal<Option<String>>,
 ) -> Element {
+    let Here {
+        state: current,
+        working,
+        hot,
+    } = here;
     let (width, height) = (layout.width.ceil(), layout.height.ceil());
     let marks = layout.nodes.iter().filter_map(|p| {
         let (cx, cy) = (p.x + p.width / 2.0, p.y + p.height / 2.0);
@@ -182,18 +354,42 @@ fn diagram(
         }
     });
     let boxes = layout.nodes.iter().filter(|p| p.kind == NodeKind::State).map(|p| {
-        let work = work_badge(work_of(tree, machine, &p.key));
         let is_current = current == Some(p.key.as_str());
+        let doing = working.filter(|_| is_current);
+        let work = doing.map_or_else(|| work_badge(work_of(tree, machine, &p.key)), String::from);
         let is_selected = selected.read().as_deref() == Some(p.key.as_str());
         let key = p.key.clone();
+        let inner = open.filter(|open| open.state == p.key).map(|open| {
+            let at = flows::place("", open.work);
+            let rows: Vec<Element> = open
+                .work
+                .children
+                .iter()
+                .map(|child| flows::branch(tree, *child, &at, open.marks, open.rows))
+                .collect();
+            rsx! {
+                // A click on a row folds it: it is not a click on the state.
+                div { class: "flow-tree fsm-inner",
+                    onclick: move |event: MouseEvent| event.stop_propagation(),
+                    {rows.into_iter()}
+                }
+            }
+        });
+        let is_open = inner.is_some();
         rsx! {
             div { key: "state-{p.key}", class: "fsm-state",
                 "data-current": if is_current { "true" } else { "false" },
                 "data-selected": if is_selected { "true" } else { "false" },
+                "data-working": if doing.is_some() { "true" } else { "false" },
+                "data-open": if is_open { "true" } else { "false" },
                 style: "left: {p.x:.0}px; top: {p.y:.0}px; width: {p.width:.0}px; height: {p.height:.0}px;",
-                onclick: move |_| selected.set(Some(key.clone())),
-                div { class: "fsm-name", "{p.key}" }
-                div { class: "fsm-work", "{work}" }
+                // A second click on a state takes the selection back.
+                div { class: "fsm-head",
+                    onclick: move |_| selected.set((!is_selected).then(|| key.clone())),
+                    div { class: "fsm-name", "{p.key}" }
+                    div { class: "fsm-work", "{work}" }
+                }
+                {inner}
             }
         }
     });
@@ -224,13 +420,43 @@ fn diagram(
     }
 }
 
-/// A state in full: what it is, its work, where it can go and its timers.
+/// The line of a state whose folder is a machine of its own (an agent under the root, a task
+/// under an agent), with a button that shows that machine through `show`.
+fn own_machine(work: Option<&Node>, mut show: impl FnMut(String) + 'static) -> Element {
+    let Some(work) = work.filter(|work| work.kind() == Kind::Machine) else {
+        return rsx! {};
+    };
+    let what = match work.level() {
+        Some(Level::Task) => "The task",
+        _ => "The agent",
+    };
+    let name = work
+        .machine
+        .as_ref()
+        .map_or(work.name.as_str(), |m| m.diagram.name.as_str());
+    let folder = work.label().to_string();
+    // One string: a release build joins a text's parts with `+`.
+    let own = format!("{what} {name}, with a diagram of its own.");
+    rsx! {
+        div { class: "row",
+            span { class: "muted", "{own}" }
+            button { class: "dx-button fsm-show", "data-style": "outline", "data-size": "sm",
+                onclick: move |_| show(folder.clone()),
+                "Show it"
+            }
+        }
+    }
+}
+
+/// A state in full: what it is, its work, where it can go, its timers, and `below` them the
+/// machine its folder is.
 fn state_card(
     tree: &FlowTree,
     machine: &Node,
     loaded: &Loaded,
     state: &str,
     current: bool,
+    below: Element,
 ) -> Element {
     let diagram = &loaded.diagram;
     let work = work_of(tree, machine, state);
@@ -296,6 +522,7 @@ fn state_card(
                     }
                 })}
                 {timers.into_iter().map(|t| rsx! { p { class: "muted", "Timer {t}" } })}
+                {below}
             }
         }
     }
@@ -335,17 +562,35 @@ fn step_row(i: usize, step: &Step) -> Element {
 pub fn MachinesPage(rev: u64) -> Element {
     let _ = rev;
     let ctx = use_context::<Ctx>();
-    // The machine whose diagram shows, by folder; and which of its running ones, when picked.
+    // The machine picked here, by folder, and which of its running ones; with the machines'
+    // latest move when it was picked.
     let mut picked = use_signal(|| None::<String>);
     let mut instance = use_signal(|| None::<u64>);
+    let mut picked_at = use_signal(|| None::<Step>);
+    // Whether the diagram follows the machine that moved last.
+    let mut follow = use_signal(|| true);
     let selected = use_signal(|| None::<String>);
+    // The rows of a state's work: those folded or unfolded by hand, and the one selected.
+    let picked_row = use_signal(|| None::<String>);
+    let folds = TreeState {
+        opened: use_signal(BTreeMap::new),
+        selected: picked_row,
+        compact: true,
+    };
     let view = ctx.view.lock().expect("the view lock");
     let machines: Machines = view.machines.view();
     let tree: Arc<FlowTree> = machines.tree.clone().unwrap_or_else(|| view.flows.clone());
-    // The machine picked in the tray menu, while it runs and until another is picked here.
+    let flows_dir = view.config.flows_dir(&view.config_file);
+    let latest = machines.history.back().cloned();
+    // While the tab follows, a pick holds until the machines move again.
+    let following = follow();
+    let holds = |at: &Option<Step>| !following || *at == latest;
+    // The machine picked in the tray menu, while it runs and its pick holds.
     let asked = view
         .open_machine
-        .and_then(|id| machines.running(id))
+        .as_ref()
+        .filter(|pick| holds(&pick.moved))
+        .and_then(|pick| machines.running(pick.instance))
         .map(|r| (r.id, r.folder.clone()));
     drop(view);
 
@@ -381,15 +626,39 @@ pub fn MachinesPage(rev: u64) -> Element {
             p { class: "muted", "The flows root is a decision, not a machine: the tree has no machines." }
         };
     }
-    // The running machine that shows: the one picked while it runs, else the task the latest
-    // take reached.
+    // The running machine that shows: the one picked while it runs, else the one that moved
+    // last (or its caller, once it rests) while the tab follows, else the task the latest take
+    // reached.
     // What was picked here is read either way: a render that does not read it would not
     // follow the next pick.
-    let (here, folder) = (instance(), picked());
+    let (here, folder, at) = (instance(), picked(), picked_at());
+    let (here, folder) = if holds(&at) {
+        (here, folder)
+    } else {
+        (None, None)
+    };
+    let moving = latest
+        .as_ref()
+        .filter(|_| following)
+        .and_then(|step| machines.running(step.instance))
+        .map(|r| {
+            // An agent back in its first state, with nothing to ask, gives way to the root
+            // that called it: what is said next goes there first.
+            let rests = r.level == Level::Agent
+                && r.unsure.is_none()
+                && tree
+                    .node(r.machine)
+                    .machine
+                    .as_ref()
+                    .is_some_and(|m| m.diagram.initial == r.state);
+            let root = machines.stack.first().filter(|_| rests);
+            root.map_or(r.id, |root| root.id)
+        });
     let shown = asked
         .as_ref()
         .map(|(id, _)| *id)
         .or(here.filter(|id| machines.running(*id).is_some()))
+        .or(moving)
         .or(machines.focus);
     // Its folder, unless another machine was picked; the root when nothing runs but it.
     let current_folder = asked
@@ -428,12 +697,10 @@ pub fn MachinesPage(rev: u64) -> Element {
         .filter(|r| r.folder == node.label())
         .or_else(|| machines.stack.iter().find(|r| r.folder == node.label()));
     let current = running.map(|r| r.state.clone());
-    let hot = machines
-        .history
-        .iter()
-        .rev()
-        .find(|s| s.machine == node.label() && running.is_none_or(|r| r.id == s.instance))
-        .and_then(|s| s.transition);
+    // The moves of the machine shown, the latest first.
+    let mine = |s: &Step| s.machine == node.label() && running.is_none_or(|r| r.id == s.instance);
+    let moves = || machines.history.iter().rev().filter(|s| mine(s));
+    let hot = moves().next().and_then(|s| s.transition);
     // What runs: the root and the agents, each agent with its tasks under it.
     let rows: Vec<&Running> = machines
         .stack
@@ -454,7 +721,7 @@ pub fn MachinesPage(rev: u64) -> Element {
             Level::Agent => "agent",
             Level::Task => "task",
         };
-        let (pick, cancel) = (ctx.clone(), ctx.clone());
+        let (pick, cancel, at) = (ctx.clone(), ctx.clone(), latest.clone());
         rsx! {
             div { key: "run-{id}", class: "fsm-run", "data-level": level,
                 "data-showing": if showing == Some(id) { "true" } else { "false" },
@@ -462,6 +729,7 @@ pub fn MachinesPage(rev: u64) -> Element {
                     pick.view.lock().expect("the view lock").open_machine = None;
                     picked.set(Some(folder.clone()));
                     instance.set(Some(id));
+                    picked_at.set(at.clone());
                 },
                 {badge(level, "secondary")}
                 span { class: "fsm-run-name", "{r.label()}" }
@@ -485,9 +753,115 @@ pub fn MachinesPage(rev: u64) -> Element {
             rsx! { p { class: "error-text", "{diagram} did not load" } }
         }
         Some(loaded) => {
-            let drawn = layout::layout(&loaded.diagram);
             let decisions = loaded.diagram.decisions();
-            let state = selected().filter(|s| loaded.diagram.state(s).is_some());
+            // The work of a state, when its folder is a flow to walk; and whether that flow
+            // has branches to show.
+            let work = |state: &str| {
+                work_of(&tree, node, state).filter(|work| work.kind() != Kind::Machine)
+            };
+            let branches = |state: &&str| work(state).is_some_and(|w| !w.children.is_empty());
+            let chosen = selected().filter(|s| loaded.diagram.state(s).is_some());
+            let (live, opened, marks) = {
+                let view = ctx.view.lock().expect("the view lock");
+                // The machine works in its state while the take that entered it still runs.
+                let live = current.as_deref().and_then(|at| {
+                    let feedback = view.feedback.as_ref().filter(|f| !f.done)?;
+                    moves()
+                        .next()
+                        .filter(|s| s.take == Some(feedback.take) && s.to == at)?;
+                    Some(live_marks(&tree, work(at)?, &feedback.stages))
+                });
+                // The state whose box is open, among those whose work has branches: the one
+                // the machine works in, else the one selected, else the latest it entered or
+                // left, else its first.
+                let opened: Option<String> = current
+                    .as_deref()
+                    .filter(|_| live.is_some())
+                    .filter(branches)
+                    .or_else(|| chosen.as_deref().filter(branches))
+                    .or_else(|| {
+                        moves()
+                            .flat_map(|s| [s.to.as_str(), s.from.as_str()])
+                            .find(branches)
+                    })
+                    .or_else(|| {
+                        let mut states = loaded.diagram.states.iter().map(|s| s.name.as_str());
+                        states.find(branches)
+                    })
+                    .map(String::from);
+                let marks = match (&opened, &live) {
+                    (Some(state), Some(live)) if current.as_ref() == Some(state) => live.clone(),
+                    // The latest take kept that moved this machine and walked the state's work.
+                    (Some(state), _) => work(state)
+                        .and_then(|work| {
+                            view.traces
+                                .iter()
+                                .filter(|t| t.machine.iter().any(&mine))
+                                .find_map(|t| traced_marks(&tree, work, &t.flow))
+                        })
+                        .unwrap_or(Marks {
+                            folded: true,
+                            ..Marks::default()
+                        }),
+                    (None, _) => Marks::default(),
+                };
+                (live, opened, marks)
+            };
+            let open = opened.as_deref().and_then(|state| {
+                Some(Open {
+                    state,
+                    work: work(state)?,
+                    marks: &marks,
+                    rows: folds,
+                })
+            });
+            // The layout makes room for the open box: a row for each branch that shows.
+            let mut sizes = BTreeMap::new();
+            if let Some(open) = open {
+                let at = flows::place("", open.work);
+                let folded = folds.opened.read();
+                let rows: usize = open
+                    .work
+                    .children
+                    .iter()
+                    .map(|child| flows::rows(&tree, *child, &at, &marks, &folded))
+                    .sum();
+                let height = layout::STATE_HEIGHT + rows as f32 * OPEN_ROW + OPEN_ROOM;
+                sizes.insert(open.state.to_string(), (OPEN_WIDTH, height));
+            }
+            let drawn = layout::layout_with(&loaded.diagram, &sizes);
+            // The state's own line says what its work does while the walk is at its node, or
+            // has no row to say it on.
+            let working = live.as_ref().and_then(|live| {
+                let at = current.as_deref().and_then(work)?;
+                let head = live.now.as_deref() == Some(flows::place("", at).as_str());
+                let shows = open.is_some_and(|open| Some(open.state) == current.as_deref());
+                live.activity.clone().filter(|_| head || !shows)
+            });
+            // Or that the machine itself decides where what was said goes.
+            let working = working.or_else(|| {
+                let view = ctx.view.lock().expect("the view lock");
+                let stages = &view.feedback.as_ref().filter(|f| !f.done)?.stages;
+                let open = stages.iter().rev().find(|s| s.ok.is_none())?;
+                let own = format!("{} at {}", loaded.diagram.name, current.as_deref()?);
+                let decides = open.kind == StageKind::Deciding
+                    && (open.label == own || (open.label == ROOT_DECIDES && node.path.is_empty()));
+                decides.then(|| "deciding".to_string())
+            });
+            let show = {
+                let (ctx, at) = (ctx.clone(), latest.clone());
+                move |folder: String| {
+                    ctx.view.lock().expect("the view lock").open_machine = None;
+                    picked.set(Some(folder));
+                    instance.set(None);
+                    picked_at.set(at.clone());
+                }
+            };
+            let here = Here {
+                state: current.as_deref(),
+                working: working.as_deref(),
+                hot,
+            };
             let unsure = running.and_then(|r| r.unsure.clone().map(|u| (r.id, u)));
             let answer = ctx.clone();
             rsx! {
@@ -515,9 +889,21 @@ pub fn MachinesPage(rev: u64) -> Element {
                         }
                     }
                 }
-                {diagram(&tree, node, &drawn, &decisions, current.as_deref(), hot, selected)}
-                if let Some(state) = state {
-                    {state_card(&tree, node, loaded, &state, current.as_deref() == Some(state.as_str()))}
+                {diagram(&tree, node, &drawn, &decisions, here, open, selected)}
+                if let Some(state) = chosen {
+                    {state_card(
+                        &tree,
+                        node,
+                        loaded,
+                        &state,
+                        current.as_deref() == Some(state.as_str()),
+                        own_machine(work_of(&tree, node, &state), show),
+                    )}
+                }
+                if let Some(place) = picked_row() {
+                    div { class: "fsm-node",
+                        {flows::details(&tree, &place, tree.source == defaults::BUILTIN, &flows_dir)}
+                    }
                 }
             }
         }
@@ -560,13 +946,29 @@ pub fn MachinesPage(rev: u64) -> Element {
                     if builtin {
                         {badge("built-in", "secondary")}
                     }
+                    Switch { checked: following, label: "Follow".to_string(),
+                        onchange: {
+                            let (ctx, at) = (ctx.clone(), latest.clone());
+                            let folder = node.label().to_string();
+                            move |on: bool| {
+                                // Turned off, the tab stays on the machine it shows.
+                                if !on {
+                                    ctx.view.lock().expect("the view lock").open_machine = None;
+                                    picked.set(Some(folder.clone()));
+                                    instance.set(showing);
+                                    picked_at.set(at.clone());
+                                }
+                                follow.set(on);
+                            }
+                        } }
                     Select { value: Some(node.label().to_string()), choices,
                         onchange: {
-                            let ctx = ctx.clone();
+                            let (ctx, at) = (ctx.clone(), latest.clone());
                             move |v: Option<String>| {
                                 ctx.view.lock().expect("the view lock").open_machine = None;
                                 picked.set(v);
                                 instance.set(None);
+                                picked_at.set(at.clone());
                             }
                         } }
                 }

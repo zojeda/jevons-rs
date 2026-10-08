@@ -30,7 +30,9 @@ use jevons_desktop_core::xpath::selector::Candidate;
 use jevons_desktop_protocol::desk::Desk;
 use jevons_desktop_server::client::Routes;
 use jevons_desktop_server::flow::extract;
-use jevons_desktop_server::flow::machine::runtime::{Runtime as Machines, View as MachinesView};
+use jevons_desktop_server::flow::machine::runtime::{
+    Runtime as Machines, Step, View as MachinesView,
+};
 use jevons_desktop_server::flow::tools::ToolHost;
 use jevons_desktop_server::flow::walk::{self, FlowStep};
 use jevons_desktop_server::flow::{Catalog, FlowError, FlowTree, defaults};
@@ -312,7 +314,7 @@ impl Feedback {
     }
 
     /// Applies a progress update; returns whether it changed what the bubble shows.
-    fn apply(&mut self, update: &Update) -> bool {
+    pub(crate) fn apply(&mut self, update: &Update) -> bool {
         match update {
             Update::Level(_) => return false,
             Update::Delta(text) => self.partial.push_str(text),
@@ -433,6 +435,25 @@ pub struct BubbleScroll {
     pub jump: bool,
 }
 
+/// A machine picked in the tray menu.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PickedMachine {
+    /// Which of the machines that run.
+    pub instance: u64,
+    /// The machines' latest move when it was picked.
+    pub moved: Option<Step>,
+}
+
+impl PickedMachine {
+    /// The machine `instance` of `machines`, picked now.
+    pub fn now(instance: u64, machines: &Machines) -> Self {
+        Self {
+            instance,
+            moved: machines.view().history.back().cloned(),
+        }
+    }
+}
+
 /// What the inspector shows; the agent writes it, the window reads it.
 #[derive(Default)]
 pub struct View {
@@ -485,8 +506,8 @@ pub struct View {
     /// another tab is picked there.
     pub machines_tab: bool,
     /// The machine picked in the tray menu, which the Machines tab shows until another is
-    /// picked there, or another tab is.
-    pub open_machine: Option<u64>,
+    /// picked there, another tab is, or, while the tab follows the machines, they move.
+    pub open_machine: Option<PickedMachine>,
     /// The Context tab's workbench: the last extract it tried and what it found.
     pub trial: Option<TrialView>,
     /// Whether a trial is under way.
@@ -1334,7 +1355,7 @@ impl Agent {
             let mut view = self.view();
             view.show_window = true;
             view.machines_tab = true;
-            view.open_machine = Some(id);
+            view.open_machine = Some(PickedMachine::now(id, &view.machines));
         }
         if self.thread_task == Some(id) {
             self.show_conversation();
