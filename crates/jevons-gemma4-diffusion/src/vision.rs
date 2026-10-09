@@ -29,6 +29,57 @@ pub struct VisionConfig {
     pub geometry: Geometry,
 }
 
+impl VisionConfig {
+    /// The encoder a `gemma4v` projector describes, whose output width must equal `text_d`.
+    /// `max_tokens` caps the image tokens per image.
+    pub fn from_gguf(g: &Gguf, text_d: usize, max_tokens: usize) -> Result<Self> {
+        let unsupported = |m: String| ModelError::Unsupported(m);
+        if g.get("clip.vision.projector_type")
+            .ok()
+            .and_then(|v| v.as_str())
+            != Some("gemma4v")
+        {
+            return Err(unsupported(
+                "the vision projector must be a gemma4v GGUF".into(),
+            ));
+        }
+        let get = |key: &str| g.u64(key).map(|v| v as usize);
+        let d = get("clip.vision.embedding_length")?;
+        let heads = get("clip.vision.attention.head_count")?;
+        let ff = get("clip.vision.feed_forward_length")?;
+        let out = get("clip.vision.projection_dim")?;
+        let merge = get("clip.vision.projector.scale_factor").unwrap_or(3);
+        let has_activation = ["clip.use_gelu", "clip.use_silu"]
+            .iter()
+            .any(|k| g.get(k).ok().and_then(|v| v.as_bool()) == Some(true));
+        let hd = d / heads;
+        if out != text_d || d % 128 != 0 || hd % 4 != 0 || hd * heads != d || has_activation {
+            return Err(unsupported(format!(
+                "unsupported vision projector shape (width {d}, heads {heads}, output {out})"
+            )));
+        }
+        Ok(Self {
+            d,
+            heads,
+            hd,
+            layers: get("clip.vision.block_count")?,
+            ff,
+            ff_pad: ff.next_multiple_of(64),
+            eps: g
+                .f32("clip.vision.attention.layer_norm_epsilon")
+                .unwrap_or(1e-6),
+            rope_theta: 100.0,
+            out,
+            geometry: Geometry {
+                patch: get("clip.vision.patch_size")?,
+                merge,
+                min_tokens: 70.min(max_tokens),
+                max_tokens,
+            },
+        })
+    }
+}
+
 struct Layer {
     ln1: Buf,
     wq: QMatrix,
@@ -82,49 +133,8 @@ impl Vision {
     pub fn load(gpu: &Gpu, path: &Path, text_d: usize, max_tokens: usize) -> Result<Self> {
         let g = Gguf::open(path)?;
         let unsupported = |m: String| ModelError::Unsupported(m);
-        if g.get("clip.vision.projector_type")
-            .ok()
-            .and_then(|v| v.as_str())
-            != Some("gemma4v")
-        {
-            return Err(unsupported(
-                "the vision projector must be a gemma4v GGUF".into(),
-            ));
-        }
-        let get = |key: &str| g.u64(key).map(|v| v as usize);
-        let d = get("clip.vision.embedding_length")?;
-        let heads = get("clip.vision.attention.head_count")?;
-        let ff = get("clip.vision.feed_forward_length")?;
-        let out = get("clip.vision.projection_dim")?;
-        let merge = get("clip.vision.projector.scale_factor").unwrap_or(3);
-        let has_activation = ["clip.use_gelu", "clip.use_silu"]
-            .iter()
-            .any(|k| g.get(k).ok().and_then(|v| v.as_bool()) == Some(true));
-        let hd = d / heads;
-        if out != text_d || d % 128 != 0 || hd % 4 != 0 || hd * heads != d || has_activation {
-            return Err(unsupported(format!(
-                "unsupported vision projector shape (width {d}, heads {heads}, output {out})"
-            )));
-        }
-        let cfg = VisionConfig {
-            d,
-            heads,
-            hd,
-            layers: get("clip.vision.block_count")?,
-            ff,
-            ff_pad: ff.next_multiple_of(64),
-            eps: g
-                .f32("clip.vision.attention.layer_norm_epsilon")
-                .unwrap_or(1e-6),
-            rope_theta: 100.0,
-            out,
-            geometry: Geometry {
-                patch: get("clip.vision.patch_size")?,
-                merge,
-                min_tokens: 70.min(max_tokens),
-                max_tokens,
-            },
-        };
+        let cfg = VisionConfig::from_gguf(&g, text_d, max_tokens)?;
+        let (d, hd, ff, out) = (cfg.d, cfg.hd, cfg.ff, cfg.out);
         let raw = |name: &str, kind: TensorType, elements: usize| -> Result<Vec<u8>> {
             let info = g.tensor(name)?;
             if info.kind != kind || info.elements() as usize != elements {

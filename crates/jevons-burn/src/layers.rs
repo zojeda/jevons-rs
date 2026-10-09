@@ -124,6 +124,24 @@ pub fn grouped_attention(
     values: Tensor<4>,
     mask: Option<&Tensor<4, Bool>>,
 ) -> Tensor<2> {
+    grouped_attention_with(
+        queries,
+        keys,
+        values,
+        mask,
+        AttentionModuleOptions::default(),
+    )
+}
+
+/// [`grouped_attention`] with Burn's attention options, such as a scale other than
+/// `1 / sqrt(head_dim)`.
+pub fn grouped_attention_with(
+    queries: Tensor<3>,
+    keys: Tensor<4>,
+    values: Tensor<4>,
+    mask: Option<&Tensor<4, Bool>>,
+    options: AttentionModuleOptions,
+) -> Tensor<2> {
     let [rows, heads, dim] = queries.dims();
     let [_, kv_heads, len, key_dim] = keys.dims();
     assert!(
@@ -148,7 +166,7 @@ pub fn grouped_attention(
         values.cast(DType::F16),
         mask.cloned(),
         None,
-        AttentionModuleOptions::default(),
+        options,
     );
     out.reshape([heads, rows, dim])
         .swap_dims(0, 1)

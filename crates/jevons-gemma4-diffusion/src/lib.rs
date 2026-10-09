@@ -7,4 +7,5 @@ pub use jevons_tokenizer::gemma4 as tokenizer;
 pub mod gpu;
 pub mod model;
 pub mod vision;
+pub mod vision_burn;
 pub mod vision_input;

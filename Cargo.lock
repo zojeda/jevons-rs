@@ -6326,6 +6326,7 @@ dependencies = [
  "cubecl-hip",
  "half",
  "image",
+ "jevons-burn",
  "jevons-formats",
  "jevons-kernels",
  "jevons-tokenizer",

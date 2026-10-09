@@ -33,6 +33,29 @@ impl From<SafetensorsError> for WeightError {
     }
 }
 
+/// Tensor data kept on `device` for as long as the model lives, outside the pool that
+/// serves a forward's activations.
+fn persistent<const D: usize>(device: &Device, data: TensorData, dtype: DType) -> Tensor<D> {
+    device.memory_persistent_allocations(data, |d| Tensor::from_data(d, (device, dtype)))
+}
+
+/// A resident FP16 matrix `[rows, cols]` for the tuned GEMM from little-endian FP16 bytes in
+/// row order, as a GGUF checkpoint stores them.
+pub fn f16_matrix(device: &Device, bytes: Vec<u8>, rows: usize, cols: usize) -> Tensor<2> {
+    assert_eq!(bytes.len(), rows * cols * 2, "FP16 matrix bytes");
+    let data = TensorData::from_bytes_vec(bytes, [rows, cols], DType::F16);
+    persistent(device, data, DType::F16)
+}
+
+/// A resident f32 tensor from host values.
+pub fn f32_tensor<const D: usize>(
+    device: &Device,
+    values: Vec<f32>,
+    shape: [usize; D],
+) -> Tensor<D> {
+    persistent(device, TensorData::new(values, shape), DType::F32)
+}
+
 pub struct Loader<'a> {
     pub checkpoint: &'a Checkpoint,
     pub device: &'a Device,
@@ -87,8 +110,7 @@ impl Loader<'_> {
     }
 
     fn persistent<const D: usize>(&self, data: TensorData, dtype: DType) -> Tensor<D> {
-        self.device
-            .memory_persistent_allocations(data, |d| Tensor::from_data(d, (self.device, dtype)))
+        persistent(self.device, data, dtype)
     }
 
     /// A BF16 matrix `[rows, cols]`, kept BF16 on the device.

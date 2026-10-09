@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+jevons-burn.workspace = true
 jevons-formats.workspace = true
 jevons-kernels.workspace = true
 jevons-tokenizer.workspace = true
@@ -19,6 +20,8 @@ cubecl-hip = { version = "=0.11.0-pre.4", default-features = false, features = [
 [dev-dependencies]
 image.workspace = true
 serde_json.workspace = true
+# Burn's CPU device, for the vision encoder's unit tests.
+jevons-burn = { workspace = true, features = ["flex"] }
 
 [[example]]
 name = "gguf_info"
