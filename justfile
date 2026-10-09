@@ -64,6 +64,11 @@ serve-release *args:
 desktop-windows *args:
     scripts/windows-desktop.sh "$@"
 
+# From WSL: run cargo natively on Windows, such as GPU tests: NAME [VAR=VALUE ...] -- cargo args.
+[group('Run')]
+windows-cargo *args:
+    scripts/windows-cargo.sh "$@"
+
 # Classify a material description; set DIFFUSION_MODEL or pass --model PATH.
 [group('Run')]
 scm prompt *args:
