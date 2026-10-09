@@ -12,7 +12,9 @@ The acceptance list of issue #5, in the order the spike takes it.
 - [x] wgpu: what runs and what fails.
 - [x] [`report.md`](report.md): the measurements and the recommendation.
 
-## Open
+## Closed
 
-- [ ] The decision on the recommendation, and with it this folder's move to `archive/`.
-- [ ] The vision tower on `jevons-burn`'s layers, as a change of its own under the same rule.
+- [x] The decision: the recommendation was accepted on 2026-10-09, and DiffusionGemma's decoder
+      stays on its kernels. This folder is archived with it.
+- [x] The vision tower on `jevons-burn`'s layers went on as a change of its own,
+      [gemma-vision-on-burn](../../gemma-vision-on-burn/report.md).
