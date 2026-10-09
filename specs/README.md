@@ -102,4 +102,4 @@ moves to `changes/archive/`.
 | [jevons-audio](jevons-audio/spec.md) | Upload decoding, resampling, PCM16 and G.711, log-mel, voice activity |
 | **Changes** | |
 | [changes/desktop-server](changes/desktop-server/proposal.md) | Machines, agents and tasks; the desktop server, client and protocol |
-| [changes/gemma-on-burn](changes/gemma-on-burn/proposal.md) | The spike of issue #5: DiffusionGemma's kernels on Burn, with no step back in speed |
+| [changes/gemma-vision-on-burn](changes/gemma-vision-on-burn/proposal.md) | The Gemma 4 vision encoder on `jevons-burn`'s layers: measured, and it does not hold its rule |
