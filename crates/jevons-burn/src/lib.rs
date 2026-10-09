@@ -9,6 +9,8 @@
 pub mod device;
 pub mod kernels;
 pub mod layers;
+#[cfg(test)]
+mod spike;
 pub mod weights;
 
 pub use burn::tensor::activation;

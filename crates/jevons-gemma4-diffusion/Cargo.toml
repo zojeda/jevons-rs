@@ -19,6 +19,15 @@ cubecl-hip = { version = "=0.11.0-pre.4", default-features = false, features = [
 [dev-dependencies]
 image.workspace = true
 serde_json.workspace = true
+# The spike of issue #5 (src/model/burn_spike.rs): the kernels as Burn backend extensions.
+jevons-burn.workspace = true
+burn = { version = "=0.22.0-pre.4", default-features = false, features = ["std", "rocm", "fusion", "autotune", "extension"] }
+burn-cubecl = { version = "=0.22.0-pre.4", default-features = false, features = ["std", "hip", "fusion", "autotune"] }
+
+[features]
+# The spike of issue #5: the kernel tests on a wgpu device (SPIR-V on Vulkan) with
+# SPIKE_RUNTIME=wgpu.
+spike-wgpu = ["cubecl/vulkan"]
 
 [[example]]
 name = "gguf_info"

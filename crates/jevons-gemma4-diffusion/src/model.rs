@@ -29,6 +29,9 @@ fn unsupported<T>(message: impl Into<String>) -> Result<T> {
     Err(ModelError::Unsupported(message.into()))
 }
 
+#[cfg(test)]
+mod burn_spike;
+
 /// Hyperparameters read from GGUF metadata.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -406,8 +409,21 @@ fn rope_table(cfg: &Config, cap: usize, full: bool) -> Vec<f32> {
 impl Model {
     /// Loads every tensor onto device `device`; `cap` bounds prompt + canvas positions.
     pub fn load(path: &std::path::Path, device: usize, cap: usize, chunk: usize) -> Result<Self> {
+        Self::load_prefix(path, device, cap, chunk, usize::MAX)
+    }
+
+    /// [`Model::load`] with only the first `layers` layers (the spike of issue #5): the
+    /// forward stops after them, so its hidden rows are those the whole model has there.
+    pub fn load_prefix(
+        path: &std::path::Path,
+        device: usize,
+        cap: usize,
+        chunk: usize,
+        layers: usize,
+    ) -> Result<Self> {
         let g = Gguf::open(path)?;
-        let cfg = Config::from_gguf(&g)?;
+        let mut cfg = Config::from_gguf(&g)?;
+        cfg.layers = cfg.layers.min(layers);
         let cap = cap.next_multiple_of(64);
         if chunk == 0 || chunk > cap || chunk > 1024 {
             return Err(ModelError::Input(

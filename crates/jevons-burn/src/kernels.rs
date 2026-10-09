@@ -13,7 +13,7 @@ use jevons_kernels::{Buf, Gpu};
 
 /// Row-invariant tile plan for `[m, k] x [k, n]`, from measurements on Nemotron-8B shapes
 /// (Radeon 8060S).
-fn plan(m: usize, n: usize, k: usize) -> Plan {
+pub(crate) fn plan(m: usize, n: usize, k: usize) -> Plan {
     let (bm, bn) = if m <= 32 {
         if k > 8192 {
             (128, 128)

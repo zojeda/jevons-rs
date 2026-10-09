@@ -8,6 +8,25 @@ use crate::gguf::TensorType;
 use cubecl::prelude::*;
 use half::f16;
 
+/// The device the tests run on: HIP, or with `SPIKE_RUNTIME=wgpu` (and the `spike-wgpu`
+/// feature) a wgpu device on Vulkan, to see which kernels a portable backend takes (the spike
+/// of issue #5).
+fn test_gpu() -> Gpu {
+    #[cfg(feature = "spike-wgpu")]
+    if std::env::var("SPIKE_RUNTIME").as_deref() == Ok("wgpu") {
+        let device = cubecl::Device::vulkan(cubecl::device::WgpuDeviceKind::default())
+            .expect("a Vulkan device");
+        let client = device.client();
+        let hw = &client.properties().hardware;
+        println!(
+            "wgpu on Vulkan: planes {}..{}",
+            hw.plane_size_min, hw.plane_size_max
+        );
+        return Gpu::from_client(client);
+    }
+    Gpu::new(0).unwrap()
+}
+
 struct Rng(u64);
 
 impl Rng {
@@ -77,7 +96,7 @@ fn check_attention(
     window: usize,
     block: Option<usize>,
 ) {
-    let gpu = Gpu::new(0).unwrap();
+    let gpu = test_gpu();
     let cap = 192;
     let kv_len = pos0 + rows;
     let mut rng = Rng(0x1234 + hd as u64 + rows as u64 + pos0 as u64);
@@ -180,7 +199,7 @@ fn attention_matches_reference_for_causal_sliding_and_canvas_queries() {
 #[test]
 #[ignore = "requires a HIP GPU"]
 fn qkv_preparation_normalizes_rotates_and_writes_caches() {
-    let gpu = Gpu::new(0).unwrap();
+    let gpu = test_gpu();
     let (rows, heads, kvh, hd, cap, pos0) = (5, 4, 2, 256, 64, 7);
     let mut rng = Rng(99);
     let q = rng.vec(rows * heads * hd, 2.0);
@@ -281,7 +300,7 @@ fn routing_selects_normalized_top_k_and_grouping_covers_every_assignment() {
 }
 
 fn check_routing(rows: usize) {
-    let gpu = Gpu::new(0).unwrap();
+    let gpu = test_gpu();
     let (d, experts, top_k, bm) = (256, 128, 8, 32);
     let mut rng = Rng(7);
     let x = rng.vec(rows * d, 1.0);
@@ -360,7 +379,7 @@ fn check_routing(rows: usize) {
 #[test]
 #[ignore = "requires a HIP GPU"]
 fn grouped_products_use_each_assignments_expert_weights() {
-    let gpu = Gpu::new(0).unwrap();
+    let gpu = test_gpu();
     let (tokens, top_k, experts, n, k) = (21, 2, 4, 128, 256);
     let mut rng = Rng(3);
     // Q8_0 weights with random signed quants.
@@ -427,7 +446,7 @@ fn grouped_products_use_each_assignments_expert_weights() {
 #[test]
 #[ignore = "requires a HIP GPU"]
 fn every_tunable_dense_plan_matches_reference_and_tiles_are_row_invariant() {
-    let gpu = Gpu::new(0).unwrap();
+    let gpu = test_gpu();
     let (n, k) = (256, 512);
     let mut rng = Rng(11);
     let mut raw = Vec::new();
@@ -482,7 +501,7 @@ fn every_tunable_dense_plan_matches_reference_and_tiles_are_row_invariant() {
 #[test]
 #[ignore = "requires a HIP GPU"]
 fn post_ffn_norms_combine_experts_residual_and_scale() {
-    let gpu = Gpu::new(0).unwrap();
+    let gpu = test_gpu();
     let (rows, d, top_k, eps, scale) = (3, 512, 2, 1e-6f32, 0.5f32);
     let mut rng = Rng(11);
     let mlp = rng.vec(rows * d, 3.0);
@@ -556,7 +575,7 @@ fn q6k_table(rng: &mut Rng, rows: usize, d: usize) -> Vec<u8> {
 #[test]
 #[ignore = "requires a HIP GPU"]
 fn q6k_embedding_rows_and_candidate_logits_match_dequantized_table() {
-    let gpu = Gpu::new(0).unwrap();
+    let gpu = test_gpu();
     let (vocab, d, eps, cap) = (40, 512, 1e-6f32, 30.0f32);
     let mut rng = Rng(5);
     let raw = q6k_table(&mut rng, vocab, d);
@@ -650,7 +669,7 @@ fn q6k_embedding_rows_and_candidate_logits_match_dequantized_table() {
 #[test]
 #[ignore = "requires a HIP GPU"]
 fn post_attention_norms_update_residual_and_emit_ffn_inputs() {
-    let gpu = Gpu::new(0).unwrap();
+    let gpu = test_gpu();
     let (rows, d, eps) = (2, 768, 1e-6f32);
     let mut rng = Rng(21);
     let attn = rng.vec(rows * d, 2.0);
@@ -705,7 +724,7 @@ fn post_attention_norms_update_residual_and_emit_ffn_inputs() {
 #[test]
 #[ignore = "requires a HIP GPU"]
 fn attention_ignores_cache_contents_beyond_the_visible_keys() {
-    let gpu = Gpu::new(0).unwrap();
+    let gpu = test_gpu();
     let (heads, kvh, hd, cap, prompt) = (4, 2, 512, 128, 27);
     let mut rng = Rng(77);
     for (rows, pos0) in [(27usize, 0usize), (18, 9), (12, 27)] {
@@ -767,7 +786,7 @@ fn attention_ignores_cache_contents_beyond_the_visible_keys() {
 #[test]
 #[ignore = "requires a HIP GPU"]
 fn attention_rows_do_not_depend_on_query_chunking() {
-    let gpu = Gpu::new(0).unwrap();
+    let gpu = test_gpu();
     let (heads, kvh, hd, cap, prompt) = (16, 2, 512, 1024, 27);
     let mut rng = Rng(78);
     let q_all = rng.vec(prompt * heads * hd, 1.0);
@@ -840,7 +859,7 @@ fn one_wmma<N8: Size>(a: &[Vector<f16, N8>], b: &[Vector<f16, N8>], c0: &[f32], 
 #[ignore = "requires a HIP GPU; hardware characterization"]
 fn wmma_zero_products_sensitivity_probe() {
     use cubecl::prelude::*;
-    let gpu = Gpu::new(0).unwrap();
+    let gpu = test_gpu();
     let mut rng = Rng(5);
     // Attention-like: probabilities in [0, 1] with tiny values, large V, nonzero accumulator.
     let mut a: Vec<f32> = h16(&rng
@@ -885,7 +904,7 @@ fn wmma_zero_products_sensitivity_probe() {
 #[test]
 #[ignore = "requires a HIP GPU"]
 fn causal_rows_are_bitwise_independent_of_later_keys() {
-    let gpu = Gpu::new(0).unwrap();
+    let gpu = test_gpu();
     let (heads, kvh, cap, prompt, change) = (16, 2, 256, 45, 20);
     for (hd, swa, pos0) in [(512usize, false, 0usize), (256, true, 0), (512, false, 7)] {
         let mut rng = Rng(900 + hd as u64 + pos0 as u64);
@@ -944,7 +963,7 @@ fn rms(v: &[f32]) -> f64 {
 #[ignore = "requires a HIP GPU"]
 fn vision_qkv_normalizes_heads_and_rotates_by_patch_column_and_row() {
     use super::vision as vk;
-    let gpu = Gpu::new(0).unwrap();
+    let gpu = test_gpu();
     let (rows, cols, heads, hd) = (6, 3, 2, 72);
     let d = heads * hd;
     let mut rng = Rng(21);
@@ -1023,7 +1042,7 @@ fn vision_qkv_normalizes_heads_and_rotates_by_patch_column_and_row() {
 #[ignore = "requires a HIP GPU"]
 fn vision_attention_is_bidirectional_over_partial_key_tiles() {
     use super::vision as vk;
-    let gpu = Gpu::new(0).unwrap();
+    let gpu = test_gpu();
     let (rows, heads, hd) = (70, 2, 72);
     let d = heads * hd;
     let mut rng = Rng(22);
@@ -1076,7 +1095,7 @@ fn vision_attention_is_bidirectional_over_partial_key_tiles() {
 #[ignore = "requires a HIP GPU"]
 fn vision_ffn_pooling_positions_and_norms_match_reference() {
     use super::vision as vk;
-    let gpu = Gpu::new(0).unwrap();
+    let gpu = test_gpu();
     let mut rng = Rng(23);
     // Quick-GELU gate with padded output columns.
     let (rows, f, pad) = (3, 5, 8);
@@ -1188,7 +1207,7 @@ fn the_release_guard_returns_what_was_dropped_before_it() {
         _big: Buf,
         _release: ReleaseOnDrop,
     }
-    let gpu = Gpu::new(0).unwrap();
+    let gpu = test_gpu();
     let reserved = || gpu.client.memory_usage().bytes_reserved;
     let before = reserved();
     let owner = Owner {
@@ -1210,7 +1229,7 @@ fn the_release_guard_returns_what_was_dropped_before_it() {
 #[test]
 #[ignore = "requires a HIP GPU"]
 fn released_buffers_return_device_memory_after_cleanup() {
-    let gpu = Gpu::new(0).unwrap();
+    let gpu = test_gpu();
     let reserved = || gpu.client.memory_usage().bytes_reserved;
     let before = reserved();
     let big = gpu.zeros(256 << 20, 4);

@@ -815,6 +815,7 @@ fn reduce_splits(part: &[f32], out: &mut [f32], len: u32, #[comptime] splits: us
 }
 
 /// Quantized weight matrix `[experts * n, k]` resident on the device.
+#[derive(Clone)]
 pub struct QMatrix {
     pub kind: TensorType,
     pub fmt: u32,
