@@ -122,6 +122,16 @@ They compare against the dump from `scripts/reference/parakeet_dump.py` (directo
 
 Against a running service, run `python3 scripts/smoke-test.py` with the server's `TYPESAFE_API_KEY` if configured.
 
+Where WSL has no ROCm but Windows has the HIP SDK, `just windows-cargo` runs the same commands natively on Windows, in the clone `just desktop-windows` builds in, after making it match the working tree:
+
+```bash
+just windows-cargo kernels -- test --release --locked -p jevons-gemma4-diffusion --lib -- --ignored --test-threads=1
+just windows-cargo read 'DIFFUSION_MODEL=C:\models\diffusiongemma-26B-A4B-it-Q4_K_M.gguf' -- \
+  test --release --locked -p jevons-decision --lib -- --ignored --exact read::tests::model_reads_preserve_reproducibility_across_requests
+```
+
+The first word names the log, `target\windows-cargo\<name>.log` in the clone, whose end is printed when the command is done; `:::` starts another cargo command in the same run. The Windows process is started detached and is never killed, and one runs at a time. Quit the tray app first: a GPU benchmark beside it can make its window lose its device, and a test that loads the model needs the memory.
+
 Regular tests cover validation, probability math, error mapping, model aliases, request IDs, image preprocessing, and queue behavior. The ignored model tests check reproducibility, extension behavior, and image prefill (including exact reuse of a cached image) using real assets.
 
 ### Golden references
