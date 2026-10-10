@@ -16,7 +16,7 @@
 //! what it would have done.
 
 use super::tree::{Catalog, CatalogTool};
-use adk_core::{Tool, ToolContext, async_trait};
+use futures_util::future::BoxFuture;
 use jevons_desktop_protocol::desk::{ClientTool, ClientTools, Desk};
 use jevons_desktop_tools::config::{McpConfig, ToolConfig};
 use jevons_desktop_tools::{ToolSet, allowed};
@@ -24,7 +24,17 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-/// A tool as a node or agent gets it.
+/// A tool as the model sees it.
+pub trait Tool: Send + Sync {
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
+    /// Its arguments' JSON Schema, read before each model turn.
+    fn parameters(&self) -> Option<Value>;
+    /// Runs it with the arguments of one call.
+    fn call(&self, arguments: Value) -> BoxFuture<'_, Result<Value, String>>;
+}
+
+/// A tool as a node gets it.
 #[derive(Clone)]
 pub struct Resolved {
     /// The model-facing tool.
@@ -62,7 +72,6 @@ fn text_of(value: &Value) -> String {
 /// One of the server's own tools, as the model sees it.
 struct Own(jevons_desktop_tools::Resolved);
 
-#[async_trait]
 impl Tool for Own {
     fn name(&self) -> &str {
         &self.0.name
@@ -72,12 +81,12 @@ impl Tool for Own {
         &self.0.known.description
     }
 
-    fn parameters_schema(&self) -> Option<Value> {
+    fn parameters(&self) -> Option<Value> {
         self.0.known.parameters.clone()
     }
 
-    async fn execute(&self, _: Arc<dyn ToolContext>, args: Value) -> adk_core::Result<Value> {
-        self.0.call(args).await.map_err(adk_core::AdkError::tool)
+    fn call(&self, arguments: Value) -> BoxFuture<'_, Result<Value, String>> {
+        Box::pin(self.0.call(arguments))
     }
 }
 
@@ -95,7 +104,6 @@ struct AtDesk {
     confirm: bool,
 }
 
-#[async_trait]
 impl Tool for AtDesk {
     fn name(&self) -> &str {
         &self.name
@@ -105,20 +113,17 @@ impl Tool for AtDesk {
         &self.description
     }
 
-    fn parameters_schema(&self) -> Option<Value> {
+    fn parameters(&self) -> Option<Value> {
         Some(self.parameters.clone())
     }
 
-    async fn execute(&self, _: Arc<dyn ToolContext>, args: Value) -> adk_core::Result<Value> {
-        self.desk
-            .run_tool(
-                self.reference.clone(),
-                args,
-                self.node.clone(),
-                self.confirm,
-            )
-            .await
-            .map_err(adk_core::AdkError::tool)
+    fn call(&self, arguments: Value) -> BoxFuture<'_, Result<Value, String>> {
+        self.desk.run_tool(
+            self.reference.clone(),
+            arguments,
+            self.node.clone(),
+            self.confirm,
+        )
     }
 }
 
@@ -128,7 +133,6 @@ struct DryRun {
     inner: Arc<dyn Tool>,
 }
 
-#[async_trait]
 impl Tool for DryRun {
     fn name(&self) -> &str {
         self.inner.name()
@@ -136,11 +140,12 @@ impl Tool for DryRun {
     fn description(&self) -> &str {
         self.inner.description()
     }
-    fn parameters_schema(&self) -> Option<Value> {
-        self.inner.parameters_schema()
+    fn parameters(&self) -> Option<Value> {
+        self.inner.parameters()
     }
-    async fn execute(&self, _: Arc<dyn ToolContext>, args: Value) -> adk_core::Result<Value> {
-        Ok(json!({"dry_run": true, "would_call": self.reference, "arguments": args}))
+    fn call(&self, arguments: Value) -> BoxFuture<'_, Result<Value, String>> {
+        let would = json!({"dry_run": true, "would_call": self.reference, "arguments": arguments});
+        Box::pin(async move { Ok(would) })
     }
 }
 
@@ -348,7 +353,7 @@ impl ToolHost {
         let mut md = String::from(
             "<!-- Written by jevons from the desktop settings; rewritten whenever they change. -->\n\
              # Tools\n\n\
-             Flow files call these tools from `tool.toml` (one call) and list them in `loop.toml`.\n\
+             Flow files call these tools from `tool.toml`, one call a node.\n\
              They are registered in the desktop settings (`[tools.<name>]`, `[mcp.<name>]`): a flow\n\
              can use them, never add them. One in the server's file runs on the server, and one\n\
              in the client's file, like every automation, on the client.\n",
@@ -477,12 +482,7 @@ arguments = { title = "A title" }
         assert!(host.resolve(&["search".into()], "dictate").await.is_err());
         let search = host.resolve(&["search".into()], "ask/web").await.unwrap();
         assert!(!search[0].confirm);
-        let ctx: Arc<dyn ToolContext> = Arc::new(adk_tool::SimpleToolContext::new("test"));
-        let dry = search[0]
-            .tool
-            .execute(ctx, json!({"query": "rust"}))
-            .await
-            .unwrap();
+        let dry = search[0].tool.call(json!({"query": "rust"})).await.unwrap();
         assert_eq!(dry["dry_run"], true);
         assert_eq!(dry["would_call"], "search");
         let catalog = host.catalog();
@@ -630,10 +630,9 @@ for line in sys.stdin:
         assert_eq!(resolved[0].reference, "calc:add");
         assert_eq!(resolved[0].tool.name(), "calc__add");
         assert!(!resolved[0].confirm, "listed as unconfirmed");
-        let ctx: Arc<dyn ToolContext> = Arc::new(adk_tool::SimpleToolContext::new("test"));
         let result = resolved[0]
             .tool
-            .execute(ctx, json!({"a": 2, "b": 3}))
+            .call(json!({"a": 2, "b": 3}))
             .await
             .unwrap();
         assert_eq!(result_text(&result), "5");

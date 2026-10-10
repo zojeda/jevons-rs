@@ -15,7 +15,7 @@ It owns:
 
 - the flow tree in `flow/`: node files, the loader and its checks, guards, the walker, machines
   and their host, `[extract]` and `[investigate]` orchestration, the context investigator's model
-  loop, tool loops, the tool host and the built-in tree;
+  loop, the tool host and the built-in tree;
 - the take pipeline (`pipeline`): transcription, the machines, the walk and its trace;
 - the typed API client, each capability's route and its provider's profile, and the API log
   (`client`); the forwarder that serves other clients (`forward`);
@@ -42,7 +42,7 @@ runs against the client core's desk over fakes.
 | [flows](flows.md) | Node files, the loader, guards and `[prefer]`, placeholders, shapes, the walker, the built-in tree and its upgrades |
 | [machines](machines.md) | Machine folders (`root.toml`, `agent.toml`, `task.toml`) and their checks, the host of the forest across takes and timers |
 | [investigator](investigator.md) | The context investigator: the model loop, its tools as steps asked of the desk, its answer |
-| [tools](tools.md) | The tool host: built-in tools, MCP servers, the client's tools, confirmations and tool loops |
+| [tools](tools.md) | The tool host: built-in tools, MCP servers, the client's tools and confirmations |
 | [pipeline](pipeline.md) | One take from its audio to delivery, live dictation |
 | this file | The session a client's takes run in, its timers, and the host that serves it over a stream |
 | [client](client.md) | Typed requests to the jevons API and other providers, each capability's route and its provider's profile, forwarding for other clients, the API log |

@@ -193,7 +193,7 @@ alone, rules, rules and then the model, the model), with a legend below the diag
 transition's label lit. When the machine shown stayed on an unsure decision, a block above the
 diagram says what was said and why nothing was taken, with a button per candidate and its
 probability; a click answers the decision with that candidate. Each state shows its work in a few words (such as `tool · web_search`,
-`loop`, `run`, `decide`, `machine`) or `waits`. While the current state's work runs at the
+`run`, `decide`, `machine`) or `waits`. While the current state's work runs at the
 state's own node, or in a box that is not open (R33), that line says what the take does there
 (`deciding`, `calling web_search`). It says `deciding` too while the machine itself decides
 where what was said goes: the root among its agents, an agent or a task among its transitions.
@@ -362,7 +362,7 @@ The rows carry the way a take went:
   taken says why (`rules`, `model 0.91`), and the row the walk is at carries `now` and what the
   take does there (`deciding`, `writing`, `calling web_search`). These come from the stages of
   the take's bubble (R26): a decision's stage names its node, the branches it chose among and
-  the one it took, and a tool's or a loop's stage that ended well leads on to its node's branch.
+  the one it took, and a tool's stage that ended well leads on to its node's branch.
   They show only while the take that moved the machine into the state runs.
 - After the take, the marks come from its trace: the latest take kept (R14) that moved this
   machine and walked the state's folder. Each branch taken says why (`rules: priority 35`,

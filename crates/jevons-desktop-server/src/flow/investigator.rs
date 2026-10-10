@@ -13,16 +13,14 @@
 //! expression, which an `[extract]` can use to read the same element with no model at all.
 
 use super::investigate::{Found, Inquiry, Investigate, Progress};
-use super::llm::JevonsLlm;
 use super::shape::{Shape, has_content};
 use super::tool_loop::{self, Task};
+use super::tools::Tool;
 use crate::client::{ChatMessage, ChatReply, ChatRequest, Client};
-use adk_core::{Tool, ToolContext, async_trait};
 use futures_util::future::BoxFuture;
 use jevons_desktop_protocol::desk::{Desk, Look, Looked};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 const INSTRUCTION: &str = "You investigate the interface of the user's applications to answer \
@@ -88,7 +86,6 @@ struct NavTool {
     progress: Option<Progress>,
 }
 
-#[async_trait]
 impl Tool for NavTool {
     fn name(&self) -> &str {
         match self.kind {
@@ -114,11 +111,7 @@ impl Tool for NavTool {
         }
     }
 
-    fn is_read_only(&self) -> bool {
-        true
-    }
-
-    fn parameters_schema(&self) -> Option<Value> {
+    fn parameters(&self) -> Option<Value> {
         let sight = self.sight.lock().expect("the sight lock");
         let node =
             json!({"type": "string", "enum": sight.ids, "description": "An element or window id"});
@@ -148,60 +141,14 @@ impl Tool for NavTool {
         })
     }
 
-    async fn execute(&self, _: Arc<dyn ToolContext>, args: Value) -> adk_core::Result<Value> {
-        let looked = self
-            .desk
-            .look_step(self.session, self.name().to_string(), args)
-            .await;
-        Ok(json!(see(&self.sight, self.progress.as_ref(), looked)))
-    }
-}
-
-/// The investigator as a tool agents can call: a question in, a short answer out.
-pub struct InvestigateTool {
-    pub investigator: Arc<dyn Investigate>,
-    /// The context of the take the agent runs in.
-    pub snapshot: crate::context::ContextSnapshot,
-}
-
-#[async_trait]
-impl Tool for InvestigateTool {
-    fn name(&self) -> &str {
-        "investigate"
-    }
-
-    fn description(&self) -> &str {
-        "Reads the user's screen (the application the take started in) to answer a question \
-         about what it shows."
-    }
-
-    fn is_read_only(&self) -> bool {
-        true
-    }
-
-    fn parameters_schema(&self) -> Option<Value> {
-        Some(
-            json!({"type": "object", "properties": {"question": {"type": "string",
-            "description": "What to find out on the screen"}}, "required": ["question"]}),
-        )
-    }
-
-    async fn execute(&self, _: Arc<dyn ToolContext>, args: Value) -> adk_core::Result<Value> {
-        let question = args["question"].as_str().unwrap_or_default().to_string();
-        let shape = Shape::Object(BTreeMap::from([("answer".to_string(), Shape::String)]));
-        let found = self
-            .investigator
-            .investigate(Inquiry {
-                name: "agent",
-                question,
-                shape: &shape,
-                scope: &[],
-                max_steps: 8,
-                snapshot: &self.snapshot,
-                progress: None,
-            })
-            .await;
-        Ok(found.value)
+    fn call(&self, arguments: Value) -> BoxFuture<'_, Result<Value, String>> {
+        Box::pin(async move {
+            let looked = self
+                .desk
+                .look_step(self.session, self.name().to_string(), arguments)
+                .await;
+            Ok(json!(see(&self.sight, self.progress.as_ref(), looked)))
+        })
     }
 }
 
@@ -313,22 +260,15 @@ impl Investigate for Investigator {
                 inquiry.question
             );
             let task = Task {
-                name: "investigator".into(),
                 instruction: INSTRUCTION.into(),
                 input,
                 tools,
-                toolsets: Vec::new(),
                 max_steps: inquiry.max_steps,
-                output_schema: Some(inquiry.shape.json_schema()),
-                confirm: BTreeSet::new(),
-                confirmer: None,
+                schema: inquiry.shape.json_schema(),
             };
-            let model = Arc::new(JevonsLlm::new(self.client.clone(), self.model.clone()));
-            match tool_loop::run(model, task).await {
-                Ok(outcome) => {
-                    let value = serde_json::from_str(&outcome.text)
-                        .map(|v| inquiry.shape.conform(&v))
-                        .unwrap_or_else(|_| inquiry.shape.empty());
+            match tool_loop::run(&self.client, &self.model, task).await {
+                Ok(answer) => {
+                    let value = inquiry.shape.conform(&answer);
                     // The client remembers where an answer came from.
                     let remembered = self.desk.look_end(session, has_content(&value)).await;
                     let mut steps = steps(&sight);

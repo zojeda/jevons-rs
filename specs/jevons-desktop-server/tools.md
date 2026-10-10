@@ -2,14 +2,14 @@
 
 [Back to jevons-desktop-server](spec.md)
 
-The tool host runs what flow nodes and tool loops call: the built-in tools (`command`, `http`, `open`)
+The tool host runs what flow nodes call: the built-in tools (`command`, `http`, `open`)
 and MCP servers registered in the server's settings, and the client's tools, the library's
 automations as `script:<name>`, which it lists from the desk and passes each call on to
 ([desk](../jevons-desktop-core/desk.md) R6). It asks the desk before a call runs, keeps each tool to the nodes its `allow` names, and in
-a dry run records a call instead of making it. Agents run their tool-calling loop on adk-rust,
-over the jevons API, through `JevonsLlm`. The node files (`tool.toml`, `loop.toml`, `run.toml`)
-and the checks made when they load are in [flows](flows.md). A machine's `tools` list is in
-[machines](machines.md).
+a dry run records a call instead of making it. The node files (`tool.toml`, `run.toml`) and the
+checks made when they load are in [flows](flows.md). A machine's `tools` list is in
+[machines](machines.md). The one model loop over tools is the context investigator's
+([investigator](investigator.md) R17).
 
 ## Requirements
 
@@ -58,8 +58,8 @@ Tests: `results_read_as_text`
 
 A node names a built-in tool by its name, an MCP tool as `server:tool`, every tool of a server as
 `server:*`, an automation as `script:<name>` and every automation as `script:*`, whichever side
-runs it. The model knows them as `server__tool` and `script__<name>`, since its tool names cannot
-hold a colon. A name that matches no tool, server, server tool or automation fails to resolve
+runs it. For a model they are `server__tool` and `script__<name>`, since a model's tool names
+cannot hold a colon; no node offers them to one today. A name that matches no tool, server, server tool or automation fails to resolve
 with a message that names it.
 
 Tests: `an_mcp_server_starts_lists_its_tools_and_answers_calls`, `automations_are_script_tools_that_ask_and_respect_allow`
@@ -75,8 +75,7 @@ turns its asking off.
 The side that runs a tool is the one that asks for it. For one of its own, the server asks the
 desk and runs the tool on a yes. For one the client runs, the server does not ask: the call goes
 to the desk with the node's `confirm`, and the client asks by itself when its own settings or
-that `confirm` say so ([desk](../jevons-desktop-core/desk.md) R6). In a tool loop the server asks
-only for its own tools.
+that `confirm` say so ([desk](../jevons-desktop-core/desk.md) R6).
 
 Tests: `builtin_tools_resolve_by_name_ask_by_default_and_respect_allow`, `an_mcp_server_starts_lists_its_tools_and_answers_calls`, `automations_are_script_tools_that_ask_and_respect_allow`, `a_server_tool_asks_through_the_client_and_a_client_tool_asks_by_itself`
 
@@ -147,34 +146,16 @@ Tests: `a_tool_node_fills_its_arguments_asks_and_answers_with_the_result`
 
 ### R18 Agents run a bounded tool-calling loop
 
-A `loop.toml` node runs an adk-rust agent over the tools it names, for at most `max_steps`
-model turns (4 by default). When the take has a context investigator, the agent can also call
-`investigate`, which takes a `question` and answers from the screen. Its instruction is the
-instructions gathered from the root, plus one telling it to call tools one at a time and then
-answer in plain text. Its input is the node's `prompt`, or the take's context, investigations and
-words. Its answer is the last text the model wrote without calling a tool.
-
-Tests: `an_agent_calls_a_tool_reads_its_result_and_answers`, `an_agent_node_calls_its_tools_and_its_answer_goes_to_the_bubble`
+Removed: the `loop.toml` node is gone. A machine's states do bounded tool work with `tool.toml`
+and `decide.toml` nodes, under the transitions its diagram draws ([machines](machines.md)).
 
 ### R19 An agent's calls ask first and show in the bubble
 
-An agent's tools that ask go through the confirmer. A denied call does not run, and the agent
-goes on without its result. Each call is a stage in the bubble. With `output = "bubble"` (the
-default), the answer streams into the bubble as the model writes it. The trace records each call
-under the name flow files use, with its arguments and the first 600 characters of its result.
-
-Tests: `a_denied_confirmation_keeps_the_tool_from_running`, `an_agent_node_calls_its_tools_and_its_answer_goes_to_the_bubble`
+Removed with R18.
 
 ### R20 `JevonsLlm` speaks Chat Completions
 
-Each model turn of an agent is one streamed `POST /v1/chat/completions`. User and system text
-become messages, the model's calls an assistant message with `tool_calls`, and results `tool`
-messages that answer their call's id. The tools go sorted by name, with their descriptions and
-parameters. The turn's output token limit becomes `max_completion_tokens`, a structured answer a
-JSON Schema `response_format`, and a thought budget the smallest `reasoning_effort` that covers
-it. Text streams out as it arrives, and a call arrives whole and ends the turn.
-
-Tests: `adk_contents_become_chat_turns_with_calls_and_results`, `a_streamed_tool_call_is_joined_and_its_arguments_parsed`
+Removed: now [investigator](investigator.md) R17, the one model loop over tools that is left.
 
 ### R21 Automations are `script:<name>` tools
 

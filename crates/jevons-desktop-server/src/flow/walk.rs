@@ -7,30 +7,24 @@
 //! questions go in one System One request, so a typical take costs one decision call. Every step
 //! is recorded as a [`FlowStep`] with the guards it checked and the probabilities it read.
 
-use super::confirm::DeskConfirmer;
 use super::extract::Extract;
 use super::frame::{Frame, Lazy};
 use super::guard::Check;
 use super::investigate::{Inquiry, Investigate};
-use super::investigator::InvestigateTool;
-use super::llm::JevonsLlm;
 use super::spec::{
-    ArgSpec, ArgType, DecideSpec, GenerateSpec, LoopSpec, Output, RunSpec, Select, ToolSpec,
-    TranscriptSpec,
+    ArgSpec, ArgType, DecideSpec, GenerateSpec, Output, RunSpec, Select, ToolSpec, TranscriptSpec,
 };
-use super::tool_loop::{self as loops, Task};
 use super::tools::result_text;
 use super::tree::{FlowTree, Investigation, Kind, Node, NodeId, NodeSpec};
 use crate::client::{
     Answer, ClientError, DecisionRequest, Question, Reasoning, ResponseRequest, probability_of,
 };
 use crate::pipeline::{DecisionTrace, Env, GenerationTrace, Stage, StageKind, Trace, Update};
-use adk_core::Tool;
 use jevons_desktop_protocol::delivery::{Action, DeliveryMethod};
 use jevons_desktop_protocol::desk::{Ask, NO_INVESTIGATOR, NOT_CONFIRMED, Read};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
@@ -193,7 +187,7 @@ impl FlowStep {
     }
 }
 
-/// A tool call a take made, from a tool node or an agent.
+/// A tool call a take made.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ToolTrace {
     /// The node that made it.
@@ -209,54 +203,11 @@ pub struct ToolTrace {
     pub confirmed: Option<bool>,
 }
 
-/// What a tool or agent node leads to.
+/// What a tool or run node leads to.
 enum Ahead {
     Leaf(Leaf),
     /// On to the node's branch, with this as `{result}`.
     Next(Value),
-}
-
-/// An agent's tool that reports each call as a stage, for the bubble.
-struct Reported {
-    inner: Arc<dyn Tool>,
-    reference: String,
-    updates: UnboundedSender<Update>,
-}
-
-#[adk_core::async_trait]
-impl Tool for Reported {
-    fn name(&self) -> &str {
-        self.inner.name()
-    }
-    fn description(&self) -> &str {
-        self.inner.description()
-    }
-    fn parameters_schema(&self) -> Option<Value> {
-        self.inner.parameters_schema()
-    }
-    fn response_schema(&self) -> Option<Value> {
-        self.inner.response_schema()
-    }
-    fn is_read_only(&self) -> bool {
-        self.inner.is_read_only()
-    }
-    async fn execute(
-        &self,
-        ctx: Arc<dyn adk_core::ToolContext>,
-        args: Value,
-    ) -> adk_core::Result<Value> {
-        let _ = self.updates.send(Update::Stage(Stage::new(
-            StageKind::Calling,
-            &self.reference,
-        )));
-        let result = self.inner.execute(ctx, args).await;
-        let _ = self.updates.send(Update::StageDone {
-            detail: if result.is_ok() { "done" } else { "failed" }.into(),
-            chosen: None,
-            ok: result.is_ok(),
-        });
-        result
-    }
 }
 
 /// Where a walk ends.
@@ -411,16 +362,6 @@ impl Walker<'_> {
                     return Ok(Walked::Leaf(self.transcript(node, t)));
                 }
                 NodeSpec::Tool(t) => match self.tool(node, t).await? {
-                    Ahead::Leaf(leaf) => {
-                        self.step().ms = began.elapsed().as_millis() as u64;
-                        return Ok(Walked::Leaf(leaf));
-                    }
-                    Ahead::Next(result) => {
-                        self.frame.values.insert("result".into(), result);
-                        node.children.first().copied()
-                    }
-                },
-                NodeSpec::Loop(a) => match self.tool_loop(node, a).await? {
                     Ahead::Leaf(leaf) => {
                         self.step().ms = began.elapsed().as_millis() as u64;
                         return Ok(Walked::Leaf(leaf));
@@ -1099,7 +1040,7 @@ impl Walker<'_> {
             resolved
         };
         let asks = resolved.confirm || t.confirm;
-        let schema = resolved.tool.parameters_schema();
+        let schema = resolved.tool.parameters();
         self.stage(Stage::new(StageKind::Calling, &resolved.reference));
         let arguments = match self.arguments(node, t, schema.as_ref()).await {
             Ok(arguments) => arguments,
@@ -1141,16 +1082,14 @@ impl Walker<'_> {
         }
         let _ = self.updates.send(Update::Progress("running".into()));
         let began = Instant::now();
-        let context: Arc<dyn adk_core::ToolContext> =
-            Arc::new(adk_tool::SimpleToolContext::new(node.label()));
-        let result = resolved.tool.execute(context, arguments).await;
+        let result = resolved.tool.call(arguments).await;
         self.trace
             .timings
             .push(("tool".into(), began.elapsed().as_millis() as u64));
         let result = match result {
             Ok(result) => result,
             // The client asked, and the user did not let it run.
-            Err(e) if resolved.at_desk && e.to_string().contains(NOT_CONFIRMED) => {
+            Err(e) if resolved.at_desk && e.contains(NOT_CONFIRMED) => {
                 record.confirmed = Some(false);
                 self.trace.calls.push(record);
                 self.done("not confirmed", None, false);
@@ -1434,124 +1373,6 @@ impl Walker<'_> {
             .timings
             .push(("generate".into(), began.elapsed().as_millis() as u64));
         Ok(written.trim().to_string())
-    }
-
-    /// Runs an agent over the node's tools (and the investigator) to its answer.
-    async fn tool_loop(&mut self, node: &Node, a: &LoopSpec) -> Result<Ahead, ClientError> {
-        let env = self.env;
-        let Some(route) = env.routes.generation.as_ref() else {
-            return Err(ClientError::NotServed("A language model for agents"));
-        };
-        let model = route.model.clone();
-        let resolved = match &self.env.tools {
-            Some(host) => host
-                .resolve(&a.tools, node.label())
-                .await
-                .map_err(ClientError::Protocol)?,
-            None if a.tools.is_empty() => Vec::new(),
-            None => {
-                return Err(ClientError::NotServed(
-                    "Tools (register them in the desktop settings)",
-                ));
-            }
-        };
-        // The server asks for its own tools; the client's ask by themselves.
-        let confirm: BTreeSet<String> = resolved
-            .iter()
-            .filter(|r| r.confirm && !r.at_desk)
-            .map(|r| r.tool.name().to_string())
-            .collect();
-        let names: HashMap<String, String> = resolved
-            .iter()
-            .map(|r| (r.tool.name().to_string(), r.reference.clone()))
-            .collect();
-        let mut tools: Vec<Arc<dyn Tool>> = resolved
-            .iter()
-            .map(|r| {
-                Arc::new(Reported {
-                    inner: r.tool.clone(),
-                    reference: r.reference.clone(),
-                    updates: self.updates.clone(),
-                }) as Arc<dyn Tool>
-            })
-            .collect();
-        if let Some(investigator) = &self.env.investigator {
-            tools.push(Arc::new(InvestigateTool {
-                investigator: investigator.clone(),
-                snapshot: self.frame.snapshot.clone(),
-            }));
-        }
-        let output = a.output.unwrap_or(Output::Bubble);
-        let mut instructions = self.frame.instructions.clone();
-        instructions.push(
-            "You can call tools to do what the user asks, one at a time. When you have what you \
-             need, answer the user in plain text."
-                .into(),
-        );
-        let input = match node.template("prompt") {
-            Some(prompt) => prompt.render(|path| self.frame.value(path)),
-            None => self.default_input(output, Action::Insert),
-        };
-        if output == Output::Bubble {
-            let _ = self.updates.send(Update::Answering);
-        }
-        self.stage(Stage::new(StageKind::Loop, node.name.clone()));
-        let updates = self.updates.clone();
-        let llm = JevonsLlm::new(route.client.clone(), model)
-            .with_think(self.frame.think.unwrap_or(0))
-            .with_deltas(Arc::new(move |delta: &str| {
-                let _ = updates.send(Update::Output(delta.to_string()));
-            }));
-        let task = Task {
-            name: "loop".into(),
-            instruction: instructions.join("\n\n"),
-            input,
-            tools,
-            toolsets: Vec::new(),
-            max_steps: a.max_steps.unwrap_or(4),
-            output_schema: None,
-            confirm,
-            confirmer: Some(Arc::new(DeskConfirmer(self.env.desk.clone()))),
-        };
-        let began = Instant::now();
-        let outcome = loops::run(Arc::new(llm), task).await;
-        self.trace
-            .timings
-            .push(("loop".into(), began.elapsed().as_millis() as u64));
-        let outcome = match outcome {
-            Ok(outcome) => outcome,
-            Err(e) => {
-                self.done("failed", None, false);
-                return Err(ClientError::Protocol(e));
-            }
-        };
-        let calls = outcome.calls.len();
-        self.done(
-            &format!("{calls} call{}", if calls == 1 { "" } else { "s" }),
-            None,
-            true,
-        );
-        for call in &outcome.calls {
-            self.trace.calls.push(ToolTrace {
-                node: node.label().to_string(),
-                tool: names
-                    .get(&call.tool)
-                    .cloned()
-                    .unwrap_or_else(|| call.tool.clone()),
-                arguments: call.arguments.clone(),
-                result: call.result.clone(),
-                confirmed: None,
-            });
-        }
-        match output {
-            Output::Next => Ok(Ahead::Next(json!(outcome.text))),
-            output => Ok(Ahead::Leaf(self.leaf(
-                node,
-                outcome.text.trim().to_string(),
-                output,
-                Action::Insert,
-            ))),
-        }
     }
 
     fn leaf(&self, node: &Node, text: String, output: Output, action: Action) -> Leaf {

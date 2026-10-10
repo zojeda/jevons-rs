@@ -7,10 +7,9 @@ publish.workspace = true
 description = "The tools jevons runs from its settings, on the server's side or the client's: programs, HTTP requests, addresses and MCP servers."
 
 [dependencies]
-adk-core.workspace = true
-adk-tool.workspace = true
 globset.workspace = true
 reqwest.workspace = true
+rmcp.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-util", "process"] }

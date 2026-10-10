@@ -33,7 +33,7 @@ read_clipboard = false
 read_other_windows = false
 # readable_apps = ["slack.exe", "chrome.exe"]
 
-# Tools that run on this machine, which flow nodes may call (tool.toml, loop.toml). Flow files
+# Tools that run on this machine, which flow nodes may call (tool.toml). Flow files
 # can use these, never add them. Each asks in the bubble before it runs unless confirm = false
 # here, whatever the server asks; `allow` keeps a tool to the flow nodes it names. {argument}
 # takes a call's argument; ${env:NAME} an environment variable.

@@ -71,7 +71,7 @@ server's message. Server-sent events split across chunks are joined. A thought b
 smallest `reasoning.effort` that covers it: `minimal` (64 tokens), `low` (256), `medium` (1024) or
 `high`.
 
-Tests: `events_split_across_chunks_are_joined`, `the_log_holds_each_call_s_request_and_response_only_while_it_is_on`, `adk_contents_become_chat_turns_with_calls_and_results`
+Tests: `events_split_across_chunks_are_joined`, `the_log_holds_each_call_s_request_and_response_only_while_it_is_on`
 
 ### R7 Chat Completions stream text and join tool calls
 
@@ -84,8 +84,8 @@ Tests: `a_streamed_tool_call_is_joined_and_its_arguments_parsed`, `text_streams_
 
 ### R8 The API log records calls only while it is on
 
-With `privacy.log_api` on, every decision, generation and chat call, the investigator's and
-agents' included, appends one record to `~/jevons/logs/api.log`: when it started, the API, how
+With `privacy.log_api` on, every decision, generation and chat call, the investigator's
+included, appends one record to `~/jevons/logs/api.log`: when it started, the API, how
 long it took, the exact request body, and the response. A decision's response is its whole
 answer. A streamed call's response is the assembled text, the number of events, and every event
 that is not a text delta. A call that fails also records its error, and one dropped before its
@@ -147,8 +147,8 @@ generation. A capability with no route is not served.
   there is none, when the session cannot open or when it fails. Live dictation needs the Realtime
   route.
 - Decisions, the root's and machines' included, go to the decision route.
-- Generation, loops, tool arguments the model writes, the investigator and the automation author
-  go to the generation route.
+- Generation, tool arguments the model writes, the investigator and the automation author go to
+  the generation route.
 
 A route is named `<provider>/<model>` in traces, such as `openrouter/typesafe/jev-1.13`.
 

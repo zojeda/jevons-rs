@@ -88,7 +88,8 @@ Tests: `a_command_runs_without_a_shell_and_reports_its_output`
 A server's `command` is a program and its arguments, spoken to over standard input and output,
 with `env` (whose values may use `${env:NAME}`) and `cwd`. A set starts every server when asked
 and lists its tools, and reports one problem per server that cannot start or list. A server not
-started yet starts on its first call. A server that failed stays failed. A set knows a server's tools only once it has listed them.
+started yet starts on its first call. A server that failed stays failed. A set knows a server's
+tools only once it has listed them.
 
 Tests: `an_mcp_server_starts_lists_its_tools_and_answers_calls`
 
@@ -109,3 +110,14 @@ Tests: `a_set_knows_its_tools_and_resolves_them_by_reference`, `an_mcp_server_st
 node's path, with leading and trailing `/` ignored. A tool with no `allow` allows every node.
 
 Tests: `a_set_knows_its_tools_and_resolves_them_by_reference`
+
+### R11 An MCP tool's result is its text or its structured content
+
+A call sends its arguments as an object, or none when there are none. The result is
+`{"output": text}`, the text blocks and the text of embedded resources joined by line breaks. When
+the server sent structured content, `output` is that content, with the text blocks beside it as
+`text` when it sent both. A result the server marks as an error fails the call with its first
+text, and so does a result with neither text nor structured content. Images, audio and resources
+that are not text are left out.
+
+Tests: `an_mcp_result_reads_as_its_text_or_its_structured_content`, `an_mcp_server_starts_lists_its_tools_and_answers_calls`

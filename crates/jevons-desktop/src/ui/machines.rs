@@ -80,11 +80,6 @@ fn work_badge(work: Option<&Node>) -> String {
     };
     match &node.spec {
         NodeSpec::Tool(t) => format!("tool · {}", t.tool),
-        NodeSpec::Loop(a) => match a.tools.as_slice() {
-            [] => "loop".into(),
-            [one] => format!("loop · {one}"),
-            many => format!("loop · {} tools", many.len()),
-        },
         NodeSpec::Run(_) => "run".into(),
         NodeSpec::Generate(_) => "generate".into(),
         NodeSpec::Transcript(_) => "transcript".into(),
@@ -107,8 +102,8 @@ fn stage_at(stages: &[StageView], kind: StageKind, label: &str) -> Option<usize>
 
 /// The marks of a walk still under way from `work` down, as far as the bubble's stages say. A
 /// decision's stage carries its node's name, the branches it chose among, the one it took and
-/// why; a tool's or a loop's that ended well leads on to the node's branch. The walk is at the last
-/// node they lead to, doing what the stage still open says.
+/// why; a tool's that ended well leads on to the node's branch. The walk is at the last node
+/// they lead to, doing what the stage still open says.
 fn live_marks(tree: &FlowTree, work: &Node, stages: &[StageView]) -> Marks {
     let mut marks = Marks {
         folded: true,
@@ -146,12 +141,10 @@ fn live_marks(tree: &FlowTree, work: &Node, stages: &[StageView]) -> Marks {
                 }
                 (at, taken)
             }
-            NodeSpec::Tool(_) | NodeSpec::Loop(_) => {
-                let stage = match &node.spec {
-                    NodeSpec::Tool(t) => stage_at(rest, StageKind::Calling, &t.tool),
-                    _ => stage_at(rest, StageKind::Loop, &node.name),
+            NodeSpec::Tool(t) => {
+                let Some(at) = stage_at(rest, StageKind::Calling, &t.tool) else {
+                    break;
                 };
-                let Some(at) = stage else { break };
                 let branch = tree.children(node.id).next();
                 (at, branch.filter(|_| rest[at].ok == Some(true)))
             }
@@ -178,7 +171,6 @@ fn doing(stages: &[StageView]) -> Option<String> {
         StageKind::Writing => "writing".into(),
         StageKind::Answering => "answering".into(),
         StageKind::Calling => format!("calling {}", open.label),
-        StageKind::Loop => "working with tools".into(),
     };
     Some(if open.detail.is_empty() {
         what

@@ -9,12 +9,12 @@
 
 pub mod config;
 
-use adk_core::{Content, ReadonlyContext, Tool, Toolset, async_trait};
-use adk_tool::mcp::McpToolset;
-use adk_tool::mcp::rmcp::ServiceExt;
-use adk_tool::mcp::rmcp::transport::TokioChildProcess;
 use config::{McpConfig, ToolConfig, ToolKind};
 use globset::{Glob, GlobSetBuilder};
+use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock, ResourceContents};
+use rmcp::service::RunningService;
+use rmcp::transport::TokioChildProcess;
+use rmcp::{RoleClient, ServiceExt};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -248,33 +248,8 @@ pub fn parameters(config: &ToolConfig) -> Value {
     json!({"type": "object", "properties": properties, "required": config.arguments.keys().collect::<Vec<_>>()})
 }
 
-/// The context MCP toolsets need to list their tools outside an agent run.
-struct Listing(Content);
-
-#[async_trait]
-impl ReadonlyContext for Listing {
-    fn invocation_id(&self) -> &str {
-        "jevons-tools"
-    }
-    fn agent_name(&self) -> &str {
-        "jevons"
-    }
-    fn user_id(&self) -> &str {
-        "user"
-    }
-    fn app_name(&self) -> &str {
-        "jevons"
-    }
-    fn session_id(&self) -> &str {
-        "tools"
-    }
-    fn branch(&self) -> &str {
-        ""
-    }
-    fn user_content(&self) -> &Content {
-        &self.0
-    }
-}
+/// A running MCP server, as its client.
+type Running = RunningService<RoleClient, ()>;
 
 /// A listed MCP tool, for the catalog and `TOOLS.md`.
 #[derive(Clone, Debug, PartialEq)]
@@ -286,7 +261,7 @@ struct Listed {
 
 enum State {
     Stopped,
-    Running(Vec<Arc<dyn Tool>>),
+    Running(Arc<Running>, Vec<Listed>),
     Failed(String),
 }
 
@@ -298,35 +273,28 @@ struct Server {
 }
 
 impl Server {
-    /// Its tools, starting it first if it is not running.
-    async fn tools(&self) -> Result<Vec<Arc<dyn Tool>>, String> {
+    /// The server and its tools, starting it first if it is not running.
+    async fn tools(&self) -> Result<(Arc<Running>, Vec<Listed>), String> {
         let mut state = self.state.lock().await;
-        if let State::Running(tools) = &*state {
-            return Ok(tools.clone());
+        if let State::Running(running, tools) = &*state {
+            return Ok((running.clone(), tools.clone()));
         }
         if let State::Failed(error) = &*state {
             return Err(error.clone());
         }
         let started = self.start().await;
         *self.listed.lock().expect("the listing lock") = Some(match &started {
-            Ok(tools) => Ok(tools
-                .iter()
-                .map(|t| Listed {
-                    name: t.name().to_string(),
-                    description: t.description().to_string(),
-                    parameters: t.parameters_schema(),
-                })
-                .collect()),
+            Ok((_, tools)) => Ok(tools.clone()),
             Err(e) => Err(e.clone()),
         });
         *state = match &started {
-            Ok(tools) => State::Running(tools.clone()),
+            Ok((running, tools)) => State::Running(running.clone(), tools.clone()),
             Err(e) => State::Failed(e.clone()),
         };
         started
     }
 
-    async fn start(&self) -> Result<Vec<Arc<dyn Tool>>, String> {
+    async fn start(&self) -> Result<(Arc<Running>, Vec<Listed>), String> {
         let (program, args) = self
             .config
             .command
@@ -344,18 +312,52 @@ impl Server {
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         let transport = TokioChildProcess::new(command)
             .map_err(|e| format!("cannot start the MCP server {}: {e}", self.name))?;
-        let client = ()
+        let running = ()
             .serve(transport)
             .await
             .map_err(|e| format!("the MCP server {} did not start: {e}", self.name))?;
-        let toolset = McpToolset::new(client).with_name(&self.name);
-        let context: Arc<dyn ReadonlyContext> = Arc::new(Listing(Content::new("user")));
-        let tools = toolset
-            .tools(context)
+        let tools: Vec<Listed> = running
+            .list_all_tools()
             .await
-            .map_err(|e| format!("the MCP server {} listed no tools: {e}", self.name))?;
+            .map_err(|e| format!("the MCP server {} listed no tools: {e}", self.name))?
+            .into_iter()
+            .map(|tool| Listed {
+                name: tool.name.into_owned(),
+                description: tool.description.unwrap_or_default().into_owned(),
+                parameters: Some(Value::Object(tool.input_schema.as_ref().clone())),
+            })
+            .collect();
         tracing::info!(server = %self.name, tools = tools.len(), "MCP server started");
-        Ok(tools)
+        Ok((Arc::new(running), tools))
+    }
+}
+
+/// An MCP tool's result as a value: its text under `output`, or its structured content there
+/// with the text beside it. Images, audio and resources that are not text are left out.
+fn mcp_value(tool: &str, result: &CallToolResult) -> Result<Value, String> {
+    let text: Vec<&str> = result
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text(text) => Some(text.text.as_str()),
+            ContentBlock::Resource(embedded) => match &embedded.resource {
+                ResourceContents::TextResourceContents { text, .. } => Some(text.as_str()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    if result.is_error == Some(true) {
+        return Err(match text.first() {
+            Some(why) => format!("the MCP tool {tool} failed: {why}"),
+            None => format!("the MCP tool {tool} failed"),
+        });
+    }
+    match (&result.structured_content, text.is_empty()) {
+        (Some(structured), true) => Ok(json!({"output": structured})),
+        (Some(structured), false) => Ok(json!({"output": structured, "text": text})),
+        (None, false) => Ok(json!({"output": text.join("\n")})),
+        (None, true) => Err(format!("the MCP tool {tool} returned no content")),
     }
 }
 
@@ -392,7 +394,8 @@ pub struct Known {
 #[derive(Clone)]
 enum Call {
     Builtin(Arc<ToolConfig>),
-    Mcp(Arc<dyn Tool>),
+    /// A server and its tool's name there.
+    Mcp(Arc<Running>, String),
 }
 
 /// A tool a reference named, ready to call.
@@ -412,12 +415,16 @@ impl Resolved {
             Call::Builtin(config) => {
                 run(config, arguments.as_object().cloned().unwrap_or_default()).await
             }
-            Call::Mcp(tool) => {
-                let context: Arc<dyn adk_core::ToolContext> =
-                    Arc::new(adk_tool::SimpleToolContext::new("jevons"));
-                tool.execute(context, arguments)
+            Call::Mcp(server, tool) => {
+                let mut call = CallToolRequestParams::new(tool.clone());
+                if let Some(arguments) = arguments.as_object().filter(|a| !a.is_empty()) {
+                    call = call.with_arguments(arguments.clone());
+                }
+                let result = server
+                    .call_tool(call)
                     .await
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| format!("the MCP tool {tool} did not answer: {e}"))?;
+                mcp_value(tool, &result)
             }
         }
     }
@@ -558,22 +565,14 @@ impl ToolSet {
             .servers
             .get(server_name)
             .ok_or_else(|| format!("no MCP server {server_name:?} is registered"))?;
-        let found: Vec<Resolved> = server
-            .tools()
-            .await?
-            .into_iter()
-            .filter(|tool| wanted == "*" || tool.name() == wanted)
-            .map(|tool| {
-                let listed = Listed {
-                    name: tool.name().to_string(),
-                    description: tool.description().to_string(),
-                    parameters: tool.parameters_schema(),
-                };
-                Resolved {
-                    known: Self::known_mcp(server, &listed),
-                    name: format!("{server_name}__{}", tool.name()),
-                    call: Call::Mcp(tool),
-                }
+        let (running, tools) = server.tools().await?;
+        let found: Vec<Resolved> = tools
+            .iter()
+            .filter(|tool| wanted == "*" || tool.name == wanted)
+            .map(|tool| Resolved {
+                known: Self::known_mcp(server, tool),
+                name: format!("{server_name}__{}", tool.name),
+                call: Call::Mcp(running.clone(), tool.name.clone()),
             })
             .collect();
         if found.is_empty() {
@@ -657,6 +656,39 @@ arguments = { text = "Text" }
         assert_eq!(
             cap("x".repeat(MAX_OUTPUT + 1), &long).chars().count(),
             MAX_OUTPUT + 1
+        );
+    }
+
+    #[test]
+    fn an_mcp_result_reads_as_its_text_or_its_structured_content() {
+        // Text blocks and the text of embedded resources, in order.
+        let text = CallToolResult::success(vec![
+            ContentBlock::text("a"),
+            ContentBlock::embedded_text("file:///notes.txt", "b"),
+        ]);
+        assert_eq!(mcp_value("t", &text).unwrap(), json!({"output": "a\nb"}));
+        let mut structured = CallToolResult::success(Vec::new());
+        structured.structured_content = Some(json!({"sum": 5}));
+        assert_eq!(
+            mcp_value("t", &structured).unwrap(),
+            json!({"output": {"sum": 5}})
+        );
+        let mut both = CallToolResult::success(vec![ContentBlock::text("5")]);
+        both.structured_content = Some(json!({"sum": 5}));
+        assert_eq!(
+            mcp_value("t", &both).unwrap(),
+            json!({"output": {"sum": 5}, "text": ["5"]})
+        );
+        let failed = CallToolResult::error(vec![ContentBlock::text("no such file")]);
+        assert_eq!(
+            mcp_value("read", &failed).unwrap_err(),
+            "the MCP tool read failed: no such file"
+        );
+        // An image alone is no content.
+        let image = CallToolResult::success(vec![ContentBlock::image("AAAA", "image/png")]);
+        assert_eq!(
+            mcp_value("shot", &image).unwrap_err(),
+            "the MCP tool shot returned no content"
         );
     }
 

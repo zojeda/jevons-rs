@@ -344,7 +344,6 @@ fn kind_word(kind: jevons_desktop_server::flow::Kind) -> &'static str {
         Kind::Generate => "generate",
         Kind::Transcript => "transcript",
         Kind::Tool => "tool",
-        Kind::Loop => "loop",
         Kind::Run => "run",
     }
 }

@@ -1,169 +1,135 @@
-//! One bounded agent run on adk-rust: an [`LlmAgent`](adk_agent::LlmAgent) over the jevons model,
-//! with tools, an optional structured answer, and confirmation before the tools that need it.
-//! The context investigator and `loop.toml` nodes both run through [`run`].
+//! The context investigator's model loop: each turn is one chat request over the tools. A call
+//! the model makes runs, and its result joins the conversation; the first turn without a call is
+//! the answer, in the JSON Schema asked for. The request constrains the answer to the schema, and
+//! the conversation also states it in words, which is what tells the model what each field is
+//! for.
 
-use adk_agent::LlmAgentBuilder;
-use adk_core::{
-    Content, Llm, Part, RunConfig, StreamingMode, Tool, ToolConfirmationHandler,
-    ToolConfirmationPolicy, Toolset,
-};
-use adk_runner::Runner;
-use adk_session::{CreateRequest, InMemorySessionService, SessionService};
-use futures_util::StreamExt;
-use serde::Serialize;
-use serde_json::Value;
-use std::collections::BTreeSet;
+use super::tools::Tool;
+use crate::client::{ChatMessage, ChatReply, ChatRequest, Client};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
-/// The most characters of a tool result the trace keeps.
-const TRACED_RESULT: usize = 600;
+/// How many times an answer that is not JSON is asked for again.
+const ANSWER_RETRIES: u32 = 3;
 
-/// What an agent is asked to do.
+/// What the model is asked to do.
 pub struct Task {
-    /// A short identifier, such as `investigator`.
-    pub name: String,
-    /// The system instruction.
+    /// What it is and how it works. It goes as the first user turn, before the schema in words.
     pub instruction: String,
     /// The user turn: the task and its context.
     pub input: String,
     pub tools: Vec<Arc<dyn Tool>>,
-    pub toolsets: Vec<Arc<dyn Toolset>>,
-    /// Model turns before the agent must answer.
+    /// Model turns before it must have answered.
     pub max_steps: u32,
-    /// The JSON Schema of a structured answer.
-    pub output_schema: Option<Value>,
-    /// Tools that ask before they run.
-    pub confirm: BTreeSet<String>,
-    /// Who approves them; without one they are denied.
-    pub confirmer: Option<Arc<dyn ToolConfirmationHandler>>,
+    /// The JSON Schema of the answer.
+    pub schema: Value,
 }
 
-/// A tool call the agent made.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct CallRecord {
-    pub tool: String,
-    pub arguments: Value,
-    /// The result, truncated for the trace.
-    pub result: Option<String>,
+/// The tools as Chat Completions declares them, sorted by name.
+fn declarations(tools: &[Arc<dyn Tool>]) -> Vec<Value> {
+    let mut tools: Vec<&Arc<dyn Tool>> = tools.iter().collect();
+    tools.sort_by(|a, b| a.name().cmp(b.name()));
+    tools
+        .into_iter()
+        .map(|tool| {
+            let mut function = json!({"name": tool.name(), "description": tool.description()});
+            if let Some(parameters) = tool.parameters() {
+                function["parameters"] = parameters;
+            }
+            json!({"type": "function", "function": function})
+        })
+        .collect()
 }
 
-/// How a run ended.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct Outcome {
-    /// The final answer: text, or JSON text with an output schema.
-    pub text: String,
-    pub calls: Vec<CallRecord>,
-}
-
-fn truncated(value: &Value) -> String {
-    let text = match value {
-        Value::String(s) => s.clone(),
-        other => other.to_string(),
-    };
-    if text.chars().count() <= TRACED_RESULT {
-        text
-    } else {
-        let mut short: String = text.chars().take(TRACED_RESULT).collect();
-        short.push('…');
-        short
-    }
+/// The user turn that states the answer's schema.
+fn schema_in_words(schema: &Value) -> String {
+    format!(
+        "You MUST respond with valid JSON conforming to this schema: {schema}. Do not include any \
+         text outside the JSON object."
+    )
 }
 
 /// Runs `task` on `model` to its answer.
-pub async fn run(model: Arc<dyn Llm>, task: Task) -> Result<Outcome, String> {
-    let mut builder = LlmAgentBuilder::new(&task.name)
-        .instruction(task.instruction)
-        .model(model)
-        .max_iterations(task.max_steps.max(1));
-    for tool in task.tools {
-        builder = builder.tool(tool);
+pub async fn run(client: &Client, model: &str, task: Task) -> Result<Value, String> {
+    let mut request = ChatRequest {
+        model: model.into(),
+        messages: vec![
+            ChatMessage::text("user", task.instruction),
+            ChatMessage::text("user", schema_in_words(&task.schema)),
+            ChatMessage::text("user", task.input),
+        ],
+        ..ChatRequest::default()
     }
-    for toolset in task.toolsets {
-        builder = builder.toolset(toolset);
-    }
-    if let Some(schema) = task.output_schema {
-        builder = builder.output_schema(schema);
-    }
-    if !task.confirm.is_empty() {
-        builder = builder.tool_confirmation_policy(ToolConfirmationPolicy::PerTool(task.confirm));
-    }
-    let agent = Arc::new(builder.build().map_err(|e| e.to_string())?);
-    let sessions = Arc::new(InMemorySessionService::new());
-    let (app, user, session) = ("jevons", "user", "take");
-    sessions
-        .create(CreateRequest {
-            app_name: app.into(),
-            user_id: user.into(),
-            session_id: Some(session.into()),
-            state: Default::default(),
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-    let mut config = RunConfig::builder().streaming_mode(StreamingMode::None);
-    if let Some(confirmer) = task.confirmer {
-        config = config.tool_confirmation_handler(confirmer);
-    }
-    let runner = Runner::builder()
-        .app_name(app)
-        .agent(agent)
-        .session_service(sessions)
-        .run_config(config.build())
-        .build()
-        .map_err(|e| e.to_string())?;
-    let mut events = runner
-        .run_str(user, session, Content::new("user").with_text(task.input))
-        .await
-        .map_err(|e| e.to_string())?;
-    let mut calls: Vec<CallRecord> = Vec::new();
-    let mut text = String::new();
-    while let Some(event) = events.next().await {
-        let event = event.map_err(|e| e.to_string())?;
-        let Some(content) = event.llm_response.content.as_ref() else {
-            continue;
-        };
-        let mut said = String::new();
-        let mut called = false;
-        for part in &content.parts {
-            match part {
-                Part::Text { text } => said.push_str(text),
-                Part::FunctionCall { name, args, .. } => {
-                    called = true;
-                    calls.push(CallRecord {
-                        tool: name.clone(),
-                        arguments: args.clone(),
-                        result: None,
-                    });
+    .answer_schema(task.schema);
+    let steps = task.max_steps.max(1);
+    let mut asked_again = 0;
+    for _ in 0..steps {
+        // A tool's arguments may depend on what the last call showed.
+        request.tools = declarations(&task.tools);
+        let reply = client
+            .chat(&request, |_| {})
+            .await
+            .map_err(|e| e.to_string())?;
+        match reply {
+            ChatReply::Text(text) => {
+                if let Ok(answer) = serde_json::from_str(&text) {
+                    return Ok(answer);
                 }
-                Part::FunctionResponse {
-                    function_response, ..
-                } => {
-                    if let Some(call) = calls
-                        .iter_mut()
-                        .rev()
-                        .find(|c| c.tool == function_response.name && c.result.is_none())
-                    {
-                        call.result = Some(truncated(&function_response.response));
-                    }
+                if asked_again == ANSWER_RETRIES {
+                    return Err(format!(
+                        "the answer was not JSON after {ANSWER_RETRIES} more tries"
+                    ));
                 }
-                _ => {}
+                asked_again += 1;
+                request.messages.push(ChatMessage::text("assistant", text));
+                request.messages.push(ChatMessage::text(
+                    "user",
+                    "Your answer was not JSON. Answer again, with JSON in the schema asked for.",
+                ));
+            }
+            ChatReply::Call {
+                id,
+                name,
+                arguments,
+            } => {
+                let id = if id.is_empty() { name.clone() } else { id };
+                let result = match task.tools.iter().find(|tool| tool.name() == name) {
+                    Some(tool) => tool
+                        .call(arguments.clone())
+                        .await
+                        .unwrap_or_else(|e| json!({"error": e})),
+                    None => json!({"error": format!("There is no tool {name}")}),
+                };
+                request.messages.push(ChatMessage {
+                    role: "assistant".into(),
+                    tool_calls: vec![json!({
+                        "id": id,
+                        "type": "function",
+                        "function": {"name": name, "arguments": arguments.to_string()},
+                    })],
+                    ..ChatMessage::default()
+                });
+                request.messages.push(ChatMessage {
+                    role: "tool".into(),
+                    content: Some(match result {
+                        Value::String(text) => text,
+                        other => other.to_string(),
+                    }),
+                    tool_call_id: Some(id),
+                    ..ChatMessage::default()
+                });
             }
         }
-        if !called && !said.trim().is_empty() && event.author != "user" {
-            text = said;
-        }
     }
-    Ok(Outcome { text, calls })
+    Err(format!("no answer in {steps} steps"))
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::client::Client;
-    use crate::flow::llm::JevonsLlm;
-    use adk_core::{ToolConfirmationDecision, ToolConfirmationRequest, ToolContext, async_trait};
     use axum::Json;
     use axum::routing::post;
-    use serde_json::json;
+    use futures_util::future::BoxFuture;
     use std::sync::Mutex;
 
     /// A chat server that replies with `replies` in order, as streamed chunks: text, or a call
@@ -197,10 +163,13 @@ pub(crate) mod tests {
         (Client::new(&base, None), seen)
     }
 
-    /// A tool that echoes its `text` argument.
-    struct Echo;
+    /// A tool that echoes its `text` argument, and fails on `fail`. Each call adds a word its
+    /// `text` may be next.
+    #[derive(Default)]
+    struct Echo {
+        words: Mutex<Vec<String>>,
+    }
 
-    #[async_trait]
     impl Tool for Echo {
         fn name(&self) -> &str {
             "echo"
@@ -208,85 +177,162 @@ pub(crate) mod tests {
         fn description(&self) -> &str {
             "Echoes the text."
         }
-        fn parameters_schema(&self) -> Option<Value> {
+        fn parameters(&self) -> Option<Value> {
+            let words = self.words.lock().unwrap().clone();
             Some(
-                json!({"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}),
+                json!({"type": "object", "properties": {"text": {"type": "string", "enum": words}},
+                "required": ["text"]}),
             )
         }
-        async fn execute(&self, _: Arc<dyn ToolContext>, args: Value) -> adk_core::Result<Value> {
-            Ok(json!({"echoed": args["text"]}))
+        fn call(&self, arguments: Value) -> BoxFuture<'_, Result<Value, String>> {
+            Box::pin(async move {
+                let text = arguments["text"].as_str().unwrap_or_default().to_string();
+                if text == "fail" {
+                    return Err("nothing to echo".into());
+                }
+                self.words.lock().unwrap().push(format!("after {text}"));
+                Ok(json!(format!("echoed {text}")))
+            })
         }
     }
 
-    #[derive(Debug)]
-    struct Deny;
+    /// A tool that only has a name.
+    struct Bare;
 
-    #[async_trait]
-    impl ToolConfirmationHandler for Deny {
-        async fn decide(
-            &self,
-            _: &ToolConfirmationRequest,
-        ) -> adk_core::Result<ToolConfirmationDecision> {
-            Ok(ToolConfirmationDecision::Deny)
+    impl Tool for Bare {
+        fn name(&self) -> &str {
+            "bare"
+        }
+        fn description(&self) -> &str {
+            ""
+        }
+        fn parameters(&self) -> Option<Value> {
+            None
+        }
+        fn call(&self, _: Value) -> BoxFuture<'_, Result<Value, String>> {
+            Box::pin(async { Ok(json!({"done": true})) })
         }
     }
 
-    fn task() -> Task {
+    fn task(max_steps: u32) -> Task {
         Task {
-            name: "test".into(),
             instruction: "Use the tools.".into(),
             input: "Say hi through echo.".into(),
-            tools: vec![Arc::new(Echo)],
-            toolsets: Vec::new(),
-            max_steps: 4,
-            output_schema: None,
-            confirm: BTreeSet::new(),
-            confirmer: None,
+            tools: vec![Arc::new(Echo::default()), Arc::new(Bare)],
+            max_steps,
+            schema: json!({"type": "object", "properties": {"said": {"type": "string"}}}),
         }
     }
 
     #[tokio::test]
-    async fn an_agent_calls_a_tool_reads_its_result_and_answers() {
+    async fn a_call_and_its_result_reach_the_model_as_chat_messages() {
         let (client, seen) = chat_server(vec![
             json!({"call": "echo", "arguments": {"text": "hi"}}),
-            json!("It said hi."),
+            json!({"call": "bare", "arguments": {}}),
+            json!(r#"{"said": "hi"}"#),
         ])
         .await;
-        let outcome = run(Arc::new(JevonsLlm::new(client, "jev")), task())
-            .await
-            .unwrap();
-        assert_eq!(outcome.text, "It said hi.");
-        assert_eq!(outcome.calls.len(), 1);
-        assert_eq!(outcome.calls[0].arguments, json!({"text": "hi"}));
-        assert!(
-            outcome.calls[0]
-                .result
-                .as_deref()
-                .unwrap()
-                .contains("\"hi\"")
-        );
+        let answer = run(&client, "jev", task(4)).await.unwrap();
+        assert_eq!(answer, json!({"said": "hi"}));
         let requests = seen.lock().unwrap();
-        assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0]["tools"][0]["function"]["name"], "echo");
-        let second = requests[1]["messages"].as_array().unwrap();
-        assert!(second.iter().any(|m| m["role"] == "tool"), "{second:?}");
+        assert_eq!(requests.len(), 3);
+        let first = &requests[0];
+        assert_eq!(first["model"], "jev");
+        assert_eq!(first["stream"], true);
+        assert_eq!(first["response_format"]["type"], "json_schema");
+        assert_eq!(
+            first["messages"],
+            json!([
+                {"role": "user", "content": "Use the tools."},
+                {"role": "user", "content": "You MUST respond with valid JSON conforming to this \
+                    schema: {\"type\":\"object\",\"properties\":{\"said\":{\"type\":\"string\"}}}. Do not \
+                    include any text outside the JSON object."},
+                {"role": "user", "content": "Say hi through echo."},
+            ])
+        );
+        // Sorted by name, each with what it has.
+        assert_eq!(
+            first["tools"],
+            json!([
+                {"type": "function", "function": {"name": "bare", "description": ""}},
+                {"type": "function", "function": {"name": "echo", "description": "Echoes the text.",
+                    "parameters": {"type": "object", "properties": {"text": {"type": "string", "enum": []}},
+                        "required": ["text"]}}},
+            ])
+        );
+        let third = requests[2]["messages"].as_array().unwrap();
+        assert_eq!(
+            third[3..],
+            [
+                json!({"role": "assistant", "tool_calls": [{"id": "call_echo", "type": "function",
+                    "function": {"name": "echo", "arguments": "{\"text\":\"hi\"}"}}]}),
+                // Text goes as it is, anything else as JSON.
+                json!({"role": "tool", "content": "echoed hi", "tool_call_id": "call_echo"}),
+                json!({"role": "assistant", "tool_calls": [{"id": "call_bare", "type": "function",
+                    "function": {"name": "bare", "arguments": "{}"}}]}),
+                json!({"role": "tool", "content": "{\"done\":true}", "tool_call_id": "call_bare"}),
+            ]
+        );
     }
 
     #[tokio::test]
-    async fn a_denied_confirmation_keeps_the_tool_from_running() {
-        let (client, _) = chat_server(vec![
+    async fn tools_are_described_again_before_each_turn() {
+        let (client, seen) = chat_server(vec![
             json!({"call": "echo", "arguments": {"text": "hi"}}),
-            json!("I was not allowed."),
+            json!("{}"),
         ])
         .await;
-        let mut guarded = task();
-        guarded.confirm = BTreeSet::from(["echo".to_string()]);
-        guarded.confirmer = Some(Arc::new(Deny));
-        let outcome = run(Arc::new(JevonsLlm::new(client, "jev")), guarded)
-            .await
-            .unwrap();
-        assert_eq!(outcome.text, "I was not allowed.");
-        let result = outcome.calls[0].result.clone().unwrap_or_default();
-        assert!(!result.contains("echoed"), "{result}");
+        run(&client, "jev", task(4)).await.unwrap();
+        let requests = seen.lock().unwrap();
+        let words = |request: &Value| {
+            request["tools"][1]["function"]["parameters"]["properties"]["text"]["enum"].clone()
+        };
+        assert_eq!(words(&requests[0]), json!([]));
+        assert_eq!(words(&requests[1]), json!(["after hi"]));
+    }
+
+    #[tokio::test]
+    async fn a_tool_s_error_reaches_the_model_and_the_run_goes_on() {
+        let (client, seen) = chat_server(vec![
+            json!({"call": "echo", "arguments": {"text": "fail"}}),
+            json!({"call": "nope", "arguments": {}}),
+            json!(r#"{"said": null}"#),
+        ])
+        .await;
+        let answer = run(&client, "jev", task(4)).await.unwrap();
+        assert_eq!(answer, json!({"said": null}));
+        let requests = seen.lock().unwrap();
+        let last = requests[2]["messages"].as_array().unwrap();
+        assert_eq!(last[4]["content"], r#"{"error":"nothing to echo"}"#);
+        assert_eq!(last[6]["content"], r#"{"error":"There is no tool nope"}"#);
+    }
+
+    #[tokio::test]
+    async fn a_run_past_its_steps_fails() {
+        let call = || json!({"call": "echo", "arguments": {"text": "hi"}});
+        let (client, seen) = chat_server(vec![call(), call(), call()]).await;
+        let failed = run(&client, "jev", task(2)).await.unwrap_err();
+        assert_eq!(failed, "no answer in 2 steps");
+        assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_is_not_json_is_asked_for_again() {
+        let (client, seen) =
+            chat_server(vec![json!("It said hi."), json!(r#"{"said": "hi"}"#)]).await;
+        let answer = run(&client, "jev", task(4)).await.unwrap();
+        assert_eq!(answer, json!({"said": "hi"}));
+        let second = seen.lock().unwrap()[1]["messages"].clone();
+        assert_eq!(
+            second[3],
+            json!({"role": "assistant", "content": "It said hi."})
+        );
+        assert_eq!(second[4]["role"], "user");
+
+        // Three more tries, then the run fails.
+        let (client, seen) = chat_server(vec![json!("no"); 5]).await;
+        let failed = run(&client, "jev", task(8)).await.unwrap_err();
+        assert_eq!(failed, "the answer was not JSON after 3 more tries");
+        assert_eq!(seen.lock().unwrap().len(), 4);
     }
 }

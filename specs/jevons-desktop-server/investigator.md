@@ -14,15 +14,13 @@ costs one model call.
 ## Scope
 
 This file covers `[investigate.<name>]` and its checks, the windows an investigation reads, the
-investigator's tools and element ids, its answer, its path cache, and the `investigate` tool that
-agents call.
+investigator's tools and element ids, its answer, its path cache and its model loop.
 
 Elsewhere:
 
 - When the walk runs an investigation, `lazy`, `enrich` and reuse within a take:
   [flows.md](flows.md). Answer shapes and placeholders: [flows.md](flows.md).
 - The XPath its `xpath` tool and its remembered paths use: [extract.md](../jevons-desktop-core/extract.md).
-- The agent loop it runs on, and agents in general: [tools.md](tools.md).
 
 ## Declaring an investigation
 
@@ -119,17 +117,20 @@ Tests: none yet
 ### R12 The agent starts from the take's window and is bounded
 
 The investigator gives the model the question and an outline of `w1` two levels deep, the tools
-above, and at most `max_steps` model turns. The model answers in the JSON Schema of the shape.
-Each step goes to the trace and to the bubble as it happens.
+above, and at most `max_steps` model turns. The model answers in the JSON Schema of the shape. An
+investigation whose model has not answered after `max_steps` turns fails. Each step goes to the
+trace and to the bubble as it happens.
 
-Tests: `an_investigation_navigates_answers_and_remembers_the_path`
+Tests: `an_investigation_navigates_answers_and_remembers_the_path`, `a_run_past_its_steps_fails`
 
 ### R13 The answer fits its shape
 
-The model's answer is made to fit the shape, as [flows.md](flows.md) says. An investigation that
-fails answers every field `null`, with the note "The investigation failed" and why.
+The model's answer is made to fit the shape, as [flows.md](flows.md) says. An answer that is not
+JSON is asked for again, each time a model turn, and the fourth such answer fails the
+investigation. An investigation that fails answers every field `null`, with the note "The
+investigation failed" and why.
 
-Tests: `an_investigation_navigates_answers_and_remembers_the_path`
+Tests: `an_investigation_navigates_answers_and_remembers_the_path`, `an_answer_that_is_not_json_is_asked_for_again`
 
 ## The path cache
 
@@ -156,7 +157,27 @@ Tests: `an_investigation_navigates_answers_and_remembers_the_path`
 
 ### R16 Agents read the screen through `investigate`
 
-Every agent may call the read-only tool `investigate`: a question in, `{answer}` out. It reads only
-the window the take started in, in at most 8 steps.
+Removed: only a `loop.toml` node offered `investigate` to the model, and that node is gone
+([tools.md](tools.md) R18).
 
-Tests: none yet
+## The model loop
+
+### R17 Each model turn is one chat request
+
+A turn is one streamed `POST /v1/chat/completions`, with the answer's JSON Schema as its
+`response_format`. Three user messages open the conversation: the instruction, the schema stated
+in words ("You MUST respond with valid JSON conforming to this schema: …"), and the question with
+its outline. The tools go sorted by name, each with its description and its arguments' schema as it is at that
+turn, so an id one step showed can be named in the next. A call arrives whole and ends the turn.
+It goes back to the model as an assistant message with `tool_calls`, then a `tool` message that
+answers the call's id with the result: text as it is, anything else as JSON. The first turn
+without a call is the answer.
+
+Tests: `a_call_and_its_result_reach_the_model_as_chat_messages`, `tools_are_described_again_before_each_turn`, `a_streamed_tool_call_is_joined_and_its_arguments_parsed`
+
+### R18 A call that fails goes back to the model
+
+A tool that fails, and a call to a tool the investigator does not have, give the model
+`{"error": …}` as the call's result, and the loop goes on.
+
+Tests: `a_tool_s_error_reaches_the_model_and_the_run_goes_on`
