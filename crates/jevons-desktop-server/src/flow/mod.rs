@@ -11,7 +11,6 @@
 //! - [`investigate`]: the contract of the built-in context investigator.
 //! - [`extract`]: XPath expressions read from the interface with no model.
 
-pub mod confirm;
 pub mod defaults;
 mod earlier;
 pub mod extract;
@@ -19,7 +18,6 @@ pub mod frame;
 pub mod guard;
 pub mod investigate;
 pub mod investigator;
-pub mod llm;
 pub mod machine;
 pub use jevons_desktop_protocol::shape;
 pub mod spec;

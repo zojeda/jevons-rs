@@ -847,37 +847,7 @@ mod tests {
 
     /// A fake jevons server: no Realtime route, a scripted decision and generation.
     async fn server(decide: Decider, output: &'static str) -> (Client, Seen) {
-        server_with(decide, output, Vec::new()).await
-    }
-
-    /// The same, with chat turns for agents: text, or `{"call": name, "arguments": {...}}`.
-    async fn server_with(
-        decide: Decider,
-        output: &'static str,
-        chat: Vec<Value>,
-    ) -> (Client, Seen) {
         let seen = Seen::default();
-        let turns = Arc::new(Mutex::new(std::collections::VecDeque::from(chat)));
-        let chat = move |Json(_body): Json<Value>| {
-            let turns = turns.clone();
-            async move {
-                let reply = turns
-                    .lock()
-                    .unwrap()
-                    .pop_front()
-                    .unwrap_or(json!("(no reply)"));
-                let chunk = match &reply {
-                    Value::String(text) => json!({"choices": [{"delta": {"content": text}}]}),
-                    call => json!({"choices": [{"delta": {"tool_calls": [{"index": 0,
-                        "id": "call_1", "type": "function",
-                        "function": {"name": call["call"], "arguments": call["arguments"].to_string()}}]}}]}),
-                };
-                (
-                    [("content-type", "text/event-stream")],
-                    format!("data: {chunk}\n\ndata: [DONE]\n\n"),
-                )
-            }
-        };
         let s = seen.clone();
         let decide = move |Json(body): Json<Value>| {
             let s = s.clone();
@@ -921,7 +891,6 @@ mod tests {
             )
             .route("/v1/systemone", post(decide))
             .route("/v1/responses", post(respond))
-            .route("/v1/chat/completions", post(chat))
             .route("/v1/audio/transcriptions", post(transcribe));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -4537,54 +4506,6 @@ allow = ["research/search/*"]
         assert_eq!(later.machine[0].to, "dictation");
         let asked = serde_json::to_string(&seen.decisions.lock().unwrap()[0]).unwrap();
         assert!(!asked.contains("\"research\""), "{asked}");
-    }
-
-    #[tokio::test]
-    async fn an_agent_node_calls_its_tools_and_its_answer_goes_to_the_bubble() {
-        let (client, _) = server_with(
-            prefer(&[]),
-            "unused",
-            vec![
-                json!({"call": "search", "arguments": {"query": "launch date"}}),
-                json!("It is on Friday."),
-            ],
-        )
-        .await;
-        let env = Env {
-            flows: tree_of(&[("loop.toml", "tools = [\"search\"]\nmax_steps = 3")]),
-            tools: Some(tool_host()),
-            ..env(client, None)
-        };
-        let (audio, finish) = one_second_of_audio();
-        let (updates, mut shown) = mpsc::unbounded_channel();
-        let start = TakeStart {
-            id: 1,
-            context: context(None),
-            entry: None,
-        };
-        let trace = run_take(&env, start, audio, finish, &updates).await;
-        assert_eq!(trace.error, None, "{:?}", trace.notes);
-        assert_eq!(trace.output, "It is on Friday.");
-        assert_eq!(trace.delivery, Some(DeliveryOutcome::Shown));
-        assert_eq!(trace.calls[0].tool, "search");
-        assert!(
-            trace.calls[0]
-                .result
-                .as_deref()
-                .unwrap()
-                .contains("dry_run")
-        );
-        let mut streamed = String::new();
-        let mut answering = false;
-        while let Ok(update) = shown.try_recv() {
-            match update {
-                Update::Answering => answering = true,
-                Update::Output(text) => streamed.push_str(&text),
-                _ => {}
-            }
-        }
-        assert!(answering);
-        assert_eq!(streamed, "It is on Friday.");
     }
 
     /// A live turn in a fake Realtime session: its live deltas, then its final transcript.

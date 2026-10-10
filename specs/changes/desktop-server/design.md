@@ -114,7 +114,7 @@ take ──▶ root machine (dispatches)
 | Root | The app's machine. It decides which agent a take is for, and nothing else. | The app's. |
 | Agent | A predefined folder: its machine (its modes, and how it routes what it gets), its scope (the tools and applications it may use) and the tasks it can start. | The app's: one instance per agent, always running. |
 | Task | A unit of work with a goal and an end: an instance of a task machine, started by an agent. | From its start to `[*]`, a failure, a timer or a cancel. |
-| State work | What one state does: a generation, a tool call, a decision tree, or a bounded tool loop (`loop.toml`, today's `agent.toml`, renamed so "agent" means only this level). | One state entry. |
+| State work | What one state does: a generation, a tool call or a decision tree. The bounded tool loop (`loop.toml`) went with [drop-adk](../archive/drop-adk/proposal.md). | One state entry. |
 
 An agent persists and coordinates; a task does one job and ends. Both are machines, but an agent's
 machine is about routing and modes, and a task's is about the steps of one job.
@@ -164,7 +164,6 @@ three diagrams are the same language; "machine" stays the general word.
 | Root | `root.toml`, `root.fsm` | only at the flows root; never ends; its states are agents |
 | Agent | `agent.toml`, `agent.fsm` | only in a root state's folder; never ends; its scope covers its tasks' tools |
 | Task | `task.toml`, `task.fsm` | only under an agent; must end; started in the background |
-| Tool loop | `loop.toml` (today's `agent.toml`) | bounded state work |
 
 ```
 flows/

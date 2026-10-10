@@ -14,8 +14,8 @@ use super::guard::Guard;
 use super::machine::{self, Loaded, Machine, NamedGuard};
 use super::shape::{Shape, is_identifier};
 use super::spec::{
-    Common, DecideSpec, GenerateSpec, InvestigateSpec, LoopSpec, MachineSpec, Output, RunSpec,
-    Select, ToolSpec, TranscriptSpec, WhenUnsure,
+    Common, DecideSpec, GenerateSpec, InvestigateSpec, MachineSpec, Output, RunSpec, Select,
+    ToolSpec, TranscriptSpec, WhenUnsure,
 };
 use super::template::{Template, is_builtin};
 use jevons_desktop_protocol::delivery::Action;
@@ -33,7 +33,7 @@ pub const MAX_BRANCHES: usize = 128;
 
 /// The node file names and their kinds. A machine is `root.toml` at the flows root,
 /// `agent.toml` in a root state's folder and `task.toml` below an agent.
-pub const NODE_FILES: [(&str, Kind); 9] = [
+pub const NODE_FILES: [(&str, Kind); 8] = [
     (machine::ROOT, Kind::Machine),
     (machine::AGENT, Kind::Machine),
     (machine::TASK, Kind::Machine),
@@ -41,7 +41,6 @@ pub const NODE_FILES: [(&str, Kind); 9] = [
     ("generate.toml", Kind::Generate),
     ("transcript.toml", Kind::Transcript),
     ("tool.toml", Kind::Tool),
-    ("loop.toml", Kind::Loop),
     ("run.toml", Kind::Run),
 ];
 
@@ -53,8 +52,6 @@ pub enum Kind {
     Generate,
     Transcript,
     Tool,
-    /// A tool-calling loop (`loop.toml`).
-    Loop,
     Run,
 }
 
@@ -68,7 +65,6 @@ pub enum NodeSpec {
     Generate(GenerateSpec),
     Transcript(TranscriptSpec),
     Tool(ToolSpec),
-    Loop(LoopSpec),
     Run(RunSpec),
 }
 
@@ -80,7 +76,6 @@ impl NodeSpec {
             Self::Generate(s) => s.common(),
             Self::Transcript(s) => s.common(),
             Self::Tool(s) => s.common(),
-            Self::Loop(s) => s.common(),
             Self::Run(s) => s.common(),
         }
     }
@@ -92,19 +87,17 @@ impl NodeSpec {
             Self::Generate(_) => Kind::Generate,
             Self::Transcript(_) => Kind::Transcript,
             Self::Tool(_) => Kind::Tool,
-            Self::Loop(_) => Kind::Loop,
             Self::Run(_) => Kind::Run,
         }
     }
 
-    /// Where a leaf, tool or agent sends its text.
+    /// Where a leaf, a tool or an automation sends its text.
     pub fn output(&self) -> Option<Output> {
         match self {
             Self::Machine(_) | Self::Decide(_) => None,
             Self::Generate(s) => Some(s.output.unwrap_or(Output::Target)),
             Self::Transcript(s) => Some(s.output.unwrap_or(Output::Target)),
             Self::Tool(s) => Some(s.output.unwrap_or(Output::Bubble)),
-            Self::Loop(s) => Some(s.output.unwrap_or(Output::Bubble)),
             Self::Run(s) => Some(s.output.unwrap_or(Output::Bubble)),
         }
     }
@@ -116,7 +109,6 @@ impl NodeSpec {
             Kind::Generate => Self::Generate(toml::from_str(text)?),
             Kind::Transcript => Self::Transcript(toml::from_str(text)?),
             Kind::Tool => Self::Tool(toml::from_str(text)?),
-            Kind::Loop => Self::Loop(toml::from_str(text)?),
             Kind::Run => Self::Run(toml::from_str(text)?),
         })
     }
@@ -218,7 +210,7 @@ impl std::fmt::Display for FlowError {
     }
 }
 
-/// A tool the settings register, for checking tool and agent nodes.
+/// A tool the settings register, for checking the nodes and machines that name it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CatalogTool {
     /// The client runs it; otherwise the server does.
@@ -519,7 +511,7 @@ impl FlowTree {
 }
 
 /// What a node can refer to: the investigations and extracts declared on the path to it, and
-/// whether a tool or agent above passed on a `{result}`.
+/// whether a tool or run node above passed on a `{result}`.
 #[derive(Clone, Debug, Default)]
 struct Scope {
     /// Investigations and extracts by name: their shape and the node that declared them.
@@ -605,8 +597,8 @@ impl Loader<'_> {
                             &join(dir, &file),
                             "unknown node file; a folder holds one of root.toml (the flows \
                              root's machine), agent.toml (an agent), task.toml (a task), \
-                             decide.toml, generate.toml, transcript.toml, tool.toml, loop.toml \
-                             or run.toml",
+                             decide.toml, generate.toml, transcript.toml, tool.toml or \
+                             run.toml",
                         );
                     }
                 }
@@ -624,9 +616,8 @@ impl Loader<'_> {
                 self.error(
                     dir,
                     "no node file: add root.toml (at the flows root), agent.toml (an agent), \
-                     task.toml (a task), decide.toml, generate.toml, transcript.toml, tool.toml, \
-                     loop.toml or run.toml (or start the folder name with _ to keep it out of \
-                     routing)",
+                     task.toml (a task), decide.toml, generate.toml, transcript.toml, tool.toml \
+                     or run.toml (or start the folder name with _ to keep it out of routing)",
                 );
                 return None;
             }
@@ -1052,7 +1043,6 @@ impl Loader<'_> {
             let file = node.file.clone();
             match &node.spec {
                 NodeSpec::Tool(t) => out.push((file, t.tool.clone())),
-                NodeSpec::Loop(a) => out.extend(a.tools.iter().map(|t| (file.clone(), t.clone()))),
                 NodeSpec::Run(r)
                     if r.automations.is_empty() || r.automations.iter().any(|n| n == "*") =>
                 {
@@ -1092,7 +1082,6 @@ impl Loader<'_> {
             NodeSpec::Generate(g) => {
                 fields.extend(g.prompt.as_deref().map(|p| ("prompt".into(), p)))
             }
-            NodeSpec::Loop(a) => fields.extend(a.prompt.as_deref().map(|p| ("prompt".into(), p))),
             NodeSpec::Tool(t) => {
                 for (arg, source) in &t.args {
                     for (kind, text) in [
@@ -1364,7 +1353,10 @@ impl Loader<'_> {
                     self.error(file, format!("tool: {why}"));
                 }
                 if t.tool.ends_with(":*") {
-                    self.error(file, "a tool node calls one tool; `server:*` is for agents");
+                    self.error(
+                        file,
+                        "a tool node calls one tool; `server:*` is for a machine's `tools`",
+                    );
                 }
                 for (arg, source) in &t.args {
                     let set = [
@@ -1406,17 +1398,6 @@ impl Loader<'_> {
                     .and_then(|tool| tool.parameters.clone())
                 {
                     self.check_arguments(file, &t.tool, &parameters, t.args.keys());
-                }
-                self.check_next(file, output, &children);
-            }
-            NodeSpec::Loop(a) => {
-                for tool in &a.tools {
-                    if let Some(why) = self.catalog.unknown(tool) {
-                        self.error(file, format!("tools: {why}"));
-                    }
-                }
-                if a.max_steps.is_some_and(|s| !(1..=16).contains(&s)) {
-                    self.error(file, "max_steps must be 1 to 16");
                 }
                 self.check_next(file, output, &children);
             }
@@ -1598,10 +1579,8 @@ impl Loader<'_> {
                 }
             }
         }
-        let passes_result = matches!(
-            node.spec,
-            NodeSpec::Tool(_) | NodeSpec::Loop(_) | NodeSpec::Run(_)
-        ) && node.spec.output() == Some(Output::Next);
+        let passes_result = matches!(node.spec, NodeSpec::Tool(_) | NodeSpec::Run(_))
+            && node.spec.output() == Some(Output::Next);
         let mut next = scope.clone();
         if passes_result {
             next.result = true;
@@ -1643,7 +1622,7 @@ impl Loader<'_> {
     }
 
     /// The shape of what a state's work writes: a generation's `schema`, or text; the words as
-    /// heard; and whatever came back from a tool, an agent, an automation or a walk through
+    /// heard; and whatever came back from a tool, an automation or a walk through
     /// further nodes, whose fields are known only once it runs.
     fn result_shape(&self, machine: &Node, state: &str) -> Shape {
         let work = machine
@@ -1678,7 +1657,7 @@ fn unresolved(path: &[String], scope: &Scope) -> Option<String> {
     }
     if name == "result" {
         return (!scope.result).then(|| {
-            "{result} is only set below a tool or agent with output = \"next\"".to_string()
+            "{result} is only set below a tool or run node with output = \"next\"".to_string()
         });
     }
     match scope.values.get(name) {
@@ -2008,20 +1987,20 @@ mod tests {
             e,
             ["tool.toml: args.limit: set exactly one of generate, choose, noul and value"]
         );
-        let unknown = FlowTree::load(
-            &Memory::new(
-                "t",
-                [(
-                    "loop.toml",
-                    "tools = [\"slack:*\", \"mail:send\", \"nope\"]",
-                )],
-            ),
-            &catalog,
-        );
-        let e = errors(&unknown);
-        assert_eq!(e.len(), 2, "{e:?}");
-        assert!(e.iter().any(|m| m.contains("no MCP server \"mail\"")));
-        assert!(e.iter().any(|m| m.contains("no tool \"nope\"")));
+        // A server that has not listed its tools yet may have any.
+        for (tool, why) in [
+            ("slack:post", None),
+            ("mail:send", Some("no MCP server \"mail\"")),
+            ("nope", Some("no tool \"nope\"")),
+        ] {
+            let node = format!("tool = {tool:?}");
+            let named = FlowTree::load(&Memory::new("t", [("tool.toml", node.as_str())]), &catalog);
+            let e = errors(&named);
+            match why {
+                Some(why) => assert!(e.len() == 1 && e[0].contains(why), "{e:?}"),
+                None => assert!(e.is_empty(), "{e:?}"),
+            }
+        }
         let missing = FlowTree::load(
             &Memory::new(
                 "t",

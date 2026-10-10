@@ -29,8 +29,8 @@ It leaves:
 - each platform's implementation of the traits (UI Automation, SendInput, CPAL, the tray and
   hotkeys), the inspector and settings windows, the settings folder as a whole and the embedded
   runtime to `jevons-desktop`;
-- the flow tree, the machines, the pipeline, the inference routes and the model loops to
-  `jevons-desktop-server`. It does not depend on it: both speak in the types of
+- the flow tree, the machines, the pipeline, the inference routes and the investigator's model
+  loop to `jevons-desktop-server`. It does not depend on it: both speak in the types of
   [jevons-desktop-protocol](../jevons-desktop-protocol/spec.md), and the automation author gets
   its model as a `Planner` the app implements.
 

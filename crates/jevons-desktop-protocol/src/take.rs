@@ -69,7 +69,6 @@ pub enum StageKind {
     Writing,
     Answering,
     Calling,
-    Loop,
 }
 
 /// A stage as it starts.

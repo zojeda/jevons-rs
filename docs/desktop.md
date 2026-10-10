@@ -74,7 +74,6 @@ Each folder is a node, and the file in it names its kind:
 | `generate.toml` | writes text with the language model, for the application, the bubble or the clipboard |
 | `transcript.toml` | uses the words as recognized, with no model |
 | `tool.toml` | calls a tool registered in the settings |
-| `loop.toml` | runs a tool-calling loop over registered tools |
 | `run.toml` | runs one of your approved automations, its arguments filled from what you said |
 
 A decision in the built-in tree:
@@ -105,7 +104,7 @@ The built-in tree:
 
 ### Agents and tasks
 
-An agent is a folder of the root with a machine of its own. It runs for as long as the app, gets every take the root hands it, and routes it among its own states and the tasks it started. A task is a job with an end that takes more than one turn: a search you follow up on ("open the second one"), a draft you revise, a command you confirm. It is a folder below an agent, `task.toml` with `task.fsm`, a state diagram in [Oxidate](https://crates.io/crates/oxidate-fsm)'s Mermaid-like language, and each state's work is the subfolder of its name: a tool call, a generation, a tool loop, a decision tree.
+An agent is a folder of the root with a machine of its own. It runs for as long as the app, gets every take the root hands it, and routes it among its own states and the tasks it started. A task is a job with an end that takes more than one turn: a search you follow up on ("open the second one"), a draft you revise, a command you confirm. It is a folder below an agent, `task.toml` with `task.fsm`, a state diagram in [Oxidate](https://crates.io/crates/oxidate-fsm)'s Mermaid-like language, and each state's work is the subfolder of its name: a tool call, a generation, a decision tree.
 
 ```text
 # flows/research/search/task.fsm (examples/desktop/machines/research)
@@ -193,9 +192,9 @@ Investigations read only the window the take started in. To let a question like 
 
 **Record tree** (in the Context tab's Interface card) saves the interface of the window in front to `~/jevons/trees` as JSON (it holds that window's text: it stays on your machine). `--tree <file>` replays a take against a recorded interface instead of the live one.
 
-### Tools and tool loops
+### Tools
 
-A `tool.toml` node calls one tool; a `loop.toml` node runs a tool-calling loop over several (at most `max_steps` model turns). Tools are registered in the settings, never in the flows folder, so a folder a coding agent edits can call only what you registered. A tool runs on the side whose file it is in: one in `jevons-desktop.toml` runs on your machine, and one in `jevons-server.toml` with the server. Flow files name them the same way either way, and `TOOLS.md` in the flows folder says where each runs.
+A `tool.toml` node calls one tool. Work that takes several calls is a task: a machine whose states each call one, under transitions you draw ([Agents and tasks](#agents-and-tasks)). Tools are registered in the settings, never in the flows folder, so a folder a coding agent edits can call only what you registered. A tool runs on the side whose file it is in: one in `jevons-desktop.toml` runs on your machine, and one in `jevons-server.toml` with the server. Flow files name them the same way either way, and `TOOLS.md` in the flows folder says where each runs.
 
 ```toml
 # jevons-desktop.toml: these run on your machine
@@ -225,9 +224,8 @@ arguments = { room = "The room, such as kitchen" }
   - `command` runs a program directly, never through a shell, with each argument as its own element. Only a few basic environment variables and the ones you list reach it, and it has a time limit.
   - `http` sends a request. Arguments are URL-encoded in the address and JSON-escaped in the body, and `${env:NAME}` keeps secrets out of files. `max_output` keeps fewer characters of the answer than the 20,000 every tool keeps, for a page a model is to read.
   - `open` opens an address or file with the default application.
-- **MCP servers** start in the background when the app starts and list their tools, which then check the flow files and fill `TOOLS.md` in the flows folder. The model knows an MCP tool as `server__tool`, because tool names cannot hold a colon.
+- **MCP servers** start in the background when the app starts and list their tools, which then check the flow files and fill `TOOLS.md` in the flows folder.
 - **Arguments** of a tool node come from `generate` (the language model writes the value), `choose` and `noul` (all of them in one decision read), and `value` (text with placeholders). With `output = "next"`, the node's single branch gets the result as `{result}`.
-- **Agents** can always call `investigate`, the context investigator, to read the screen. Their answer streams into the bubble.
 - **Confirmation:** every call that asks shows in the bubble first (see [Using it](#using-it)). `allow` on a tool or server limits which flow nodes may use it. The side that runs a tool is the one that enforces both: a tool on your machine asks and checks `allow` there, whatever the server asked for, and automations are always yours. A name registered in both files is an error.
 - **Headless runs** (`--replay`, `--transcript`) list the MCP servers' tools but run nothing: each call returns what it would have done, and the trace records it.
 
@@ -309,7 +307,7 @@ Nothing in the library folder can approve an automation, so a coding agent that 
   - **Record it again….** Records the task anew and replaces the automation with the new version, which you approve again. Use it when the application changed and the automation stopped finding its elements.
 - **Hotkey:** give it one in Settings → Automations. Hold the hotkey and say the arguments.
 - **By voice:** the built-in `run` branch handles requests like "post to random that lunch is ready". The decision model picks the automation, and the language model fills its arguments.
-- **From flows:** `tool = "script:slack-post"` in a `tool.toml`, a `run.toml` node, or `tools = ["script:*"]` for an agent.
+- **From flows:** `tool = "script:slack-post"` in a `tool.toml`, or a `run.toml` node.
 
 A run asks in the bubble first unless the automation is listed in `automation.unconfirmed`, and **Cancel the current take** stops it. Its trace goes to `~/jevons/traces`: the steps, every action, and the answer, or the error with its kind, line and column. A failed run also keeps the window's interface in the automation's `failures/` folder, to fix the script against.
 
@@ -344,7 +342,7 @@ The app asks models for four things, and each can come from a different place:
 | Speech | A take's audio to text, uploaded | `/v1/audio/transcriptions` |
 | Live speech | The same, streamed while you speak | `/v1/realtime` |
 | Decisions | The flow tree's and machines' choices | `/v1/systemone` |
-| Generation | Rewrites, answers, loops, the investigator | `/v1/responses`, `/v1/chat/completions` |
+| Generation | Rewrites, answers, the investigator | `/v1/responses`, `/v1/chat/completions` |
 
 By default all four run on the models the app loads (the `embedded` provider). To send one
 elsewhere, add a provider and route the capability to it, in the Settings tab or in `jevons-server.toml`:

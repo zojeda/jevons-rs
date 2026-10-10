@@ -6,9 +6,7 @@
 //! generated files. `AGENTS.md` carries a hash of what jevons wrote, so it is updated only until
 //! someone edits it.
 
-use super::spec::{
-    DecideSpec, GenerateSpec, LoopSpec, MachineSpec, RunSpec, ToolSpec, TranscriptSpec,
-};
+use super::spec::{DecideSpec, GenerateSpec, MachineSpec, RunSpec, ToolSpec, TranscriptSpec};
 use super::tree::{Catalog, Disk, FlowTree, Memory, NODE_FILES};
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -215,11 +213,20 @@ pub fn init(dir: &Path) -> std::io::Result<InitReport> {
     agents_md(dir, &mut report)?;
     let schemas = dir.join("_schemas");
     std::fs::create_dir_all(&schemas)?;
-    for (file, text) in schemas_json() {
-        let path = schemas.join(&file);
+    let current = schemas_json();
+    for (file, text) in &current {
+        let path = schemas.join(file);
         if std::fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
             std::fs::write(&path, text)?;
             report.written.push(format!("_schemas/{file}"));
+        }
+    }
+    // The schema of a node kind that is gone.
+    for entry in std::fs::read_dir(&schemas)? {
+        let name = entry?.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".schema.json") && !current.iter().any(|(file, _)| *file == name) {
+            std::fs::remove_file(schemas.join(&name))?;
+            report.removed.push(format!("_schemas/{name}"));
         }
     }
     let taplo = dir.join(".taplo.toml");
@@ -329,10 +336,6 @@ pub fn schemas_json() -> Vec<(String, String)> {
         (
             "tool.schema.json".into(),
             pretty(schemars::schema_for!(ToolSpec)),
-        ),
-        (
-            "loop.schema.json".into(),
-            pretty(schemars::schema_for!(LoopSpec)),
         ),
         (
             "run.schema.json".into(),
@@ -523,6 +526,11 @@ mod tests {
             std::fs::read_to_string(dir.join("AGENTS.md")).unwrap(),
             edited
         );
+        // The schema of a node kind that is gone goes; any other file there stays.
+        std::fs::write(dir.join("_schemas/loop.schema.json"), "{}").unwrap();
+        std::fs::write(dir.join("_schemas/notes.md"), "mine").unwrap();
+        assert_eq!(init(&dir).unwrap().removed, ["_schemas/loop.schema.json"]);
+        assert!(dir.join("_schemas/notes.md").exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

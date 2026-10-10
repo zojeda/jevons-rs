@@ -1,7 +1,7 @@
 //! The node files as written. A folder's node file names its kind: `root.toml` or `task.toml` (a
-//! machine), `decide.toml`, `generate.toml`, `transcript.toml`, `tool.toml`, `loop.toml` or
-//! `run.toml`. Every kind shares the fields in [`node_spec!`] (among them `[investigate.<name>]`
-//! and `[extract.<name>]`); unknown fields are errors with their line.
+//! machine), `decide.toml`, `generate.toml`, `transcript.toml`, `tool.toml` or `run.toml`. Every
+//! kind shares the fields in [`node_spec!`] (among them `[investigate.<name>]` and
+//! `[extract.<name>]`); unknown fields are errors with their line.
 
 use super::guard::When;
 use jevons_desktop_protocol::delivery::{Action, DeliveryMethod};
@@ -259,25 +259,6 @@ node_spec! {
         /// `next` to continue into the single branch with it as `{result}`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub output: Option<Output>,
-    }
-}
-
-node_spec! {
-    /// `loop.toml`: a tool-calling loop, bounded by `max_steps`.
-    pub struct LoopSpec {
-        /// Registered tools: `name`, `server:tool`, or `server:*` for every tool of a server. The
-        /// context investigator is always available as `investigate`.
-        #[serde(default)]
-        pub tools: Vec<String>,
-        /// Model turns before the agent must answer (1 to 16; 4 by default).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub max_steps: Option<u32>,
-        /// `bubble` (the default), `target`, `clipboard`, `none` or `next`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub output: Option<Output>,
-        /// The task; by default the context, the investigations and what the user said.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub prompt: Option<String>,
     }
 }
 

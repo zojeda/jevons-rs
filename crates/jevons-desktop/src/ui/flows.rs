@@ -173,7 +173,6 @@ fn kind_name(kind: Kind) -> &'static str {
         Kind::Generate => "generate",
         Kind::Transcript => "transcript",
         Kind::Tool => "tool",
-        Kind::Loop => "loop",
         Kind::Run => "run",
     }
 }

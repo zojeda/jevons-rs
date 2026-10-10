@@ -129,7 +129,7 @@ Tests: `a_nested_machine_must_end_and_list_every_tool_its_states_call`
 ### R16 A machine lists every tool its states call
 
 `tools` names every tool the machine's states may call, at any depth below it: tool nodes' `tool`,
-loops' `tools`, and `script:<name>` for automations. An entry is a name, or `server:*` or
+and `script:<name>` for automations. An entry is a name, or `server:*` or
 `script:*` for all of a kind. A state that calls an unlisted tool is an error. So a task's list is
 all it can do, its agent's covers it, and the root's covers everything.
 
@@ -138,7 +138,7 @@ Tests: `a_nested_machine_must_end_and_list_every_tool_its_states_call`
 ### R17 States read what earlier states wrote
 
 Below a machine, each state's name is a placeholder, `{state}`, that holds what that state's work
-wrote last. A result with fields keeps them, and `{state.field}` reads one: a tool's, a loop's or
+wrote last. A result with fields keeps them, and `{state.field}` reads one: a tool's or
 an automation's result may have any field, a generation with a `schema` has its schema's, and a
 generation without one and the words as heard are text, with no fields. A field the shape lacks is
 a load error. Below an agent, `{task.name}` and `{task.result}` are the task that last ended and

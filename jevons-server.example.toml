@@ -68,7 +68,7 @@ realtime = true
 # ~/jevons/logs/api.log. They hold what you say and your screen's text; keys are never written.
 log_api = false
 
-# Tools that run with the server, which flow nodes may call (tool.toml, loop.toml). Flow files can
+# Tools that run with the server, which flow nodes may call (tool.toml). Flow files can
 # use these, never add them. A tool written here runs here; one that should run on your machine
 # (opening an address, running a program) goes in jevons-desktop.toml. Each asks in the bubble
 # before it runs unless confirm = false here. {argument} takes a call's argument; ${env:NAME} an
