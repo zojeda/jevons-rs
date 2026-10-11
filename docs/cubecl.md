@@ -135,12 +135,29 @@ llama.cpp running parts of its vision graph in FP16. Encoding a 77-token image t
 
 ## Design notes
 
+- **The forward is a chain of Burn operations.** The text model's forward is made of Burn backend
+  extensions (`model::burn`): one for the embedding, an attention block and a feed-forward block
+  per layer, and those of the logit head. The residual, the input rows and the logits are Burn
+  tensors, while weights, norm vectors, the KV caches and a layer's scratch stay device buffers
+  passed as arguments. An operation launches the kernels a direct launch would, so the bits are
+  the same. Burn queues the operations on the model's thread and runs them in order; a direct
+  read of a cache syncs the Burn device first. One operation per kernel was built first and
+  dropped: a 30-layer forward then queues over a thousand operations, against about sixty with
+  two per layer. The vision encoder launches its kernels directly.
 - **Weights stay quantized.** Q4_K, Q5_0, Q6_K and Q8_0 blocks are repacked into aligned
   structure-of-arrays buffers and dequantized to FP16 tiles inside the matrix kernels, which use
   RDNA3 16x16x16 WMMA instructions with FP32 accumulation.
 - **Prefill** processes each chunk in one forward and writes the prompt KV cache; it never
-  computes vocabulary logits. **Canvas** forwards attend bidirectionally over the canvas and the
-  cached prompt. With `steps=1`, only the candidate answer logits are computed.
+  computes vocabulary logits. Token rows are chunked together whatever prompt parts they come
+  from. **Canvas** forwards attend bidirectionally over the canvas and the cached prompt. With
+  `steps=1`, only the candidate answer logits are computed.
+- **A read's canvas rides with its prompt.** At small row counts a forward costs what its weights
+  cost to stream, whatever its rows. A one-step read therefore puts its canvas rows in the forward
+  of the last prompt rows still to compute, on the row-invariant kernels, so the answer is bitwise
+  the same when the prompt was already resident and the canvas ran alone.
+- **Sampling stays on the device.** With full logits, one kernel per row finds the best token,
+  samples by inverse CDF from a host draw and sums the entropy terms; four values per row come
+  back instead of rows × vocabulary logits.
 - **Small row counts** (canvas projections, experts with one or two tokens) use split-K tiles or a
   barrier-free half-wave matrix-vector kernel.
 - **Exact prefix reuse.** Prefill kernels are row invariant: a token's result never depends on

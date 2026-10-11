@@ -222,7 +222,7 @@ impl DiffusionModel for FakeModel {
         &mut self,
         tokens: &[i32],
         prompt_length: usize,
-        conditioning: Conditioning<'_>,
+        conditioning: Conditioning,
         _logits: Logits,
     ) -> Result<()> {
         assert_eq!(prompt_length, self.prompt.len());

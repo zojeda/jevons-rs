@@ -2,7 +2,8 @@
 //! prompt-prefix reuse.
 use jevons_core::{
     ChatFormat, Conditioning, DiffusionModel, DiffusionScheme, Error, ImageInput, Logits,
-    ModelConfig, ModelInfo, PrefillProfile, PromptPart, Result, TextTokenizer, decode_image,
+    ModelConfig, ModelInfo, Prediction, PrefillProfile, PromptPart, Result, TextTokenizer,
+    decode_image,
 };
 use jevons_gemma4_diffusion::model::Segment;
 use jevons_gemma4_diffusion::vision::{EncodedImage, Vision};
@@ -152,6 +153,55 @@ impl Gemma4 {
     }
 }
 
+impl Gemma4 {
+    /// Makes `parts + suffix` the resident prompt, then forwards `canvas` after it if given.
+    fn prefill_then(
+        &mut self,
+        parts: &[PromptPart],
+        suffix: &[i32],
+        canvas: Option<&[i32]>,
+    ) -> Result<usize> {
+        let start = Instant::now();
+        let length = parts.iter().map(PromptPart::len).sum::<usize>() + suffix.len();
+        if length > self.info.n_ctx {
+            return Err(Error::InvalidInput("Prompt exceeds context size".into()));
+        }
+        let encoded = self.images.as_ref().map_or(&[][..], |s| &s.encoded[..]);
+        let mut segments = Vec::with_capacity(parts.len() + 1);
+        for part in parts {
+            segments.push(match part {
+                PromptPart::Text(tokens) => Segment::Tokens(tokens),
+                PromptPart::Image { tokens, index } => {
+                    let (image, key) = encoded
+                        .get(*index)
+                        .filter(|(image, _)| image.tokens == *tokens)
+                        .ok_or_else(|| Error::InvalidInput("Unknown image part".into()))?;
+                    Segment::Image {
+                        rows: &image.rows,
+                        count: *tokens,
+                        key: *key,
+                    }
+                }
+            });
+        }
+        segments.push(Segment::Tokens(suffix));
+        if !self.prompt_cache {
+            self.model.clear_prompt_cache();
+        }
+        let stats = match canvas {
+            Some(canvas) => self.model.prefill_with_canvas(&segments, canvas),
+            None => self.model.prefill_segments(&segments),
+        }
+        .map_err(map)?;
+        self.profile.wall_ms += start.elapsed().as_secs_f64() * 1000.0;
+        self.profile.calls += 1;
+        self.profile.batches += stats.batches;
+        self.profile.processed_tokens += stats.processed_tokens;
+        self.profile.reused_tokens += stats.reused_tokens;
+        Ok(length)
+    }
+}
+
 impl DiffusionModel for Gemma4 {
     fn info(&self) -> &ModelInfo {
         &self.info
@@ -214,55 +264,32 @@ impl DiffusionModel for Gemma4 {
     }
 
     fn prefill(&mut self, parts: &[PromptPart], suffix: &[i32]) -> Result<usize> {
-        let start = Instant::now();
-        let length = parts.iter().map(PromptPart::len).sum::<usize>() + suffix.len();
-        if length > self.info.n_ctx {
-            return Err(Error::InvalidInput("Prompt exceeds context size".into()));
-        }
-        let encoded = self.images.as_ref().map_or(&[][..], |s| &s.encoded[..]);
-        let mut segments = Vec::with_capacity(parts.len() + 1);
-        for part in parts {
-            segments.push(match part {
-                PromptPart::Text(tokens) => Segment::Tokens(tokens),
-                PromptPart::Image { tokens, index } => {
-                    let (image, key) = encoded
-                        .get(*index)
-                        .filter(|(image, _)| image.tokens == *tokens)
-                        .ok_or_else(|| Error::InvalidInput("Unknown image part".into()))?;
-                    Segment::Image {
-                        rows: &image.rows,
-                        count: *tokens,
-                        key: *key,
-                    }
-                }
-            });
-        }
-        segments.push(Segment::Tokens(suffix));
-        if !self.prompt_cache {
-            self.model.clear_prompt_cache();
-        }
-        let stats = self.model.prefill_segments(&segments).map_err(map)?;
-        self.profile.wall_ms += start.elapsed().as_secs_f64() * 1000.0;
-        self.profile.calls += 1;
-        self.profile.batches += stats.batches;
-        self.profile.processed_tokens += stats.processed_tokens;
-        self.profile.reused_tokens += stats.reused_tokens;
-        Ok(length)
+        self.prefill_then(parts, suffix, None)
+    }
+
+    /// One piece of work on the device: the canvas rows ride with the prompt rows still to
+    /// compute, on kernels that give a row the same values whatever rows it is computed with.
+    fn prefill_and_forward_canvas(
+        &mut self,
+        parts: &[PromptPart],
+        suffix: &[i32],
+        tokens: &[i32],
+    ) -> Result<usize> {
+        self.prefill_then(parts, suffix, Some(tokens))
     }
 
     fn forward_canvas(
         &mut self,
         tokens: &[i32],
         prompt_length: usize,
-        conditioning: Conditioning<'_>,
+        conditioning: Conditioning,
         logits: Logits,
     ) -> Result<()> {
         let previous = match conditioning {
             Conditioning::None => None,
             Conditioning::Previous {
-                logits,
                 inverse_temperature,
-            } => Some((logits, inverse_temperature)),
+            } => Some(inverse_temperature),
         };
         self.model
             .canvas(tokens, prompt_length, logits == Logits::Full, previous)
@@ -275,6 +302,37 @@ impl DiffusionModel for Gemma4 {
 
     fn full_logits(&mut self) -> Result<Vec<f32>> {
         self.model.all_logits().map_err(|_| Error::MissingLogits)
+    }
+
+    /// On the device, in f32: the logits stay there, and four values per row come back.
+    fn predictions(
+        &mut self,
+        rows: &[usize],
+        temperature: f64,
+        draws: &[f64],
+    ) -> Result<Vec<Prediction>> {
+        // A draw that rounds up to 1.0 in f32 would select no token.
+        let draws: Vec<f32> = draws
+            .iter()
+            .map(|&draw| (draw as f32).min(1.0 - f32::EPSILON / 2.0))
+            .collect();
+        let rows = self
+            .model
+            .predictions(rows, (1.0 / temperature) as f32, &draws)
+            .map_err(map)?;
+        rows.into_iter()
+            .map(|[best, sampled, z, weighted_logs]| {
+                let (z, weighted_logs) = (f64::from(z), f64::from(weighted_logs));
+                if !(z.is_finite() && z > 0.0 && weighted_logs.is_finite()) {
+                    return Err(Error::InvalidLogits);
+                }
+                Ok(Prediction {
+                    best: best as i32,
+                    sampled: sampled as i32,
+                    entropy: (z.ln() - weighted_logs / z).max(0.0),
+                })
+            })
+            .collect()
     }
 
     fn profile(&mut self) -> &mut PrefillProfile {

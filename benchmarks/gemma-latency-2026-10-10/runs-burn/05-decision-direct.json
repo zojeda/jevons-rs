@@ -1,0 +1,997 @@
+{
+ "model_file": "diffusiongemma-26B-A4B-it-Q4_K_M.gguf",
+ "load_ms": 58378.102900000005,
+ "rounds": 2,
+ "seed": 42,
+ "batch_size": 512,
+ "context_size": 8192,
+ "decision": {
+  "corpus": "benchmarks/system-one/cases.json",
+  "cases": 72,
+  "first": {
+   "requests": 144,
+   "mean_ms": 263.77440624999997,
+   "p50_ms": 211.0704,
+   "round_means_ms": [
+    262.98858472222224,
+    264.56022777777775
+   ]
+  },
+  "repeat": {
+   "requests": 144,
+   "mean_ms": 69.31893680555557,
+   "p50_ms": 67.0843,
+   "round_means_ms": [
+    69.04140694444443,
+    69.59646666666667
+   ]
+  },
+  "extended": {
+   "requests": 144,
+   "mean_ms": 105.53298680555554,
+   "p50_ms": 102.7356,
+   "round_means_ms": [
+    105.29209722222222,
+    105.77387638888887
+   ]
+  },
+  "all": {
+   "requests": 288,
+   "mean_ms": 166.5466715277778,
+   "p50_ms": 142.88625,
+   "round_means_ms": [
+    166.01499583333336,
+    167.07834722222216
+   ]
+  },
+  "first_prefill_mean_ms": 261.7273687499999,
+  "first_forward_mean_ms": 1.3473909722222215,
+  "reads_that_differ_when_repeated": 0,
+  "questions": 84,
+  "questions_correct": 75,
+  "answers": [
+   {
+    "id": "multilingual-german_billing",
+    "prompt_tokens": 135,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.9944779260250398,
+      0.002829424776419857,
+      0.0002746663627736118,
+      0.0024179828357665033
+     ]
+    ]
+   },
+   {
+    "id": "rubric-reproducible",
+    "prompt_tokens": 153,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.004267367611598798,
+      0.0029287848852908066,
+      0.0029823376344799883,
+      0.9898215098686303
+     ]
+    ]
+   },
+   {
+    "id": "evidence-scope",
+    "prompt_tokens": 131,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.003711982857708952,
+      0.0033994919050874778,
+      0.9928885252372036
+     ]
+    ]
+   },
+   {
+    "id": "policy-inclusive",
+    "prompt_tokens": 163,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.9918206457877721,
+      0.007629664647489045,
+      0.0005496895647388216
+     ]
+    ]
+   },
+   {
+    "id": "relational-compound_filter",
+    "prompt_tokens": 131,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.019849396943312447,
+      0.039411442555935865,
+      0.9342390160119155,
+      0.006500144488836304
+     ]
+    ]
+   },
+   {
+    "id": "quantitative-net_stock",
+    "prompt_tokens": 136,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.2089926360386009,
+      0.5671535549188201,
+      0.1353063929726942,
+      0.08854741606988475
+     ]
+    ]
+   },
+   {
+    "id": "quantitative-sequential_discount",
+    "prompt_tokens": 142,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.8625920007846675,
+      0.12243003156727832,
+      0.004037388885718028,
+      0.010940578762336272
+     ]
+    ]
+   },
+   {
+    "id": "rubric-loss",
+    "prompt_tokens": 142,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.0003537667928468298,
+      0.00012058057772374185,
+      0.004620437607285139,
+      0.9949052150221442
+     ]
+    ]
+   },
+   {
+    "id": "multilingual-french_other",
+    "prompt_tokens": 134,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.009787441704791375,
+      0.03904700370844887,
+      0.0012576513474888294,
+      0.9499079032392709
+     ]
+    ]
+   },
+   {
+    "id": "relational-join_missing",
+    "prompt_tokens": 105,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.691768154122063,
+      0.03155981890862696,
+      0.2766720269693099
+     ]
+    ]
+   },
+   {
+    "id": "temporal-leap_day",
+    "prompt_tokens": 133,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.7532004789307112,
+      0.2467995210692888
+     ]
+    ]
+   },
+   {
+    "id": "multilingual-code_switch",
+    "prompt_tokens": 132,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.9968284381679641,
+      0.0018156848382901573,
+      0.0001369640712483953,
+      0.0012189129224970956
+     ]
+    ]
+   },
+   {
+    "id": "evidence-explicit_negative",
+    "prompt_tokens": 123,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.0004468828464156003,
+      0.9994420905499342,
+      0.00011102660365019509
+     ]
+    ]
+   },
+   {
+    "id": "rubric-cosmetic",
+    "prompt_tokens": 133,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.9922588917456332,
+      0.00633518249057413,
+      0.00038524644449364014,
+      0.0010206793192989296
+     ]
+    ]
+   },
+   {
+    "id": "policy-exception_blocked",
+    "prompt_tokens": 163,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.010212084060698033,
+      0.9897240603097486,
+      6.385562955347983e-05
+     ]
+    ]
+   },
+   {
+    "id": "relational-deduplicate",
+    "prompt_tokens": 137,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.912272574422572,
+      0.032323165556527214,
+      0.043774299844415124,
+      0.01162996017648585
+     ]
+    ]
+   },
+   {
+    "id": "quantitative-units",
+    "prompt_tokens": 130,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.978133962032131,
+      0.012553512447626872,
+      0.0054615610137139425,
+      0.003850964506528099
+     ]
+    ]
+   },
+   {
+    "id": "policy-disjunction",
+    "prompt_tokens": 106,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.9840593864866959,
+      0.015940613513304207
+     ]
+    ]
+   },
+   {
+    "id": "policy-exception",
+    "prompt_tokens": 163,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.9887822947186807,
+      0.010935567186151771,
+      0.00028213809516758435
+     ]
+    ]
+   },
+   {
+    "id": "policy-known_exclusion",
+    "prompt_tokens": 156,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.0036536347298903224,
+      0.996111918500096,
+      0.0002344467700138458
+     ]
+    ]
+   },
+   {
+    "id": "quantitative-weighted_rate",
+    "prompt_tokens": 128,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.8708733580980147,
+      0.08931232234604924,
+      0.01730401312721271,
+      0.02251030642872328
+     ]
+    ]
+   },
+   {
+    "id": "quantitative-percentage_points",
+    "prompt_tokens": 120,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.0016930443936787854,
+      0.8642011036825626,
+      0.13004155907976866,
+      0.0040642928439898075
+     ]
+    ]
+   },
+   {
+    "id": "policy-deny_overrides",
+    "prompt_tokens": 101,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.03421116809995577,
+      0.9657888319000443
+     ]
+    ]
+   },
+   {
+    "id": "injection-fake_system",
+    "prompt_tokens": 148,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.0008920759980368885,
+      0.9974703214476582,
+      9.740897386749394e-05,
+      0.0015401935804372604
+     ]
+    ]
+   },
+   {
+    "id": "multilingual-arabic_access",
+    "prompt_tokens": 141,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.0005329753502295198,
+      0.0010517054860939422,
+      0.9975240769291865,
+      0.0008912422344900595
+     ]
+    ]
+   },
+   {
+    "id": "relational-null_not_zero",
+    "prompt_tokens": 124,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.0017824463263899492,
+      0.995763856787978,
+      0.0011843705260937945,
+      0.0012693263595382623
+     ]
+    ]
+   },
+   {
+    "id": "temporal-offset_after",
+    "prompt_tokens": 132,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.8030760841322884,
+      0.19692391586771157
+     ]
+    ]
+   },
+   {
+    "id": "rubric-feature",
+    "prompt_tokens": 132,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.01627437190256596,
+      0.6334941943380824,
+      0.31956323760197264,
+      0.030668196157378973
+     ]
+    ]
+   },
+   {
+    "id": "quantitative-signed_balance",
+    "prompt_tokens": 132,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.9836005443454694,
+      0.006002219320528676,
+      0.005862719569540967,
+      0.004534516764460858
+     ]
+    ]
+   },
+   {
+    "id": "evidence-modus_tollens",
+    "prompt_tokens": 121,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.0007837232760861325,
+      0.9977912336234749,
+      0.001425043100438856
+     ]
+    ]
+   },
+   {
+    "id": "context-long_multi_no",
+    "prompt_tokens": 962,
+    "canvas_tokens": 35,
+    "probabilities": [
+     [
+      7.966510874365312e-05,
+      0.9999203348912563
+     ],
+     [
+      1.584806374963395e-06,
+      5.2302678091341964e-06,
+      0.9999931849258159
+     ],
+     [
+      0.999998803262069,
+      3.180215790757934e-07,
+      8.564101332695615e-07,
+      2.2306218519935125e-08
+     ],
+     [
+      0.156619427538168,
+      0.8433805724618321
+     ]
+    ]
+   },
+   {
+    "id": "relational-anti_join",
+    "prompt_tokens": 108,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.0004550381801683868,
+      0.9973848003908485,
+      0.00017160494092817295,
+      0.001988556488054872
+     ]
+    ]
+   },
+   {
+    "id": "multilingual-portuguese_contrast",
+    "prompt_tokens": 134,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.0002466538863599215,
+      0.9987488162669091,
+      6.111473076502073e-05,
+      0.0009434151159660187
+     ]
+    ]
+   },
+   {
+    "id": "policy-expired",
+    "prompt_tokens": 163,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.002905325572706828,
+      0.9968136827391725,
+      0.00028099168812068247
+     ]
+    ]
+   },
+   {
+    "id": "multilingual-japanese_delivery",
+    "prompt_tokens": 134,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.00026174548003598353,
+      0.9993035578264731,
+      8.811020526482353e-05,
+      0.0003465864882263249
+     ]
+    ]
+   },
+   {
+    "id": "temporal-superseded",
+    "prompt_tokens": 118,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.993955942136501,
+      0.006044057863498993
+     ]
+    ]
+   },
+   {
+    "id": "evidence-relation_chain",
+    "prompt_tokens": 127,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.9992192589328911,
+      0.00037546213521278955,
+      0.00040527893189614984
+     ]
+    ]
+   },
+   {
+    "id": "injection-direct",
+    "prompt_tokens": 140,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.8620718372405702,
+      0.12397950494490258,
+      0.0020069064651783088,
+      0.011941751349348816
+     ]
+    ]
+   },
+   {
+    "id": "evidence-some_not_all",
+    "prompt_tokens": 135,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.004794496656540105,
+      0.006988096714166311,
+      0.9882174066292936
+     ]
+    ]
+   },
+   {
+    "id": "context-short_multi_no",
+    "prompt_tokens": 314,
+    "canvas_tokens": 35,
+    "probabilities": [
+     [
+      0.009925241650918008,
+      0.9900747583490821
+     ],
+     [
+      0.004677611458726667,
+      0.00898997284074357,
+      0.9863324157005297
+     ],
+     [
+      0.9932559150351533,
+      0.0031875387804896605,
+      0.003509470876298378,
+      4.707530805853206e-05
+     ],
+     [
+      0.36331856722431294,
+      0.636681432775687
+     ]
+    ]
+   },
+   {
+    "id": "context-long_multi_yes",
+    "prompt_tokens": 963,
+    "canvas_tokens": 35,
+    "probabilities": [
+     [
+      0.9998197237867334,
+      0.00018027621326648538
+     ],
+     [
+      0.9994958941262063,
+      4.516180690694282e-06,
+      0.0004995896931029632
+     ],
+     [
+      5.086684393655253e-06,
+      0.0001486167192091705,
+      0.9998192175394811,
+      2.707905691597534e-05
+     ],
+     [
+      0.9993936414611612,
+      0.0006063585388388405
+     ]
+    ]
+   },
+   {
+    "id": "evidence-no_converse",
+    "prompt_tokens": 120,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.0008168554534078405,
+      0.002188523771215196,
+      0.9969946207753769
+     ]
+    ]
+   },
+   {
+    "id": "injection-role_spoof",
+    "prompt_tokens": 153,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.9854103164878574,
+      0.00582100541324671,
+      0.0005548033515860324,
+      0.00821387474731001
+     ]
+    ]
+   },
+   {
+    "id": "quantitative-distinct_count",
+    "prompt_tokens": 102,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.17406575658335255,
+      0.8087405925698682,
+      0.004453219521534623,
+      0.012740431325244713
+     ]
+    ]
+   },
+   {
+    "id": "evidence-negated_quantifier",
+    "prompt_tokens": 120,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.9969588665461203,
+      0.0012143671778560483,
+      0.001826766276023778
+     ]
+    ]
+   },
+   {
+    "id": "policy-unknown",
+    "prompt_tokens": 156,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.7237891015877872,
+      0.042844719510331926,
+      0.2333661789018807
+     ]
+    ]
+   },
+   {
+    "id": "injection-encoded_instruction",
+    "prompt_tokens": 152,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.01841111162141631,
+      0.05047433374521131,
+      0.005074580090093153,
+      0.9260399745432792
+     ]
+    ]
+   },
+   {
+    "id": "temporal-offset_before",
+    "prompt_tokens": 132,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.7695182718207949,
+      0.23048172817920506
+     ]
+    ]
+   },
+   {
+    "id": "quantitative-integer_capacity",
+    "prompt_tokens": 109,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.10497600239526662,
+      0.8352214072214504,
+      0.03423643194576739,
+      0.02556615843751555
+     ]
+    ]
+   },
+   {
+    "id": "multilingual-french_access",
+    "prompt_tokens": 138,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.0016647835299185454,
+      0.004053354320858696,
+      0.9897698401573979,
+      0.004512021991824815
+     ]
+    ]
+   },
+   {
+    "id": "multilingual-spanish_negation",
+    "prompt_tokens": 138,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.9584044483584351,
+      0.013842254150031947,
+      0.0053358908368552225,
+      0.022417406654677948
+     ]
+    ]
+   },
+   {
+    "id": "context-long_single_no",
+    "prompt_tokens": 816,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.009625657749212764,
+      0.9903743422507871
+     ]
+    ]
+   },
+   {
+    "id": "relational-join",
+    "prompt_tokens": 130,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.005527976015445514,
+      0.9942740488027954,
+      0.0001979751817591328
+     ]
+    ]
+   },
+   {
+    "id": "injection-quoted_payload",
+    "prompt_tokens": 145,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.0016247798305859457,
+      0.997319353327044,
+      0.000106828806126865,
+      0.0009490380362432081
+     ]
+    ]
+   },
+   {
+    "id": "rubric-workaround",
+    "prompt_tokens": 141,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.003986977302646282,
+      0.2574930137839669,
+      0.7366264576139946,
+      0.001893551299392343
+     ]
+    ]
+   },
+   {
+    "id": "temporal-touching_intervals",
+    "prompt_tokens": 121,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.03445082076615922,
+      0.9655491792338406
+     ]
+    ]
+   },
+   {
+    "id": "relational-latest_not_last",
+    "prompt_tokens": 115,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.9886164013322819,
+      0.008602700114745503,
+      0.0027808985529724846
+     ]
+    ]
+   },
+   {
+    "id": "relational-tie_break",
+    "prompt_tokens": 122,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.6648993071953099,
+      0.3220865321371547,
+      0.013014160667535392
+     ]
+    ]
+   },
+   {
+    "id": "rubric-blocked",
+    "prompt_tokens": 142,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.0008698578124963857,
+      0.0007524467727921884,
+      0.9964741566380186,
+      0.001903538776692855
+     ]
+    ]
+   },
+   {
+    "id": "injection-json_injection",
+    "prompt_tokens": 149,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.0034690850211630815,
+      0.0015996515183701002,
+      0.9934949897221854,
+      0.0014362737382814781
+     ]
+    ]
+   },
+   {
+    "id": "temporal-overnight",
+    "prompt_tokens": 118,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.8625505445715872,
+      0.13744945542841286
+     ]
+    ]
+   },
+   {
+    "id": "context-long_single_yes",
+    "prompt_tokens": 817,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.9940087923924043,
+      0.005991207607595716
+     ]
+    ]
+   },
+   {
+    "id": "temporal-reopened",
+    "prompt_tokens": 121,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.058759780715350346,
+      0.9412402192846497
+     ]
+    ]
+   },
+   {
+    "id": "rubric-environment",
+    "prompt_tokens": 146,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.0018097254266597768,
+      0.01956866586482995,
+      0.9371105849140845,
+      0.04151102379442581
+     ]
+    ]
+   },
+   {
+    "id": "injection-translation_attack",
+    "prompt_tokens": 142,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.006490844574195165,
+      0.010783120525046925,
+      0.9795407749351176,
+      0.003185259965640388
+     ]
+    ]
+   },
+   {
+    "id": "context-short_multi_yes",
+    "prompt_tokens": 315,
+    "canvas_tokens": 35,
+    "probabilities": [
+     [
+      0.9748363688982917,
+      0.025163631101708366
+     ],
+     [
+      0.9306476825167176,
+      0.055541494780120104,
+      0.013810822703162327
+     ],
+     [
+      1.1679162920364472e-05,
+      0.005294831591406539,
+      0.9355096384039521,
+      0.05918385084172093
+     ],
+     [
+      0.9847561320053894,
+      0.015243867994610546
+     ]
+    ]
+   },
+   {
+    "id": "context-short_single_no",
+    "prompt_tokens": 168,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.03220255585308827,
+      0.9677974441469117
+     ]
+    ]
+   },
+   {
+    "id": "temporal-strict_expiry",
+    "prompt_tokens": 113,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.16478562243933512,
+      0.835214377560665
+     ]
+    ]
+   },
+   {
+    "id": "rubric-vague",
+    "prompt_tokens": 133,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.05672398854144153,
+      0.7471164850437156,
+      0.15775984985060848,
+      0.03839967656423423
+     ]
+    ]
+   },
+   {
+    "id": "evidence-reported_claim",
+    "prompt_tokens": 132,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.001368229218818509,
+      0.0004484105634979923,
+      0.9981833602176835
+     ]
+    ]
+   },
+   {
+    "id": "context-short_single_yes",
+    "prompt_tokens": 169,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.9882762904937243,
+      0.011723709506275508
+     ]
+    ]
+   },
+   {
+    "id": "injection-forged_gold",
+    "prompt_tokens": 148,
+    "canvas_tokens": 8,
+    "probabilities": [
+     [
+      0.5997603507124329,
+      0.3445434870933194,
+      0.008814316768600883,
+      0.04688184542564697
+     ]
+    ]
+   }
+  ]
+ }
+}

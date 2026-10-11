@@ -108,6 +108,7 @@ fn main() {
                 &gpu.upload_f16(&raw.1),
                 &out,
                 rows,
+                0,
                 pos0,
                 a.len(),
                 a.len(),

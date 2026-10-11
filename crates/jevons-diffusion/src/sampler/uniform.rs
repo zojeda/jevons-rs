@@ -1,69 +1,29 @@
 //! Entropy-bound refinement for uniform-noise diffusion, following the pinned native sampler.
-use jevons_core::{Error, Result};
+use jevons_core::{DiffusionModel, Error, Prediction, Result};
 use rand::Rng;
 
-pub struct Prediction {
-    pub best: i32,
-    pub sampled: i32,
-    pub entropy: f64,
-}
-
-fn predict(row: &[f32], temperature: f64, draw: f64) -> Result<Prediction> {
-    if row.is_empty() || row.iter().any(|x| !x.is_finite()) {
-        return Err(Error::InvalidLogits);
-    }
-    let best = row
-        .iter()
-        .enumerate()
-        .fold(0, |best, (i, x)| if *x > row[best] { i } else { best });
-    let max = f64::from(row[best]);
-    let z: f64 = row
-        .iter()
-        .map(|&x| ((f64::from(x) - max) / temperature).exp())
-        .sum();
-    let mut cumulative = 0.0;
-    let mut sampled = None;
-    let mut entropy = 0.0;
-    for (i, &x) in row.iter().enumerate() {
-        let p = ((f64::from(x) - max) / temperature).exp() / z;
-        cumulative += p;
-        if sampled.is_none() && cumulative > draw {
-            sampled = Some(i);
-        }
-        if p > 0.0 {
-            entropy -= p * p.ln();
-        }
-    }
-    Ok(Prediction {
-        best: best as i32,
-        sampled: sampled.unwrap_or(best) as i32,
-        entropy,
-    })
-}
-
-/// Only mutable positions participate in the entropy budget; fixed template tokens stay intact.
+/// One refinement step over the last canvas forward's full logits. The model predicts each of
+/// `positions` at `temperature`, from one draw per position in order. Positions are then taken
+/// by ascending entropy: those reached while the summed entropy is at most 0.1 take their
+/// sampled token and the rest fresh noise. Only `positions` change; fixed template tokens stay
+/// intact.
 pub fn refine(
+    model: &mut dyn DiffusionModel,
     canvas: &mut [i32],
-    logits: &[f32],
     positions: &[usize],
-    vocab: usize,
     temperature: f64,
     mask: i32,
     rng: &mut impl Rng,
 ) -> Result<Vec<Prediction>> {
-    if logits.len() != canvas.len() * vocab || positions.iter().any(|&p| p >= canvas.len()) {
+    if positions.iter().any(|&p| p >= canvas.len()) {
         return Err(Error::InvalidLogits);
     }
-    let predictions = positions
-        .iter()
-        .map(|&p| {
-            predict(
-                &logits[p * vocab..(p + 1) * vocab],
-                temperature,
-                rng.random(),
-            )
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let draws: Vec<f64> = positions.iter().map(|_| rng.random()).collect();
+    let predictions = model.predictions(positions, temperature, &draws)?;
+    if predictions.len() != positions.len() {
+        return Err(Error::InvalidLogits);
+    }
+    let vocab = model.info().n_vocab;
     let mut order: Vec<_> = (0..positions.len()).collect();
     order.sort_by(|&a, &b| predictions[a].entropy.total_cmp(&predictions[b].entropy));
     let mut entropy = 0.0;
@@ -71,7 +31,7 @@ pub fn refine(
         canvas[positions[i]] = if entropy <= 0.1 {
             predictions[i].sampled
         } else {
-            noise(vocab as i32, mask, rng)
+            noise(vocab, mask, rng)
         };
         entropy += predictions[i].entropy;
     }
@@ -90,34 +50,40 @@ pub fn noise(vocab: i32, mask: i32, rng: &mut impl Rng) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fake::{FakeModel, MASK};
+    use jevons_core::{Conditioning, Logits};
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
 
     #[test]
     fn refinement_preserves_fixed_tokens_and_accepts_certain_predictions() {
+        let mut model = FakeModel::new();
+        model.favored = vec![0, 21, 0, 22];
         let mut canvas = [9, 0, 8, 0];
-        let logits = [
-            0., 0., 0., -1000., 1000., -1000., 0., 0., 0., -1000., -1000., 1000.,
-        ];
+        model
+            .forward_canvas(&canvas, 0, Conditioning::None, Logits::Full)
+            .unwrap();
         let predictions = refine(
+            &mut model,
             &mut canvas,
-            &logits,
             &[1, 3],
-            3,
             1.0,
-            -1,
+            MASK,
             &mut ChaCha8Rng::seed_from_u64(1),
         )
         .unwrap();
-        assert_eq!(canvas, [9, 1, 8, 2]);
+        assert_eq!(canvas, [9, 21, 8, 22]);
         assert!(predictions.iter().all(|p| p.entropy < 1e-10));
-    }
-
-    #[test]
-    fn entropy_and_sampling_use_stable_probabilities() {
-        let p = predict(&[1000., 1000.], 1.0, 0.75).unwrap();
-        assert_eq!(p.sampled, 1);
-        assert!((p.entropy - 2_f64.ln()).abs() < 1e-10);
-        assert!(predict(&[f32::NAN], 1.0, 0.0).is_err());
+        assert!(
+            refine(
+                &mut model,
+                &mut canvas,
+                &[4],
+                1.0,
+                MASK,
+                &mut ChaCha8Rng::seed_from_u64(1)
+            )
+            .is_err()
+        );
     }
 }

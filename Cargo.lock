@@ -6144,11 +6144,14 @@ dependencies = [
 name = "jevons-gemma4-diffusion"
 version = "0.1.0"
 dependencies = [
+ "burn",
+ "burn-cubecl",
  "bytemuck",
  "cubecl",
  "cubecl-hip",
  "half",
  "image",
+ "jevons-burn",
  "jevons-formats",
  "jevons-kernels",
  "jevons-tokenizer",

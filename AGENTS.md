@@ -13,7 +13,7 @@ Crates are layered; each layer depends only on the ones below it (see the README
   - `jevons-decision`: restricted-canvas reads, samples and probabilities (`Decide` on `DiffusionEngine`), the `jevons-scm` CLI and the `golden` example.
   - `jevons-speech`: windowed transcription, words and segments (`Transcriber`).
 - **Diffusion layer** — `jevons-diffusion`: `DiffusionEngine` (model, chat format, answer codes, context), thought and token generation in every `Decoding` mode, the samplers, and the scripted `fake` model for service tests (feature `testing`).
-- **Models** — `jevons-models` (detection and loading), `jevons-gemma4-diffusion` (DiffusionGemma on tuned CubeCL kernels), `jevons-nemotron-diffusion` and `jevons-parakeet` (on Burn).
+- **Models** — `jevons-models` (detection and loading), `jevons-gemma4-diffusion` (DiffusionGemma on tuned CubeCL kernels, its forward a chain of Burn operations over them), `jevons-nemotron-diffusion` and `jevons-parakeet` (on Burn).
 - **GPU runtimes** — `jevons-kernels` (shared tuned CubeCL kernels: device buffers, quantized / FP16-weight GEMM) and `jevons-burn` (Burn 0.22 runtime: HIP device, weight streaming, attention, KV cache, the tuned GEMM as a Burn extension).
 - **Foundation** — `jevons-core` (the `DiffusionModel` and `SpeechModel` contracts, errors, model configuration, image decoding), `jevons-formats` (GGUF and safetensors readers), `jevons-tokenizer` (Gemma 4 and Hugging Face tokenizers), `jevons-audio` (upload decoding, resampling, PCM16/G.711, log-mel features, voice activity detection).
 

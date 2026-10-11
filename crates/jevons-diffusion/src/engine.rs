@@ -556,25 +556,22 @@ impl DiffusionEngine {
                 .map(|_| uniform::noise(self.n_vocab, self.mask, &mut rng))
                 .collect();
             let positions: Vec<_> = (0..count).collect();
-            let mut previous: Option<Vec<f32>> = None;
+            let mut previous = None;
             let mut previous_best = Vec::new();
-            let mut inverse_temperature = 1.0;
             let clock = Instant::now();
             for step in 0..48 {
                 self.model.forward_canvas(
                     &canvas,
                     prompt_length,
-                    conditioning(previous.as_deref(), inverse_temperature),
+                    conditioning(previous),
                     Logits::Full,
                 )?;
                 generated.forwards += 1;
-                let logits = self.model.full_logits()?;
                 let temperature = 0.4 + 0.4 * (48 - step) as f64 / 48.0;
                 let predictions = uniform::refine(
+                    self.model.as_mut(),
                     &mut canvas,
-                    &logits,
                     &positions,
-                    self.n_vocab as usize,
                     temperature,
                     self.mask,
                     &mut rng,
@@ -586,8 +583,7 @@ impl DiffusionEngine {
                 if stable {
                     break;
                 }
-                previous = Some(logits);
-                inverse_temperature = (1.0 / temperature) as f32;
+                previous = Some((1.0 / temperature) as f32);
             }
             generated.forward_ms += clock.elapsed().as_secs_f64() * 1000.0;
             let stop = previous_best.iter().position(|t| stops.contains(t));
@@ -606,10 +602,10 @@ impl DiffusionEngine {
     }
 }
 
-pub fn conditioning(previous: Option<&[f32]>, inverse_temperature: f32) -> Conditioning<'_> {
+/// Conditioning on the previous step's logits at its inverse temperature, if there was one.
+pub fn conditioning(previous: Option<f32>) -> Conditioning {
     match previous {
-        Some(logits) => Conditioning::Previous {
-            logits,
+        Some(inverse_temperature) => Conditioning::Previous {
             inverse_temperature,
         },
         None => Conditioning::None,

@@ -552,7 +552,7 @@ impl DiffusionModel for Nemotron {
         &mut self,
         tokens: &[i32],
         prompt_length: usize,
-        conditioning: Conditioning<'_>,
+        conditioning: Conditioning,
         logits: Logits,
     ) -> Result<()> {
         if !matches!(conditioning, Conditioning::None) {

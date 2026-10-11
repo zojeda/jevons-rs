@@ -261,6 +261,7 @@ flowchart TB
     diffusion --> nemotron
     speech --> parakeet
     gemma --> cubecl
+    gemma --> burn
     nemotron --> burn
     parakeet --> burn
     cubecl --> gpu
@@ -274,7 +275,7 @@ flowchart TB
   - **Decision** (`jevons-decision`) reads every answer slot's distribution over its candidates from one canvas forward, averages samples and chunks slots that exceed one canvas. It also has the `jevons-scm` CLI.
   - **Speech** (`jevons-speech`) windows recordings longer than one model pass into words and segments, and runs single passes for live utterances.
 - **Diffusion layer** (`jevons-diffusion`): the part Generative and Decision share. `DiffusionEngine` owns a loaded diffusion model with its chat framing, verified answer codes and context limits, and generates bounded token runs (thoughts and answers) with masked or uniform-noise diffusion, self-speculation or autoregressive decoding.
-- **Models** implement the contracts in `jevons-core` (`DiffusionModel`, `SpeechModel`), and `jevons-models` detects which one a model file holds. DiffusionGemma runs on hand-tuned CubeCL kernels, while Nemotron-Labs-Diffusion and Parakeet run on Burn, all on the same CubeCL runtime and HIP device.
+- **Models** implement the contracts in `jevons-core` (`DiffusionModel`, `SpeechModel`), and `jevons-models` detects which one a model file holds. DiffusionGemma runs on hand-tuned CubeCL kernels, which its forward calls as Burn operations, while Nemotron-Labs-Diffusion and Parakeet run on Burn's own layers, all on the same CubeCL runtime and HIP device.
 
 ### Models
 

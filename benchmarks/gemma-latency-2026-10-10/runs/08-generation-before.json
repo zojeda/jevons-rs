@@ -1,0 +1,92 @@
+{
+ "model_file": "diffusiongemma-26B-A4B-it-Q4_K_M.gguf",
+ "load_ms": 65342.60140000001,
+ "rounds": 1,
+ "seed": 42,
+ "batch_size": 512,
+ "context_size": 8192,
+ "generation": {
+  "prompts": 6,
+  "all": {
+   "requests": 6,
+   "mean_ms": 9565.833716666666,
+   "p50_ms": 9562.771850000001,
+   "round_means_ms": [
+    9565.833716666666
+   ]
+  },
+  "by_max_tokens": [
+   {
+    "max_tokens": 64,
+    "wall": {
+     "requests": 6,
+     "mean_ms": 9565.833716666666,
+     "p50_ms": 9562.771850000001,
+     "round_means_ms": [
+      9565.833716666666
+     ]
+    },
+    "prefill_mean_ms": 245.86085,
+    "completion_tokens_mean": 56.5,
+    "blocks_mean": 1.0,
+    "ms_per_block": 9565.833716666666
+   }
+  ],
+  "answers": [
+   {
+    "prompt": "sky",
+    "max_tokens": 64,
+    "prompt_tokens": 23,
+    "completion_tokens": 51,
+    "finish": "Stop",
+    "blocks": 1,
+    "text": "The sky appears blue because sunlight interacts with Earth's atmosphere and is scattered in all directions through a process called Rayleigh scattering. Blue light travels in shorter, smaller waves, causing it to disperse more than other colors when hitting gas molecules in the air."
+   },
+   {
+    "prompt": "fibonacci",
+    "max_tokens": 64,
+    "prompt_tokens": 31,
+    "completion_tokens": 64,
+    "finish": "Length",
+    "blocks": 1,
+    "text": " is an efficient implementation using an iterative approach. This is generally preferred over recursion because it runs in linear time $O(n)$ and avoids recursion depth limits.\n\n```python\ndef fibonacci(n):\n    \"\"\"\n    Calculate the n-th Fibonacci number using an iterative approach.\n\n    The sequence starts"
+   },
+   {
+    "prompt": "summary",
+    "max_tokens": 64,
+    "prompt_tokens": 114,
+    "completion_tokens": 32,
+    "finish": "Stop",
+    "blocks": 1,
+    "text": "Once a prosperous salt-trading hub, the town of Vell now survives on a seasonal festival celebrating its vanished maritime history after trade shifted to a nearby railway."
+   },
+   {
+    "prompt": "translation",
+    "max_tokens": 64,
+    "prompt_tokens": 31,
+    "completion_tokens": 64,
+    "finish": "Length",
+    "blocks": 1,
+    "text": "Here are a few ways to translate this, depending on the level of formality:\n\n**Option 1: Most common/natural**\n> \"La reunión se pasó al jueves a las diez porque la sala estaba reservada.\"\n\n**Option 2: More formal**\n> \"La reunión se movió para"
+   },
+   {
+    "prompt": "commits",
+    "max_tokens": 64,
+    "prompt_tokens": 23,
+    "completion_tokens": 64,
+    "finish": "Length",
+    "blocks": 1,
+    "text": "Writing clear commit messages is essential for team collaboration, debugging, and maintaining a long-term project history. Here are five practical tips to improve your workflow:\n\n### 1. Use the \"Imperative Mood\"\nWrite your subject line as a command telling the codebase what to *do* if applied. This follows"
+   },
+   {
+    "prompt": "mutex",
+    "max_tokens": 64,
+    "prompt_tokens": 35,
+    "completion_tokens": 64,
+    "finish": "Length",
+    "blocks": 1,
+    "text": "The primary difference lies in **ownership** and **intent**.\n\n### 1. Mutex (Mutual Exclusion)\n*   **Definition:** A locking mechanism used to grant exclusive access to a single resource.\n*   **Ownership:** The thread that locks the mutex **must** be the one to unlock it."
+   }
+  ]
+ }
+}

@@ -8,6 +8,9 @@ publish.workspace = true
 [[example]]
 name = "prefill_bench"
 
+[[example]]
+name = "latency_bench"
+
 [dependencies]
 jevons-audio.workspace = true
 jevons-core.workspace = true

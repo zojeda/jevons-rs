@@ -89,7 +89,7 @@ moves to `changes/archive/`.
 | [jevons-diffusion](jevons-diffusion/spec.md) | `DiffusionEngine`, decoding modes, samplers, the fake model |
 | **Models** | |
 | [jevons-models](jevons-models/spec.md) | Model detection and loading, the DiffusionGemma adapter |
-| [jevons-gemma4-diffusion](jevons-gemma4-diffusion/spec.md) | DiffusionGemma on tuned CubeCL kernels |
+| [jevons-gemma4-diffusion](jevons-gemma4-diffusion/spec.md) | DiffusionGemma on tuned CubeCL kernels, its forward as Burn operations |
 | [jevons-nemotron-diffusion](jevons-nemotron-diffusion/spec.md) | Nemotron-Labs-Diffusion on Burn |
 | [jevons-parakeet](jevons-parakeet/spec.md) | Parakeet TDT on Burn |
 | **GPU runtimes** | |

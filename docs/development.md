@@ -20,7 +20,7 @@ The workspace is layered: the API on top, three services, the diffusion layer th
 | | `jevons-speech` | Windowed transcription of recordings, words and segments, single live passes (`Transcriber`) |
 | Diffusion | `jevons-diffusion` | `DiffusionEngine`: the loaded model, chat format, verified answer codes, context limits, prompt parts with images; thought and token generation (masked and uniform diffusion, self-speculation, autoregressive); samplers; the scripted `fake` model (feature `testing`) |
 | Models | `jevons-models` | Detect a model's architecture and load its `DiffusionModel` (DiffusionGemma with feature `gemma4`, Nemotron with `nemotron`) or `SpeechModel` (Parakeet with `parakeet`) |
-| | `jevons-gemma4-diffusion` | DiffusionGemma text and vision runtime: tuned CubeCL kernels (MoE routing, visibility-aware attention, fused norms, plus the shared GEMM) |
+| | `jevons-gemma4-diffusion` | DiffusionGemma text and vision runtime: tuned CubeCL kernels (MoE routing, visibility-aware attention, fused norms, plus the shared GEMM), with the text model's forward as Burn operations over them |
 | | `jevons-nemotron-diffusion` | Nemotron-Labs-Diffusion on Burn: Ministral-3 decoder, Pixtral vision tower and projector, image preprocessing |
 | | `jevons-parakeet` | Parakeet TDT on Burn: FastConformer encoder with relative-position attention, LSTM prediction network, greedy token-and-duration decoding |
 | GPU runtimes | `jevons-kernels` | Shared tuned CubeCL kernels: device buffers and the quantized / FP16-weight GEMM, callable on Burn tensors' buffers |
@@ -44,7 +44,7 @@ The project was previously named `llama-cpp-system-one`, after its original llam
 | `jevons-speech` | `transcriber` |
 | `jevons-diffusion` | `engine`, `sampler::{uniform, masked}`, `fake` |
 | `jevons-models` | `detect`, `gemma4`, `speech` |
-| `jevons-gemma4-diffusion` | `vision_input`, `gpu::{gemm, attention, ops, tune, vision}`, `model`, `vision` |
+| `jevons-gemma4-diffusion` | `vision_input`, `gpu::{gemm, attention, ops, tune, vision}`, `model`, `model::burn`, `vision` |
 | `jevons-nemotron-diffusion` | `config`, `rope`, `image`, `vision`, `model` |
 | `jevons-parakeet` | `config`, `encoder`, `decoder`, `model` |
 | `jevons-kernels` | `gemm` |
@@ -155,6 +155,19 @@ uv run scripts/reference/parakeet_dump.py "$PARAKEET_MODEL" ~/.cache/jevons/gold
 ```
 
 The engine golden uses `DIFFUSION_MODEL` (and `DIFFUSION_MMPROJ` for the image fixture) and writes to `<root>/<architecture>-engine`.
+
+### Latency
+
+`latency_bench` loads one model and times both diffusion modalities in the process, without HTTP:
+
+```bash
+cargo run --release --locked -p jevons-api --example latency_bench -- --rounds 3 > latency.json
+```
+
+- **Decision:** every request of `benchmarks/system-one/cases.json` in a fixed shuffled order, read three ways: after another request (its prompt is prefilled), once more (its prompt is resident), and with a sentence added to its prompt (only the addition is prefilled). It scores the answers against the corpus and counts repeated reads whose probabilities differ.
+- **Generation:** six chat prompts at each `--max-tokens` budget (64 and 192 by default), with the texts in the report.
+
+Every request runs once untimed first, so kernels compiled on first use stay out of the means. Compare two builds on the same day and machine; [the 2026-10-10 report](../benchmarks/gemma-latency-2026-10-10/README.md) shows how.
 
 ## Recipes
 

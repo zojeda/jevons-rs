@@ -33,7 +33,8 @@ It leaves to other crates:
 - `jevons-rs`: the process entry point. `jevons-desktop` embeds the crate through `load` and
   `serve`.
 
-The `prefill_bench` example measures prefill and is not part of the served behavior.
+The `prefill_bench` example measures prefill, and `latency_bench` the mean latency of Decision
+reads and Generative answers on one loaded model. Neither is part of the served behavior.
 
 ## Capabilities
 

@@ -108,6 +108,7 @@ fn check_attention(
         &f16_buf(&gpu, &vt),
         &out,
         rows,
+        0,
         pos0,
         kv_len,
         prompt,
@@ -484,6 +485,8 @@ fn every_tunable_dense_plan_matches_reference_and_tiles_are_row_invariant() {
 fn post_ffn_norms_combine_experts_residual_and_scale() {
     let gpu = Gpu::new(0).unwrap();
     let (rows, d, top_k, eps, scale) = (3, 512, 2, 1e-6f32, 0.5f32);
+    // The last row is a canvas row, with its own scale.
+    let (canvas_scale, first_canvas) = (1.25f32, 2);
     let mut rng = Rng(11);
     let mlp = rng.vec(rows * d, 3.0);
     let down = rng.vec(rows * top_k * d, 3.0);
@@ -505,6 +508,8 @@ fn post_ffn_norms_combine_experts_residual_and_scale() {
         &b(&ws[3]),
         &x_next,
         scale,
+        canvas_scale,
+        first_canvas,
         rows,
         d,
         top_k,
@@ -532,8 +537,13 @@ fn post_ffn_norms_combine_experts_residual_and_scale() {
             .map(|c| na[c] * f64::from(ws[0][c]) + nb[c] * f64::from(ws[1][c]))
             .collect();
         let nc = norm(&sum);
+        let scale = f64::from(if r >= first_canvas {
+            canvas_scale
+        } else {
+            scale
+        });
         let out: Vec<f64> = (0..d)
-            .map(|c| (nc[c] * f64::from(ws[2][c]) + f64::from(res[r * d + c])) * f64::from(scale))
+            .map(|c| (nc[c] * f64::from(ws[2][c]) + f64::from(res[r * d + c])) * scale)
             .collect();
         let nn = norm(&out);
         want_x.extend((0..d).map(|c| nn[c] * f64::from(ws[3][c])));
@@ -649,6 +659,97 @@ fn q6k_embedding_rows_and_candidate_logits_match_dequantized_table() {
 
 #[test]
 #[ignore = "requires a HIP GPU"]
+fn row_predictions_match_the_reference_sampler() {
+    let gpu = Gpu::new(0).unwrap();
+    let (v, rows) = (2048usize, 5usize);
+    let mut rng = Rng(11);
+    let mut logits = rng.vec(rows * v, 6.0);
+    // Row 1: one certain token late in the row. Row 2: the maximum twice, the first wins.
+    logits[v + 1500] = 400.0;
+    logits[2 * v + 700] = 9.0;
+    logits[2 * v + 1900] = 9.0;
+    // Row 3: every probability but one underflows in f32.
+    for x in &mut logits[3 * v..4 * v] {
+        *x = -200.0;
+    }
+    logits[3 * v + 5] = 0.0;
+    let chosen = [0u32, 1, 2, 3, 4, 0, 4];
+    let draws = [0.0f32, 0.5, 0.999, 0.999_999_94, 0.25, 0.731, 0.9];
+    let inv_temp = 1.0f32 / 0.6;
+    let out = gpu.zeros(4 * chosen.len(), 4);
+    ops::predict(
+        &gpu,
+        &gpu.upload_f32(&logits),
+        &u32_buf(&gpu, &chosen),
+        &gpu.upload_f32(&draws),
+        chosen.len(),
+        &out,
+        inv_temp,
+        v,
+    );
+    let got = gpu.read_f32(&out);
+    for (i, (&row, &draw)) in chosen.iter().zip(&draws).enumerate() {
+        let row = &logits[row as usize * v..][..v];
+        let best = (0..v).fold(0, |b, j| if row[j] > row[b] { j } else { b });
+        let e: Vec<f64> = row
+            .iter()
+            .map(|&x| (f64::from(x - row[best]) * f64::from(inv_temp)).exp())
+            .collect();
+        let z: f64 = e.iter().sum();
+        let entropy: f64 = e
+            .iter()
+            .filter(|&&e| e > 0.0)
+            .map(|e| -(e / z) * (e / z).ln())
+            .sum();
+        // Cumulative probability just before and at each token: the sampled token must be one
+        // the draw selects within the f32 sums' rounding.
+        let mut cumulative = vec![0.0; v + 1];
+        for j in 0..v {
+            cumulative[j + 1] = cumulative[j] + e[j] / z;
+        }
+        let [got_best, sampled, got_z, got_u] = [0, 1, 2, 3].map(|k| got[4 * i + k]);
+        assert_eq!(got_best as usize, best, "row {i}: largest logit");
+        let sampled = sampled as usize;
+        assert!(sampled < v, "row {i}: sampled token {sampled}");
+        let draw = f64::from(draw);
+        assert!(
+            cumulative[sampled] <= draw + 1e-4 && cumulative[sampled + 1] > draw - 1e-4,
+            "row {i}: token {sampled} covers {}..{}, draw {draw}",
+            cumulative[sampled],
+            cumulative[sampled + 1]
+        );
+        assert!(
+            e[sampled] > 0.0,
+            "row {i}: sampled a token without probability"
+        );
+        let (got_z, got_u) = (f64::from(got_z), f64::from(got_u));
+        assert!(
+            (got_z - z).abs() <= 1e-5 * z,
+            "row {i}: z {got_z}, want {z}"
+        );
+        let got_entropy = got_z.ln() - got_u / got_z;
+        assert!(
+            (got_entropy - entropy).abs() <= 1e-4,
+            "row {i}: entropy {got_entropy}, want {entropy}"
+        );
+    }
+    // The same row with the same draw gives the same values wherever it is launched.
+    let single = gpu.zeros(4, 4);
+    ops::predict(
+        &gpu,
+        &gpu.upload_f32(&logits),
+        &u32_buf(&gpu, &[0]),
+        &gpu.upload_f32(&[0.0]),
+        1,
+        &single,
+        inv_temp,
+        v,
+    );
+    assert_eq!(gpu.read_f32(&single), got[..4]);
+}
+
+#[test]
+#[ignore = "requires a HIP GPU"]
 fn post_attention_norms_update_residual_and_emit_ffn_inputs() {
     let gpu = Gpu::new(0).unwrap();
     let (rows, d, eps) = (2, 768, 1e-6f32);
@@ -741,6 +842,7 @@ fn attention_ignores_cache_contents_beyond_the_visible_keys() {
                 &gpu.upload_f16(&v),
                 &out,
                 rows,
+                0,
                 pos0,
                 kv_len,
                 prompt,
@@ -795,7 +897,7 @@ fn attention_rows_do_not_depend_on_query_chunking() {
         let q = gpu.upload_f16(&q_all[pos0 * heads * hd..]);
         let out = gpu.zeros(rows * heads * hd, 2);
         attention::attention(
-            &gpu, &q, &kb, &vb, &out, rows, pos0, prompt, prompt, None, cap, &shape,
+            &gpu, &q, &kb, &vb, &out, rows, 0, pos0, prompt, prompt, None, cap, &shape,
         );
         let o = gpu.read_f16(&out);
         o[(rows - 1) * heads * hd..].to_vec()
@@ -916,6 +1018,7 @@ fn causal_rows_are_bitwise_independent_of_later_keys() {
                 &gpu.upload_f16(v),
                 &out,
                 rows,
+                0,
                 pos0,
                 prompt,
                 prompt,
