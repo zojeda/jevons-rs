@@ -173,14 +173,15 @@ Tests: `the_most_confident_position_always_commits_and_others_need_the_threshold
 
 ### R18 Entropy-bound refinement
 
-`uniform::refine` changes the listed positions and leaves the rest of the canvas intact. It orders
-them by entropy at the given temperature; positions reached while the summed entropy is at most 0.1
-take their sampled token, and the others get fresh noise. Probabilities are computed relative to
-each row's largest logit, so extreme logits stay finite. Non-finite logits, an empty row, a logit
-count that does not match the canvas, or a position past its end fail with `InvalidLogits`.
-`uniform::noise` does not return the mask token.
+`uniform::refine` changes the listed positions and leaves the rest of the canvas intact. It draws
+one number per position, in order, and asks the model for each position's prediction at the given
+temperature (`DiffusionModel::predictions`), so the logits never have to leave the model. It then
+orders the positions by entropy; positions reached while the summed entropy is at most 0.1 take
+their sampled token, and the others get fresh noise. A position past the end of the canvas fails
+with `InvalidLogits`, as do logits the model rejects. `uniform::noise` does not return the mask
+token.
 
-Tests: `refinement_preserves_fixed_tokens_and_accepts_certain_predictions`, `entropy_and_sampling_use_stable_probabilities`
+Tests: `refinement_preserves_fixed_tokens_and_accepts_certain_predictions`
 
 ### R19 The fake model's tokenizer
 

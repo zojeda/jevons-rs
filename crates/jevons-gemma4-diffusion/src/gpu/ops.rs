@@ -132,7 +132,8 @@ fn post_attention(
 }
 
 /// End of layer: `a = norm(mlp)*w1`, `b = norm(moe)*w2` with `moe = sum_j wt_j * down_j`,
-/// `res' = (norm(a + b)*w3 + res) * scale`; emits `x_next = norm(res')*w_next` (f16).
+/// `res' = (norm(a + b)*w3 + res) * scale`; emits `x_next = norm(res')*w_next` (f16). Rows from
+/// `first_canvas` on take `canvas_scale`, the rows before it `scale`.
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 fn post_ffn(
@@ -146,6 +147,8 @@ fn post_ffn(
     w_next: &[f32],
     x_next: &mut [f16],
     scale: f32,
+    canvas_scale: f32,
+    first_canvas: u32,
     eps: f32,
     #[comptime] d: usize,
     #[comptime] top_k: usize,
@@ -153,6 +156,7 @@ fn post_ffn(
     let per = comptime!(d / ROW_THREADS);
     let row = CUBE_POS_X as usize;
     let t = UNIT_POS as usize;
+    let row_scale = select(row as u32 >= first_canvas, canvas_scale, scale);
     let mut scratch = Shared::<[f32]>::new_slice(8usize);
     let mut a = Array::<f32>::new(per);
     let mut b = Array::<f32>::new(per);
@@ -179,7 +183,7 @@ fn post_ffn(
     #[unroll]
     for i in 0usize..per {
         let c = i * ROW_THREADS + t;
-        a[i] = (a[i] * rc * w3[c] + res[row * d + c]) * scale;
+        a[i] = (a[i] * rc * w3[c] + res[row * d + c]) * row_scale;
         res[row * d + c] = a[i];
     }
     let rn = inv_rms(&a, &mut scratch, per, d, eps);
@@ -668,6 +672,108 @@ fn softmax_rows(logits: &[f32], probs: &mut [f16], inv_temp: f32, #[comptime] v:
     }
 }
 
+/// What chosen rows of `logits` `[rows, v]` say at the inverse temperature `inv_temp`, one
+/// workgroup per chosen row `rows[g]` with its draw `draws[g]` in `[0, 1)`. A thread owns
+/// `v / 256` consecutive tokens. With `e = exp((x - max) * inv_temp)`, it writes four values per
+/// workgroup: the first token with the largest logit; the first token at which the sum of `e`
+/// in token order exceeds `draw * z` (the largest-logit token if none does); `z = sum(e)`; and
+/// `sum(e * ln e)`. Every sum is accumulated in a fixed order, so a row gives the same values
+/// wherever it is launched.
+#[cube(launch)]
+fn predict_rows(
+    logits: &[f32],
+    rows: &[u32],
+    draws: &[f32],
+    out: &mut [f32],
+    inv_temp: f32,
+    #[comptime] v: usize,
+) {
+    let g = CUBE_POS_X as usize;
+    let t = UNIT_POS as usize;
+    let per = comptime!(v / ROW_THREADS);
+    let first = t * per;
+    let base = rows[g] as usize * v + first;
+    let mut a = Shared::<[f32]>::new_slice(ROW_THREADS);
+    let mut b = Shared::<[f32]>::new_slice(ROW_THREADS);
+    let mut mx = f32::new(-3.0e38f32);
+    let mut at = first as u32;
+    for i in 0usize..per {
+        let x = logits[base + i];
+        if x > mx {
+            mx = x;
+            at = (first + i) as u32;
+        }
+    }
+    a[t] = mx;
+    b[t] = f32::cast_from(at);
+    sync_cube();
+    // Threads are in token order: a later one wins only with a larger logit.
+    let mut m = f32::new(-3.0e38f32);
+    let mut best = f32::new(0.0f32);
+    for j in 0usize..ROW_THREADS {
+        if a[j] > m {
+            m = a[j];
+            best = b[j];
+        }
+    }
+    sync_cube();
+    let mut s = f32::new(0.0f32);
+    let mut u = f32::new(0.0f32);
+    for i in 0usize..per {
+        let y = (logits[base + i] - m) * inv_temp;
+        let e = f32::exp(y);
+        s += e;
+        u += e * y;
+    }
+    a[t] = s;
+    b[t] = u;
+    sync_cube();
+    let mut before = f32::new(0.0f32);
+    let mut z = f32::new(0.0f32);
+    let mut us = f32::new(0.0f32);
+    for j in 0usize..ROW_THREADS {
+        if j == t {
+            before = z;
+        }
+        z += a[j];
+        us += b[j];
+    }
+    sync_cube();
+    // What is left of the target once the threads before this one are counted: negative when
+    // an earlier thread already crossed it, and below this thread's sum when it crosses here.
+    let left = draws[g] * z - before;
+    let mut found = f32::new(3.0e38f32);
+    if left < 0.0f32 {
+        found = f32::cast_from(first as u32);
+    }
+    if left >= 0.0f32 && s > left {
+        let mut run = f32::new(0.0f32);
+        for i in 0usize..per {
+            run += f32::exp((logits[base + i] - m) * inv_temp);
+            if run > left && found > 1.0e38f32 {
+                found = f32::cast_from((first + i) as u32);
+            }
+        }
+    }
+    a[t] = found;
+    sync_cube();
+    if t == 0usize {
+        let mut sampled = f32::new(3.0e38f32);
+        for j in 0usize..ROW_THREADS {
+            if a[j] < sampled {
+                sampled = a[j];
+            }
+        }
+        if sampled > 1.0e38f32 {
+            sampled = best;
+        }
+        out[4usize * g] = best;
+        out[4usize * g + 1usize] = sampled;
+        out[4usize * g + 2usize] = z;
+        out[4usize * g + 3usize] = us;
+    }
+}
+
 /// Q6_K table `[rows, d]` dequantized and transposed to FP16 `[d, rows]` via 64x64 tiles.
 #[cube(launch)]
 fn q6k_transpose(
@@ -722,6 +828,35 @@ pub fn softmax_f16(gpu: &Gpu, logits: &Buf, probs: &Buf, rows: usize, v: usize, 
         CubeDim::new_1d(ROW_THREADS as u32),
         logits.arg(),
         probs.arg(),
+        inv_temp,
+        v,
+    );
+}
+
+/// For each of `count` chosen rows of `logits` `[_, v]`, with its draw: the largest-logit
+/// token, the sampled token, `z` and `sum(e * ln e)` in `out` (see [`predict_rows`]). The
+/// entropy is `ln z - sum(e * ln e) / z`.
+#[allow(clippy::too_many_arguments)]
+pub fn predict(
+    gpu: &Gpu,
+    logits: &Buf,
+    rows: &Buf,
+    draws: &Buf,
+    count: usize,
+    out: &Buf,
+    inv_temp: f32,
+    v: usize,
+) {
+    // Token indices are written as f32, exact below 2^24.
+    assert!(v.is_multiple_of(ROW_THREADS) && v <= 1 << 24);
+    predict_rows::launch(
+        &gpu.client,
+        row_grid(count),
+        CubeDim::new_1d(ROW_THREADS as u32),
+        logits.arg(),
+        rows.arg(),
+        draws.arg(),
+        out.arg(),
         inv_temp,
         v,
     );
@@ -884,6 +1019,8 @@ pub fn post_ffn_norms(
     w_next: &Buf,
     x_next: &Buf,
     scale: f32,
+    canvas_scale: f32,
+    first_canvas: usize,
     rows: usize,
     d: usize,
     top_k: usize,
@@ -903,6 +1040,8 @@ pub fn post_ffn_norms(
         w_next.arg(),
         x_next.arg(),
         scale,
+        canvas_scale,
+        first_canvas as u32,
         eps,
         d,
         top_k,

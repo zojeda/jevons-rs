@@ -120,14 +120,25 @@ pub enum DiffusionScheme {
 }
 
 /// Extra input to a canvas forward.
-#[derive(Clone, Copy, Debug)]
-pub enum Conditioning<'a> {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Conditioning {
     None,
-    /// The prior step's full logits (canvas rows x vocab) at an inverse temperature.
+    /// The full logits of the previous canvas forward, which the model still holds, at an
+    /// inverse temperature. That forward had the same rows and asked for [`Logits::Full`].
     Previous {
-        logits: &'a [f32],
         inverse_temperature: f32,
     },
+}
+
+/// What one canvas row's logits say at a temperature.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Prediction {
+    /// The first token with the largest logit.
+    pub best: i32,
+    /// The token where the cumulative probability first exceeds the row's draw.
+    pub sampled: i32,
+    /// Entropy of the row's distribution, in nats.
+    pub entropy: f64,
 }
 
 /// Which logits a canvas forward must make available.
@@ -167,9 +178,23 @@ pub trait DiffusionModel {
         &mut self,
         tokens: &[i32],
         prompt_length: usize,
-        conditioning: Conditioning<'_>,
+        conditioning: Conditioning,
         logits: Logits,
     ) -> Result<()>;
+    /// [`Self::prefill`], then a canvas forward over `tokens` without conditioning, for
+    /// [`Logits::Candidates`]; returns the resident prompt length. A model may evaluate the
+    /// canvas together with the prompt rows it still has to compute. What is then read from the
+    /// canvas must equal what those two calls give, however much of the prompt was resident.
+    fn prefill_and_forward_canvas(
+        &mut self,
+        parts: &[PromptPart],
+        suffix: &[i32],
+        tokens: &[i32],
+    ) -> Result<usize> {
+        let length = self.prefill(parts, suffix)?;
+        self.forward_canvas(tokens, length, Conditioning::None, Logits::Candidates)?;
+        Ok(length)
+    }
     /// Logits of `candidates` at canvas row `row` of the last canvas forward.
     fn candidate_logits(&mut self, row: usize, candidates: &[i32]) -> Result<Vec<f64>>;
     /// All logits (canvas rows x vocab) of the last canvas forward with [`Logits::Full`].
@@ -184,6 +209,30 @@ pub trait DiffusionModel {
             return Err(Error::InvalidLogits);
         }
         logits.chunks(vocab).map(greedy).collect()
+    }
+    /// The [`Prediction`] of each of `rows` at `temperature`, for the last canvas forward with
+    /// [`Logits::Full`]; `draws[i]` in `[0, 1)` picks the sampled token of `rows[i]`. Models may
+    /// compute this on the device, in its arithmetic; the default reads [`Self::full_logits`].
+    fn predictions(
+        &mut self,
+        rows: &[usize],
+        temperature: f64,
+        draws: &[f64],
+    ) -> Result<Vec<Prediction>> {
+        let vocab = self.info().n_vocab as usize;
+        let logits = self.full_logits()?;
+        if vocab == 0 || rows.len() != draws.len() || !logits.len().is_multiple_of(vocab) {
+            return Err(Error::InvalidLogits);
+        }
+        rows.iter()
+            .zip(draws)
+            .map(|(&row, &draw)| {
+                let row = logits
+                    .get(row * vocab..(row + 1) * vocab)
+                    .ok_or(Error::InvalidLogits)?;
+                predict(row, temperature, draw)
+            })
+            .collect()
     }
     /// Like [`Self::prefill`], but always evaluates the last `rows` positions of
     /// `parts + suffix` instead of serving them from the cache, and returns each one's greedy
@@ -218,9 +267,52 @@ pub fn greedy(row: &[f32]) -> Result<(i32, f64)> {
     Ok((best as i32, 1.0 / z))
 }
 
+/// The [`Prediction`] of one logit row at `temperature`: the first argmax, the token where the
+/// cumulative probability first exceeds `draw` (the argmax if none does), and the entropy.
+pub fn predict(row: &[f32], temperature: f64, draw: f64) -> Result<Prediction> {
+    if row.is_empty() || row.iter().any(|x| !x.is_finite()) {
+        return Err(Error::InvalidLogits);
+    }
+    let best = row
+        .iter()
+        .enumerate()
+        .fold(0, |best, (i, x)| if *x > row[best] { i } else { best });
+    let max = f64::from(row[best]);
+    let z: f64 = row
+        .iter()
+        .map(|&x| ((f64::from(x) - max) / temperature).exp())
+        .sum();
+    let mut cumulative = 0.0;
+    let mut sampled = None;
+    let mut entropy = 0.0;
+    for (i, &x) in row.iter().enumerate() {
+        let p = ((f64::from(x) - max) / temperature).exp() / z;
+        cumulative += p;
+        if sampled.is_none() && cumulative > draw {
+            sampled = Some(i);
+        }
+        if p > 0.0 {
+            entropy -= p * p.ln();
+        }
+    }
+    Ok(Prediction {
+        best: best as i32,
+        sampled: sampled.unwrap_or(best) as i32,
+        entropy,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entropy_and_sampling_use_stable_probabilities() {
+        let p = predict(&[1000., 1000.], 1.0, 0.75).unwrap();
+        assert_eq!(p.sampled, 1);
+        assert!((p.entropy - 2_f64.ln()).abs() < 1e-10);
+        assert!(predict(&[f32::NAN], 1.0, 0.0).is_err());
+    }
 
     #[test]
     fn greedy_takes_the_first_argmax_with_its_stable_probability() {

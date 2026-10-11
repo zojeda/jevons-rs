@@ -5,12 +5,25 @@
 //! the canvas plus the cached prompt. Prompt KV is reused across calls for the longest common
 //! token prefix; causal attention makes the reused keys/values exactly those a fresh prefill
 //! would produce.
+//!
+//! The forward runs as Burn operations ([`burn`]): an embedding, then an attention block and a
+//! feed-forward block per layer, over Burn tensors. Weights, norm vectors, the KV caches and a
+//! layer's scratch are device buffers those operations take as arguments.
+mod burn;
+
+use self::burn::{
+    AttentionArgs, EmbedArgs, FeedForwardArgs, GemmaOps, NormArgs, PickArgs, PredictArgs,
+    ProductArgs, Rows, RowsArgs, Sizes, SoftcapArgs, SoftmaxArgs, Table,
+};
 use crate::gguf::{Gguf, TensorType};
-use crate::gpu::attention::{self, AttnShape};
-use crate::gpu::gemm::{self, Groups, QMatrix};
-use crate::gpu::ops::{self, Q6kTable, QkvShape};
+use crate::gpu::gemm::QMatrix;
+use crate::gpu::ops::{self, Q6kTable};
 use crate::gpu::tune::{DeviceProfile, TuneBuffers, Tuner, Workload};
-use crate::gpu::{Buf, Gpu, ReleaseOnDrop};
+use crate::gpu::{Buf, Gpu};
+use ::burn::backend::{Dispatch, DispatchTensor};
+use ::burn::tensor::{DType, Device, Int, Tensor, TensorData};
+use jevons_burn::device::ReleaseOnDrop;
+use std::sync::Arc;
 use std::time::Instant;
 
 #[derive(Debug, thiserror::Error)]
@@ -141,6 +154,7 @@ impl Config {
     }
 }
 
+#[derive(Clone)]
 struct Layer {
     swa: bool,
     kv_heads: usize,
@@ -182,6 +196,12 @@ impl Embedding {
         let (ql, qh, sc, d) = self.matrix.regions();
         Q6kTable { ql, qh, sc, d }
     }
+
+    /// The same regions, as an operation's argument.
+    fn regions(&self) -> Table {
+        let (ql, qh, sc, d) = self.matrix.regions();
+        Table([ql.clone(), qh.clone(), sc.clone(), d.clone()])
+    }
 }
 
 /// Self-conditioning network: previous canvas logits -> probability-weighted embeddings ->
@@ -194,11 +214,10 @@ struct SelfCond {
     embed_t: Option<QMatrix>,
 }
 
-/// Reusable activation buffers sized for `rows` tokens.
+/// What a layer's kernels write between its operations, sized for `rows` tokens and shared by
+/// every layer: the operations run one after the other.
 struct Scratch {
     rows: usize,
-    h: Buf,
-    xn: Buf,
     q: Buf,
     k: Buf,
     v: Buf,
@@ -233,16 +252,17 @@ pub struct PrefillStats {
 pub struct Model {
     pub cfg: Config,
     gpu: Gpu,
-    layers: Vec<Layer>,
+    /// The Burn device the forward's operations run on: the CubeCL client `gpu` holds.
+    device: Device,
+    layers: Vec<Arc<Layer>>,
     embed: Embedding,
     output_norm: Buf,
     self_cond: SelfCond,
     rope_swa: Buf,
     rope_full: Buf,
     dummy: Buf,
-    split: gemm::SplitScratch,
     tuner: Tuner,
-    scratch: Scratch,
+    scratch: Arc<Scratch>,
     /// Positions available in the KV cache (prompt + canvas), a multiple of 64.
     pub cap: usize,
     /// Maximum tokens per forward chunk.
@@ -250,15 +270,36 @@ pub struct Model {
     /// Tokens whose prompt KV is resident, in position order.
     /// Keys of the resident prompt rows: token ids, or negative content keys for image rows.
     cached: Vec<i64>,
+    /// Residual rows and next-input rows of the last forward.
+    rows: Option<(Tensor<2>, Tensor<2>)>,
     /// Canvas logits of the last canvas forward, if requested.
-    logits: Option<Buf>,
+    logits: Option<Tensor<2>>,
+    /// Canvas rows of the last forward and the row of that forward they start at.
     canvas_rows: usize,
-    last_hidden_rows: usize,
+    canvas_row0: usize,
     /// When set, each forward records per-layer intermediate rows (diagnostics only).
     pub trace: Option<Vec<(usize, &'static str, Vec<f32>)>>,
-    /// Returns the model's pooled device memory once every buffer above is dropped: it stays
-    /// the last field.
+    /// Returns the model's pooled device memory once every buffer and tensor above is dropped:
+    /// it stays the last field.
     _release: ReleaseOnDrop,
+}
+
+fn float<const D: usize>(tensor: DispatchTensor) -> Tensor<D> {
+    Tensor::from_dispatch(tensor)
+}
+
+/// A tensor's values on the host, f16 widened.
+fn host<const D: usize>(tensor: Tensor<D>) -> Vec<f32> {
+    tensor
+        .cast(DType::F32)
+        .into_data()
+        .try_to_vec()
+        .expect("f32 values")
+}
+
+fn ids(device: &Device, values: Vec<u32>) -> Tensor<1, Int> {
+    let len = values.len();
+    Tensor::from_data(TensorData::new(values, [len]), (device, DType::U32))
 }
 
 /// Row tile for the small-row expert kernel.
@@ -487,7 +528,7 @@ impl Model {
                 cfg.ff_exp,
                 cfg.experts,
             )?;
-            layers.push(Layer {
+            layers.push(Arc::new(Layer {
                 swa,
                 kv_heads: kvh,
                 hd,
@@ -521,7 +562,7 @@ impl Model {
                 enc_out_scale: scalar(&b("enc_layer_output_scale.weight"))?,
                 k_cache: gpu.zeros(cap * kvh * hd, 2),
                 v_cache: gpu.zeros(cap * kvh * hd, 2),
-            });
+            }));
         }
         if g.tensor("token_embd.weight")?.kind != TensorType::Q6K {
             return unsupported("token_embd must be Q6_K");
@@ -546,7 +587,8 @@ impl Model {
         };
         let rope_swa = gpu.upload_f32(&rope_table(&cfg, cap, false));
         let rope_full = gpu.upload_f32(&rope_table(&cfg, cap, true));
-        let scratch = Self::scratch(&gpu, &cfg, chunk);
+        let scratch = Arc::new(Self::scratch(&gpu, &cfg, chunk));
+        let burn_device = jevons_burn::device::hip(device);
         gpu.sync();
         let usage = Some(gpu.client.memory_usage());
         eprintln!(
@@ -559,12 +601,12 @@ impl Model {
                 .map_or(0.0, |u| u.bytes_reserved as f64 / 1e9),
         );
         Ok(Self {
-            _release: ReleaseOnDrop::new(&gpu),
+            _release: ReleaseOnDrop::new(&burn_device),
             dummy: gpu.upload_u32(&[0]),
-            split: gemm::SplitScratch::new(),
             tuner: Tuner::new(DeviceProfile::detect(&gpu, device)),
             cfg,
             gpu,
+            device: burn_device,
             layers,
             embed,
             output_norm,
@@ -575,9 +617,10 @@ impl Model {
             cap,
             chunk,
             cached: Vec::new(),
+            rows: None,
             logits: None,
             canvas_rows: 0,
-            last_hidden_rows: 0,
+            canvas_row0: 0,
             trace: None,
         })
     }
@@ -593,8 +636,6 @@ impl Model {
         let max_jobs = a.div_ceil(SMALL_GROUP_ROWS) + cfg.experts;
         Scratch {
             rows,
-            h: gpu.zeros(rows * d, 4),
-            xn: gpu.zeros(rows * d, 2),
             q: gpu.zeros(rows * qmax, 4),
             k: gpu.zeros(rows * kvmax, 4),
             v: gpu.zeros(rows * kvmax, 4),
@@ -618,13 +659,20 @@ impl Model {
         }
     }
 
+    /// Runs what Burn has queued and waits for the device, so that a direct read sees it.
+    fn sync(&self) {
+        self.device.sync().expect("device sync");
+    }
+
     pub fn gpu(&self) -> &Gpu {
         &self.gpu
     }
 
     /// Zeroes every KV cache (diagnostics).
     pub fn zero_kv(&mut self) {
+        self.sync();
         for l in &mut self.layers {
+            let l = Arc::make_mut(l);
             l.k_cache = self.gpu.zeros(l.k_cache.len(), 2);
             l.v_cache = self.gpu.zeros(l.v_cache.len(), 2);
         }
@@ -633,7 +681,8 @@ impl Model {
 
     /// Measures launch plans missing from the stored table (see [`crate::gpu::tune`]), then
     /// compiles the common kernel variants (prompt chunks of both tile heights, a canvas with
-    /// candidate and full logits, one self-conditioned step) so requests do not pay JIT time.
+    /// candidate and full logits, row predictions, one self-conditioned step) so requests do
+    /// not pay JIT time.
     pub fn warmup(&mut self) -> Result<()> {
         self.tune();
         let prompt: Vec<i32> = (0..48).map(|i| 1000 + i).collect();
@@ -641,8 +690,8 @@ impl Model {
         self.prefill(&prompt)?;
         let canvas: Vec<i32> = (0..12).map(|i| 2000 + i).collect();
         self.canvas(&canvas, prompt.len(), true, None)?;
-        let logits = self.all_logits()?;
-        self.canvas(&canvas, prompt.len(), false, Some((&logits, 1.5)))?;
+        self.predictions(&[0, canvas.len() - 1], 1.5, &[0.25, 0.75])?;
+        self.canvas(&canvas, prompt.len(), false, Some(1.5))?;
         self.candidate_logits(0, &[1, 2])?;
         self.clear_prompt_cache();
         self.logits = None;
@@ -693,324 +742,187 @@ impl Model {
         self.tuner.tune(gpu, &work, &bufs)
     }
 
-    /// Non-cached product (canvas side paths) with the tuned plan for its shape.
-    #[allow(clippy::too_many_arguments)]
-    fn matmul(
-        &self,
-        gpu: &Gpu,
-        x: &Buf,
-        m: usize,
-        w: &QMatrix,
-        out: &Buf,
-        dummy: &Buf,
-        split: &gemm::SplitScratch,
-    ) {
-        gemm::matmul_plan(
-            gpu,
-            x,
-            m,
-            w,
-            out,
-            dummy,
-            split,
-            self.tuner.dense(w, m, false),
-        );
-    }
-
     /// Forgets resident prompt KV (it will be recomputed on the next prefill).
     pub fn clear_prompt_cache(&mut self) {
         self.cached.clear();
     }
 
-    /// Runs one forward over `tokens` at absolute positions `pos0..`.
-    /// `prompt` is the prompt length for visibility; `canvas` selects decoder embeddings,
-    /// scalars and bidirectional visibility.
+    /// Runs one forward over the input rows at absolute positions `pos0..`. `prompt` is the
+    /// prompt length for visibility. Rows from `canvas_from` on are canvas rows, with decoder
+    /// embeddings, scalars and bidirectional visibility; the rows before them are prompt rows
+    /// that end the prompt. `exact` keeps every row on the row-invariant kernels, so a row's
+    /// values do not depend on the rows computed with it; prompt rows always need it. `sc` is
+    /// the self-conditioning signal of the canvas rows.
     fn forward(
         &mut self,
         input: Input,
         pos0: usize,
         prompt: usize,
-        canvas: bool,
-        sc: Option<&Buf>,
+        canvas_from: usize,
+        exact: bool,
+        sc: Option<Tensor<2>>,
     ) -> Result<()> {
         let t = input.len();
         let cfg = &self.cfg;
-        let (d, gpu, s) = (cfg.d, &self.gpu, &self.scratch);
-        if t == 0 || t > s.rows || pos0 + t > self.cap {
+        let (d, device) = (cfg.d, &self.device);
+        if t == 0 || t > self.chunk || pos0 + t > self.cap || canvas_from > t {
             return Err(ModelError::Input(
                 "forward chunk exceeds the allocated context".into(),
             ));
         }
-        let kv_len = pos0 + t;
+        if canvas_from > 0 && (!exact || (canvas_from < t && pos0 + canvas_from != prompt)) {
+            return Err(ModelError::Input(
+                "prompt rows need the row-invariant kernels and end the prompt before a canvas"
+                    .into(),
+            ));
+        }
         // An image block attends bidirectionally within itself (see attention.rs).
         let block = matches!(input, Input::Embeddings(..)).then_some(pos0);
-        match input {
+        let w_attn = self.layers[0].attn_norm.clone();
+        let (h, xn) = match input {
             Input::Tokens(tokens) => {
-                let ids: Vec<u32> = tokens
+                let tokens: Vec<u32> = tokens
                     .iter()
                     .map(|&x| u32::try_from(x).ok().filter(|&x| (x as usize) < cfg.vocab))
                     .collect::<Option<_>>()
                     .ok_or_else(|| ModelError::Input("token outside the vocabulary".into()))?;
-                let tok_bytes: Vec<u8> = ids.iter().flat_map(|v| v.to_le_bytes()).collect();
-                let tokens_buf = Buf::from_bytes(gpu, &tok_bytes, t);
-                let table = self.embed.table();
-                ops::embed(
-                    gpu,
-                    &tokens_buf,
-                    &table,
-                    &self.layers[0].attn_norm,
-                    sc,
-                    &s.h,
-                    &s.xn,
-                    t,
-                    if canvas { 0 } else { t },
+                let tokens = ids(device, tokens).into_dispatch();
+                let a = EmbedArgs {
+                    table: self.embed.regions(),
+                    w_attn,
+                    first_canvas: canvas_from,
                     d,
-                    cfg.eps,
-                );
+                    eps: cfg.eps,
+                };
+                match sc {
+                    Some(cond) => Dispatch::g4_embed_conditioned(tokens, cond.into_dispatch(), a),
+                    None => Dispatch::g4_embed(tokens, a),
+                }
             }
             Input::Embeddings(rows, _) => {
-                if canvas || rows.len() < t * d {
+                if canvas_from < t || rows.len() < t * d {
                     return Err(ModelError::Input("invalid embedding rows".into()));
                 }
                 // Projected image rows are already scaled; they skip the sqrt(d) factor.
-                ops::embed_rows(
-                    gpu,
-                    rows,
-                    &self.layers[0].attn_norm,
-                    &s.h,
-                    &s.xn,
-                    t,
-                    d,
-                    cfg.eps,
-                );
+                Dispatch::g4_rows(
+                    ids(device, vec![0; t]).into_dispatch(),
+                    RowsArgs {
+                        rows: rows.clone(),
+                        w_attn,
+                        d,
+                        eps: cfg.eps,
+                    },
+                )
             }
-        }
+        };
+        let (mut h, mut xn): (Tensor<2>, Tensor<2>) = (float(h), float(xn));
         let a = t * cfg.top_k;
         // Few rows per expert (canvas): barrier-free small-row kernel; otherwise matrix tiles.
         // Prompt rows must not depend on chunk composition: prefix reuse relies on a token's
         // K/V being bitwise identical however the prompt was chunked. Prefill therefore uses
-        // row-invariant kernels (matrix tiles, no split-K); canvas rows are never cached and may
-        // use the small-row paths.
-        let small = canvas && a < 2 * cfg.experts;
+        // row-invariant kernels (matrix tiles, no split-K). Canvas rows are never cached and may
+        // use the small-row paths, unless they must not depend on the prompt rows they are
+        // computed with.
+        let small = !exact && a < 2 * cfg.experts;
         let tuner = &self.tuner;
-        let mm =
-            |x: &Buf, m: usize, w: &QMatrix, out: &Buf, dummy: &Buf, split: &gemm::SplitScratch| {
-                let plan = tuner.dense(w, m, !canvas);
-                gemm::matmul_plan(gpu, x, m, w, out, dummy, split, plan)
-            };
+        let plan = |w: &QMatrix| tuner.dense(w, t, exact);
+        let rows = Rows {
+            pos0,
+            prompt,
+            first_canvas: canvas_from,
+            block,
+            cap: self.cap,
+        };
+        let sizes = Sizes {
+            d,
+            heads: cfg.heads,
+            ff: cfg.ff,
+            ff_exp: cfg.ff_exp,
+            experts: cfg.experts,
+            top_k: cfg.top_k,
+            window: cfg.window,
+            eps: cfg.eps,
+        };
         for (l, layer) in self.layers.iter().enumerate() {
+            let (res, x) = Dispatch::g4_attention_block(
+                h.into_dispatch(),
+                xn.into_dispatch(),
+                AttentionArgs {
+                    layer: layer.clone(),
+                    scratch: self.scratch.clone(),
+                    rope: if layer.swa {
+                        self.rope_swa.clone()
+                    } else {
+                        self.rope_full.clone()
+                    },
+                    rows,
+                    sizes,
+                    wq: plan(&layer.wq),
+                    wk: plan(&layer.wk),
+                    wv: plan(layer.wv.as_ref().unwrap_or(&layer.wk)),
+                    wo: plan(&layer.wo),
+                },
+            );
+            (h, xn) = (float(res), float(x));
+            let mut attention_residual = Vec::new();
+            if self.trace.is_some() {
+                // The block's scratch, and the residual it left.
+                let s = &self.scratch;
+                let width = t * cfg.heads * layer.hd;
+                self.sync();
+                let mut q16 = self.gpu.read_f16(&s.q16);
+                q16.truncate(width);
+                let mut attn = self.gpu.read_f16(&s.attn);
+                attn.truncate(width);
+                let mut o = self.gpu.read_f32(&s.o);
+                o.truncate(t * d);
+                attention_residual = host(h.clone());
+                if let Some(tr) = self.trace.as_mut() {
+                    tr.push((l, "q16", q16));
+                    tr.push((l, "attn", attn));
+                    tr.push((l, "wo", o));
+                }
+            }
             // Both expert products share one grouping, hence one row tile (the gate/up plan's).
             let up_plan = tuner.grouped(&layer.gate_up_exps, t);
-            let down_bn = tuner.grouped(&layer.down_exps, t).bn;
-            let group_bm = if small { SMALL_GROUP_ROWS } else { up_plan.bm };
-            let max_jobs = a.div_ceil(group_bm) + cfg.experts;
-            let (hd, kvh) = (layer.hd, layer.kv_heads);
-            mm(&s.xn, t, &layer.wq, &s.q, &self.dummy, &self.split);
-            mm(&s.xn, t, &layer.wk, &s.k, &self.dummy, &self.split);
-            let v_src = match &layer.wv {
-                Some(wv) => {
-                    mm(&s.xn, t, wv, &s.v, &self.dummy, &self.split);
-                    &s.v
-                }
-                None => &s.k,
-            };
-            ops::qkv(
-                gpu,
-                &s.q,
-                &s.k,
-                v_src,
-                &layer.q_norm,
-                &layer.k_norm,
-                if layer.swa {
-                    &self.rope_swa
-                } else {
-                    &self.rope_full
-                },
-                &s.q16,
-                &layer.k_cache,
-                &layer.v_cache,
-                t,
-                pos0,
-                self.cap,
-                &QkvShape {
-                    heads: cfg.heads,
-                    kv_heads: kvh,
-                    hd,
-                },
-                cfg.eps,
-            );
-            if let Some(tr) = self.trace.as_mut() {
-                let mut v = gpu.read_f16(&s.q16);
-                v.truncate(t * cfg.heads * hd);
-                tr.push((l, "q16", v));
-            }
-            attention::attention(
-                gpu,
-                &s.q16,
-                &layer.k_cache,
-                &layer.v_cache,
-                &s.attn,
-                t,
-                pos0,
-                kv_len,
-                prompt,
-                block,
-                self.cap,
-                &AttnShape {
-                    heads: cfg.heads,
-                    kv_heads: kvh,
-                    hd,
-                    swa: layer.swa,
-                    window: cfg.window,
-                },
-            );
-            mm(&s.attn, t, &layer.wo, &s.o, &self.dummy, &self.split);
-            if let Some(tr) = self.trace.as_mut() {
-                let mut a = gpu.read_f16(&s.attn);
-                a.truncate(t * cfg.heads * hd);
-                tr.push((l, "attn", a));
-                let mut o = gpu.read_f32(&s.o);
-                o.truncate(t * d);
-                tr.push((l, "wo", o));
-            }
-            ops::post_attention_norms(
-                gpu,
-                &s.o,
-                &s.h,
-                &layer.post_attn_norm,
-                &layer.ffn_norm,
-                &layer.pre_norm2,
-                &layer.router_scale,
-                &s.x_ffn,
-                &s.x_moe,
-                &s.x_router,
-                t,
-                d,
-                cfg.eps,
-            );
-            // Shared expert.
-            mm(&s.x_ffn, t, &layer.gate_up, &s.gu, &self.dummy, &self.split);
-            ops::geglu_rows(gpu, &s.gu, &s.gu, &s.g16, t, cfg.ff, 2 * cfg.ff, cfg.ff);
-            mm(&s.g16, t, &layer.down, &s.mlp, &self.dummy, &self.split);
-            if let Some(tr) = self.trace.as_mut() {
-                let mut v = gpu.read_f32(&s.mlp);
-                v.truncate(t * d);
-                tr.push((l, "mlp", v));
-                let mut v = gpu.read_f32(&s.h);
-                v.truncate(t * d);
-                tr.push((l, "attn_res", v));
-            }
-            // Routed experts.
-            ops::route_tokens(
-                gpu,
-                &s.x_router,
-                &layer.router,
-                &layer.expert_scale,
-                &s.ids,
-                &s.weights,
-                t,
-                d,
-                cfg.experts,
-                cfg.top_k,
-            );
-            ops::group_routes(
-                gpu,
-                &s.ids,
-                &s.sorted,
-                &s.offsets,
-                &s.jobs,
-                a,
-                cfg.experts,
-                group_bm,
-            );
-            let mut groups = Groups {
-                ids: &s.sorted,
-                offsets: &s.offsets,
-                jobs: &s.jobs,
-                max_jobs,
-                in_div: cfg.top_k as u32,
-                rows: a,
-            };
-            if small {
-                gemm::matvec_grouped(
-                    gpu,
-                    &s.x_moe,
-                    &layer.gate_up_exps,
-                    &groups,
-                    &s.egu,
-                    group_bm,
-                );
-            } else {
-                gemm::matmul_grouped(
-                    gpu,
-                    &s.x_moe,
-                    &layer.gate_up_exps,
-                    &groups,
-                    &s.egu,
-                    group_bm,
-                    up_plan.bn,
-                    1,
-                    &self.split,
-                );
-            }
-            ops::geglu_rows(
-                gpu,
-                &s.egu,
-                &s.egu,
-                &s.eg16,
-                a,
-                cfg.ff_exp,
-                2 * cfg.ff_exp,
-                cfg.ff_exp,
-            );
-            groups.in_div = 1;
-            if small {
-                gemm::matvec_grouped(gpu, &s.eg16, &layer.down_exps, &groups, &s.edown, group_bm);
-            } else {
-                gemm::matmul_grouped(
-                    gpu,
-                    &s.eg16,
-                    &layer.down_exps,
-                    &groups,
-                    &s.edown,
-                    group_bm,
-                    down_bn,
-                    1,
-                    &self.split,
-                );
-            }
             let next_norm = match self.layers.get(l + 1) {
                 Some(next) => &next.attn_norm,
                 None => &self.output_norm,
             };
-            ops::post_ffn_norms(
-                gpu,
-                &s.mlp,
-                &s.edown,
-                &s.weights,
-                &s.h,
-                &layer.post_norm1,
-                &layer.post_norm2,
-                &layer.post_norm,
-                next_norm,
-                &s.xn,
-                if canvas {
-                    layer.out_scale
-                } else {
-                    layer.enc_out_scale
+            let (res, x) = Dispatch::g4_feed_forward_block(
+                h.into_dispatch(),
+                xn.into_dispatch(),
+                FeedForwardArgs {
+                    layer: layer.clone(),
+                    scratch: self.scratch.clone(),
+                    w_next: next_norm.clone(),
+                    first_canvas: canvas_from,
+                    sizes,
+                    gate_up: plan(&layer.gate_up),
+                    down: plan(&layer.down),
+                    group_bm: if small { SMALL_GROUP_ROWS } else { up_plan.bm },
+                    up_bn: up_plan.bn,
+                    down_bn: tuner.grouped(&layer.down_exps, t).bn,
+                    small,
                 },
-                t,
-                d,
-                cfg.top_k,
-                cfg.eps,
             );
+            (h, xn) = (float(res), float(x));
+            if self.trace.is_some() {
+                self.sync();
+                let mut mlp = self.gpu.read_f32(&self.scratch.mlp);
+                mlp.truncate(t * d);
+                if let Some(tr) = self.trace.as_mut() {
+                    tr.push((l, "mlp", mlp));
+                    tr.push((l, "attn_res", attention_residual));
+                }
+            }
         }
         if let Some(tr) = self.trace.as_mut() {
-            let mut v = gpu.read_f32(&s.h);
-            v.truncate(t * d);
-            tr.push((usize::MAX, "h", v));
+            tr.push((usize::MAX, "h", host(h.clone())));
         }
-        self.last_hidden_rows = t;
+        self.canvas_row0 = canvas_from;
+        self.canvas_rows = t - canvas_from;
+        self.rows = Some((h, xn));
         Ok(())
     }
 
@@ -1020,8 +932,30 @@ impl Model {
     }
 
     /// Makes the concatenated segments the resident prompt, recomputing only after the longest
-    /// cached prefix. Each image block is prefilled as one forward (at most `chunk` rows).
+    /// cached prefix. Each image block is prefilled as one forward (at most `chunk` rows); the
+    /// token rows between blocks are chunked together, whatever segments they came in.
     pub fn prefill_segments(&mut self, segments: &[Segment]) -> Result<PrefillStats> {
+        self.prefill_then(segments, None)
+    }
+
+    /// [`Self::prefill_segments`], then a canvas forward over `canvas` for candidate logits, as
+    /// one piece of work: the canvas rows ride in the forward of the last prompt rows still to
+    /// compute when they fit in its chunk, and get a forward of their own otherwise. Either way
+    /// they stay on the row-invariant kernels, so what is read from them does not depend on how
+    /// much of the prompt was resident.
+    pub fn prefill_with_canvas(
+        &mut self,
+        segments: &[Segment],
+        canvas: &[i32],
+    ) -> Result<PrefillStats> {
+        self.prefill_then(segments, Some(canvas))
+    }
+
+    fn prefill_then(
+        &mut self,
+        segments: &[Segment],
+        canvas: Option<&[i32]>,
+    ) -> Result<PrefillStats> {
         let start = Instant::now();
         let mut keys = Vec::new();
         let mut blocks = Vec::new();
@@ -1035,7 +969,7 @@ impl Model {
                             self.chunk
                         )));
                     }
-                    blocks.push(keys.len()..keys.len() + count);
+                    blocks.push((keys.len()..keys.len() + count, *rows));
                     keys.extend((0..*count).map(|j| image_key(*key, j)));
                 }
             }
@@ -1044,6 +978,11 @@ impl Model {
         if total >= self.cap {
             return Err(ModelError::Input("prompt exceeds the context size".into()));
         }
+        if canvas
+            .is_some_and(|c| c.is_empty() || c.len() > self.chunk || total + c.len() > self.cap)
+        {
+            return Err(ModelError::Input("canvas exceeds the context size".into()));
+        }
         let mut reused = self
             .cached
             .iter()
@@ -1051,41 +990,55 @@ impl Model {
             .take_while(|(a, b)| a == b)
             .count();
         // Never resume inside an image block: it must be recomputed as one forward.
-        if let Some(b) = blocks.iter().find(|b| b.start < reused && reused < b.end) {
+        if let Some((b, _)) = blocks
+            .iter()
+            .find(|(b, _)| b.start < reused && reused < b.end)
+        {
             reused = b.start;
         }
         self.cached.truncate(reused);
         self.logits = None;
         let mut batches = 0;
-        let mut offset = 0;
-        for segment in segments {
-            let len = match segment {
-                Segment::Tokens(tokens) => tokens.len(),
-                Segment::Image { count, .. } => *count,
-            };
-            let seg_end = offset + len;
-            let mut pos = reused.max(offset);
-            while pos < seg_end {
-                let (input, end) = match segment {
-                    Segment::Tokens(tokens) => {
-                        let end = (pos + self.chunk).min(seg_end);
-                        (Input::Tokens(&tokens[pos - offset..end - offset]), end)
-                    }
-                    Segment::Image { rows, count, .. } => {
-                        (Input::Embeddings(rows, *count), seg_end)
-                    }
-                };
-                if let Err(e) = self.forward(input, pos, total, false, None) {
-                    self.cached.clear();
-                    return Err(e);
+        let mut pos = reused;
+        let mut canvas_left = canvas;
+        while pos < total {
+            let block = blocks.iter().find(|(b, _)| b.start == pos);
+            let (end, forwarded) = match block {
+                Some((b, rows)) => {
+                    let input = Input::Embeddings(rows, b.len());
+                    (b.end, self.forward(input, pos, total, b.len(), true, None))
                 }
-                self.cached.extend_from_slice(&keys[pos..end]);
-                batches += 1;
-                pos = end;
+                None => {
+                    let next_block = blocks.iter().map(|(b, _)| b.start).find(|&s| s > pos);
+                    let end = (pos + self.chunk).min(next_block.unwrap_or(total));
+                    let mut tokens: Vec<i32> = keys[pos..end].iter().map(|&k| k as i32).collect();
+                    let prompt_rows = tokens.len();
+                    if let Some(canvas) = canvas_left
+                        && end == total
+                        && prompt_rows + canvas.len() <= self.chunk
+                    {
+                        tokens.extend(canvas);
+                        canvas_left = None;
+                    }
+                    let input = Input::Tokens(&tokens);
+                    (
+                        end,
+                        self.forward(input, pos, total, prompt_rows, true, None),
+                    )
+                }
+            };
+            if let Err(e) = forwarded {
+                self.cached.clear();
+                return Err(e);
             }
-            offset = seg_end;
+            self.cached.extend_from_slice(&keys[pos..end]);
+            batches += 1;
+            pos = end;
         }
-        self.gpu.sync();
+        if let Some(canvas) = canvas_left {
+            self.forward(Input::Tokens(canvas), total, total, 0, true, None)?;
+        }
+        self.sync();
         Ok(PrefillStats {
             wall_ms: start.elapsed().as_secs_f64() * 1e3,
             batches,
@@ -1094,79 +1047,66 @@ impl Model {
         })
     }
 
-    /// Self-conditioning signal `[rows, d]` from the previous step's canvas logits
-    /// (`softmax(logits * inv_temp) @ E * sqrt(d)` through the gated MLP).
-    fn self_condition(&mut self, rows: usize, inv_temp: f32, host: &[f32]) -> Result<Buf> {
-        let (d, v, ff) = (self.cfg.d, self.cfg.vocab, self.cfg.ff);
-        if host.len() != rows * v {
-            return Err(ModelError::Input(
-                "self-conditioning logits have the wrong shape".into(),
-            ));
-        }
-        let gpu = &self.gpu;
-        // Reuse the device copy of the previous step's logits when it is the same shape.
+    /// Self-conditioning signal `[rows, d]` from the previous canvas forward's full logits,
+    /// still on the device (`softmax(logits * inv_temp) @ E * sqrt(d)` through the gated MLP).
+    fn self_condition(&mut self, rows: usize, inv_temp: f32) -> Result<Tensor<2>> {
+        let (d, v) = (self.cfg.d, self.cfg.vocab);
         let logits = match &self.logits {
-            Some(buf) if self.canvas_rows == rows => buf.clone(),
-            _ => gpu.upload_f32(host),
+            Some(logits) if self.canvas_rows == rows => logits.clone(),
+            _ => {
+                return Err(ModelError::Input(
+                    "self-conditioning needs a previous canvas forward with full logits".into(),
+                ));
+            }
         };
         if self.self_cond.embed_t.is_none() {
             let table = self.embed.table();
-            let words = ops::q6k_transposed_f16(gpu, &table, v, d);
+            let words = ops::q6k_transposed_f16(&self.gpu, &table, v, d);
             self.self_cond.embed_t = Some(
-                QMatrix::from_f16_words(gpu, d, v, words.with_len(v * d / 2))
+                QMatrix::from_f16_words(&self.gpu, d, v, words.with_len(v * d / 2))
                     .map_err(ModelError::Unsupported)?,
             );
         }
         let sc = &self.self_cond;
-        let probs = gpu.empty(rows * v, 2);
-        ops::softmax_f16(gpu, &logits, &probs, rows, v, inv_temp);
-        let soft = gpu.empty(rows * d, 4);
-        self.matmul(
-            gpu,
-            &probs,
-            rows,
-            sc.embed_t.as_ref().expect("built above"),
-            &soft,
-            &self.dummy,
-            &self.split,
-        );
-        let normed = gpu.empty(rows * d, 2);
-        ops::rms_norm_scaled_f16(
-            gpu,
-            &soft,
-            &sc.pre_norm,
-            &normed,
-            rows,
-            d,
-            self.cfg.eps,
-            (d as f32).sqrt(),
-        );
-        let gu = gpu.empty(rows * 2 * ff, 4);
-        self.matmul(
-            gpu,
-            &normed,
-            rows,
-            &sc.gate_up,
-            &gu,
-            &self.dummy,
-            &self.split,
-        );
-        let g16 = gpu.empty(rows * ff, 2);
-        ops::geglu_rows(gpu, &gu, &gu, &g16, rows, ff, 2 * ff, ff);
-        let signal = gpu.empty(rows * d, 4);
-        self.matmul(gpu, &g16, rows, &sc.down, &signal, &self.dummy, &self.split);
-        Ok(signal)
+        let tuner = &self.tuner;
+        let product = |x: Tensor<2>, w: &QMatrix| -> Tensor<2> {
+            float(Dispatch::g4_matmul(
+                x.into_dispatch(),
+                ProductArgs {
+                    w: w.clone(),
+                    plan: tuner.dense(w, rows, false),
+                },
+            ))
+        };
+        let probs: Tensor<2> = float(Dispatch::g4_softmax(
+            logits.into_dispatch(),
+            SoftmaxArgs { inv_temp },
+        ));
+        let soft = product(probs, sc.embed_t.as_ref().expect("built above"));
+        let normed: Tensor<2> = float(Dispatch::g4_scaled_norm(
+            soft.into_dispatch(),
+            NormArgs {
+                w: sc.pre_norm.clone(),
+                eps: self.cfg.eps,
+                pre_scale: (d as f32).sqrt(),
+            },
+        ));
+        let gu = product(normed, &sc.gate_up);
+        let g16: Tensor<2> = float(Dispatch::g4_geglu(gu.into_dispatch()));
+        Ok(product(g16, &sc.down))
     }
 
     /// Canvas forward after a prefill of `prompt_len` tokens. With `full_logits`, all canvas
     /// logit rows are computed; otherwise only [`Self::candidate_logits`] may be used.
-    /// `previous = Some((logits, inv_temp))` enables self-conditioning on the prior step.
+    /// `previous = Some(inv_temp)` conditions on the full logits of the previous canvas forward,
+    /// which must have had the same rows. A canvas forwarded for candidate logits without
+    /// conditioning gives the bits [`Self::prefill_with_canvas`] gives it.
     pub fn canvas(
         &mut self,
         tokens: &[i32],
         prompt_len: usize,
         full_logits: bool,
-        previous: Option<(&[f32], f32)>,
+        previous: Option<f32>,
     ) -> Result<()> {
         if prompt_len != self.cached.len() {
             return Err(ModelError::Input(
@@ -1177,32 +1117,32 @@ impl Model {
             return Err(ModelError::Input("canvas exceeds the context size".into()));
         }
         let signal = match previous {
-            Some((host, inv_temp)) => Some(self.self_condition(tokens.len(), inv_temp, host)?),
+            Some(inv_temp) => Some(self.self_condition(tokens.len(), inv_temp)?),
             None => None,
         };
+        // What `prefill_with_canvas` may forward with prompt rows stays on their kernels here.
+        let exact = !full_logits && previous.is_none();
         self.forward(
             Input::Tokens(tokens),
             prompt_len,
             prompt_len,
-            true,
-            signal.as_ref(),
+            0,
+            exact,
+            signal,
         )?;
-        self.canvas_rows = tokens.len();
         self.logits = None;
         if full_logits {
-            let n = tokens.len() * self.cfg.vocab;
-            let out = self.gpu.empty(n, 4);
-            self.matmul(
-                &self.gpu,
-                &self.scratch.xn,
-                tokens.len(),
-                &self.embed.matrix,
-                &out,
-                &self.dummy,
-                &self.split,
+            let (_, xn) = self.rows.as_ref().expect("the forward left its rows");
+            let w = &self.embed.matrix;
+            let logits = Dispatch::g4_matmul(
+                xn.clone().into_dispatch(),
+                ProductArgs {
+                    w: w.clone(),
+                    plan: self.tuner.dense(w, tokens.len(), false),
+                },
             );
-            ops::softcap_logits(&self.gpu, &out, n, self.cfg.softcap);
-            self.logits = Some(out);
+            let cap = self.cfg.softcap;
+            self.logits = Some(float(Dispatch::g4_softcap(logits, SoftcapArgs { cap })));
         }
         Ok(())
     }
@@ -1217,32 +1157,66 @@ impl Model {
             return Err(ModelError::Input("invalid logit row or candidate".into()));
         }
         if let Some(logits) = &self.logits {
-            let all = self.gpu.read_f32(logits);
+            let all = host(logits.clone());
             let v = self.cfg.vocab;
             return Ok(candidates
                 .iter()
                 .map(|&c| f64::from(all[row * v + c as usize]))
                 .collect());
         }
-        let pairs: Vec<u8> = candidates
-            .iter()
-            .flat_map(|&c| [(row as u32).to_le_bytes(), (c as u32).to_le_bytes()])
-            .flatten()
-            .collect();
-        let pairs = Buf::from_bytes(&self.gpu, &pairs, candidates.len() * 2);
-        let out = self.gpu.empty(candidates.len(), 4);
-        let table = self.embed.table();
-        ops::pick(
-            &self.gpu,
-            &self.scratch.xn,
-            &pairs,
-            candidates.len(),
-            &table,
-            &out,
-            self.cfg.softcap,
-            self.cfg.d,
+        let Some((_, xn)) = &self.rows else {
+            return Err(ModelError::Input("no canvas was forwarded".into()));
+        };
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+        let row = (self.canvas_row0 + row) as u32;
+        let pairs = candidates.iter().flat_map(|&c| [row, c as u32]).collect();
+        let picked: Tensor<1> = float(Dispatch::g4_pick(
+            xn.clone().into_dispatch(),
+            ids(&self.device, pairs).into_dispatch(),
+            PickArgs {
+                table: self.embed.regions(),
+                cap: self.cfg.softcap,
+                d: self.cfg.d,
+            },
+        ));
+        Ok(host(picked).into_iter().map(f64::from).collect())
+    }
+
+    /// For each of `rows` of the last canvas forward with `full_logits`, at the inverse
+    /// temperature `inv_temp` and with its draw in `[0, 1)`: the first token with the largest
+    /// logit, the token where the cumulative probability first exceeds the draw (the former if
+    /// none does), `z = sum(e)` and `sum(e * ln e)` for `e = exp((logit - max) * inv_temp)`.
+    /// Computed on the device in f32; only these four values per row are read back.
+    pub fn predictions(
+        &mut self,
+        rows: &[usize],
+        inv_temp: f32,
+        draws: &[f32],
+    ) -> Result<Vec<[f32; 4]>> {
+        let logits = self
+            .logits
+            .as_ref()
+            .ok_or_else(|| ModelError::Input("no full logits were computed".into()))?;
+        if rows.len() != draws.len() || rows.iter().any(|&r| r >= self.canvas_rows) {
+            return Err(ModelError::Input("invalid logit rows or draws".into()));
+        }
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+        let chosen = rows.iter().map(|&r| r as u32).collect();
+        let draws = Tensor::<1>::from_data(
+            TensorData::new(draws.to_vec(), [draws.len()]),
+            (&self.device, DType::F32),
         );
-        Ok(self.gpu.read_f32(&out).into_iter().map(f64::from).collect())
+        let values: Tensor<2> = float(Dispatch::g4_predict(
+            logits.clone().into_dispatch(),
+            ids(&self.device, chosen).into_dispatch(),
+            draws.into_dispatch(),
+            PredictArgs { inv_temp },
+        ));
+        Ok(host(values).as_chunks::<4>().0.to_vec())
     }
 
     /// All canvas logits (rows x vocab) of the last canvas forward with `full_logits`.
@@ -1251,11 +1225,12 @@ impl Model {
             .logits
             .as_ref()
             .ok_or_else(|| ModelError::Input("no full logits were computed".into()))?;
-        Ok(self.gpu.read_f32(logits))
+        Ok(host(logits.clone()))
     }
 
     /// Raw K and transposed-V caches of `layer` (f16 values widened; diagnostics).
     pub fn kv_raw(&self, layer: usize) -> (Vec<f32>, Vec<f32>, usize, usize) {
+        self.sync();
         let l = &self.layers[layer];
         (
             self.gpu.read_f16(&l.k_cache),
@@ -1267,6 +1242,7 @@ impl Model {
 
     /// Resident K cache of `layer` for positions `0..len` (diagnostics).
     pub fn k_cache(&self, layer: usize, len: usize) -> Vec<f32> {
+        self.sync();
         let l = &self.layers[layer];
         let mut v = self.gpu.read_f16(&l.k_cache);
         v.truncate(len * l.kv_heads * l.hd);
@@ -1275,6 +1251,7 @@ impl Model {
 
     /// Resident transposed V cache of `layer` as `[pos][kv_head * hd]` for `0..len` (diagnostics).
     pub fn v_cache(&self, layer: usize, len: usize) -> Vec<f32> {
+        self.sync();
         let l = &self.layers[layer];
         let raw = self.gpu.read_f16(&l.v_cache);
         let width = l.kv_heads * l.hd;
@@ -1289,8 +1266,8 @@ impl Model {
 
     /// Final hidden states (FP32 residual stream) of the last forward, for diagnostics.
     pub fn hidden(&self) -> Vec<f32> {
-        let mut v = self.gpu.read_f32(&self.scratch.h);
-        v.truncate(self.last_hidden_rows * self.cfg.d);
-        v
+        self.rows
+            .as_ref()
+            .map_or_else(Vec::new, |(h, _)| host(h.clone()))
     }
 }

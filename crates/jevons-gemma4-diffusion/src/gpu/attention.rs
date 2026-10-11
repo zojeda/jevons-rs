@@ -87,6 +87,7 @@ fn flash_attention<N8: Size>(
     v_cache: &[Vector<f16, N8>],
     out: &mut [f16],
     rows: u32,
+    row0: u32,
     pos0: u32,
     kv_len: u32,
     prompt: u32,
@@ -126,7 +127,7 @@ fn flash_attention<N8: Size>(
         let mut v = zero;
         let qa = a0 + r;
         if qa >= pos0 as usize && qa < (pos0 + rows) as usize {
-            v = q[((qa - pos0 as usize) * heads + head) * hv + c];
+            v = q[((qa - pos0 as usize + row0 as usize) * heads + head) * hv + c];
         }
         q_tile[r * qstride + c] = v;
     }
@@ -342,7 +343,8 @@ fn flash_attention<N8: Size>(
             if qa >= pos0 as usize && qa < (pos0 + rows) as usize {
                 let l = row_l[r];
                 let v = o.index(f)[e].extract(0usize) / select(l > 0.0f32, l, 1.0f32);
-                out[((qa - pos0 as usize) * heads + head) * hd + c] = f16::cast_from(v);
+                out[((qa - pos0 as usize + row0 as usize) * heads + head) * hd + c] =
+                    f16::cast_from(v);
             }
         }
     }
@@ -356,8 +358,9 @@ pub struct AttnShape {
     pub window: usize,
 }
 
-/// `out[t, h*hd]` for `rows` queries starting at absolute position `pos0`. `block` is the
-/// first position of an image block being prefilled (`None` for text and canvas).
+/// `out[t, h*hd]` for `rows` queries starting at absolute position `pos0`, which are rows
+/// `row0..` of `q` and `out`. `block` is the first position of an image block being prefilled
+/// (`None` for text and canvas).
 #[allow(clippy::too_many_arguments)]
 pub fn attention(
     gpu: &Gpu,
@@ -366,6 +369,7 @@ pub fn attention(
     v_cache: &Buf,
     out: &Buf,
     rows: usize,
+    row0: usize,
     pos0: usize,
     kv_len: usize,
     prompt: usize,
@@ -388,6 +392,7 @@ pub fn attention(
         v_cache.arg(),
         out.arg(),
         rows as u32,
+        row0 as u32,
         pos0 as u32,
         kv_len as u32,
         prompt as u32,

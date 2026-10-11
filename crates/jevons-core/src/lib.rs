@@ -14,7 +14,7 @@ pub use error::{Error, Result};
 pub use image::{RgbImage, decode_image};
 pub use model::{
     ChatFormat, Conditioning, DiffusionModel, DiffusionScheme, ImageInput, Logits, ModelInfo,
-    PromptPart, TextTokenizer,
+    Prediction, PromptPart, TextTokenizer, predict,
 };
 pub use profile::PrefillProfile;
 pub use speech::{

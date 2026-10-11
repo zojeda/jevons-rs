@@ -3,7 +3,8 @@
 ## Purpose
 
 `jevons-gemma4-diffusion` runs DiffusionGemma, Google's text diffusion model on the Gemma 4 26B A4B
-mixture-of-experts architecture, on tuned CubeCL kernels over HIP. It loads the GGUF checkpoint that
+mixture-of-experts architecture, on tuned CubeCL kernels over HIP. The text model's forward is a
+chain of Burn operations over those kernels. It loads the GGUF checkpoint that
 llama.cpp reads, prefills prompts with causal attention into a KV cache that it reuses across calls,
 evaluates canvases with bidirectional attention and optional self-conditioning, and returns
 candidate or full logits. With a `gemma4v` projector it encodes images into prompt rows.
@@ -17,12 +18,14 @@ It owns:
 - `gpu::attention`, `gpu::ops`, `gpu::vision`: attention with DiffusionGemma's visibility rules,
   expert routing and grouping, fused norms, embedding and logit kernels, and the vision encoder's
   kernels.
+- `model::burn`: the text model's forward as Burn backend extensions (`GemmaOps`).
 - `gpu::tune`: launch plans measured per device and their stored table.
 - `vision_input` and `vision`: image preprocessing and the Gemma 4 vision encoder.
 
 It leaves to other crates:
 
-- Device buffers and the matrix products to `jevons-kernels`.
+- Device buffers and the matrix products to `jevons-kernels`, and the Burn device to
+  `jevons-burn`.
 - GGUF reading and block packing to `jevons-formats`, and the Gemma 4 tokenizer to
   `jevons-tokenizer` (both re-exported).
 - The `DiffusionModel` adapter to `jevons-models`: chat markers, answer-code pieces, the 8-image
@@ -66,9 +69,10 @@ Tests: none yet
 ### R4 Prefill writes the prompt cache
 
 Prefill runs causal attention over the prompt in chunks of at most the batch size, writes keys and
-values for every layer and computes no vocabulary logits. Prompt queries in sliding-window layers
-see keys less than `window` positions back. Attention stays within 2e-2 and Q/K/V preparation within
-2e-3 of f64 references.
+values for every layer and computes no vocabulary logits. Token rows are chunked together whatever
+segments they arrive in; only an image block starts a forward of its own. Prompt queries in
+sliding-window layers see keys less than `window` positions back. Attention stays within 2e-2 and
+Q/K/V preparation within 2e-3 of f64 references.
 
 Tests: `attention_matches_reference_for_causal_sliding_and_canvas_queries`, `qkv_preparation_normalizes_rotates_and_writes_caches`
 
@@ -106,13 +110,22 @@ rows × vocabulary logits when asked for full logits. Without them, callers read
 one row. An out-of-range row or candidate, or a request for full logits after a forward that
 computed none, fails with an input error.
 
-Tests: `q6k_embedding_rows_and_candidate_logits_match_dequantized_table`
+Full logits stay on the device. `predictions` reads four values per chosen row from them at an
+inverse temperature and a draw: the first token with the largest logit, the first token where the
+running sum of `e = exp((logit - max) * inverse temperature)` in token order exceeds
+`draw * sum(e)` (the largest-logit token when none does), `sum(e)` and `sum(e * ln e)`. The sums
+are in f32 and accumulated in a fixed order, so a row gives the same values wherever it is
+launched. Rows that do not match the draws, a row past the canvas, or a forward without full
+logits fail with an input error.
+
+Tests: `q6k_embedding_rows_and_candidate_logits_match_dequantized_table`, `row_predictions_match_the_reference_sampler`
 
 ### R9 Self-conditioning
 
-A canvas forward can take the previous step's full logits and an inverse temperature, which
-condition its embeddings through the checkpoint's self-conditioning network. Logits of the wrong
-shape fail with an input error.
+A canvas forward can take an inverse temperature, which conditions its embeddings on the full
+logits of the previous canvas forward through the checkpoint's self-conditioning network. Those
+logits are still on the device. A forward that follows none with full logits over the same number
+of rows fails with an input error.
 
 Tests: none yet
 
@@ -154,17 +167,18 @@ Tests: none yet
 ### R14 Warmup
 
 `warmup` tunes and compiles the common kernel variants: prompt chunks of both tile heights, a canvas
-with candidate and with full logits, and one self-conditioned step. It clears the prompt cache
-before it returns.
+with candidate and with full logits, row predictions, and one self-conditioned step. It clears the
+prompt cache before it returns.
 
 Tests: none yet
 
 ### R15 A dropped model frees its memory
 
-Dropping the model returns its pooled device memory to the device, through a release guard
-(`jevons-kernels` R13) that runs after every buffer of the model is dropped: the layers, the
-embeddings, the caches, the scratch buffers and the logits. The vision tower's buffers are
-dropped before the model, so the same release covers them.
+Dropping the model returns its pooled device memory to the device, through the Burn device's
+release guard (`jevons-burn` R15), which runs what Burn has queued and then frees the pool. It runs
+after every buffer and tensor of the model is dropped: the layers, the embeddings, the caches,
+the scratch, the last forward's rows and the logits. The vision tower's buffers are dropped before the model,
+so the same release covers them.
 
 Tests: `the_release_guard_returns_what_was_dropped_before_it`
 
@@ -204,3 +218,28 @@ gate, position embeddings, norms and 3×3 pooling) match f64 references within 1
 post-norm residual within 1e-4.
 
 Tests: `vision_qkv_normalizes_heads_and_rotates_by_patch_column_and_row`, `vision_attention_is_bidirectional_over_partial_key_tiles`, `vision_ffn_pooling_positions_and_norms_match_reference`
+
+### R20 A canvas read with its prompt
+
+`prefill_with_canvas` makes the segments the resident prompt and forwards a canvas after it for
+candidate logits. The canvas rows share the forward of the last prompt rows still to compute when
+both fit in one batch. Otherwise, and when the whole prompt is resident, they get a forward of
+their own. Either way every row stays on the row-invariant kernels, as does a canvas forwarded
+for candidate logits without conditioning. Prompt rows are bitwise those of a prefill alone, and
+the candidate logits are bitwise those of a prefill followed by that canvas forward, however much
+of the prompt was resident. An empty canvas, one larger than the batch, or one that does not fit
+the context after the prompt fails with an input error.
+
+Tests: `model_reads_preserve_reproducibility_across_requests`, `model_extensions_average_refine_think_and_chunk`, `post_ffn_norms_combine_experts_residual_and_scale`
+
+### R21 The forward runs as Burn operations
+
+A prefill or a canvas forward of the text model is a chain of Burn backend extensions over Burn
+tensors: one for the embedding, an attention block and a feed-forward block per layer, and those
+of the logit head, self-conditioning, candidate picks and row predictions. The residual rows, the
+next layer's input rows and the logits are Burn tensors. Weights, norm vectors, rotary tables, the
+KV caches and a layer's scratch stay device buffers the operations take as arguments. An operation
+launches the kernels a direct launch would, with the same plans, so reads and generated text are
+bitwise those of the kernels launched directly. The vision encoder launches its kernels directly.
+
+Tests: `model_reads_preserve_reproducibility_across_requests`, `model_extensions_average_refine_think_and_chunk`, `model_images_prefill_and_preserve_text_reproducibility`

@@ -101,7 +101,8 @@ Tests: `slots_beyond_the_canvas_capacity_are_read_in_seeded_chunks`, `model_exte
 On a uniform-noise model, each answer position starts as a seeded random token that is not the mask
 token. Each step before the last refines the answer positions and keeps the prefixes. The first step
 is not self-conditioned, and each later step is conditioned on the previous step's logits. The last
-step reads the candidate logits at temperature 1.
+step reads the candidate logits at temperature 1. A read of one step hands the model the first
+sample's canvas together with the prompt (`prefill_and_forward_canvas`), as one piece of work.
 
 Tests: `framing_and_the_empty_thought_come_from_the_model_chat_format`, `refinement_conditions_later_steps_on_the_previous_logits`, `model_extensions_average_refine_think_and_chunk`
 
@@ -150,7 +151,8 @@ Tests: `model_images_prefill_and_preserve_text_reproducibility`, `nemotron_image
 
 `prompt_tokens` adds the prompt length of every chunk and sample, plus the thought's prompt tokens.
 `canvas_tokens` adds the canvas length (padding included) of every chunk and sample. Steps do not
-multiply either count. `forward_ms` adds canvas and thought forwards and leaves prefill out.
+multiply either count. `forward_ms` adds canvas and thought forwards and leaves prefill out; a
+canvas the model forwards with the prompt counts as prefill.
 
 Tests: `framing_and_the_empty_thought_come_from_the_model_chat_format`, `masked_canvases_pad_to_the_block_and_answers_carry_the_prefix_space`, `model_extensions_average_refine_think_and_chunk`
 

@@ -6,12 +6,16 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+jevons-burn.workspace = true
 jevons-formats.workspace = true
 jevons-kernels.workspace = true
 jevons-tokenizer.workspace = true
 thiserror.workspace = true
 half = "2.7"
 bytemuck = "1"
+# The forward runs as Burn operations: each kernel is a backend extension (src/gpu/burn.rs).
+burn = { version = "=0.22.0-pre.4", default-features = false, features = ["std", "rocm", "fusion", "autotune", "extension"] }
+burn-cubecl = { version = "=0.22.0-pre.4", default-features = false, features = ["std", "hip", "fusion", "autotune"] }
 cubecl = { version = "=0.11.0-pre.4", features = ["hip"] }
 # hiprtc C++ code generation, as in CubeCL 0.10 (the default LLVM path rejects some kernels).
 cubecl-hip = { version = "=0.11.0-pre.4", default-features = false, features = ["cpp"] }

@@ -1,5 +1,5 @@
 //! DiffusionGemma inference on CubeCL (HIP): quantized kernels, the prompt/canvas forward
-//! passes and the Gemma 4 vision encoder. Shares the CubeCL 0.11 runtime with Burn.
+//! passes as Burn operations over them, and the Gemma 4 vision encoder.
 #![forbid(unsafe_code)]
 
 pub use jevons_formats::{gguf, quant};

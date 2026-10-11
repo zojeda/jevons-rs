@@ -13,7 +13,7 @@ file reader.
 jevons-core owns:
 
 - `DiffusionModel` with `TextTokenizer`, `ChatFormat`, `ModelInfo`, `DiffusionScheme`,
-  `PromptPart`, `Conditioning` and `Logits`.
+  `PromptPart`, `Conditioning`, `Logits` and `Prediction`.
 - `SpeechModel` with `SpeechConfig`, `SpeechInfo`, `SpeechToken`, `Word`, `Segment` and
   `Transcript`.
 - `Error` and `Result`, `ModelConfig`, `PrefillProfile`, `decode_image` and `Script`.
@@ -121,8 +121,9 @@ Tests: `model_images_prefill_and_preserve_text_reproducibility`
 `forward_canvas` evaluates a canvas over the resident prompt without changing the prompt cache.
 Afterwards `candidate_logits(row, candidates)` returns the logits of those candidates at that row.
 `full_logits` returns every row's logits (rows times vocabulary) when the forward asked for
-`Logits::Full`. `Conditioning::Previous` passes the prior step's full logits at an inverse
-temperature.
+`Logits::Full`. `Conditioning::Previous` conditions a forward on the full logits of the previous
+canvas forward at an inverse temperature. The model still holds those logits; the caller passes
+none.
 
 Tests: none yet
 
@@ -194,3 +195,26 @@ and U+1F00 to U+1FFF. Cyrillic covers U+0400 to U+052F. Digits, punctuation and 
 script, and a letter outside all three ranges fails in every script.
 
 Tests: `scripts_keep_letters_of_other_alphabets_out`
+
+### R20 Row predictions
+
+`predictions(rows, temperature, draws)` returns, for each listed row of the last canvas forward
+with `Logits::Full`, the first token with the largest logit, the token where the cumulative
+probability at that temperature first exceeds the row's draw (the largest-logit token when none
+does), and the entropy of the row's distribution. Probabilities are taken relative to the row's
+largest logit, so extreme logits stay finite. The default reads `full_logits` and computes in
+f64 (`predict`); a model may compute on its device, in the device's arithmetic. An empty row, a
+logit that is not finite, a row past the logits, or draws that do not match the rows fail with
+`InvalidLogits`.
+
+Tests: `entropy_and_sampling_use_stable_probabilities`
+
+### R21 A canvas can go with its prompt
+
+`prefill_and_forward_canvas(parts, suffix, tokens)` makes `parts + suffix` the resident prompt,
+forwards the canvas `tokens` after it without conditioning for candidate logits, and returns the
+prompt length. The default calls `prefill` and then `forward_canvas`. A model may evaluate the
+canvas together with the prompt rows it still has to compute; what is read from the canvas then
+equals what those two calls give, however much of the prompt was resident.
+
+Tests: `model_reads_preserve_reproducibility_across_requests`, `model_extensions_average_refine_think_and_chunk`

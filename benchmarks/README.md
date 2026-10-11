@@ -11,6 +11,7 @@ Measurements of the System One API (typed answers from the diffusion language mo
 | [two-models-2026-09-24](two-models-2026-09-24/README.md) | DiffusionGemma and Nemotron-Labs-Diffusion 8B back to back |
 | [nemotron-2026-09-25](nemotron-2026-09-25/README.md) | Nemotron-Labs-Diffusion 3B and self-speculative decoding |
 | [cubecl](cubecl/README.md) | CubeCL kernel and backend comparisons |
+| [gemma-latency-2026-10-10](gemma-latency-2026-10-10/README.md) | DiffusionGemma before and after sampling on the device, one forward per read and the forward through Burn, interleaved on Windows |
 
 # System One
 

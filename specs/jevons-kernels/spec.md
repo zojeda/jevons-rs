@@ -57,7 +57,8 @@ Tests: `empty_cache_databases_are_removed_and_others_kept`
 
 `QMatrix` holds weights `[experts * n, k]` in one of five encodings: Q4_K, Q6_K, Q5_0 and Q8_0 GGML
 blocks, dequantized to FP16 inside the product, and row-major FP16. The kernel tests exercise Q8_0
-and FP16.
+and FP16. A clone of a `QMatrix` shares its device buffers, so it can travel as an operation's
+argument.
 
 Tests: `every_tunable_dense_plan_matches_reference_and_tiles_are_row_invariant`, `f16_matmul_matches_burn_matmul_for_canvas_and_prefill_rows`
 

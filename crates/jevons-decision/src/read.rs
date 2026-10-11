@@ -132,19 +132,42 @@ impl Decide for DiffusionEngine {
         }
         for (group_index, range) in groups.iter().enumerate() {
             let group = &prepared[range.clone()];
-            let prompt_length = self.model().prefill(&prompt, &suffix)?;
+            // A uniform-noise read of one step hands the model its first canvas with the
+            // prompt, as one piece of work.
+            let together = options.steps == 1
+                && matches!(
+                    self.scheme(),
+                    DiffusionScheme::UniformSelfConditioned { .. }
+                );
+            let mut resident = if together {
+                None
+            } else {
+                Some(self.model().prefill(&prompt, &suffix)?)
+            };
             let group_seed = seed.wrapping_add(104729_u64.wrapping_mul(group_index as u64));
             let mut reads = Vec::new();
             for sample in 0..options.samples {
                 let sample_seed = group_seed.wrapping_add(7919_u64.wrapping_mul(sample as u64));
-                let (slots, canvas, time) = match self.scheme() {
-                    DiffusionScheme::UniformSelfConditioned { .. } => {
-                        read_canvas(self, group, prompt_length, sample_seed, options.steps)?
-                    }
+                let (slots, canvas, time, prompt_length) = match self.scheme() {
                     DiffusionScheme::Masked { threshold, .. } => {
-                        read_masked(self, group, prompt_length, options.steps, threshold)?
+                        let length = match resident {
+                            Some(length) => length,
+                            None => self.model().prefill(&prompt, &suffix)?,
+                        };
+                        let (slots, canvas, time) =
+                            read_masked(self, group, length, options.steps, threshold)?;
+                        (slots, canvas, time, length)
+                    }
+                    DiffusionScheme::UniformSelfConditioned { .. } => {
+                        let prompt = Prompt {
+                            parts: &prompt,
+                            suffix: &suffix,
+                            resident,
+                        };
+                        read_canvas(self, group, prompt, sample_seed, options.steps)?
                     }
                 };
+                resident = Some(prompt_length);
                 result.prompt_tokens += prompt_length;
                 result.canvas_tokens += canvas;
                 result.forward_ms += time;
@@ -163,13 +186,24 @@ impl Decide for DiffusionEngine {
     }
 }
 
+/// The prompt a canvas is read after: its length once it is resident, or `None` while the model
+/// still has to be given it.
+struct Prompt<'a> {
+    parts: &'a [PromptPart],
+    suffix: &'a [i32],
+    resident: Option<usize>,
+}
+
+/// Uniform-noise read. Returns the slots, the canvas length, the time of the canvas work that
+/// followed the prompt's, and the prompt length. A prompt that is not resident yet goes to the
+/// model with the first canvas; that canvas then counts as prompt work, not in the time.
 fn read_canvas(
     engine: &mut DiffusionEngine,
     group: &[PreparedSlot],
-    prompt_length: usize,
+    prompt: Prompt<'_>,
     seed: u64,
     steps: usize,
-) -> Result<(Vec<SlotRead>, usize, f64)> {
+) -> Result<(Vec<SlotRead>, usize, f64, usize)> {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let mut canvas = Vec::new();
     let mut slots = Vec::new();
@@ -180,7 +214,7 @@ fn read_canvas(
         canvas.push(initial_token);
         slots.push(SlotRead {
             canvas_position: position,
-            absolute_position: prompt_length + position,
+            absolute_position: position,
             initial_token,
             candidate_tokens: slot.candidates.clone(),
             logits: Vec::new(),
@@ -188,21 +222,37 @@ fn read_canvas(
         });
     }
     let positions: Vec<_> = slots.iter().map(|s| s.canvas_position).collect();
-    let mut previous: Option<Vec<f32>> = None;
-    let mut inverse_temperature = 1.0;
+    let mut previous = None;
+    let mask = engine.mask();
+    // The only canvas of a one-step read, already forwarded with the prompt.
+    let mut forwarded = false;
+    let prompt_length = match prompt.resident {
+        Some(length) => length,
+        None if steps == 1 => {
+            forwarded = true;
+            let model = engine.model();
+            model.prefill_and_forward_canvas(prompt.parts, prompt.suffix, &canvas)?
+        }
+        None => engine.model().prefill(prompt.parts, prompt.suffix)?,
+    };
+    for slot in &mut slots {
+        slot.absolute_position += prompt_length;
+    }
     let start = Instant::now();
     for step in 0..steps {
         let last = step + 1 == steps;
-        engine.model().forward_canvas(
-            &canvas,
-            prompt_length,
-            conditioning(previous.as_deref(), inverse_temperature),
-            if last {
-                Logits::Candidates
-            } else {
-                Logits::Full
-            },
-        )?;
+        if !forwarded {
+            engine.model().forward_canvas(
+                &canvas,
+                prompt_length,
+                conditioning(previous),
+                if last {
+                    Logits::Candidates
+                } else {
+                    Logits::Full
+                },
+            )?;
+        }
         if last {
             for slot in &mut slots {
                 slot.logits = engine
@@ -211,22 +261,20 @@ fn read_canvas(
                 slot.probabilities = restricted_softmax(&slot.logits)?;
             }
         } else {
-            let logits = engine.model().full_logits()?;
             let temperature = 0.4 + 0.4 * (steps - step) as f64 / steps as f64;
             uniform::refine(
+                engine.model(),
                 &mut canvas,
-                &logits,
                 &positions,
-                engine.n_vocab() as usize,
                 temperature,
-                engine.mask(),
+                mask,
                 &mut rng,
             )?;
-            previous = Some(logits);
-            inverse_temperature = (1.0 / temperature) as f32;
+            previous = Some((1.0 / temperature) as f32);
         }
     }
-    Ok((slots, canvas.len(), start.elapsed().as_secs_f64() * 1000.0))
+    let time = start.elapsed().as_secs_f64() * 1000.0;
+    Ok((slots, canvas.len(), time, prompt_length))
 }
 
 /// Masked-diffusion read: every answer position starts as the mask token. Each step commits

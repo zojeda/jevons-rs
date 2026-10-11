@@ -117,8 +117,8 @@ Prompts use ChatML: `<|im_start|>user\n…<|im_end|>\n<|im_start|>assistant\n`, 
 
 We seed `ChaCha8Rng` for noise and sampling. Sample seeds increment by 7919; question chunk seeds increment by 104729, with wrapping arithmetic. Matching requests and seeds reproduce initialization. Different backends and RNG implementations can produce different probabilities.
 
-The first denoising step disables previous-step self-conditioning. Each new sample starts from fresh noise and no prior logits. Self-conditioning logits stay on the GPU between steps of one read and are discarded afterwards. Prompt prefill refreshes the cache before each question chunk; samples reuse that prefix.
+The first denoising step disables previous-step self-conditioning. Each new sample starts from fresh noise and no prior logits. Full logits stay on the GPU between steps of one read and are discarded afterwards: DiffusionGemma samples each position there and reads back its best token, its sampled token and its entropy. Prompt prefill refreshes the cache before each question chunk; samples reuse that prefix.
 
 The service keeps user text separate from special-token chat framing. Vision delimiters are special tokens added by the service, not parsed from user text. User-supplied strings cannot inject chat control tokens.
 
-See [limits and usage](api.md#limits-and-usage) for token accounting. `forward_ms` adds canvas evaluations, sampling, and logit transfers across reads and thoughts, excluding prompt prefill and image encoding. HTTP latency includes all work.
+See [limits and usage](api.md#limits-and-usage) for token accounting. `forward_ms` adds canvas evaluations and sampling across reads and thoughts, excluding prompt prefill and image encoding. A read of one step forwards its first canvas with the prompt, so that canvas counts as prefill. HTTP latency includes all work.

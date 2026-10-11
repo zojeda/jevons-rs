@@ -116,14 +116,12 @@ fn main() {
     out.f32("canvas1_hidden", &model.hidden(), &[c, d]);
 
     // Three full-logit steps, each self-conditioned on the previous (inverse temperature 1/0.8).
-    let mut previous: Option<Vec<f32>> = None;
     for step in 1..=3 {
         model
-            .canvas(&canvas, p, true, previous.as_deref().map(|l| (l, 1.25)))
+            .canvas(&canvas, p, true, (step > 1).then_some(1.25))
             .unwrap();
         let logits = model.all_logits().unwrap();
         out.f32(&format!("canvas_step{step}_logits"), &logits, &[c, vocab]);
-        previous = Some(logits);
     }
 
     // Reuse noise floor: a different prompt, then the original again from the cache.
