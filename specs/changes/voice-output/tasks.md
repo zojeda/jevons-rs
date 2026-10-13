@@ -135,8 +135,10 @@
       first. Replayed on the sound device in silence, 100 to 180 ms were missing while another
       app played sound. An utterance opens with three short chunks now, and a stretch is one
       frame: nothing missing while a frame takes up to 40 ms.
-- [ ] The same build on the GPU with the tray app quit: the reference tests, and the chunks'
-      timings in the model's log.
+- [x] The same build on the GPU with the tray app quit (2026-10-13): the reference tests pass
+      (175 of 175 first codes, 2,617 of 2,625 others, audio within 8.2e-4). In turn with the
+      build before it, the same frames and first audio, and the audio sent outlasts the wait
+      for each chunk by 169 ms at least, where it fell 120 ms short.
 
 ## 9. Landing
 

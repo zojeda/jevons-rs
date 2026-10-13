@@ -139,6 +139,28 @@ An utterance now opens with three chunks of four frames, and the server's stretc
 frame, so a chunk goes to the desk whole. A speaker that starts with the first sample has audio
 until a frame takes more than 40 ms.
 
+On the GPU, the build before and this one spoke the same twelve sentences in turn, twice each
+(`ab3`), the tray app quit. The last row is the audio already sent when a chunk comes, less the
+time since the first one came: below zero, a speaker that started at once had run out.
+
+| `ab3`, warm | Four frames, then twelve | Three chunks of four, then twelve |
+| --- | ---: | ---: |
+| A frame, the middle one | 25.0 and 25.9 ms | 25.1 and 25.2 ms |
+| First audio of a sentence | 133 to 181 ms | 136 to 191 ms |
+| 47 to 51 s of speech | 17.9 and 19.5 s | 18.8 and 18.1 s |
+| Audio sent, less the wait, at its least | -84 and -120 ms | 169 and 174 ms |
+
+The same frames and the same first audio, and the speaker keeps a sixth of a second in hand.
+The two short chunks more cost a sentence a few milliseconds of decoding.
+
+`chunks`, three runs of the new build nine minutes earlier, took 43 ms a frame (37.5 to 54),
+first audio after 218 to 306 ms, 1.5 to 1.6 times faster than real time, with no standby in the
+event log. It started a minute after 25 minutes of builds on every core, and by the next run, three
+minutes on, a frame took 25 ms again: the chip was held back after the load. Past 40 ms a
+frame the audio sent fell 81 to 114 ms short before the first chunk of twelve. That is the
+bar's own edge: beyond it a speaker that already plays can still run out, about a second into
+an answer.
+
 ## What bounds a frame
 
 A micro-benchmark of the small-row product on this model's shapes, one row, the screen on:
@@ -232,10 +254,15 @@ Logs in the Windows clone, `target\windows-cargo\qwen-gpu{1..8}.log` and `kern-b
 | `ab2` | The build before the fix and the fix, in turn, three times each | The same frames and the same first audio. |
 | 8 | The text in fixed row counts | Run 5's counts to the code again: 175 of 175 first codes, 2,617 of 2,625 others. |
 | `device` | A program that opens the output device and plays silence, no model | What opening the device costs by its state, and the audio a first word lacks by chunk schedule. |
+| `chunks` | Three short chunks: the installed app's `--say`, twelve sentences, three times, an empty cache, right after long builds | Warm-up 187 s, then 2.3 s. No chunk compiles after it. Frames at 43 ms: the chip held back after the builds. |
+| 9 | Three short chunks | Run 5's counts again: 175 of 175 first codes, 2,617 of 2,625 others. Audio from the reference's codes, decoded in the new chunks, within 8.2e-4. |
+| `ab3` | The build before and the three short chunks, in turn, twice each | The same frames (25 ms) and first audio. The audio sent outlasts the wait by 169 ms at least, where it fell 120 ms short. |
 
-The logs of `say`, `direct`, `ab`, `bench`, `lengths` and `ab2` are in
+The logs of `say`, `direct`, `ab`, `bench`, `lengths`, `ab2`, `chunks` and `ab3` are in
 `%USERPROFILE%\jevons\voice-bench\`, with the speech of the `say` run in `say.wav`, of the
-third `bench` run in `bench.wav` and of the second `lengths` run in `lengths.wav`.
+third `bench` run in `bench.wav` and of the second `lengths` run in `lengths.wav`. `device` is
+the program in `cpal-open` there, with its output in `open.log`, `first-word.log` and
+`schedules.log`.
 
 To repeat a run:
 
