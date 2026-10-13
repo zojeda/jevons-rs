@@ -190,7 +190,7 @@ machine, Windows entered Modern Standby and held the whole chip back, CPU and GP
 factor. Whoever speaks to the app has the screen on. With the tray app quit the figures are
 the same, and a ten-sentence answer, each sentence's prompt and short chunks counted, comes out
 2.7 to 2.8 times faster than real time.
-[The benchmark report](../../../benchmarks/voice-2026-10-12/README.md) has the runs, what was
+[The benchmark report](../../../../benchmarks/voice-2026-10-12/README.md) has the runs, what was
 sampled and what was not.
 
 The bar set before the port was 40 ms a frame and 400 ms to first audio. How it got there:

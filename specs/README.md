@@ -105,4 +105,3 @@ moves to `changes/archive/`.
 | **Changes** | |
 | [changes/desktop-server](changes/desktop-server/proposal.md) | Machines, agents and tasks; the desktop server, client and protocol |
 | [changes/gemma-vision-on-burn](changes/gemma-vision-on-burn/proposal.md) | The Gemma 4 vision encoder on `jevons-burn`'s layers: measured, and it does not hold its rule |
-| [changes/voice-output](changes/voice-output/proposal.md) | Voice as a leaf's output: a Voice service on an open-weight text-to-speech model, `/v1/audio/speech`, and the desk that speaks |

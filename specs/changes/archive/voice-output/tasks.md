@@ -116,12 +116,15 @@
 - [x] The Voice card in Settings, the Voice row in Models, the catalog entry, the runtime's
       settings, a failed voice model leaving the rest up.
 - [x] `--say` and `--out`.
-- [ ] On Windows, by a person with a sound card: a spoken answer end to end, barge-in in hold
+- [x] On Windows, by a person with a sound card: a spoken answer end to end, barge-in in hold
       and in toggle mode, Escape, Stop and Cancel, the tray's speaking frames, the output
       device list, a 48 kHz device without clicks between stretches. `docs/desktop.md` lists
-      each check. Run so far, on 2026-10-13: a spoken answer end to end (two sentences, 12.4 s,
-      on Bluetooth headphones at 48 kHz), once your flows folder's `ask` leaves asked for
-      voice. Still to run: interrupting it, the tray and the device list, and clean sound.
+      each check. Run by you on 2026-10-13, on Bluetooth headphones at 48 kHz, and reported
+      right: answers spoken end to end (three in the app's log), one stopped as it played (7.6 s
+      into 10.2 s), a take started over another in hold mode (14 s into 19 s: the voice
+      stopped and the take went through), the tray's frames, the device list, and clean sound.
+      Not run by hand: barge-in in toggle mode, which opens the microphone through the same
+      code as hold mode, and whichever two of Escape, Stop and Cancel the one stop was not.
 - [x] The benchmark with the tray app quit (2026-10-13): the installed app, ten sentences
       through `--say`, three runs, the screen on. Warm: 24 ms a frame, 142 to 182 ms to first
       audio, 39 to 41 s of speech in 14 to 15 s. Nothing was left to interleave it with.
@@ -146,5 +149,5 @@
       `principles.md`.
 - [x] Hear it and choose the voice: `reader`, on 2026-10-13. It is the model's first voice now,
       so it speaks for every request and every leaf that names none.
-- [ ] This folder moves to `specs/changes/archive/` and its row leaves the index, once the
-      checks at the desk have run.
+- [x] This folder moves to `specs/changes/archive/` and its row leaves the index, once the
+      checks at the desk have run: 2026-10-13.

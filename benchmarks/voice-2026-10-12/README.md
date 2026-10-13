@@ -1,6 +1,6 @@
 # Voice: Qwen3-TTS on the fused kernels (2026-10-12)
 
-[Back to benchmarks](../README.md) · [Proposal](../../specs/changes/voice-output/proposal.md) · [Design](../../specs/changes/voice-output/design.md)
+[Back to benchmarks](../README.md) · [Proposal](../../specs/changes/archive/voice-output/proposal.md) · [Design](../../specs/changes/archive/voice-output/design.md)
 
 Ryzen AI MAX+ 395 / Radeon 8060S, natively on Windows with the HIP SDK 7.2, release builds,
 `Qwen/Qwen3-TTS-12Hz-0.6B-Base` in FP16, the voice `lector`. The figures come from the model's
