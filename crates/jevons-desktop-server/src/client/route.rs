@@ -88,6 +88,9 @@ pub struct Route {
     /// The provider's name in the settings.
     pub provider: String,
     pub profile: Profile,
+    /// On the voice route: the voice to speak in, as the provider names it; its default one
+    /// when `None`. Other routes leave it out.
+    pub voice: Option<String>,
 }
 
 impl Route {
@@ -98,7 +101,14 @@ impl Route {
             model: model.into(),
             provider: provider.into(),
             profile: Profile::ours(),
+            voice: None,
         }
+    }
+
+    /// The same route, speaking in `voice`.
+    pub fn in_voice(mut self, voice: Option<String>) -> Self {
+        self.voice = voice;
+        self
     }
 
     /// What traces call it, such as `openrouter/typesafe/jev-1.13`.
@@ -195,6 +205,8 @@ pub struct Routes {
     pub realtime: Option<Route>,
     pub decision: Option<Route>,
     pub generation: Option<Route>,
+    /// Text to speech, for the leaves that answer aloud.
+    pub voice: Option<Route>,
 }
 
 #[cfg(test)]
@@ -279,6 +291,7 @@ mod tests {
             model: "typesafe/jev-1.13".into(),
             provider: "openrouter".into(),
             profile: Profile::of(&Provider::of(ProviderKind::Openrouter)),
+            voice: None,
         }
     }
 

@@ -399,6 +399,19 @@ mod tests {
                 {"type": "file", "path": "other.gguf", "size": 9},
             ]))
         };
+        // A model with a second network in a subfolder, as a voice model's codec is.
+        let voice = || async {
+            let weights = WEIGHTS.len();
+            axum::Json(serde_json::json!([
+                {"type": "file", "path": "config.json", "size": 2},
+                {"type": "file", "path": "model.safetensors", "size": weights},
+                {"type": "file", "path": "README.md", "size": 5},
+                {"type": "directory", "path": "speech_tokenizer"},
+                {"type": "file", "path": "speech_tokenizer/config.json", "size": weights},
+                {"type": "file", "path": "speech_tokenizer/model.safetensors", "size": weights},
+                {"type": "file", "path": "speech_tokenizer/preprocessor_config.json", "size": 7},
+            ]))
+        };
         let file = |State(hits): State<Hits>,
                     UrlPath((_, _, path)): UrlPath<(String, String, String)>,
                     headers: HeaderMap| async move {
@@ -426,6 +439,7 @@ mod tests {
         let app = axum::Router::new()
             .route("/api/models/org/model/tree/main", get(tree))
             .route("/api/models/other/projector/tree/main", get(projector))
+            .route("/api/models/org/voice/tree/main", get(voice))
             .route("/{owner}/{name}/resolve/main/{*path}", get(file))
             .with_state(hits.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -549,6 +563,46 @@ mod tests {
             std::fs::read(entry.dir(&folder).join("mmproj.gguf")).unwrap(),
             b"proj"
         );
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[tokio::test]
+    async fn files_in_a_subfolder_keep_their_path_under_the_model_s_folder() {
+        let (base, _) = serve(digest(WEIGHTS)).await;
+        let hub = Hub::new(&base, None);
+        // The built-in voice model's files, from a repository laid out as its own.
+        let mut entry = crate::catalog::builtin().pop().unwrap();
+        assert!(entry.serves(Service::Voice));
+        entry.repo = "org/voice".into();
+        let files = hub.plan(&entry).await.unwrap();
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        // A name keeps to its own folder: `config.json` is not the codec's.
+        assert_eq!(
+            paths,
+            [
+                "config.json",
+                "model.safetensors",
+                "speech_tokenizer/config.json",
+                "speech_tokenizer/model.safetensors"
+            ]
+        );
+        let folder = folder("subfolder");
+        let dir = hub
+            .download(&entry, &files, &folder, Arc::default(), |_| {})
+            .await
+            .unwrap();
+        assert_eq!(dir, entry.dir(&folder));
+        assert_eq!(std::fs::read(dir.join("config.json")).unwrap(), b"{}");
+        assert_eq!(
+            std::fs::read(dir.join("speech_tokenizer/model.safetensors")).unwrap(),
+            WEIGHTS
+        );
+        assert!(dir.join("speech_tokenizer/config.json").is_file());
+        assert!(
+            !dir.join("speech_tokenizer/preprocessor_config.json")
+                .exists()
+        );
+        assert!(entry.is_ready(&folder));
         std::fs::remove_dir_all(folder).unwrap();
     }
 

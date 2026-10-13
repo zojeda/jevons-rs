@@ -3,7 +3,7 @@
 ## Purpose
 
 jevons-core is the foundation every other layer builds on. It defines the contracts a diffusion
-language model and a speech model implement, the error type they share, model configuration,
+language model, a speech model and a voice model implement, the error type they share, model configuration,
 bounded decoding of request images, prefill counters, the transcript types, and `Script`, which
 keeps a transcript in the writing system of its language. It holds no model, no GPU code and no
 file reader.
@@ -16,18 +16,20 @@ jevons-core owns:
   `PromptPart`, `Conditioning`, `Logits` and `Prediction`.
 - `SpeechModel` with `SpeechConfig`, `SpeechInfo`, `SpeechToken`, `Word`, `Segment` and
   `Transcript`.
+- `VoiceModel` with `VoiceConfig`, `VoiceInfo` and `Utterance`.
 - `Error` and `Result`, `ModelConfig`, `PrefillProfile`, `decode_image` and `Script`.
 
 It leaves to other crates:
 
 - Detecting and loading a model from its files: `jevons-models`.
-- Implementing the contracts: `jevons-gemma4-diffusion`, `jevons-nemotron-diffusion` and
-  `jevons-parakeet`, with the Gemma tokenizer adapter in `jevons-models`.
+- Implementing the contracts: `jevons-gemma4-diffusion`, `jevons-nemotron-diffusion`,
+  `jevons-parakeet` and `jevons-qwen3-tts`, with the Gemma tokenizer adapter in `jevons-models`.
 - Sampling policy, context limits and answer codes: `jevons-diffusion`.
 - Building words, segments and transcripts from speech tokens: `jevons-speech`.
+- Preparing text for a voice model, sentence by sentence: `jevons-voice`.
 - Mapping errors to HTTP statuses: `jevons-api`.
 
-Neither model contract requires `Send`. A model stays on the thread that loaded it (P2).
+No model contract requires `Send`. A model stays on the thread that loaded it (P2).
 
 ## Requirements
 
@@ -44,7 +46,7 @@ Tests: none yet
 
 `ModelConfig::new(path)` turns on the prompt cache, sets no architecture override and no vision
 projector, and selects GPU 0, a context of 8192 positions and a batch of 512 tokens.
-`SpeechConfig::new(path)` selects GPU 0.
+`SpeechConfig::new(path)` and `VoiceConfig::new(path)` select GPU 0.
 
 Tests: none yet
 
@@ -218,3 +220,13 @@ canvas together with the prompt rows it still has to compute; what is read from 
 equals what those two calls give, however much of the prompt was resident.
 
 Tests: `model_reads_preserve_reproducibility_across_requests`, `model_extensions_average_refine_think_and_chunk`
+
+### R22 A voice model speaks one utterance into a sink
+
+A `VoiceModel` reports `VoiceInfo`: a stable architecture ID, a display name, the output sample
+rate (mono), the ISO-639-1 languages it speaks and the voices it speaks in. `speak(utterance,
+audio)` speaks an `Utterance` (a text, one of the model's voices, and a language or `None` to
+leave it to the model) and hands `audio` the samples as it produces them. A sink that returns
+false stops the model. A voice or a language the model does not have fails with `InvalidInput`.
+
+Tests: none yet

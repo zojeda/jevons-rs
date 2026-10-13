@@ -40,11 +40,17 @@ port = 8080
 # The provider and model of each capability. One left out goes to `embedded`; `realtime` left out
 # follows `speech` when that is embedded or a jevons server. An embedded or jevons provider
 # names its own model when `model` is left out; the others need one.
+# `voice` reads aloud the answers of the flow leaves that say `output = "voice"`, through the
+# provider's POST /v1/audio/speech. It is served once its provider has a voice model; until then
+# those leaves answer in the bubble. Its `voice` is the voice to speak in, as the provider names
+# it (left out: the provider's default). A voice route to another provider sends the answer's
+# text there, as a generation route sends the prompt.
 # [routes]
 # speech = { provider = "embedded" }
 # realtime = { provider = "embedded" }
 # decision = { provider = "openrouter", model = "typesafe/jev-1.13" }
 # generation = { provider = "box" }
+# voice = { provider = "embedded", voice = "lucia" }
 
 [models]
 # Where models live (default: ~/jevons/models, such as C:\Users\<you>\jevons\models).
@@ -62,6 +68,9 @@ realtime = true
 # path = "D:/models/diffusiongemma/diffusiongemma-26B-A4B-it-Q4_K_M.gguf"
 # [models.speech]
 # path = "D:/models/parakeet-tdt-0.6b-v3"
+# The model that reads answers aloud (none until you choose one):
+# [models.voice]
+# path = "D:/models/qwen3-tts-12hz-0.6b-base"
 
 [privacy]
 # For debugging: write every decision and generation request and its response, whole, to

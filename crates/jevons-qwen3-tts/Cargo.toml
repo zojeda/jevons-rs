@@ -1,0 +1,30 @@
+[package]
+name = "jevons-qwen3-tts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+jevons-burn.workspace = true
+jevons-core.workspace = true
+jevons-formats.workspace = true
+jevons-kernels.workspace = true
+jevons-tokenizer.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+half = "2.7"
+# The talker's and the code predictor's steps run as Burn operations over kernels of their own
+# (src/fused.rs).
+burn = { version = "=0.22.0-pre.4", default-features = false, features = ["std", "rocm", "fusion", "autotune", "extension"] }
+burn-cubecl = { version = "=0.22.0-pre.4", default-features = false, features = ["std", "hip", "fusion", "autotune"] }
+cubecl = { version = "=0.11.0-pre.4", features = ["hip"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+jevons-burn = { workspace = true, features = ["flex"] }
+# The model tests and the example print the runtime's logs when RUST_LOG asks for them.
+tracing-subscriber.workspace = true

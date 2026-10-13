@@ -554,6 +554,7 @@ mod tests {
             generative: None,
             decision: None,
             speech: Some(scripted_service(20.0).await),
+            voice: None,
             api_key: key.map(Arc::from),
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -611,10 +612,7 @@ mod tests {
     /// Appends 24 kHz samples as PCM16 in 100 ms chunks.
     async fn append(socket: &mut Socket, samples: &[f32]) {
         for chunk in samples.chunks(2400) {
-            let bytes: Vec<u8> = chunk
-                .iter()
-                .flat_map(|s| ((s * 32768.0).round() as i16).to_le_bytes())
-                .collect();
+            let bytes = jevons_audio::pcm16_le_bytes(chunk);
             let audio = base64::engine::general_purpose::STANDARD.encode(bytes);
             send(
                 socket,

@@ -1,4 +1,5 @@
-//! Raw sample formats of streaming audio: 16-bit little-endian PCM and G.711 µ-law / A-law.
+//! Raw sample formats of streaming audio: 16-bit little-endian PCM in and out, and G.711
+//! µ-law / A-law in.
 
 /// 16-bit little-endian PCM to f32 in `[-1, 1)`. A trailing odd byte is ignored.
 pub fn pcm16_le(bytes: &[u8]) -> Vec<f32> {
@@ -7,6 +8,26 @@ pub fn pcm16_le(bytes: &[u8]) -> Vec<f32> {
         .0
         .iter()
         .map(|b| f32::from(i16::from_le_bytes(*b)) / 32768.0)
+        .collect()
+}
+
+/// One f32 sample as 16-bit PCM: clamped to `[-1, 1]`, times 32767, rounded to nearest. NaN
+/// is 0.
+fn pcm16(sample: f32) -> i16 {
+    (sample.clamp(-1.0, 1.0) * 32767.0).round() as i16
+}
+
+/// f32 samples to 16-bit PCM. Every crate that writes PCM16 scales through this rule: clamp to
+/// `[-1, 1]`, multiply by 32767, round to nearest.
+pub fn to_pcm16(samples: &[f32]) -> Vec<i16> {
+    samples.iter().map(|&sample| pcm16(sample)).collect()
+}
+
+/// [`to_pcm16`] as little-endian bytes, two per sample.
+pub fn pcm16_le_bytes(samples: &[f32]) -> Vec<u8> {
+    samples
+        .iter()
+        .flat_map(|&sample| pcm16(sample).to_le_bytes())
         .collect()
 }
 
@@ -53,6 +74,33 @@ mod tests {
     fn pcm16_covers_the_full_range_and_ignores_a_trailing_byte() {
         let bytes = [0x00, 0x80, 0xff, 0x7f, 0x00, 0x00, 0x01];
         assert_eq!(pcm16_le(&bytes), vec![-1.0, 32767.0 / 32768.0, 0.0]);
+    }
+
+    #[test]
+    fn pcm16_out_clamps_scales_by_32767_and_rounds_to_nearest() {
+        let samples = [0.0, 1.0, -1.0, 2.0, -2.0, 0.5, -0.5, 1e-5, 0.25, f32::NAN];
+        assert_eq!(
+            to_pcm16(&samples),
+            vec![0, 32767, -32767, 32767, -32767, 16384, -16384, 0, 8192, 0]
+        );
+    }
+
+    #[test]
+    fn pcm16_bytes_are_the_scaled_samples_in_little_endian() {
+        let samples = [1.0, -1.0, 0.0, 0.5];
+        assert_eq!(
+            pcm16_le_bytes(&samples),
+            vec![0xff, 0x7f, 0x01, 0x80, 0x00, 0x00, 0x00, 0x40]
+        );
+        let bytes: Vec<u8> = to_pcm16(&samples)
+            .iter()
+            .flat_map(|s| s.to_le_bytes())
+            .collect();
+        assert_eq!(pcm16_le_bytes(&samples), bytes);
+        // Read back, a sample is within one step of what was written.
+        for (read, written) in pcm16_le(&bytes).iter().zip(samples) {
+            assert!((read - written).abs() <= 1.0 / 32767.0, "{read} {written}");
+        }
     }
 
     #[test]

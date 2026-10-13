@@ -1,5 +1,5 @@
 description = "Says what the page says"
-output = "bubble"
+output = "voice"
 max_output_tokens = 400
 prompt = """
 The user asked: {transcript}

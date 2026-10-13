@@ -43,8 +43,8 @@ Tests: `a_missing_file_gives_defaults_and_unknown_fields_are_errors`, `the_examp
 | --- | --- |
 | `[server]` | `expose` (false), `bind` (`127.0.0.1`), `port` (8080), `api_key` (none) |
 | `[providers.<name>]` | `kind` (`embedded`, `jevons`, `openrouter` or `openai-compatible`), `url` (the kind's), `key` (the kind's environment variable), `extensions`, `max_questions` and `min_probability` (the kind's profile) |
-| `[routes]` | `speech`, `realtime`, `decision` and `generation`, each a `provider` and an optional `model` (all `embedded`) |
-| `[models]` | `folder`, `runtime_config`, `generative`, `decision` and `speech` (each a `path`, an optional `mmproj` and the `catalog` entry it came from), `realtime` (true) |
+| `[routes]` | `speech`, `realtime`, `decision`, `generation` and `voice`, each a `provider` and an optional `model` (all `embedded`); `voice` also takes the `voice` to speak in (the provider's own) |
+| `[models]` | `folder`, `runtime_config`, `generative`, `decision`, `speech` and `voice` (each a `path`, an optional `mmproj` and the `catalog` entry it came from), `realtime` (true) |
 | `[privacy]` | `log_api` (false) |
 | top level | `flows_dir`, and `[tools.<name>]` and `[mcp.<name>]`: the tools and MCP servers that run with the server |
 
@@ -53,13 +53,14 @@ Tests: `a_missing_file_gives_defaults_and_unknown_fields_are_errors`, `the_examp
 | Section | Fields and defaults |
 | --- | --- |
 | `[dictation]` | `hotkey` (`Ctrl+Alt+Space`), `hotkey_mode` (`hold`), `live_hotkey` (`F9`), `live_hotkey_mode` (`hold`), `live_feedback` (true), `inspector_hotkey` (none), `branch_hotkeys` (none), `microphone` (the default device), `language` (detected), `decide` (true), `max_output_tokens` (1024) |
+| `[voice]` | `speak` (true), `output` (the default device): [desk](../jevons-desktop-core/desk.md) R12 |
 | `[privacy]` | `max_context_chars` (2000), `read_clipboard` (false), `read_other_windows` (false), `readable_apps` (none) |
 | `[tools.<name>]`, `[mcp.<name>]` | the tools and MCP servers that run on this machine ([desk](../jevons-desktop-core/desk.md) R6) |
 | `[automation]` | `enabled` (false: automations are coming soon, [app](app.md) R29), `dir`, `recordings_dir`, `record_hotkey` (none), `hotkeys` (none), `approved` (none), `unconfirmed` (none), `allow` (none), `author_model` (the generative model) |
 
 The example files, `jevons-desktop.example.toml` and `jevons-server.example.toml`, parse.
 
-Tests: `the_example_settings_file_parses`, `saved_settings_load_back_unchanged`, `the_two_halves_make_the_settings_and_back`
+Tests: `the_example_settings_file_parses`, `saved_settings_load_back_unchanged`, `the_two_halves_make_the_settings_and_back`, `the_voice_settings_and_route_load_back_each_from_its_own_file`
 
 ### R4 Hotkey modes are `hold` or `toggle`
 
@@ -205,13 +206,16 @@ Tests: `each_capability_goes_to_the_provider_its_route_names`, `a_provider_s_key
 
 ### R20 Each capability goes to the provider its route names
 
-`[routes]` sends `speech`, `realtime`, `decision` and `generation` each to a provider, with the
-model to ask it for. A route left out goes to `embedded`. `realtime` left out follows `speech` when
-that is on an embedded or jevons provider, and is off otherwise. An embedded or jevons provider
-names its own model when the route has none. Settings that set neither providers nor routes write
+`[routes]` sends `speech`, `realtime`, `decision`, `generation` and `voice` each to a provider,
+with the model to ask it for. A route left out goes to `embedded`. `realtime` left out follows
+`speech` when that is on an embedded or jevons provider, and is off otherwise. An embedded or
+jevons provider names its own model when the route has none. The `voice` route may also name
+the `voice` to speak in, as its provider calls it; left out, the provider speaks in its own.
+A `voice` route to another provider sends the text of each answer read aloud to that provider,
+as a `generation` route sends the prompt. Settings that set neither providers nor routes write
 neither when saved.
 
-Tests: `routes_left_out_go_to_the_embedded_provider`, `each_capability_goes_to_the_provider_its_route_names`
+Tests: `routes_left_out_go_to_the_embedded_provider`, `each_capability_goes_to_the_provider_its_route_names`, `the_voice_route_names_its_provider_its_model_and_the_voice_to_speak_in`, `the_voice_settings_and_route_load_back_each_from_its_own_file`
 
 ### R21 Providers and routes that cannot work are errors
 
@@ -221,9 +225,22 @@ The settings are refused, with what is wrong, when:
 - a provider other than the embedded one has no address;
 - a route has no `model` and its provider does not name its own;
 - `max_questions` is 0, or `min_probability` is not from 0 to 1;
+- a route other than `voice` names a `voice`;
 - one model name is asked of two providers (other clients' requests are forwarded by model
   name).
 
 The `mode`, `remote_url` and `remote_key` of earlier settings files are unknown fields.
 
-Tests: `providers_and_routes_that_cannot_work_are_errors`
+Tests: `providers_and_routes_that_cannot_work_are_errors`, `the_voice_route_names_its_provider_its_model_and_the_voice_to_speak_in`
+
+### R22 `[voice]` says whether a take may speak
+
+`[voice]` in `jevons-desktop.toml` holds `speak` and `output`
+([desk](../jevons-desktop-core/desk.md) R12). A table left at its defaults is not written, and
+nothing about the voice is written to `jevons-server.toml` until a route, a voice or a model is
+set there. A take is told it may read its answer aloud when `speak` is on and its side has a
+speaker to play it: the tray app has one, a headless run has none. Told otherwise, a leaf that
+asks for voice answers in the bubble
+([flows](../jevons-desktop-server/flows.md) R51).
+
+Tests: `a_take_may_speak_when_the_switch_is_on_and_there_is_a_speaker`, `the_voice_settings_and_route_load_back_each_from_its_own_file`

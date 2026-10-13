@@ -1,6 +1,6 @@
 //! Compose routes, middleware, and body limits around shared application state.
 
-use crate::workers::{diffusion as worker, speech};
+use crate::workers::{diffusion as worker, speech, voice};
 use crate::{error::ApiError, handlers, middleware::request_context};
 use axum::{
     Router,
@@ -9,7 +9,7 @@ use axum::{
     middleware,
     routing::{get, post},
 };
-use jevons_core::SpeechInfo;
+use jevons_core::{SpeechInfo, VoiceInfo};
 use std::sync::Arc;
 
 pub const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
@@ -44,6 +44,20 @@ pub struct SpeechService {
     pub realtime: bool,
 }
 
+/// The text-to-speech model and the names it answers to.
+#[derive(Clone)]
+pub struct VoiceService {
+    pub worker: voice::Client,
+    pub model_id: String,
+    pub aliases: Arc<[String]>,
+    pub description: String,
+    pub info: VoiceInfo,
+    /// The voice of a request that names none.
+    pub default_voice: String,
+    /// Longest `input` of a request, in characters.
+    pub max_input_chars: usize,
+}
+
 impl DiffusionService {
     pub fn serves(&self, model: &str) -> bool {
         model == self.model_id || self.aliases.iter().any(|a| a == model)
@@ -63,7 +77,21 @@ impl SpeechService {
     }
 }
 
-/// The enabled services; at least one is present.
+impl VoiceService {
+    pub fn serves(&self, model: &str) -> bool {
+        model == self.model_id || self.aliases.iter().any(|a| a == model)
+    }
+
+    /// The model ID, then its aliases.
+    pub fn names(&self) -> Vec<String> {
+        std::iter::once(self.model_id.clone())
+            .chain(self.aliases.iter().cloned())
+            .collect()
+    }
+}
+
+/// The enabled services. At least one is present, unless every service the settings enable
+/// was optional and failed to load (see [`crate::load_optional`]).
 #[derive(Clone)]
 pub struct AppState {
     /// OpenAI Chat Completions, Completions and Responses.
@@ -72,6 +100,8 @@ pub struct AppState {
     pub decision: Option<DiffusionService>,
     /// OpenAI audio transcriptions and Realtime transcription sessions.
     pub speech: Option<SpeechService>,
+    /// OpenAI audio speech.
+    pub voice: Option<VoiceService>,
     pub api_key: Option<Arc<str>>,
 }
 
@@ -87,7 +117,8 @@ pub fn router(state: AppState) -> Router {
             "/v1/audio/transcriptions",
             post(handlers::transcriptions)
                 .layer(DefaultBodyLimit::max(MAX_AUDIO_BYTES + FORM_OVERHEAD_BYTES)),
-        );
+        )
+        .route("/v1/audio/speech", post(handlers::audio_speech));
     if state.speech.as_ref().is_some_and(|s| s.realtime) {
         router = router.route("/v1/realtime", get(handlers::realtime));
     }
@@ -135,6 +166,7 @@ mod tests {
                 generative: Some(local.clone()),
                 decision: Some(local),
                 speech: None,
+                voice: None,
                 api_key: key.map(Arc::from),
             }),
             receiver,
@@ -558,33 +590,12 @@ mod tests {
         assert_eq!(body["error"]["message"], "too long");
     }
 
-    /// A 16-bit mono WAV file.
-    fn wav(rate: u32, samples: &[f32]) -> Vec<u8> {
-        let data = samples.len() as u32 * 2;
-        let mut bytes = Vec::new();
-        bytes.extend(b"RIFF");
-        bytes.extend((36 + data).to_le_bytes());
-        bytes.extend(b"WAVEfmt ");
-        bytes.extend(16u32.to_le_bytes());
-        bytes.extend(1u16.to_le_bytes());
-        bytes.extend(1u16.to_le_bytes());
-        bytes.extend(rate.to_le_bytes());
-        bytes.extend((rate * 2).to_le_bytes());
-        bytes.extend(2u16.to_le_bytes());
-        bytes.extend(16u16.to_le_bytes());
-        bytes.extend(b"data");
-        bytes.extend(data.to_le_bytes());
-        for s in samples {
-            bytes.extend(((s * 32768.0).round() as i16).to_le_bytes());
-        }
-        bytes
-    }
-
     async fn speech_app() -> Router {
         router(AppState {
             generative: None,
             decision: None,
             speech: Some(crate::workers::speech::scripted_service(20.0).await),
+            voice: None,
             api_key: None,
         })
     }
@@ -648,7 +659,7 @@ mod tests {
     }
 
     fn speech_audio(seconds: usize) -> Vec<u8> {
-        wav(100, &crate::workers::speech::spoken(seconds, 100))
+        jevons_audio::wav(100, &crate::workers::speech::spoken(seconds, 100))
     }
 
     #[tokio::test]
@@ -803,6 +814,7 @@ mod tests {
             generative: Some(local.clone()),
             decision: Some(local),
             speech: Some(crate::workers::speech::scripted_service(20.0).await),
+            voice: None,
             api_key: None,
         });
         let response = app
@@ -838,7 +850,425 @@ mod tests {
         let health: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(
             health,
-            json!({"status": "ok", "services": {"generative": "local", "decision": "local", "speech": "scripted-asr"}})
+            json!({
+                "status": "ok",
+                "services": {
+                    "generative": "local", "decision": "local", "speech": "scripted-asr",
+                    "voice": null,
+                },
+                "voice": null,
+            })
+        );
+    }
+
+    use crate::workers::voice;
+    use jevons_audio::{pcm16_le_bytes, resample, wav_header};
+    use jevons_voice::fake::{FakeVoice, LEVEL, Log, TONE_HZ, samples_for, spoken};
+    use std::time::Duration;
+
+    /// An app whose only service is the scripted voice model, and the log of what the model
+    /// is asked to speak.
+    async fn voice_app(adjust: impl FnOnce(&mut FakeVoice) + Send + 'static) -> (Router, Log) {
+        let (voice, log) = voice::scripted_service(4, adjust).await;
+        let app = router(AppState {
+            generative: None,
+            decision: None,
+            speech: None,
+            voice: Some(voice),
+            api_key: None,
+        });
+        (app, log)
+    }
+
+    fn speech_request(body: &Value) -> HttpRequest<Body> {
+        HttpRequest::builder()
+            .method("POST")
+            .uri("/v1/audio/speech")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    /// Posts a speech request: the status, the content type and the whole body.
+    async fn speak(app: Router, body: Value) -> (StatusCode, String, Vec<u8>) {
+        let response = app.oneshot(speech_request(&body)).await.unwrap();
+        assert!(response.headers().contains_key("x-typesafe-request-id"));
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap().to_string())
+            .unwrap_or_default();
+        let bytes = to_bytes(response.into_body(), 1 << 24).await.unwrap();
+        (status, content_type, bytes.to_vec())
+    }
+
+    /// The scripted model's audio for one utterance at `rate`.
+    fn fake_tone(text: &str, rate: u32) -> Vec<f32> {
+        (0..samples_for(text, rate))
+            .map(|n| {
+                let phase = 2.0 * std::f64::consts::PI * TONE_HZ * n as f64 / f64::from(rate);
+                LEVEL * phase.sin() as f32
+            })
+            .collect()
+    }
+
+    fn said(log: &Log) -> Vec<String> {
+        spoken(log).into_iter().map(|spoke| spoke.text).collect()
+    }
+
+    #[tokio::test]
+    async fn speech_answers_a_streamed_wav_at_the_models_rate() {
+        let (app, log) = voice_app(|_| {}).await;
+        let body = json!({"model": "scripted-tts", "input": "Hola. Todo bien."});
+        let (status, content_type, bytes) = speak(app, body.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(content_type, "audio/wav");
+        // The header of a stream: both sizes unknown.
+        assert_eq!(bytes[..44], wav_header(24000, None));
+        let mut audio = fake_tone("Hola.", 24000);
+        audio.extend(fake_tone("Todo bien.", 24000));
+        assert_eq!(bytes[44..], pcm16_le_bytes(&audio));
+        assert_eq!(said(&log), ["Hola.", "Todo bien."]);
+        assert!(spoken(&log).iter().all(|spoke| spoke.voice == "lector"));
+        // A model at another rate keeps it.
+        let (app, _) = voice_app(|model| model.info.sample_rate = 16000).await;
+        let (_, _, bytes) = speak(app, body).await;
+        assert_eq!(bytes[..44], wav_header(16000, None));
+        let mut audio = fake_tone("Hola.", 16000);
+        audio.extend(fake_tone("Todo bien.", 16000));
+        assert_eq!(bytes[44..], pcm16_le_bytes(&audio));
+    }
+
+    #[tokio::test]
+    async fn speech_answers_pcm16_at_24_khz_whatever_the_models_rate() {
+        let (app, log) = voice_app(|_| {}).await;
+        let body = json!({
+            "model": "tts-latest", "input": "Good morning.", "voice": "reader",
+            "language": "en", "response_format": "pcm", "speed": 1.0, "stream_format": "audio",
+        });
+        let (status, content_type, bytes) = speak(app, body.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(content_type, "audio/pcm");
+        assert_eq!(bytes, pcm16_le_bytes(&fake_tone("Good morning.", 24000)));
+        let asked = &spoken(&log)[0];
+        assert_eq!(
+            (asked.voice.as_str(), asked.language.as_deref()),
+            ("reader", Some("en"))
+        );
+        // A model at 16 kHz is resampled: the same duration, one and a half times the samples.
+        let (app, _) = voice_app(|model| model.info.sample_rate = 16000).await;
+        let (_, content_type, bytes) = speak(app, body).await;
+        assert_eq!(content_type, "audio/pcm");
+        let spoken_at_16k = fake_tone("Good morning.", 16000);
+        assert_eq!(bytes.len(), spoken_at_16k.len() * 3);
+        assert_eq!(
+            bytes,
+            pcm16_le_bytes(&resample(&spoken_at_16k, 16000, 24000))
+        );
+    }
+
+    #[tokio::test]
+    async fn speech_requests_fail_before_the_model_with_openai_errors() {
+        let (app, log) = voice_app(|_| {}).await;
+        let error = |bytes: &[u8]| serde_json::from_slice::<Value>(bytes).unwrap()["error"].clone();
+        let request = |extra: Value| {
+            let mut body = json!({"model": "scripted-tts", "input": "Hola."});
+            for (key, value) in extra.as_object().unwrap() {
+                body[key] = value.clone();
+            }
+            body
+        };
+        let (status, content_type, bytes) =
+            speak(app.clone(), request(json!({"model": "tts-1"}))).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(content_type.starts_with("application/json"));
+        assert_eq!(error(&bytes)["code"], "model_not_found");
+        for (extra, param) in [
+            (json!({"instructions": "Speak cheerfully."}), "instructions"),
+            (json!({"speed": 1.5}), "speed"),
+            (json!({"stream_format": "sse"}), "stream_format"),
+            (json!({"response_format": "mp3"}), "response_format"),
+            (json!({"seed": 7}), "seed"),
+        ] {
+            let (status, _, bytes) = speak(app.clone(), request(extra)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{param}");
+            assert_eq!(error(&bytes)["code"], "unsupported_parameter", "{param}");
+            assert_eq!(error(&bytes)["param"], param);
+        }
+        for (extra, param, names) in [
+            (json!({"input": ""}), "input", "empty"),
+            (
+                json!({"input": "a".repeat(4097)}),
+                "input",
+                "4096 characters",
+            ),
+            (json!({"voice": "alloy"}), "voice", "lector, reader"),
+            (json!({"language": "fr"}), "language", "es, en"),
+        ] {
+            let (status, _, bytes) = speak(app.clone(), request(extra)).await;
+            let error = error(&bytes);
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{param}");
+            assert_eq!(error["type"], "invalid_request_error");
+            assert_eq!(
+                (&error["param"], &error["code"]),
+                (&json!(param), &Value::Null)
+            );
+            assert!(
+                error["message"].as_str().unwrap().contains(names),
+                "{error}"
+            );
+        }
+        // The service finds nothing to say in marks alone.
+        let (status, _, bytes) = speak(app.clone(), request(json!({"input": "..."}))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let message = error(&bytes)["message"].as_str().unwrap().to_string();
+        assert!(message.contains("nothing to say"), "{message}");
+        // A body that is no JSON object, and one sent as a form.
+        let (status, _, bytes) = speak(app.clone(), json!(["Hola."])).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(error(&bytes)["type"], "invalid_request_error");
+        let form = HttpRequest::builder()
+            .method("POST")
+            .uri("/v1/audio/speech")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from("model=scripted-tts&input=Hola."))
+            .unwrap();
+        let response = app.clone().oneshot(form).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert!(
+            spoken(&log).is_empty(),
+            "a rejected request reached the model"
+        );
+    }
+
+    #[tokio::test]
+    async fn speech_needs_the_key_and_a_voice_service() {
+        // Without a voice model, the route knows no model.
+        let (without, _receiver) = app(None);
+        let body = json!({"model": "scripted-tts", "input": "Hola."});
+        let (status, _, bytes) = speak(without, body.clone()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let error: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(error["error"]["code"], "model_not_found");
+        // With a key configured, the route asks for it like the others.
+        let (voice, log) = voice::scripted_service(4, |_| {}).await;
+        let app = router(AppState {
+            generative: None,
+            decision: None,
+            speech: None,
+            voice: Some(voice),
+            api_key: Some(Arc::from("secret")),
+        });
+        let (status, _, bytes) = speak(app.clone(), body.clone()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let error: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(error["detail"]["error_type"], "authentication_error");
+        assert!(spoken(&log).is_empty());
+        let mut request = speech_request(&body);
+        request
+            .headers_mut()
+            .insert("authorization", "Bearer secret".parse().unwrap());
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], "audio/wav");
+        // The body streams: its length is not known when the headers leave.
+        assert!(!response.headers().contains_key("content-length"));
+    }
+
+    #[tokio::test]
+    async fn a_speech_that_fails_is_an_error_before_its_audio_and_a_broken_body_after() {
+        let (app, _) = voice_app(|model| model.fail_on = Some("falla".into())).await;
+        // Before the first audio: the status and the OpenAI error.
+        let body = json!({"model": "scripted-tts", "input": "Esto falla."});
+        let (status, _, bytes) = speak(app.clone(), body).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        let error: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            (&error["error"]["type"], &error["error"]["message"]),
+            (&json!("server_error"), &json!("Speech failed"))
+        );
+        // After it: the audio so far, then the body breaks off.
+        let body = json!({"model": "scripted-tts", "input": "Uno. Esto falla."});
+        let response = app.oneshot(speech_request(&body)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut pieces = response.into_body().into_data_stream();
+        let mut received = 0;
+        let broken = loop {
+            match futures_util::StreamExt::next(&mut pieces).await {
+                Some(Ok(piece)) => received += piece.len(),
+                Some(Err(_)) => break true,
+                None => break false,
+            }
+        };
+        assert!(broken, "the body ended as if the speech were whole");
+        assert_eq!(received, 44 + 2 * samples_for("Uno.", 24000));
+    }
+
+    #[tokio::test]
+    async fn a_client_that_hangs_up_stops_the_model() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (app, log) = voice_app(|model| model.chunk_delay = Duration::from_millis(10)).await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let served = app.clone();
+        let server = tokio::spawn(async move { axum::serve(listener, served).await.unwrap() });
+        // Three seconds of speech in the first sentence alone: 37 chunks, 10 ms apart.
+        let first = "Esta es la primera frase, y es bastante larga para que dure un buen rato.";
+        let text = format!("{first} Esta es la segunda. Y la tercera.");
+        let body = json!({"model": "scripted-tts", "input": text}).to_string();
+        let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+        let request = format!(
+            "POST /v1/audio/speech HTTP/1.1\r\nHost: test\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        client.write_all(request.as_bytes()).await.unwrap();
+        // The answer starts while the model still speaks, and the client leaves.
+        let mut head = [0; 256];
+        let read = client.read(&mut head).await.unwrap();
+        assert!(head[..read].starts_with(b"HTTP/1.1 200"));
+        drop(client);
+        // The worker is free at its next chunk: another request is spoken whole, and the first
+        // one never got to its second sentence.
+        let body = json!({"model": "scripted-tts", "input": "Ya está."});
+        let (status, _, bytes) = speak(app, body).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(bytes.len(), 44 + 2 * samples_for("Ya está.", 24000));
+        assert_eq!(said(&log), [first, "Ya está."]);
+        server.abort();
+    }
+
+    /// A voice service whose queue of one nothing reads.
+    fn stalled_voice() -> (VoiceService, mpsc::Receiver<voice::Job>) {
+        let (sender, receiver) = mpsc::channel(1);
+        let service = VoiceService {
+            worker: voice::Client { sender },
+            model_id: "scripted-tts".into(),
+            aliases: Arc::from([]),
+            description: "Scripted voice.".into(),
+            info: FakeVoice::new().info,
+            default_voice: "lector".into(),
+            max_input_chars: 4096,
+        };
+        (service, receiver)
+    }
+
+    #[tokio::test]
+    async fn a_full_voice_queue_answers_529_and_a_stopped_worker_503() {
+        let (service, mut receiver) = stalled_voice();
+        let app = router(AppState {
+            generative: None,
+            decision: None,
+            speech: None,
+            voice: Some(service.clone()),
+            api_key: None,
+        });
+        let _waiting = service.worker.speak("Hola.".into(), None, None).unwrap();
+        let body = json!({"model": "scripted-tts", "input": "Hola."});
+        let response = app.clone().oneshot(speech_request(&body)).await.unwrap();
+        assert_eq!(response.status().as_u16(), 529);
+        assert_eq!(response.headers()["retry-after"], "1");
+        let bytes = to_bytes(response.into_body(), 4096).await.unwrap();
+        let error: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(error["error"]["type"], "overloaded_error");
+        // The worker stops: the route and the health check say so.
+        receiver.close();
+        let (status, _, bytes) = speak(app.clone(), body).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        let error: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(error["error"]["type"], "overloaded_error");
+        let health = HttpRequest::builder()
+            .uri("/health")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(health).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn a_voice_worker_lost_before_its_first_audio_answers_503() {
+        let (service, mut receiver) = stalled_voice();
+        let app = router(AppState {
+            generative: None,
+            decision: None,
+            speech: None,
+            voice: Some(service),
+            api_key: None,
+        });
+        let lose_worker = async move {
+            let job = receiver.recv().await.unwrap();
+            drop(job);
+            drop(receiver);
+        };
+        let body = json!({"model": "scripted-tts", "input": "Hola."});
+        let ((status, _, _), ()) = tokio::join!(speak(app, body), lose_worker);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn listings_and_health_include_the_voice_model() {
+        let (sender, _receiver) = mpsc::channel(1);
+        let local = DiffusionService {
+            worker: worker::Client { sender },
+            model_id: "local".into(),
+            aliases: Arc::from([]),
+            description: "Local test model.".into(),
+        };
+        let (voice, _) = voice::scripted_service(4, |_| {}).await;
+        let app = router(AppState {
+            generative: Some(local.clone()),
+            decision: Some(local),
+            speech: Some(crate::workers::speech::scripted_service(20.0).await),
+            voice: Some(voice),
+            api_key: None,
+        });
+        let get = |path: &str| {
+            let request = HttpRequest::builder()
+                .uri(path)
+                .body(Body::empty())
+                .unwrap();
+            let app = app.clone();
+            async move {
+                let response = app.oneshot(request).await.unwrap();
+                let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+                serde_json::from_slice::<Value>(&bytes).unwrap()
+            }
+        };
+        let models = get("/v1/models").await;
+        let ids: Vec<&str> = models["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap())
+            .collect();
+        // The voice model comes last.
+        assert_eq!(
+            ids,
+            [
+                "local",
+                "scripted-asr",
+                "asr-latest",
+                "scripted-tts",
+                "tts-latest"
+            ]
+        );
+        assert_eq!(models["models"][3]["description"], "Scripted voice.");
+        assert_eq!(
+            get("/health").await,
+            json!({
+                "status": "ok",
+                "services": {
+                    "generative": "local", "decision": "local", "speech": "scripted-asr",
+                    "voice": "scripted-tts",
+                },
+                "voice": {
+                    "voices": ["lector", "reader"],
+                    "default_voice": "lector",
+                    "languages": ["es", "en"],
+                    "sample_rate": 24000,
+                },
+            })
         );
     }
 }

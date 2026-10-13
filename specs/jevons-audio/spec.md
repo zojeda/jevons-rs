@@ -2,23 +2,25 @@
 
 ## Purpose
 
-jevons-audio prepares audio for speech models on the CPU. It decodes uploaded files to mono
-samples at the model's rate within size and duration bounds, resamples streams, converts raw
-16-bit PCM and G.711 bytes, computes the log-mel features Parakeet expects, and detects speech
-turns in a live stream. All of it is Rust: no ffmpeg and no libopus.
+jevons-audio prepares audio for speech models on the CPU, and writes the audio a voice model
+produces. It decodes uploaded files to mono samples at the model's rate within size and duration
+bounds, resamples streams, converts raw 16-bit PCM and G.711 bytes, computes the log-mel features
+Parakeet expects, and detects speech turns in a live stream. Going out, it turns samples into
+16-bit PCM and into WAV files and streams. All of it is Rust: no ffmpeg and no libopus.
 
 ## Scope
 
 jevons-audio owns `decode_audio` with `AudioLimits`, `Resampler` and `resample`, `pcm16_le`,
-`mulaw` and `alaw`, `LogMel` with `MelConfig` and `Features`, and `Vad` with `VadConfig` and
-`VadEvent`.
+`mulaw` and `alaw`, `to_pcm16` and `pcm16_le_bytes`, `wav_header` and `wav`, `LogMel` with
+`MelConfig` and `Features`, and `Vad` with `VadConfig` and `VadEvent`.
 
 It leaves to other crates:
 
 - Upload and Realtime wire formats, their size limits and their input rates: `jevons-api`.
 - Windowing long audio, words and segments: `jevons-speech`.
 - Running the model on the features: `jevons-parakeet`.
-- Microphone capture: `jevons-desktop`.
+- Microphone capture and playback: `jevons-desktop`.
+- Which format and rate a response carries: `jevons-api`.
 
 ## Requirements
 
@@ -173,3 +175,44 @@ Tests: `a_turn_starts_with_prefix_padding_and_stops_after_the_silence`
 after three new loud frames.
 
 Tests: none yet
+
+### R20 PCM16 out has one scaling rule
+
+`to_pcm16` clamps each sample to `[-1, 1]`, multiplies it by 32767 and rounds to the nearest
+integer, halves away from zero. NaN gives 0. `pcm16_le_bytes` gives the same values as
+little-endian bytes, two per sample.
+
+Tests: `pcm16_out_clamps_scales_by_32767_and_rounds_to_nearest`, `pcm16_bytes_are_the_scaled_samples_in_little_endian`
+
+### R21 A WAV header describes mono PCM16
+
+`wav_header(sample_rate, Some(n))` returns the 44-byte RIFF/WAVE header of a file of `n` samples:
+a 16-byte format chunk (PCM, one channel, the rate, `2 · rate` bytes per second, 2 bytes per frame,
+16 bits per sample), a data size of `2n` and a RIFF size of `36 + 2n`.
+
+Tests: `a_wav_header_describes_mono_pcm16_with_its_true_sizes`
+
+### R22 A streamed WAV header marks its length unknown
+
+`wav_header(sample_rate, None)` returns the same header with `0xFFFFFFFF` as the RIFF size and as
+the data size, for a stream whose length is not known when it starts. A sample count whose sizes
+do not fit in 32 bits gets the same sizes. `decode_audio` reads such a stream to the end of its
+data.
+
+Tests: `a_streamed_wav_header_marks_both_sizes_unknown`, `a_streamed_wav_decodes_to_the_end_of_its_data`
+
+### R23 A whole WAV file
+
+`wav(sample_rate, samples)` returns the header with its true sizes followed by
+`pcm16_le_bytes(samples)`. `decode_audio` reads it back to the same number of samples, each
+within 1e-4 of the one written.
+
+Tests: `a_written_wav_is_its_header_then_pcm16_and_decodes_back_to_its_samples`
+
+### R24 Model output upsamples to playback rates
+
+One second of a 440 Hz tone at 24 kHz resampled to 48 kHz or 44.1 kHz has one second of samples
+at the new rate and, away from the edges, differs from the tone generated at that rate by an RMS
+error below 5e-3. Fed in chunks of 80 ms it gives the same samples as one pass.
+
+Tests: `model_output_upsamples_to_playback_rates`

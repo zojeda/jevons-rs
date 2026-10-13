@@ -4,9 +4,9 @@
 
 Each OS implements jevons-desktop-core's platform layers: the context, the interface reads that
 investigations, extracts and XPath use, the actions automations take, text input, the recorder,
-and the microphone. Windows has them all, through UI Automation and SendInput. Elsewhere the app
-knows the active window, captures the microphone, and leaves text on the clipboard. Platform code
-goes through safe wrapper crates only.
+the microphone and the speaker. Windows has them all, through UI Automation and SendInput.
+Elsewhere the app knows the active window, captures the microphone, plays an answer's speech, and
+leaves text on the clipboard. Platform code goes through safe wrapper crates only.
 
 ## Requirements
 
@@ -92,3 +92,20 @@ under each click and its window, and reports keys as chords (with ctrl, alt or m
 key) or typed text. Input the app sends itself (its delivery, clicks and keys) is not reported.
 
 Tests: none yet
+
+### R10 Speech plays through CPAL
+
+The speaker lists the output devices for the Settings tab, and plays on the named one, or the
+default one. A playback takes mono PCM16 at 24 kHz and returns at once: it resamples to the
+device's rate and queues the result. The device's stream runs on a thread of its own. Its
+callback never waits: it puts each queued sample on every channel of a frame, in the device's
+sample format (32-bit float, or signed or unsigned 16-bit), and fills with silence when nothing
+is queued, so speech made slower than it is heard plays on after the gap. A playback counts as
+playing until the device has taken every frame queued. Stopping or dropping it silences the
+device at once and closes the stream, and what was queued is never played. A device that fails
+or goes away ends the playback: the next speech handed to it is refused, which ends that take's
+voice ([desk](../jevons-desktop-core/desk.md) R8). A glitch (a buffer underrun) and a change of
+route the stream follows by itself do not end it: they are logged. A device with no output, a
+name no device has, or another sample format fails the start with its message.
+
+Tests: `speech_plays_in_order_on_every_channel_and_silence_when_nothing_is_queued`, `speech_is_resampled_to_the_device_s_rate`, `a_playback_that_was_stopped_or_lost_its_device_plays_no_more`, `integer_devices_get_pcm16_with_silence_where_their_format_has_it`, `a_glitch_does_not_end_the_capture_and_a_lost_device_does`

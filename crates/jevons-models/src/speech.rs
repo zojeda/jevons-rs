@@ -41,6 +41,12 @@ pub fn detect_speech(path: &Path) -> Result<SpeechArchitecture> {
     if is_speech_checkpoint(&config) {
         return Ok(SpeechArchitecture::ParakeetTdt);
     }
+    if crate::voice::is_voice_checkpoint(&config) {
+        return Err(Error::UnsupportedModel(format!(
+            "{} is a text-to-speech model; use it for services.voice",
+            dir.display()
+        )));
+    }
     Err(Error::UnsupportedModel(format!(
         "checkpoint model_type {:?} is not a supported speech model",
         config["model_type"].as_str().unwrap_or_default()

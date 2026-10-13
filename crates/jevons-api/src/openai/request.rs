@@ -59,18 +59,32 @@ fn thought_budget(effort: &str, param: &str) -> Result<usize, OpenAiError> {
 }
 
 /// Reads the fields of one request object, tracking which were used.
-struct Fields<'a> {
+pub(super) struct Fields<'a> {
     object: &'a Map<String, Value>,
     known: Vec<&'static str>,
 }
 
 impl<'a> Fields<'a> {
-    fn get(&mut self, key: &'static str) -> Option<&'a Value> {
+    /// The fields of `body`, which must be a JSON object.
+    pub(super) fn new(body: &'a Value) -> Result<Self, OpenAiError> {
+        let Some(object) = body.as_object() else {
+            return Err(OpenAiError::invalid(
+                "The request body must be a JSON object",
+                None,
+            ));
+        };
+        Ok(Self {
+            object,
+            known: Vec::new(),
+        })
+    }
+
+    pub(super) fn get(&mut self, key: &'static str) -> Option<&'a Value> {
         self.known.push(key);
         self.object.get(key).filter(|v| !v.is_null())
     }
 
-    fn string(&mut self, key: &'static str) -> Result<Option<&'a str>, OpenAiError> {
+    pub(super) fn string(&mut self, key: &'static str) -> Result<Option<&'a str>, OpenAiError> {
         match self.get(key) {
             None => Ok(None),
             Some(Value::String(s)) => Ok(Some(s)),
@@ -129,7 +143,7 @@ impl<'a> Fields<'a> {
     }
 
     /// Accepts the field only at its no-op value.
-    fn only(
+    pub(super) fn only(
         &mut self,
         key: &'static str,
         accepted: &[Value],
@@ -155,7 +169,7 @@ impl<'a> Fields<'a> {
         self.known.extend(keys);
     }
 
-    fn finish(self) -> Result<(), OpenAiError> {
+    pub(super) fn finish(self) -> Result<(), OpenAiError> {
         match self
             .object
             .keys()
@@ -344,16 +358,8 @@ fn response_input(
 
 impl OpenAiRequest {
     pub fn parse(api: Api, body: &Value) -> Result<Self, OpenAiError> {
-        let Some(object) = body.as_object() else {
-            return Err(OpenAiError::invalid(
-                "The request body must be a JSON object",
-                None,
-            ));
-        };
-        let mut f = Fields {
-            object,
-            known: Vec::new(),
-        };
+        let mut f = Fields::new(body)?;
+        let object = f.object;
         let model = f
             .string("model")?
             .ok_or_else(|| OpenAiError::invalid("model is required", Some("model")))?

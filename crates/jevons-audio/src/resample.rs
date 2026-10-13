@@ -194,6 +194,31 @@ mod tests {
     }
 
     #[test]
+    fn model_output_upsamples_to_playback_rates() {
+        // A voice model's 24 kHz, to the rates sound cards run at.
+        for to in [48000, 44100] {
+            let input = tone(24000, 440.0, 24000);
+            let output = resample(&input, 24000, to);
+            assert_eq!(output.len(), to as usize, "24000 → {to}");
+            let expected = tone(to, 440.0, to as usize);
+            let edge = 200;
+            let error = rms_error(
+                &output[edge..output.len() - edge],
+                &expected[edge..expected.len() - edge],
+            );
+            assert!(error < 5e-3, "24000 → {to}: rms error {error}");
+            // Playback feeds the resampler a chunk at a time: 80 ms here.
+            let mut resampler = Resampler::new(24000, to);
+            let mut chunked = Vec::new();
+            for chunk in input.chunks(1920) {
+                resampler.process(chunk, &mut chunked);
+            }
+            resampler.finish(&mut chunked);
+            assert_eq!(chunked, output, "24000 → {to}");
+        }
+    }
+
+    #[test]
     fn equal_rates_pass_samples_through() {
         let input = tone(16000, 100.0, 1000);
         assert_eq!(resample(&input, 16000, 16000), input);

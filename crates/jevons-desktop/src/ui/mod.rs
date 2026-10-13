@@ -1757,6 +1757,13 @@ mod tests {
     }
 
     impl jevons_desktop_protocol::desk::Desk for Held {
+        fn speak(
+            &self,
+            _: jevons_desktop_protocol::desk::Speech,
+        ) -> futures_util::future::BoxFuture<'_, Result<bool, String>> {
+            Box::pin(async { Ok(false) })
+        }
+
         fn deliver(
             &self,
             _: jevons_desktop_protocol::desk::Delivery,
@@ -2277,6 +2284,237 @@ mod tests {
         // Back to the formatted answer.
         click_text(&mut doc, ".bubble-button", "Done selecting");
         assert!(doc.query_selector("textarea").unwrap().is_none());
+    }
+
+    /// The bubble as its window shows it, at an answer's size.
+    fn bubble_doc(
+        view: Arc<Mutex<View>>,
+    ) -> (
+        DioxusDocument,
+        tokio::sync::mpsc::UnboundedReceiver<crate::agent::Command>,
+    ) {
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        let (commands, received) = tokio::sync::mpsc::unbounded_channel();
+        let mut vdom = VirtualDom::new(bubble::Bubble);
+        vdom.insert_any_root_context(Box::new(Ctx { view, commands }));
+        vdom.insert_any_root_context(Box::new(bubble::Anchor {
+            tail_x: 300.0,
+            icon_below: true,
+            width: bubble::ANSWER_SIZE.0,
+        }));
+        let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+        doc.add_user_agent_stylesheet(include_str!("bubble.css"));
+        doc.set_viewport(Viewport::new(
+            bubble::ANSWER_SIZE.0 as u32,
+            bubble::ANSWER_SIZE.1 as u32,
+            1.0,
+            ColorScheme::Dark,
+        ));
+        doc.initial_build();
+        doc.poll(None);
+        (doc, received)
+    }
+
+    #[test]
+    fn an_answer_read_aloud_offers_stop_while_the_voice_plays_and_keeps_its_buttons() {
+        use crate::agent::{BubbleAction, Command, Feedback, StageView};
+        use jevons_desktop_server::pipeline::StageKind;
+        let folder = std::env::temp_dir().join(format!("jevons-ui-spoken-{}", std::process::id()));
+        let view = Arc::new(Mutex::new(view(&folder)));
+        // The take still makes the speech: the answer is there, and the voice reads it.
+        {
+            let mut view = view.lock().unwrap();
+            view.feedback = Some(Feedback {
+                take: 4,
+                answer: true,
+                working: true,
+                status: "Speaking…".into(),
+                heard: "What time is it".into(),
+                output: "It is five o'clock.".into(),
+                window: Some(7),
+                stages: vec![StageView {
+                    kind: StageKind::Speaking,
+                    label: "voice".into(),
+                    choices: Vec::new(),
+                    detail: String::new(),
+                    chosen: None,
+                    ok: None,
+                }],
+                ..Feedback::default()
+            });
+            view.speaking = Some(4);
+        }
+        let (mut doc, mut received) = bubble_doc(view.clone());
+        let buttons = |doc: &DioxusDocument| texts(doc, ".bubble-button");
+        assert!(doc.root_element().text_content().contains("five o'clock"));
+        assert_eq!(buttons(&doc), ["Stop (Esc)"]);
+        click_text(&mut doc, ".bubble-button", "Stop");
+        assert!(matches!(
+            received.try_recv(),
+            Ok(Command::Bubble(BubbleAction::Stop))
+        ));
+        // The take has ended and the voice still plays: Stop comes first, then the answer's
+        // own buttons.
+        let refresh = |doc: &mut DioxusDocument, change: &dyn Fn(&mut View)| {
+            change(&mut view.lock().unwrap());
+            doc.vdom.mark_dirty(ScopeId::APP);
+            doc.poll(None);
+        };
+        refresh(&mut doc, &|view| {
+            let feedback = view.feedback.as_mut().unwrap();
+            feedback.done = true;
+            feedback.working = false;
+            feedback.status = "Answer".into();
+        });
+        assert_eq!(
+            buttons(&doc),
+            [
+                "Stop (Esc)",
+                "Close",
+                "Insert",
+                "Select text",
+                "Copy raw",
+                "Copy"
+            ]
+        );
+        // The last word was heard, or the voice was stopped: the answer stays, without Stop.
+        refresh(&mut doc, &|view| view.speaking = None);
+        assert_eq!(
+            buttons(&doc),
+            ["Close", "Insert", "Select text", "Copy raw", "Copy"]
+        );
+        assert!(doc.root_element().text_content().contains("five o'clock"));
+        // The voice reads another take's answer: this bubble has nothing to stop.
+        refresh(&mut doc, &|view| view.speaking = Some(9));
+        assert!(!buttons(&doc).iter().any(|b| b.starts_with("Stop")));
+        // A task's conversation offers it the same way.
+        refresh(&mut doc, &|view| {
+            view.feedback.as_mut().unwrap().task = true;
+            view.speaking = Some(4);
+        });
+        assert_eq!(buttons(&doc)[0], "Stop (Esc)");
+    }
+
+    /// The Settings tab alone, with the window's own page around it.
+    fn settings_root() -> Element {
+        rsx! { settings::SettingsPage { rev: REV.fetch_add(1, Ordering::Relaxed) } }
+    }
+
+    #[test]
+    fn the_voice_card_turns_speaking_off_and_names_the_device_and_what_serves_it() {
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        use jevons_desktop_core::platform::AudioDevice;
+        let folder = std::env::temp_dir().join(format!("jevons-ui-voice-{}", std::process::id()));
+        let page = |change: &dyn Fn(&mut View)| {
+            let mut state = view(&folder);
+            state.speakers = vec![
+                AudioDevice {
+                    name: "Speakers".into(),
+                    default: true,
+                },
+                AudioDevice {
+                    name: "Headphones".into(),
+                    default: false,
+                },
+            ];
+            change(&mut state);
+            let (commands, _received) = tokio::sync::mpsc::unbounded_channel();
+            let mut vdom = VirtualDom::new(settings_root);
+            vdom.insert_any_root_context(Box::new(Ctx {
+                view: Arc::new(Mutex::new(state)),
+                commands,
+            }));
+            let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+            doc.add_user_agent_stylesheet(include_str!("style.css"));
+            doc.set_viewport(Viewport::new(1000, 5000, 1.0, ColorScheme::Dark));
+            doc.initial_build();
+            doc.poll(None);
+            doc
+        };
+        let card = |doc: &DioxusDocument| texts(doc, ".dx-card[data-card=\"voice\"]").join(" ");
+        let switched_on = |doc: &DioxusDocument| {
+            doc.query_selector(".dx-card[data-card=\"voice\"] .dx-switch[data-state=\"checked\"]")
+                .unwrap()
+                .is_some()
+        };
+        // The defaults: answers are read aloud on the default device, once something serves
+        // the voice.
+        let mut doc = page(&|_| {});
+        let text = card(&doc);
+        assert!(
+            text.contains("Speak answers")
+                && text.contains("Default output device")
+                && text.contains("Nothing serves the voice yet"),
+            "{text}"
+        );
+        assert!(switched_on(&doc));
+        // The switch mutes every leaf's voice.
+        click_text(
+            &mut doc,
+            ".dx-card[data-card=\"voice\"] .switch-row",
+            "Read aloud",
+        );
+        assert!(!switched_on(&doc));
+        // Settings that name a device and a voice on another provider say where the text goes.
+        let mut doc = page(&|view| {
+            view.config.voice.output = Some("Headphones".into());
+            view.config.providers.insert(
+                "cloud".into(),
+                crate::config::Provider {
+                    url: Some("https://tts.example".into()),
+                    ..crate::config::Provider::of(crate::config::ProviderKind::OpenaiCompatible)
+                },
+            );
+            view.config.routes.voice = Some(crate::config::RouteTo {
+                provider: "cloud".into(),
+                model: Some("tts-1".into()),
+                voice: Some("nova".into()),
+            });
+            view.served.insert("voice", "cloud/tts-1".into());
+        });
+        let text = card(&doc);
+        assert!(
+            text.contains("Headphones")
+                && text.contains("The voice route goes to cloud")
+                && !text.contains("Nothing serves the voice yet"),
+            "{text}"
+        );
+        // Text fields get their text when the page is laid out.
+        doc.resolve(0.0);
+        let voice = doc
+            .query_selector(".dx-card[data-card=\"voice\"] input")
+            .unwrap()
+            .expect("the voice's name");
+        let typed = doc
+            .get_node(voice)
+            .unwrap()
+            .element_data()
+            .unwrap()
+            .text_input_data()
+            .unwrap()
+            .editor
+            .text()
+            .to_string();
+        assert_eq!(typed, "nova");
+        // A device that is not connected now is still the one the settings name.
+        let doc = page(&|view| view.config.voice.output = Some("Dock".into()));
+        assert!(card(&doc).contains("Dock (not connected)"));
+        // The app's own voice model lists its voices: one is chosen, not typed.
+        let doc = page(&|view| {
+            view.served
+                .insert("voice", "embedded/qwen3-tts-12hz-0.6b-base".into());
+            view.voices = Some(crate::runtime::Voices {
+                names: vec!["lector".into(), "reader".into()],
+                default: "lector".into(),
+            });
+        });
+        let text = card(&doc);
+        assert!(text.contains("The model's own (lector)"), "{text}");
+        assert!(
+            doc.query_selector(".dx-card[data-card=\"voice\"] input")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

@@ -133,9 +133,11 @@ Tests: `greedy_reads_each_rows_argmax_and_its_probability`
 ### R14 CPU device for tests
 
 The `flex` feature enables Burn's CPU device. The building blocks run there with Burn's own matmul,
-so model crates test their layers without a GPU.
+so model crates test their layers without a GPU. `kernels::on_cube` tells a CubeCL device from the
+CPU device, so a model crate loads FP16 weights for the tuned GEMM on one and f32 weights on the
+other.
 
-Tests: `rms_norm_scales_rows_to_unit_rms_times_weight`, `kv_cache_writes_positions_and_views_a_prefix`
+Tests: `rms_norm_scales_rows_to_unit_rms_times_weight`, `kv_cache_writes_positions_and_views_a_prefix`, `the_cpu_device_is_not_a_cubecl_device`
 
 ### R15 A release guard returns a dropped model's memory
 

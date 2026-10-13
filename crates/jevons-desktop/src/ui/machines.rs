@@ -171,6 +171,7 @@ fn doing(stages: &[StageView]) -> Option<String> {
         StageKind::Writing => "writing".into(),
         StageKind::Answering => "answering".into(),
         StageKind::Calling => format!("calling {}", open.label),
+        StageKind::Speaking => "speaking".into(),
     };
     Some(if open.detail.is_empty() {
         what

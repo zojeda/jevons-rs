@@ -1,6 +1,6 @@
 //! The desk: what the server asks of the client, which sits where the user is. The server
-//! decides what to do with a take; only the client can type into the user's window, ask them,
-//! read their screen and act on their applications.
+//! decides what to do with a take; only the client can type into the user's window, speak to
+//! them, ask them, read their screen and act on their applications.
 //!
 //! Every call carries plain data and answers with plain data, so the same calls can travel
 //! between processes. A client that cannot do something says so in its answer: nothing here
@@ -21,6 +21,16 @@ pub struct Delivery {
     /// The handle of the window the take started in: the text goes nowhere else.
     pub window: u64,
     pub request: DeliveryRequest,
+}
+
+/// A stretch of an answer's speech: mono PCM16 at
+/// [`SAMPLE_RATE`](crate::delivery::SAMPLE_RATE). An answer comes as several, in order.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Speech {
+    pub take: u64,
+    pub samples: Vec<i16>,
+    /// The answer's last stretch: nothing follows it. It may hold no samples.
+    pub last: bool,
 }
 
 /// A tool call the user must approve before it runs.
@@ -112,6 +122,12 @@ pub trait Desk: Send + Sync {
     fn deliver(&self, delivery: Delivery)
     -> BoxFuture<'_, Result<Option<DeliveryOutcome>, String>>;
 
+    /// Queues a stretch of speech to play. It answers once the stretch is queued, long before
+    /// it is heard. False: the desk is not speaking this take (it has no speaker, the user
+    /// muted or stopped it, the microphone is open, or a newer take speaks), and the stretches
+    /// after it would answer the same.
+    fn speak(&self, speech: Speech) -> BoxFuture<'_, Result<bool, String>>;
+
     /// Asks the user whether a tool may run.
     fn confirm(&self, ask: Ask) -> BoxFuture<'_, bool>;
 
@@ -163,13 +179,17 @@ pub fn unread(read: &Read, note: &str) -> Extracted {
     }
 }
 
-/// A desk with no one at it: nothing is delivered, confirmed, read or run. Headless checks
-/// and tests of the server alone use it.
+/// A desk with no one at it: nothing is delivered, spoken, confirmed, read or run. Headless
+/// checks and tests of the server alone use it.
 pub struct Nobody;
 
 impl Desk for Nobody {
     fn deliver(&self, _: Delivery) -> BoxFuture<'_, Result<Option<DeliveryOutcome>, String>> {
         Box::pin(async { Ok(None) })
+    }
+
+    fn speak(&self, _: Speech) -> BoxFuture<'_, Result<bool, String>> {
+        Box::pin(async { Ok(false) })
     }
 
     fn confirm(&self, _: Ask) -> BoxFuture<'_, bool> {
@@ -239,6 +259,11 @@ impl Desk for Seat {
     ) -> BoxFuture<'_, Result<Option<DeliveryOutcome>, String>> {
         let desk = self.now();
         Box::pin(async move { desk.deliver(delivery).await })
+    }
+
+    fn speak(&self, speech: Speech) -> BoxFuture<'_, Result<bool, String>> {
+        let desk = self.now();
+        Box::pin(async move { desk.speak(speech).await })
     }
 
     fn confirm(&self, ask: Ask) -> BoxFuture<'_, bool> {

@@ -1,13 +1,17 @@
 //! Endpoint behavior and conversion from HTTP input to validated requests.
 
 use crate::openai::{
-    Api, Body, OpenAiError, OpenAiRequest, TranscriptStream, TranscriptionRequest,
+    Api, Body, OpenAiError, OpenAiRequest, SpeechAudio, SpeechRequest, TranscriptStream,
+    TranscriptionRequest,
 };
 use crate::system_one::ValidationError;
-use crate::workers::{diffusion::Update, speech};
-use crate::{AppState, DiffusionService, MAX_AUDIO_BYTES, SpeechService, error::ApiError};
+use crate::workers::{diffusion::Update, speech, voice};
+use crate::{
+    AppState, DiffusionService, MAX_AUDIO_BYTES, SpeechService, VoiceService, error::ApiError,
+};
 use axum::{
     Json,
+    body::Body as ResponseBody,
     extract::{
         Multipart, Query, State,
         multipart::{MultipartError, MultipartRejection},
@@ -33,7 +37,8 @@ pub(super) async fn health(State(state): State<AppState>) -> Result<Json<Value>,
         .as_ref()
         .is_none_or(|s| s.worker.is_alive())
         && state.decision.as_ref().is_none_or(|s| s.worker.is_alive())
-        && state.speech.as_ref().is_none_or(|s| s.worker.is_alive());
+        && state.speech.as_ref().is_none_or(|s| s.worker.is_alive())
+        && state.voice.as_ref().is_none_or(|s| s.worker.is_alive());
     if !alive {
         return Err(ApiError::unavailable());
     }
@@ -43,7 +48,15 @@ pub(super) async fn health(State(state): State<AppState>) -> Result<Json<Value>,
             "generative": state.generative.as_ref().map(|s| &s.model_id),
             "decision": state.decision.as_ref().map(|s| &s.model_id),
             "speech": state.speech.as_ref().map(|s| &s.model_id),
+            "voice": state.voice.as_ref().map(|s| &s.model_id),
         },
+        // What a client needs to ask the voice model for speech and to play its answer.
+        "voice": state.voice.as_ref().map(|s| json!({
+            "voices": s.info.voices,
+            "default_voice": s.default_voice,
+            "languages": s.info.languages,
+            "sample_rate": s.info.sample_rate,
+        })),
     })))
 }
 
@@ -58,6 +71,9 @@ pub(super) async fn models(State(state): State<AppState>) -> Json<Value> {
     }
     if let Some(speech) = &state.speech {
         models.push((&speech.model_id, &speech.aliases, &speech.description));
+    }
+    if let Some(voice) = &state.voice {
+        models.push((&voice.model_id, &voice.aliases, &voice.description));
     }
     let names: Vec<(&str, &str)> = models
         .iter()
@@ -438,6 +454,96 @@ type TranscriptState = (
     UnboundedReceiver<speech::Update>,
     TranscriptStream,
     Vec<crate::openai::Event>,
+    bool,
+);
+
+pub(super) async fn audio_speech(
+    State(state): State<AppState>,
+    body: Result<Json<Value>, JsonRejection>,
+) -> Response {
+    match speak(&state, body).await {
+        Ok(response) => response,
+        Err(error) => error.openai().into_response(),
+    }
+}
+
+/// `POST /v1/audio/speech`: the text spoken by the voice model, as a body that streams while
+/// the model speaks.
+async fn speak(
+    state: &AppState,
+    body: Result<Json<Value>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    let Json(value) = body.map_err(|rejection| {
+        OpenAiError::new(
+            rejection.status().as_u16(),
+            "invalid_request_error",
+            rejection.body_text(),
+        )
+    })?;
+    let request = SpeechRequest::parse(&value)?;
+    let service: &VoiceService = state
+        .voice
+        .as_ref()
+        .filter(|s| s.serves(&request.model))
+        .ok_or_else(|| model_not_found(&request.model))?;
+    request.check(&service.info, service.max_input_chars)?;
+    let audio = request.audio(service.info.sample_rate);
+    let mut updates = service
+        .worker
+        .speak(request.input, request.voice, request.language)?;
+    // Wait for the first update so that a text the model cannot speak fails with a status.
+    let first = updates.recv().await.ok_or_else(ApiError::unavailable)?;
+    if let voice::Update::Done(Err(error)) = first {
+        return Err(failure(error, "Speech failed").into());
+    }
+    let content_type = audio.content_type();
+    let opening = audio.start();
+    let pieces = futures_util::stream::unfold(
+        (updates, audio, Some(first), opening, false),
+        |(mut updates, mut audio, mut next, mut pending, mut done): SpeechState| async move {
+            loop {
+                if !pending.is_empty() {
+                    let piece = std::mem::take(&mut pending);
+                    return Some((Ok(piece), (updates, audio, next, pending, done)));
+                }
+                if done {
+                    return None;
+                }
+                let update = match next.take() {
+                    Some(update) => update,
+                    None => updates.recv().await.unwrap_or_else(|| {
+                        voice::Update::Done(Err(Error::Backend("the worker stopped".into())))
+                    }),
+                };
+                match update {
+                    voice::Update::Audio(samples) => pending = audio.chunk(&samples),
+                    voice::Update::Done(Ok(_)) => {
+                        done = true;
+                        pending = audio.finish();
+                    }
+                    voice::Update::Done(Err(error)) => {
+                        // The status and the first audio have left: break the body off, so
+                        // the client can tell this answer from a whole one.
+                        tracing::error!(error = %error, "Speech failed after its audio started");
+                        let broken = std::io::Error::other("speech failed");
+                        return Some((Err(broken), (updates, audio, next, pending, true)));
+                    }
+                }
+            }
+        },
+    );
+    Ok((
+        [(header::CONTENT_TYPE, content_type)],
+        ResponseBody::from_stream(pieces),
+    )
+        .into_response())
+}
+
+type SpeechState = (
+    UnboundedReceiver<voice::Update>,
+    SpeechAudio,
+    Option<voice::Update>,
+    Vec<u8>,
     bool,
 );
 

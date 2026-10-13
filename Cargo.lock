@@ -2547,8 +2547,6 @@ dependencies = [
 [[package]]
 name = "cubecl-environment"
 version = "0.11.0-pre.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ce6acca16be43e3866009fee78f5839071039bfe4ac8a20597b4f5443f79103"
 dependencies = [
  "async-channel",
  "backtrace",
@@ -5930,6 +5928,7 @@ dependencies = [
  "jevons-diffusion",
  "jevons-generative",
  "jevons-speech",
+ "jevons-voice",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -6198,6 +6197,7 @@ dependencies = [
  "jevons-gemma4-diffusion",
  "jevons-nemotron-diffusion",
  "jevons-parakeet",
+ "jevons-qwen3-tts",
  "serde_json",
 ]
 
@@ -6227,6 +6227,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "jevons-qwen3-tts"
+version = "0.1.0"
+dependencies = [
+ "burn",
+ "burn-cubecl",
+ "cubecl",
+ "half",
+ "jevons-burn",
+ "jevons-core",
+ "jevons-formats",
+ "jevons-kernels",
+ "jevons-tokenizer",
+ "serde",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "jevons-rs"
 version = "0.1.0"
 dependencies = [
@@ -6253,6 +6272,14 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokenizers",
+]
+
+[[package]]
+name = "jevons-voice"
+version = "0.1.0"
+dependencies = [
+ "jevons-core",
+ "jevons-models",
 ]
 
 [[package]]

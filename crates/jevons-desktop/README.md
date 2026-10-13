@@ -8,7 +8,7 @@ It runs the jevons models in-process, optionally exposing the API on a port, or 
 
 ## The tray icon
 
-<img src="assets/tray.png" alt="Tray states: ready, loading, tuning, no models, failed, listening (quiet and loud), transcribing, writing" width="680">
+<img src="assets/tray.png" alt="Tray states: ready, loading, tuning, no models, failed, listening (quiet and loud), transcribing, writing, speaking (three frames)" width="900">
 
 From left to right:
 - **Ready** (cyan): the models are loaded.
@@ -19,6 +19,7 @@ From left to right:
 - **Listening:** the waveform follows your voice.
 - **Transcribing:** green dots.
 - **Writing:** violet dots, while the decision and generation run.
+- **Speaking:** a cyan waveform that moves by itself, while an answer is read aloud.
 
 The tray and taskbar icon is drawn in code (`jevons-desktop-core::icons`), simplified from the [artwork](assets/jevons.png) so it stays legible at 16–32 px. To regenerate the images after changing it:
 

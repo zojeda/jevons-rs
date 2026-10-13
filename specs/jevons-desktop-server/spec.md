@@ -2,12 +2,12 @@
 
 ## Purpose
 
-`jevons-desktop-server` is what is done with a take. It transcribes what the user said through
-its speech route, moves the machines, walks the flow tree and decides, generates, and asks the
-client for what only the client can do: type the text, ask the user, read the screen, run its own
-tools. It also routes each capability to its inference provider and forwards the API to other
-clients. It is in the app's process today, behind a trait, and is built to move to a process of
-its own.
+`jevons-desktop-server` is what is done with a take. It transcribes what the user said through its
+speech route, moves the machines, walks the flow tree and decides, generates, and asks the client
+for what only the client can do: type the text, read an answer aloud, ask the user, read the screen,
+run its own tools. It also routes each capability to its inference provider and forwards the API to
+other clients. It is in the app's process today, behind a trait, and is built to move to a process
+of its own.
 
 ## Scope
 
@@ -16,7 +16,8 @@ It owns:
 - the flow tree in `flow/`: node files, the loader and its checks, guards, the walker, machines
   and their host, `[extract]` and `[investigate]` orchestration, the context investigator's model
   loop, the tool host and the built-in tree;
-- the take pipeline (`pipeline`): transcription, the machines, the walk and its trace;
+- the take pipeline (`pipeline`): transcription, the machines, the walk, the delivery of its
+  text, an answer's speech, and the trace;
 - the typed API client, each capability's route and its provider's profile, and the API log
   (`client`); the forwarder that serves other clients (`forward`);
 - the server's settings (`config`): providers and routes, the exposed API, the embedded
@@ -26,11 +27,12 @@ It leaves:
 
 - everything at the user's desk to the client, `jevons-desktop-core`, which it reaches only
   through the `Desk` trait of [jevons-desktop-protocol](../jevons-desktop-protocol/spec.md):
-  delivering text, confirming a tool, reading the interface, an investigation's elements and
-  remembered paths, and the automations library;
+  delivering text, playing speech, confirming a tool, reading the interface, an investigation's
+  elements and remembered paths, and the automations library;
 - the engine that moves a machine to [jevons-machine](../jevons-machine/spec.md);
 - inference to its providers (`jevons-api` embedded, a jevons server, OpenRouter), reached over
-  HTTP through `client`.
+  HTTP through `client`. The server makes no sound: the voice route gives it speech as samples,
+  and the client plays them.
 
 It does not depend on `jevons-desktop-core`. Its tests do, as a dev-dependency: the pipeline suite
 runs against the client core's desk over fakes.
@@ -43,40 +45,41 @@ runs against the client core's desk over fakes.
 | [machines](machines.md) | Machine folders (`root.toml`, `agent.toml`, `task.toml`) and their checks, the host of the forest across takes and timers |
 | [investigator](investigator.md) | The context investigator: the model loop, its tools as steps asked of the desk, its answer |
 | [tools](tools.md) | The tool host: built-in tools, MCP servers, the client's tools and confirmations |
-| [pipeline](pipeline.md) | One take from its audio to delivery, live dictation |
+| [pipeline](pipeline.md) | One take from its audio to delivery, live dictation, an answer read aloud |
 | this file | The session a client's takes run in, its timers, and the host that serves it over a stream |
-| [client](client.md) | Typed requests to the jevons API and other providers, each capability's route and its provider's profile, forwarding for other clients, the API log |
+| [client](client.md) | Typed requests to the jevons API and other providers, speech among them, each capability's route and its provider's profile, forwarding for other clients, the API log |
 
 ## Requirements
 
 ### R1 The server reaches the client only through the desk
 
-A take's environment holds a `Desk`. The walker and the pipeline deliver text, confirm tool calls
-and read extracts by asking it; the investigator asks it for each navigation step; the tool host
-lists the client's tools from it and passes each call on. The crate links no platform layer and
-no client code.
+A take's environment holds a `Desk`. The walker and the pipeline deliver text, play an answer's
+speech, confirm tool calls and read extracts by asking it; the investigator asks it for each
+navigation step; the tool host lists the client's tools from it and passes each call on. The crate
+links no platform layer and no client code.
 
-Tests: `each_capability_goes_to_its_own_provider`, `an_investigation_navigates_answers_and_remembers_the_path`, `automations_are_script_tools_that_ask_and_respect_allow`, `a_tool_node_fills_its_arguments_asks_and_answers_with_the_result`
+Tests: `each_capability_goes_to_its_own_provider`, `an_investigation_navigates_answers_and_remembers_the_path`, `automations_are_script_tools_that_ask_and_respect_allow`, `a_tool_node_fills_its_arguments_asks_and_answers_with_the_result`, `an_answer_is_read_aloud_a_stretch_at_a_time_and_shown_too`
 
 ### R2 With no one at the desk a take still runs
 
 With the protocol's `Nobody`, a take is transcribed, routed and traced: the text is only recorded,
-a tool that asks first is declined, an extract is empty with its note, and an investigation
-answers empty with "No context investigator is available here" without asking the model.
+an answer that would be read aloud is shown, a tool that asks first is declined, an extract is
+empty with its note, and an investigation answers empty with "No context investigator is
+available here" without asking the model.
 
-Tests: `a_desk_that_cannot_look_answers_empty_with_its_note`, `a_declined_tool_call_takes_the_denied_transition`
+Tests: `a_desk_that_cannot_look_answers_empty_with_its_note`, `a_declined_tool_call_takes_the_denied_transition`, `a_desk_that_stops_ends_the_request_and_what_it_took_counts_as_spoken`
 
 ### R3 A session holds what a client's takes run with
 
 A session is opened with the client's desk, the flow tree and the client's settings for its takes
-(the language, whether to ask the decision model, the most tokens a generation writes). The
-server's own parts change under it: the routes as providers answer, the flow tree as the folder
-changes, the tools as the settings do. A take, live dictation, a take from text and a
-transcription alone are each one call on it, and so are cancelling every task or one. The
+(the language, whether to ask the decision model, the most tokens a generation writes, whether a
+take may speak). The server's own parts change under it: the routes as providers answer, the flow
+tree as the folder changes, the tools as the settings do. A take, live dictation, a take from text
+and a transcription alone are each one call on it, and so are cancelling every task or one. The
 machines are the session's and live across its takes. Without a route it is not ready, and the
 client does not start a take.
 
-Tests: `a_session_runs_a_timer_s_take_by_itself_and_tells_the_client`
+Tests: `a_session_runs_a_timer_s_take_by_itself_and_tells_the_client`, `an_answer_s_speech_crosses_the_stream_to_the_client_s_speaker`
 
 ### R4 A machine's timer is the session's to run
 

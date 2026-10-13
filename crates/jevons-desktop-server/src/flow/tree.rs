@@ -30,6 +30,9 @@ pub const MAX_DEPTH: usize = 8;
 pub const MAX_MODEL_DECISIONS: usize = 4;
 /// A decision's most branches (System One's most choices).
 pub const MAX_BRANCHES: usize = 128;
+/// Why a node that is not a generation cannot answer aloud.
+const VOICE_ONLY_GENERATES: &str =
+    "output = \"voice\" is for generate.toml: only what the language model writes is read aloud";
 
 /// The node file names and their kinds. A machine is `root.toml` at the flows root,
 /// `agent.toml` in a root state's folder and `task.toml` below an agent.
@@ -1330,11 +1333,21 @@ impl Loader<'_> {
                 if g.action.is_some_and(|a| a != Action::Insert) && output != Some(Output::Target) {
                     self.error(file, "`action` applies only to output = \"target\"");
                 }
+                if output == Some(Output::Voice) && g.schema.is_some() {
+                    self.error(
+                        file,
+                        "output = \"voice\" reads the answer aloud, and nobody listens to \
+                         JSON: drop `schema`, or use another output",
+                    );
+                }
             }
             NodeSpec::Transcript(t) => {
                 no_branches(self, "a transcript node is a leaf");
                 if output == Some(Output::Next) {
                     self.error(file, "output = \"next\" is for tools and agents");
+                }
+                if output == Some(Output::Voice) {
+                    self.error(file, VOICE_ONLY_GENERATES);
                 }
                 if t.action == Some(Action::Rewrite) {
                     self.error(
@@ -1399,6 +1412,9 @@ impl Loader<'_> {
                 {
                     self.check_arguments(file, &t.tool, &parameters, t.args.keys());
                 }
+                if output == Some(Output::Voice) {
+                    self.error(file, VOICE_ONLY_GENERATES);
+                }
                 self.check_next(file, output, &children);
             }
             NodeSpec::Run(r) => {
@@ -1413,6 +1429,9 @@ impl Loader<'_> {
                     if let Some(why) = why {
                         self.error(file, format!("automations: {why}"));
                     }
+                }
+                if output == Some(Output::Voice) {
+                    self.error(file, VOICE_ONLY_GENERATES);
                 }
                 self.check_next(file, output, &children);
             }
@@ -2058,6 +2077,51 @@ mod tests {
             "{:?}",
             errors(&deep)
         );
+    }
+
+    #[test]
+    fn only_a_generation_without_a_schema_answers_aloud() {
+        // A generation may, as a branch or as a state's work.
+        let spoken = tree(&[
+            ("decide.toml", "fallback = \"a\""),
+            (
+                "a/generate.toml",
+                "description = \"a\"\noutput = \"voice\"\nprompt = \"{transcript}\"",
+            ),
+        ]);
+        assert!(spoken.is_valid(), "{:?}", errors(&spoken));
+        let a = spoken.find("a").unwrap();
+        assert_eq!(spoken.node(a).spec.output(), Some(Output::Voice));
+        // Nobody listens to JSON.
+        let shaped = tree(&[(
+            "generate.toml",
+            "output = \"voice\"\n[schema]\nkind = \"web | news\"",
+        )]);
+        let e = errors(&shaped);
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert!(
+            e[0].contains("generate.toml: output = \"voice\" reads the answer aloud")
+                && e[0].contains("drop `schema`"),
+            "{e:?}"
+        );
+        // The words as heard, a tool's result and an automation's are not read aloud.
+        for (file, text) in [
+            ("transcript.toml", "output = \"voice\""),
+            ("tool.toml", "tool = \"search\"\noutput = \"voice\""),
+            ("run.toml", "output = \"voice\""),
+        ] {
+            let other = tree(&[(file, text)]);
+            let e = errors(&other);
+            assert!(
+                e.iter().any(
+                    |m| m.contains(&format!("{file}: output = \"voice\" is for generate.toml"))
+                ),
+                "{file}: {e:?}"
+            );
+        }
+        // A key the output does not have is still an error with its line.
+        let unknown = tree(&[("generate.toml", "output = \"speech\"")]);
+        assert!(!unknown.is_valid());
     }
 
     #[test]

@@ -1,0 +1,6 @@
+{
+  "model": "qwen3-tts-latest",
+  "input": "Hola. El total es $1.500, y la reunión empieza a las 15:30. The build finished in 42 seconds.",
+  "voice": "lector",
+  "response_format": "wav"
+}

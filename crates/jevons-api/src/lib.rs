@@ -1,11 +1,12 @@
-//! The API layer: HTTP and WebSocket routes over the three services, with authentication,
+//! The API layer: HTTP and WebSocket routes over the four services, with authentication,
 //! settings, and bounded queues into the threads that own the models.
 //!
 //! - [`openai`]: OpenAI Chat Completions, Completions and Responses (Generative), audio
-//!   transcriptions and Realtime transcription sessions (Speech).
+//!   transcriptions and Realtime transcription sessions (Speech), and audio speech (Voice).
 //! - [`system_one`]: the System One wire contract, compiled into Decision reads.
 //! - [`workers`]: one thread per loaded model. The diffusion worker serves both Generative and
-//!   Decision jobs on one engine; the speech worker runs live passes before uploads.
+//!   Decision jobs on one engine; the speech worker runs live passes before uploads; the voice
+//!   worker streams a speech's audio as the model produces it.
 #![forbid(unsafe_code)]
 
 pub mod config;
@@ -20,6 +21,7 @@ pub mod system_one;
 pub mod workers;
 
 pub use http::{
-    AppState, DiffusionService, MAX_AUDIO_BYTES, MAX_BODY_BYTES, SpeechService, router,
+    AppState, DiffusionService, MAX_AUDIO_BYTES, MAX_BODY_BYTES, SpeechService, VoiceService,
+    router,
 };
-pub use server::{Workers, load, run, serve};
+pub use server::{Loaded, Service, Unserved, Workers, load, load_optional, run, serve};

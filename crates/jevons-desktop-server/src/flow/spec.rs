@@ -134,6 +134,9 @@ pub enum Output {
     Target,
     /// Shown in the feedback bubble by the tray icon, with Copy and Insert.
     Bubble,
+    /// Read aloud, and shown in the bubble too; for `generate.toml` alone. It is `bubble`
+    /// where nothing serves the voice, or where the user turned it off.
+    Voice,
     /// Onto the clipboard.
     Clipboard,
     /// Nowhere (for flows run only for a tool's side effect).
@@ -181,7 +184,7 @@ node_spec! {
 node_spec! {
     /// `generate.toml`: a leaf that writes text with the generative model.
     pub struct GenerateSpec {
-        /// `target` (the default), `bubble`, `clipboard` or `none`.
+        /// `target` (the default), `bubble`, `voice`, `clipboard` or `none`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub output: Option<Output>,
         /// With `output = "target"`: `insert` at the cursor (the default), `replace` the selection,
@@ -192,7 +195,8 @@ node_spec! {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub prompt: Option<String>,
         /// The answer's shape, written as an investigation's `schema`: the model answers in
-        /// JSON, and what reads the result reads its fields, such as `{state.field}`.
+        /// JSON, and what reads the result reads its fields, such as `{state.field}`. Not with
+        /// `output = "voice"`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(with = "Option<serde_json::Value>")]
         pub schema: Option<toml::Value>,

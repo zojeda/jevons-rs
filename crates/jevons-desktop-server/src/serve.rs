@@ -35,6 +35,7 @@ fn settings(of: &TakeSettings) -> Settings {
         language: of.language.clone(),
         decide: of.decide,
         max_output_tokens: of.max_output_tokens,
+        voice: of.voice,
         ..Settings::default()
     }
 }

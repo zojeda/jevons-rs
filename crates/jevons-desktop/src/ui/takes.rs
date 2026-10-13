@@ -60,15 +60,7 @@ impl PartialEq for TraceProp {
 fn TakeItem(trace: TraceProp) -> Element {
     let trace = trace.0;
     let turn = trace.turn.map_or(String::new(), |t| format!(".{t} live"));
-    let (status, style) = match &trace.error {
-        Some(_) => ("failed", "destructive"),
-        None if matches!(trace.delivery, Some(DeliveryOutcome::OnClipboard { .. })) => {
-            ("clipboard", "warning")
-        }
-        None if trace.delivery == Some(DeliveryOutcome::Shown) => ("answered", "success"),
-        None if trace.output.is_empty() => ("nothing typed", "secondary"),
-        None => ("typed", "success"),
-    };
+    let (status, style) = outcome(&trace);
     let title = format!(
         "#{}{turn} · {} · {} · {:.1} s",
         trace.take,
@@ -127,6 +119,7 @@ fn TakeItem(trace: TraceProp) -> Element {
                 DeliveryOutcome::Delivered { method } => format!("{method:?}"),
                 DeliveryOutcome::OnClipboard { reason } => format!("on the clipboard: {reason}"),
                 DeliveryOutcome::Shown => "shown in the bubble".into(),
+                DeliveryOutcome::Spoken => "read aloud".into(),
             },
         ));
     }
@@ -165,6 +158,18 @@ fn TakeItem(trace: TraceProp) -> Element {
     }
 }
 
+/// How a take ended, in a word for its badge, and the badge's style.
+fn outcome(trace: &Trace) -> (&'static str, &'static str) {
+    match (&trace.error, &trace.delivery) {
+        (Some(_), _) => ("failed", "destructive"),
+        (None, Some(DeliveryOutcome::OnClipboard { .. })) => ("clipboard", "warning"),
+        (None, Some(DeliveryOutcome::Shown)) => ("answered", "success"),
+        (None, Some(DeliveryOutcome::Spoken)) => ("spoken", "success"),
+        (None, _) if trace.output.is_empty() => ("nothing typed", "secondary"),
+        (None, _) => ("typed", "success"),
+    }
+}
+
 /// How long ago a take started, such as "just now", "12 min ago" or "3 h ago".
 fn ago(started_at_ms: u64) -> String {
     let now = std::time::SystemTime::now()
@@ -176,5 +181,50 @@ fn ago(started_at_ms: u64) -> String {
         60..3600 => format!("{} min ago", seconds / 60),
         3600..86_400 => format!("{} h ago", seconds / 3600),
         _ => format!("{} d ago", seconds / 86_400),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jevons_desktop_core::platform::DeliveryMethod;
+    use jevons_desktop_server::pipeline::TakeStart;
+
+    #[test]
+    fn a_take_s_badge_says_how_it_ended() {
+        let start = TakeStart {
+            id: 1,
+            context: Default::default(),
+            entry: None,
+        };
+        let ended = |delivery: Option<DeliveryOutcome>, output: &str, error: Option<&str>| {
+            let mut trace = Trace::new(&start);
+            trace.delivery = delivery;
+            trace.output = output.into();
+            trace.error = error.map(String::from);
+            outcome(&trace).0
+        };
+        let typed = DeliveryOutcome::Delivered {
+            method: DeliveryMethod::Paste,
+        };
+        assert_eq!(ended(Some(typed), "Hello.", None), "typed");
+        // An answer read aloud is no text typed into the application.
+        assert_eq!(
+            ended(Some(DeliveryOutcome::Spoken), "It is five.", None),
+            "spoken"
+        );
+        assert_eq!(
+            ended(Some(DeliveryOutcome::Shown), "It is five.", None),
+            "answered"
+        );
+        let copied = DeliveryOutcome::OnClipboard {
+            reason: "the window changed".into(),
+        };
+        assert_eq!(ended(Some(copied), "Hello.", None), "clipboard");
+        assert_eq!(ended(None, "", None), "nothing typed");
+        assert_eq!(
+            ended(Some(DeliveryOutcome::Spoken), "It is five.", Some("no")),
+            "failed"
+        );
     }
 }

@@ -244,10 +244,46 @@ impl Checkpoint {
         crate::io::read_exact_at(&shard.file, out, info.offset).map_err(io(&shard.path))
     }
 
+    /// Reads `out.len()` bytes of a tensor starting `offset` bytes into it, such as a few rows
+    /// of an embedding table too large to keep in memory.
+    pub fn read_range_into(&self, info: &TensorInfo, offset: usize, out: &mut [u8]) -> Result<()> {
+        let shard = &self.shards[info.shard];
+        if offset
+            .checked_add(out.len())
+            .is_none_or(|end| end > info.byte_len())
+        {
+            return Err(format(&shard.path, "byte range outside the tensor"));
+        }
+        crate::io::read_exact_at(&shard.file, out, info.offset + offset as u64)
+            .map_err(io(&shard.path))
+    }
+
     /// Reads a floating-point tensor widened to f32.
     pub fn read_f32(&self, name: &str) -> Result<Vec<f32>> {
         let info = self.tensor(name)?;
-        let bytes = self.read(name)?;
+        self.widen(name, info, self.read(name)?)
+    }
+
+    /// Reads the given rows of a floating-point matrix widened to f32, one after the other,
+    /// without reading the rest of it.
+    pub fn read_rows_f32(&self, name: &str, rows: &[usize]) -> Result<Vec<f32>> {
+        let info = self.tensor(name)?;
+        let path = &self.shards[info.shard].path;
+        let [count, width] = info.shape[..] else {
+            return Err(format(path, format!("{name} is not a matrix")));
+        };
+        let row_bytes = width * info.dtype.size();
+        let mut bytes = vec![0; rows.len() * row_bytes];
+        for (row, out) in rows.iter().zip(bytes.chunks_exact_mut(row_bytes.max(1))) {
+            if *row >= count {
+                return Err(format(path, format!("{name} has no row {row}")));
+            }
+            self.read_range_into(info, row * row_bytes, out)?;
+        }
+        self.widen(name, info, bytes)
+    }
+
+    fn widen(&self, name: &str, info: &TensorInfo, bytes: Vec<u8>) -> Result<Vec<f32>> {
         let path = &self.shards[info.shard].path;
         Ok(match info.dtype {
             Dtype::F32 => bytes
@@ -339,6 +375,50 @@ mod tests {
         )
         .unwrap();
         assert!(Checkpoint::open_dir(&dir).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_range_of_a_tensor_reads_without_the_rest() {
+        let dir = temp_dir("range");
+        let rows: Vec<u8> = (0u8..12).collect();
+        write(
+            &dir.join("model.safetensors"),
+            &[
+                ("pad", "F32", vec![1], vec![9; 4]),
+                ("table", "BF16", vec![3, 2], rows),
+            ],
+        );
+        let checkpoint = Checkpoint::open_dir(&dir).unwrap();
+        let table = checkpoint.tensor("table").unwrap();
+        let mut row = [0u8; 4];
+        checkpoint.read_range_into(table, 4, &mut row).unwrap();
+        assert_eq!(row, [4, 5, 6, 7]);
+        checkpoint.read_range_into(table, 8, &mut row).unwrap();
+        assert_eq!(row, [8, 9, 10, 11]);
+        let halves: Vec<u8> = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]
+            .iter()
+            .flat_map(|v| half::bf16::from_f32(*v).to_le_bytes())
+            .collect();
+        write(
+            &dir.join("model.safetensors"),
+            &[
+                ("table", "BF16", vec![3, 2], halves),
+                ("vector", "F32", vec![1], vec![0; 4]),
+            ],
+        );
+        let checkpoint = Checkpoint::open_dir(&dir).unwrap();
+        assert_eq!(
+            checkpoint.read_rows_f32("table", &[2, 0]).unwrap(),
+            [5.0, 6.0, 1.0, 2.0]
+        );
+        assert!(checkpoint.read_rows_f32("table", &[3]).is_err());
+        assert!(checkpoint.read_rows_f32("vector", &[0]).is_err());
+        let table = checkpoint.tensor("table").unwrap();
+        assert!(matches!(
+            checkpoint.read_range_into(table, 10, &mut row),
+            Err(SafetensorsError::Format { .. })
+        ));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

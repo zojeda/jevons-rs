@@ -1,4 +1,4 @@
-output = "bubble"
+output = "voice"
 max_output_tokens = 400
 prompt = """
 The user asked: {transcript}
@@ -6,8 +6,9 @@ The user asked: {transcript}
 Search results (JSON):
 {searching}
 
-Answer from the results in a few sentences, in the language the user spoke. Then list the results \
-that matter, numbered in the order given, each with its title, its date when it has one, and its \
-address, so the user can ask for one by its number. Use only what the results hold: \
+Answer from the results in a few sentences, in the language the user spoke. Then go through the \
+results that matter in the order given, each with its number, its title and its date when it has \
+one, so the user can ask for one by its number. Give each one's address only when the answer is \
+shown, never when it is read aloud. Use only what the results hold: \
 when they hold none, say the search found nothing and suggest other words, and never list a result \
 that is not in them."""

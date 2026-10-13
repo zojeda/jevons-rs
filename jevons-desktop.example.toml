@@ -1,5 +1,5 @@
-# The jevons desktop app's settings: dictation, what a take may read, and automations. The
-# Settings panel writes this file; every field is optional.
+# The jevons desktop app's settings: dictation, the voice, what a take may read, and
+# automations. The Settings panel writes this file; every field is optional.
 # Default location: the platform configuration folder (for example
 # %APPDATA%\jevons\config\jevons-desktop.toml or ~/.config/jevons/jevons-desktop.toml).
 # The server's settings (providers, models, the flows folder, tools) are in jevons-server.toml,
@@ -24,6 +24,15 @@ live_feedback = true
 # Ask the decision model at the flow tree's model decisions (off: take their fallbacks).
 decide = true
 max_output_tokens = 1024
+
+# The voice: jevons reads aloud the answers of the flow leaves that ask for it
+# (`output = "voice"`, as the built-in assistant's do), once a voice model is served. Others in
+# the room hear it. It never speaks while it listens, and it stops when you start a take.
+[voice]
+# false: those answers are shown in the bubble and nothing is said.
+speak = true
+# The output device; the default one when left out.
+# output = "Headphones"
 
 [privacy]
 max_context_chars = 2000

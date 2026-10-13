@@ -27,7 +27,7 @@ export TYPESAFE_API_KEY="local-development-key"
 cargo run --release --locked -p jevons-rs -- --config jevons.toml
 ```
 
-Complete the [ROCm setup](build.md#rocmhip) first. DiffusionGemma runs on the [CubeCL backend](cubecl.md), and Nemotron-Labs-Diffusion and Parakeet on Burn. Add a speech model and `[services.speech]` to also serve [speech to text](#speech-to-text); a server may enable any subset of the three services.
+Complete the [ROCm setup](build.md#rocmhip) first. DiffusionGemma runs on the [CubeCL backend](cubecl.md), and Nemotron-Labs-Diffusion and Parakeet on Burn. Add a speech model and `[services.speech]` to also serve [speech to text](#speech-to-text), and a voice model and `[services.voice]` for [text to speech](#text-to-speech); a server may enable any subset of the four services.
 
 If neither `server.api_key` nor `TYPESAFE_API_KEY` (or `--api-key`) is set, the server disables authentication. A configured key protects every path except `/health`. Logs include counts and timing, excluding request state and credentials. Ctrl-C and SIGTERM drain pending requests and release the models.
 
@@ -42,12 +42,13 @@ The file is `--config PATH` (or `JEVONS_CONFIG`), otherwise `./jevons.toml` or `
 | `[services.generative]` | `model` |
 | `[services.decision]` | `model` |
 | `[services.speech]` | `model`, `max_audio_seconds` (3600), `realtime` (true) |
+| `[services.voice]` | `model`, `voice` (the default voice; the first the model lists), `max_input_chars` (4096) |
 
-Every model must be used by a service. When `generative` and `decision` name the same model, it is loaded once: one engine, one worker and one queue serve both, and each request decides whether it reads the masked canvas (System One) or generates free text (OpenAI routes). Naming two different models gives each service its own model and worker, memory permitting; their IDs and aliases must differ. A model serves either language services or speech, not both, and a speech model rejects the diffusion-only keys.
+Every model must be used by a service. When `generative` and `decision` name the same model, it is loaded once: one engine, one worker and one queue serve both, and each request decides whether it reads the masked canvas (System One) or generates free text (OpenAI routes). Naming two different models gives each service its own model and worker, memory permitting; their IDs and aliases must differ. A model serves either language services, speech or voice, never two of them, and a speech or voice model rejects the diffusion-only keys.
 
 ## Routes
 
-The routes belong to the three services (see the [architecture](../README.md#architecture)). When a service is off, its OpenAI routes answer `404` with code `model_not_found`, and `/v1/systemone` answers `404` `Unknown model` in the `detail` shape (see [errors](#errors)). Without Speech or with `realtime = false`, the server has no `/v1/realtime` route and answers `404` `Unknown path` in the `detail` shape.
+The routes belong to the four services (see the [architecture](../README.md#architecture)). When a service is off, its OpenAI routes answer `404` with code `model_not_found`, and `/v1/systemone` answers `404` `Unknown model` in the `detail` shape (see [errors](#errors)). Without Speech or with `realtime = false`, the server has no `/v1/realtime` route and answers `404` `Unknown path` in the `detail` shape.
 
 | Service | Route | Purpose |
 | --- | --- | --- |
@@ -56,9 +57,10 @@ The routes belong to the three services (see the [architecture](../README.md#arc
 | Generative | `POST /v1/responses` | OpenAI Responses: free-form answers without stored state. |
 | Speech | `POST /v1/audio/transcriptions` | OpenAI transcriptions: an uploaded recording to text, subtitles or timestamps (see [speech to text](#speech-to-text)). |
 | Speech | `GET /v1/realtime` | OpenAI Realtime transcription sessions over a WebSocket. |
+| Voice | `POST /v1/audio/speech` | OpenAI speech: a text to streamed WAV or PCM audio (see [text to speech](#text-to-speech)). |
 | Decision | `POST /v1/systemone` | Evaluate `state`, `model`, and one or more `questions` ([System One guide](system-one.md)). |
 | All | `GET /v1/models` | List models: System One `models` (`name`, `description`, `release_date`) and OpenAI `data` (`id`, `object`, `created`, `owned_by`). |
-| All | `GET /health` | Check model readiness and worker availability: `status` and `services`, the model IDs serving `generative`, `decision` and `speech` (`null` for a service that is off). |
+| All | `GET /health` | Check model readiness and worker availability: `status` and `services`, the model IDs serving `generative`, `decision`, `speech` and `voice` (`null` for a service that is off), and `voice`, the voice model's voices, languages and sample rate. |
 
 ```bash
 curl http://127.0.0.1:8080/v1/systemone \
@@ -265,6 +267,59 @@ uv run examples/realtime.py examples/speech-es.flac --url ws://127.0.0.1:8080/v1
 - **Turns.** With `server_vad` (the default; `threshold`, `prefix_padding_ms`, `silence_duration_ms`), an energy detector sends `input_audio_buffer.speech_started` and `speech_stopped` and commits the turn. With `turn_detection: null` the client sends `input_audio_buffer.commit` (at least 100 ms of audio). `input_audio_buffer.clear` drops the buffer. `semantic_vad`, noise reduction and responses (`response.create`) are rejected with an `error` event.
 - **Transcripts.** While a detected turn is spoken, a pass over it runs every 0.7 seconds of audio, and the words two consecutive passes agree on arrive as `conversation.item.input_audio_transcription.delta` events for the turn's `item_id` (for the first 30 seconds of a turn). After the commit (`input_audio_buffer.committed`, `conversation.item.added`), the whole turn is transcribed and `…transcription.completed` carries the final transcript and usage, followed by `conversation.item.done`. The final transcript is authoritative: it can revise words already sent as deltas. Live passes run before queued uploads and between the windows of long ones.
 
+## Text to speech
+
+The Voice service runs a text-to-speech model on its own worker thread and queue. The supported model is Alibaba's [Qwen3-TTS 12Hz 0.6B Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base) (Apache-2.0): a Hugging Face directory with `config.json`, `vocab.json`, `merges.txt`, `model.safetensors` and its codec under `speech_tokenizer/`. It speaks ten languages (`zh`, `en`, `de`, `it`, `pt`, `es`, `ja`, `ko`, `fr`, `ru`) at 24 kHz, in the voice of a speaker vector.
+
+```toml
+[models.qwen]
+path = "~/models/qwen3-tts-12hz-0.6b-base"
+
+[services.voice]
+model = "qwen"
+voice = "reader"           # the voice of a request that names none; the model's first
+max_input_chars = 4096     # longest text of one request
+```
+
+The model is served as `qwen3-tts-12hz-0.6b-base` (change it with the model's `id`), with the alias `qwen3-tts-latest`, and `/v1/models` lists it last. A voice model serves no other service. `/health` says what a client needs to ask for speech and to play it:
+
+```json
+{"status": "ok",
+ "services": {"generative": "nemotron-diffusion-3b", "decision": "nemotron-diffusion-3b",
+              "speech": "parakeet-tdt-0.6b-v3", "voice": "qwen3-tts-12hz-0.6b-base"},
+ "voice": {"voices": ["reader", "lector"], "default_voice": "reader",
+           "languages": ["zh", "en", "de", "it", "pt", "es", "ja", "ko", "fr", "ru"],
+           "sample_rate": 24000}}
+```
+
+`voice` is `null` without a voice model.
+
+### Speech
+
+`POST /v1/audio/speech` takes OpenAI's JSON body and answers audio, so OpenAI SDKs work unchanged:
+
+```bash
+curl http://127.0.0.1:8080/v1/audio/speech \
+  -H "Authorization: Bearer $TYPESAFE_API_KEY" -H "Content-Type: application/json" \
+  --data-binary @examples/audio-speech.json --output speech.wav
+```
+
+```python
+with client.audio.speech.with_streaming_response.create(
+    model="qwen3-tts-latest", voice="lector", input="Son las 15:30.", response_format="wav"
+) as speech:
+    speech.stream_to_file("speech.wav")
+```
+
+- **Fields.** `model` and `input` are required. `voice` is one of the model's voices; without it the service uses its default voice. `response_format` is `wav` (the default here, where OpenAI's is `mp3`) or `pcm`. `language` is an extension: one of the model's ISO-639-1 codes, for the whole text.
+- **Text.** Up to `max_input_chars` characters (4,096 by default). The service takes out Markdown, links' targets, HTML tags, code blocks and emoji, and cuts the text into sentences. In a Spanish or English sentence it writes numbers, amounts, percentages, clock times and dates in words (`$1.500` is "mil quinientos pesos", `15:30` "quince y treinta"). A text with nothing to say returns `400`.
+- **Language.** Without `language`, each sentence is Spanish or English by its own words, so an answer may quote one inside the other. Pass `language` for the other eight languages; their digits stay digits.
+- **Voices.** `reader` and `lector` are built in, made from the repository's English and Spanish speech fixtures; each speaks every language with its own accent. A request that names no voice is spoken in `reader`, unless the settings name another. A `voices/<name>.safetensors` file in the model directory adds the voice `<name>`. Make one from a recording you have the rights to: `uv run scripts/reference/qwen3_tts_voice.py MODEL_DIR CLIP OUT.safetensors`.
+- **Audio.** `wav` is mono 16-bit PCM at the model's rate (`Content-Type: audio/wav`). Its header carries `0xFFFFFFFF` in both size fields, the convention for a WAV stream whose length is unknown when the header leaves: read to the end of the data. `pcm` is headerless mono PCM16 little-endian at 24 kHz (`audio/pcm`), OpenAI's definition.
+- **Streaming.** The status and the first audio leave after the first stretch of the first sentence, and the rest follows as the model speaks. The response has no `Content-Length`. Closing the connection stops the model at its next stretch of audio.
+- **Failures.** Before the first audio, a failure is a JSON error with its status. After it, the server logs the failure and breaks the body off without its end.
+- **Not supported.** `mp3`, `opus`, `aac` and `flac`, a `speed` other than 1, `stream_format: "sse"`, `instructions` and unknown fields return `400` with code `unsupported_parameter`. Chat Completions keep text output, and Realtime stays a transcription session.
+
 ## Errors
 
 Responses include `x-typesafe-request-id`. System One validation errors use `{"detail":[{"loc":...,"msg":...,"type":...}]}`. Other errors use `{"detail":{"error_type":...,"message":...}}`; OpenAI routes use the OpenAI shape above, except for authentication errors, which keep the `detail` shape on every route.
@@ -278,7 +333,7 @@ Responses include `x-typesafe-request-id`. System One validation errors use `{"d
 | 415 | An OpenAI JSON route without a JSON content type |
 | 422 | Invalid input, unsupported extension, or token capacity exceeded |
 | 529 | Full queue; `retry-after: 1` accompanies the response |
-| 503 | Inference worker (language or speech) unavailable |
+| 503 | Inference worker (language, speech or voice) unavailable |
 | 500 | Inference or internal response mapping failure |
 
 Protocol references: [System One](https://codiv.ai/docs/api-reference/system-one), [errors](https://codiv.ai/docs/api-reference/errors), [models](https://codiv.ai/docs/api-reference/models), and [confidence](https://codiv.ai/docs/guides/confidence). The integration targets the System One contract reviewed on 2026-09-19.

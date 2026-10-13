@@ -1,6 +1,6 @@
 # In a chat app, read the open conversation first.
 description = "In a chat application"
-output = "bubble"
+output = "voice"
 
 [when]
 app = ["slack.exe", "*teams*", "discord*", "whatsapp*", "telegram*"]

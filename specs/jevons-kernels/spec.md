@@ -41,7 +41,11 @@ Tests: none yet
 The first `Gpu::new` in a process turns on CubeCL's compilation cache in `cache_dir()`:
 `DIFFUSION_CUBECL_CACHE`, else `$XDG_CACHE_HOME/diffusion-cubecl`, else `~/.cache/diffusion-cubecl`,
 where the home directory is `HOME` or, on Windows, `USERPROFILE`. When another runtime in the
-process (Burn) configured CubeCL before it, that configuration stays.
+process (Burn) configured CubeCL before it, that configuration stays. A second process that
+launches the same kernels compiles none of them. On Windows this holds through the copy of
+`cubecl-environment` in `third_party/`, which opens the cache without Turso's multi-process WAL:
+upstream's open fails there, and every process then compiled its kernels again. One process
+writes the cache at a time; another that finds it locked caches nothing for that run.
 
 Tests: none yet
 

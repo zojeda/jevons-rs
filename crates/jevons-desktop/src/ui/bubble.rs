@@ -3,7 +3,8 @@
 //! through, so dictation keeps going to the application underneath, except while it shows an
 //! answer (with Copy, Insert and Close) or asks before a tool runs (Run or Cancel, also Enter
 //! and Esc). An answer opens a larger bubble, renders its Markdown, scrolls with the wheel and
-//! stays until Close (or the next take). While a task waits for what the user says next, that
+//! stays until Close (or the next take). While the answer is read aloud, Stop (also Esc) ends
+//! the voice and leaves the answer. While a task waits for what the user says next, that
 //! larger bubble is its conversation: the earlier turns stay above the one being said. The larger
 //! bubble follows its newest text, as a chat does, until the user scrolls up; a button then goes
 //! back to it, blinking while more arrives.
@@ -37,13 +38,15 @@ pub fn Bubble() -> Element {
     let anchor = use_context::<Anchor>();
     // An answer shown as plain, selectable text instead of its formatting.
     let selecting = use_signal(|| false);
-    let (feedback, scroll) = {
+    let (feedback, scroll, speaking) = {
         let view = ctx.view.lock().expect("the view lock");
-        (view.feedback.clone(), view.bubble)
+        (view.feedback.clone(), view.bubble, view.speaking)
     };
     let Some(f) = feedback else {
         return rsx! { div { class: "bubble" } };
     };
+    // The voice reads this bubble's answer aloud.
+    let speaking = speaking == Some(f.take);
     let state = if f.failed {
         "failed"
     } else if f.done {
@@ -105,12 +108,14 @@ pub fn Bubble() -> Element {
         };
     }
     let newest = to_newest(&ctx, &f, scroll);
+    let tails = (tail_top, tail_bottom);
     if f.task {
-        return conversation(&ctx, &f, selecting, head, newest, tail_top, tail_bottom);
+        return conversation(&ctx, &f, selecting, speaking, head, newest, tails);
     }
     if f.answer {
-        return answer(&ctx, &f, selecting, head, newest, tail_top, tail_bottom);
+        return answer(&ctx, &f, selecting, speaking, head, newest, tails);
     }
+    let (tail_top, tail_bottom) = tails;
     let quiet = f.heard.is_empty() && f.partial.is_empty();
     rsx! {
         div { class: "bubble", "data-state": state,
@@ -154,6 +159,7 @@ fn stage_row(index: usize, stage: &StageView, frame: u64) -> Element {
         StageKind::Writing => "write",
         StageKind::Answering => "answer",
         StageKind::Calling => "call",
+        StageKind::Speaking => "speak",
     };
     let state = match stage.ok {
         None => "running",
@@ -225,17 +231,20 @@ fn stage_row(index: usize, stage: &StageView, frame: u64) -> Element {
     }
 }
 
+/// The bubble's arrow, above its content or below it.
+type Tails = (Option<Element>, Option<Element>);
+
 /// A finished answer: the question, the answer and what to do with it. Blitz selects text only
 /// in text fields, so Select text shows the answer's Markdown in one, to select any part of it
-/// and copy it with Ctrl+C.
+/// and copy it with Ctrl+C. While the voice reads it (`speaking`), Stop ends the voice.
 fn answer(
     ctx: &Ctx,
     f: &Feedback,
     selecting: Signal<bool>,
+    speaking: bool,
     head: Element,
     newest: Option<Element>,
-    tail_top: Option<Element>,
-    tail_bottom: Option<Element>,
+    (tail_top, tail_bottom): Tails,
 ) -> Element {
     let tail = if tail_bottom.is_some() { "down" } else { "up" };
     let select = selecting();
@@ -256,9 +265,23 @@ fn answer(
             }
             {newest}
             if f.done {
-                {actions(ctx, selecting, f.window.is_some(), true)}
+                {actions(ctx, selecting, f.window.is_some(), true, speaking)}
+            } else if speaking {
+                // The take still makes the rest of the speech: the voice can be stopped now.
+                div { class: "bubble-actions", {stop(ctx)} }
             }
             {tail_bottom}
+        }
+    }
+}
+
+/// Stops the voice that reads the answer aloud. The answer stays in the bubble.
+fn stop(ctx: &Ctx) -> Element {
+    let ctx = ctx.clone();
+    rsx! {
+        button { class: "bubble-button", "data-on": "true", title: "Stop reading it aloud",
+            onclick: move |_| ctx.send(Command::Bubble(BubbleAction::Stop)),
+            "Stop (Esc)"
         }
     }
 }
@@ -290,13 +313,22 @@ fn to_newest(ctx: &Ctx, f: &Feedback, scroll: BubbleScroll) -> Option<Element> {
 }
 
 /// What to do with the text a finished bubble holds: Close always, the rest when there is
-/// `text` to copy or insert.
-fn actions(ctx: &Ctx, selecting: Signal<bool>, can_insert: bool, text: bool) -> Element {
+/// `text` to copy or insert, and Stop first while the voice reads it (`speaking`).
+fn actions(
+    ctx: &Ctx,
+    selecting: Signal<bool>,
+    can_insert: bool,
+    text: bool,
+    speaking: bool,
+) -> Element {
     let (copy, raw, insert, close) = (ctx.clone(), ctx.clone(), ctx.clone(), ctx.clone());
     let mut toggle = selecting;
     let select = selecting();
     rsx! {
         div { class: "bubble-actions",
+            if speaking {
+                {stop(ctx)}
+            }
             button { class: "bubble-button", onclick: move |_| close.send(Command::Bubble(BubbleAction::Close)), "Close" }
             if text && can_insert {
                 button { class: "bubble-button", onclick: move |_| insert.send(Command::Bubble(BubbleAction::Insert)), "Insert" }
@@ -336,10 +368,10 @@ fn conversation(
     ctx: &Ctx,
     f: &Feedback,
     selecting: Signal<bool>,
+    speaking: bool,
     head: Element,
     newest: Option<Element>,
-    tail_top: Option<Element>,
-    tail_bottom: Option<Element>,
+    (tail_top, tail_bottom): Tails,
 ) -> Element {
     let tail = if tail_bottom.is_some() { "down" } else { "up" };
     let select = selecting();
@@ -386,7 +418,9 @@ fn conversation(
             }
             {newest}
             if f.done {
-                {actions(ctx, selecting, f.window.is_some(), !text.is_empty())}
+                {actions(ctx, selecting, f.window.is_some(), !text.is_empty(), speaking)}
+            } else if speaking {
+                div { class: "bubble-actions", {stop(ctx)} }
             }
             {tail_bottom}
         }

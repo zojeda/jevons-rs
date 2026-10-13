@@ -28,12 +28,13 @@ The router serves these routes:
 | `POST /v1/responses` | Generative |
 | `POST /v1/audio/transcriptions` | Speech |
 | `GET /v1/realtime` | Speech, when `services.speech.realtime` is true |
+| `POST /v1/audio/speech` | Voice |
 
 The HTTP routes exist whether or not their service is enabled. A route whose service is off
 answers as for an unknown model: `404` with code `model_not_found` on OpenAI routes, `404`
 `Unknown model` on `/v1/systemone`.
 
-Tests: `transcription_requests_fail_before_inference_with_openai_errors`, `unsupported_extensions_unknown_models_and_large_bodies_fail_before_inference`
+Tests: `transcription_requests_fail_before_inference_with_openai_errors`, `unsupported_extensions_unknown_models_and_large_bodies_fail_before_inference`, `speech_needs_the_key_and_a_voice_service`
 
 ### R2 Unknown paths and methods
 
@@ -52,7 +53,7 @@ a header without the `Bearer ` prefix gets `401` (`authentication_error`, `Inval
 Without a configured key, no route checks authentication. Authentication errors keep the
 `detail` shape on every route, OpenAI routes included.
 
-Tests: `authentication_and_validation_match_the_wire_contract`, `openai_errors_use_the_openai_shape`, `a_listener_can_override_the_api_key`
+Tests: `authentication_and_validation_match_the_wire_contract`, `openai_errors_use_the_openai_shape`, `a_listener_can_override_the_api_key`, `speech_needs_the_key_and_a_voice_service`
 
 ### R4 A key in the WebSocket subprotocol
 
@@ -97,7 +98,7 @@ Tests: `authentication_and_validation_match_the_wire_contract`, `openai_errors_u
 | `503` | The model's worker is gone |
 | `529` | The model's queue is full; the response carries `retry-after: 1` |
 
-Tests: `openai_errors_use_the_openai_shape`, `queue_saturation_and_worker_failure_are_reported`, `worker_lost_after_accepting_a_job_returns_unavailable`, `unsupported_extensions_unknown_models_and_large_bodies_fail_before_inference`
+Tests: `openai_errors_use_the_openai_shape`, `queue_saturation_and_worker_failure_are_reported`, `worker_lost_after_accepting_a_job_returns_unavailable`, `unsupported_extensions_unknown_models_and_large_bodies_fail_before_inference`, `a_full_voice_queue_answers_529_and_a_stopped_worker_503`
 
 ### R8 Body limits
 
@@ -111,11 +112,12 @@ Tests: `unsupported_extensions_unknown_models_and_large_bodies_fail_before_infer
 ### R9 Health
 
 `GET /health` needs no key. While every enabled service's worker runs, it answers `200` with
-`{"status":"ok","services":{"generative":ID,"decision":ID,"speech":ID}}`, where each `ID` is the
-served model ID or `null` for a service that is off. When any enabled worker has stopped, it
-answers `503` (`overloaded_error`, `The inference worker is unavailable`).
+`{"status":"ok","services":{"generative":ID,"decision":ID,"speech":ID,"voice":ID},"voice":VOICE}`,
+where each `ID` is the served model ID or `null` for a service that is off, and `VOICE` is R13's
+object. When any enabled worker has stopped, it answers `503` (`overloaded_error`,
+`The inference worker is unavailable`).
 
-Tests: `health_bypasses_authentication_and_reflects_worker_liveness`, `listings_and_health_include_the_speech_model`, `rebinding_the_listener_keeps_models_loaded`
+Tests: `health_bypasses_authentication_and_reflects_worker_liveness`, `listings_and_health_include_the_speech_model`, `listings_and_health_include_the_voice_model`, `a_full_voice_queue_answers_529_and_a_stopped_worker_503`, `rebinding_the_listener_keeps_models_loaded`
 
 ### R10 Model listing
 
@@ -126,10 +128,10 @@ Tests: `health_bypasses_authentication_and_reflects_worker_liveness`, `listings_
   for OpenAI clients.
 
 Each loaded model appears as its served ID followed by its aliases, all with the model's
-description. Models come in service order: Generative, Decision, Speech. A model that serves
-Generative and Decision appears once.
+description. Models come in service order: Generative, Decision, Speech, Voice. A model that
+serves Generative and Decision appears once.
 
-Tests: `model_listing_and_successful_response_preserve_sdk_shapes`, `listings_and_health_include_the_speech_model`
+Tests: `model_listing_and_successful_response_preserve_sdk_shapes`, `listings_and_health_include_the_speech_model`, `listings_and_health_include_the_voice_model`
 
 ### R11 Model names
 
@@ -137,11 +139,21 @@ Each route accepts its service model's served ID or any of its aliases in `model
 service's model does not answer to is an unknown model. Responses report the served ID, not the
 alias the request used.
 
-Tests: `chat_completions_reach_the_worker_and_return_the_openai_shape`, `model_listing_and_successful_response_preserve_sdk_shapes`, `transcriptions_answer_in_every_response_format`
+Tests: `chat_completions_reach_the_worker_and_return_the_openai_shape`, `model_listing_and_successful_response_preserve_sdk_shapes`, `transcriptions_answer_in_every_response_format`, `speech_answers_pcm16_at_24_khz_whatever_the_models_rate`
 
 ### R12 Logs leave request content out
 
 Logs record counts, timings, model names and failures. They never hold request text, images,
-audio, transcripts, generated text or keys.
+audio, transcripts, generated text, a text to speak, synthesized audio or keys.
 
 Tests: none yet
+
+### R13 Health describes the voice model
+
+The `voice` key beside `services` in the health body is
+`{"voices":[NAME,...],"default_voice":NAME,"languages":[CODE,...],"sample_rate":HZ}`: the voices
+the model lists, the voice of a request that names none, the ISO-639-1 codes the model speaks,
+and the sample rate of a `wav` answer. It is `null` while Voice is off, which includes an
+optional voice model that failed to load ([workers](workers.md) R17).
+
+Tests: `listings_and_health_include_the_voice_model`, `listings_and_health_include_the_speech_model`, `a_voice_model_that_fails_to_load_stops_the_load_unless_voice_is_optional`

@@ -13,7 +13,7 @@
 use crate::context::ContextSnapshot;
 use crate::delivery::{AudioEvent, DeliveryOutcome};
 use crate::desk::{
-    Ask, ClientTools, Delivery, Desk, Look, Looked, NO_INVESTIGATOR, Opened, Read, unread,
+    Ask, ClientTools, Delivery, Desk, Look, Looked, NO_INVESTIGATOR, Opened, Read, Speech, unread,
 };
 use crate::extract::Extracted;
 use crate::take::{TakeSettings, Update};
@@ -26,7 +26,7 @@ use std::sync::{Mutex, RwLock};
 use tokio::sync::{mpsc, oneshot};
 
 /// The version of these messages. A client and a server of different versions do not talk.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// Why an effect has no answer: the client went away before it gave one.
 pub const GONE: &str = "the client disconnected";
@@ -131,6 +131,10 @@ pub enum Effect {
     Deliver {
         delivery: Delivery,
     },
+    /// Its samples travel as the microphone's do: numbers in the message.
+    Speak {
+        speech: Speech,
+    },
     Confirm {
         ask: Ask,
     },
@@ -166,6 +170,10 @@ pub enum Reply {
     Delivered {
         outcome: Result<Option<DeliveryOutcome>, String>,
     },
+    Spoke {
+        /// Whether the desk speaks this take.
+        speaking: Result<bool, String>,
+    },
     Confirmed {
         yes: bool,
     },
@@ -191,6 +199,9 @@ pub async fn carry_out(desk: &dyn Desk, effect: Effect) -> Reply {
     match effect {
         Effect::Deliver { delivery } => Reply::Delivered {
             outcome: desk.deliver(delivery).await,
+        },
+        Effect::Speak { speech } => Reply::Spoke {
+            speaking: desk.speak(speech).await,
         },
         Effect::Confirm { ask } => Reply::Confirmed {
             yes: desk.confirm(ask).await,
@@ -363,6 +374,15 @@ impl Desk for RemoteDesk {
         })
     }
 
+    fn speak(&self, speech: Speech) -> BoxFuture<'_, Result<bool, String>> {
+        Box::pin(async move {
+            match self.ask(Effect::Speak { speech }).await {
+                Some(Reply::Spoke { speaking }) => speaking,
+                _ => Err(GONE.into()),
+            }
+        })
+    }
+
     fn confirm(&self, ask: Ask) -> BoxFuture<'_, bool> {
         Box::pin(async move {
             matches!(
@@ -469,6 +489,14 @@ mod tests {
         }
     }
 
+    fn speech() -> Speech {
+        Speech {
+            take: 3,
+            samples: vec![0, 1200, -1200, i16::MAX, i16::MIN],
+            last: true,
+        }
+    }
+
     fn read() -> Read {
         let spec: ExtractSpec =
             toml::from_str("xpath = \"//ListItem\"\nas = \"list\"\nscope = [\"slack.exe\"]")
@@ -513,6 +541,7 @@ mod tests {
             Effect::Deliver {
                 delivery: delivery(),
             },
+            Effect::Speak { speech: speech() },
             Effect::Confirm {
                 ask: Ask {
                     tool: "note".into(),
@@ -551,6 +580,16 @@ mod tests {
             Reply::Delivered { outcome: Ok(None) },
             Reply::Delivered {
                 outcome: Err("no".into()),
+            },
+            Reply::Delivered {
+                outcome: Ok(Some(DeliveryOutcome::Spoken)),
+            },
+            Reply::Spoke { speaking: Ok(true) },
+            Reply::Spoke {
+                speaking: Ok(false),
+            },
+            Reply::Spoke {
+                speaking: Err("no output device".into()),
             },
             Reply::Confirmed { yes: true },
             Reply::Read {
@@ -646,6 +685,8 @@ mod tests {
             },
             Update::Output("Hi".into()),
             Update::Answering,
+            Update::Stage(Stage::new(StageKind::Speaking, "voice")),
+            Update::Speaking,
             Update::State("research › search › results".into()),
             Update::Task { instance: 5 },
         ];
@@ -727,6 +768,24 @@ mod tests {
             json!({"type": "effect", "id": 1,
                 "effect": {"do": "look_end", "session": 2, "remember": false}})
         );
+        // Speech crosses as the microphone's audio does: its samples as numbers.
+        let speak = serde_json::to_value(Effect::Speak {
+            speech: Speech {
+                take: 3,
+                samples: vec![5, -5],
+                last: false,
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            speak,
+            json!({"do": "speak", "speech": {"take": 3, "samples": [5, -5], "last": false}})
+        );
+        let spoke = serde_json::to_value(Reply::Spoke { speaking: Ok(true) }).unwrap();
+        assert_eq!(spoke, json!({"did": "spoke", "speaking": {"Ok": true}}));
+        // A take's settings say whether it may speak.
+        let settings = serde_json::to_value(TakeSettings::default()).unwrap();
+        assert_eq!(settings["voice"], true);
     }
 
     /// A desk that answers everything, to tell its answers from a refusal's.
@@ -742,6 +801,11 @@ mod tests {
                     method: delivery.request.method,
                 }))
             })
+        }
+
+        fn speak(&self, speech: Speech) -> BoxFuture<'_, Result<bool, String>> {
+            // It speaks every take but the ninth.
+            Box::pin(async move { Ok(speech.take != 9) })
         }
 
         fn confirm(&self, ask: Ask) -> BoxFuture<'_, bool> {
@@ -825,6 +889,13 @@ mod tests {
                 method: DeliveryMethod::Paste
             }))
         );
+        // Speech reaches the client's desk, and its answer comes back: yes, or not this take.
+        assert_eq!(desk.speak(speech()).await, Ok(true));
+        let refused = Speech {
+            take: 9,
+            ..speech()
+        };
+        assert_eq!(desk.speak(refused).await, Ok(false));
         let ask = |tool: &str| Ask {
             tool: tool.into(),
             arguments: json!({}),
@@ -879,6 +950,7 @@ mod tests {
         // The pending confirmation is denied, and every call after answers as refused.
         assert!(!waiting.await.unwrap());
         assert_eq!(desk.deliver(delivery()).await, Err(GONE.into()));
+        assert_eq!(desk.speak(speech()).await, Err(GONE.into()));
         assert!(
             !desk
                 .confirm(Ask {
@@ -908,7 +980,8 @@ mod tests {
         );
         // An answer nobody waits for is dropped.
         desk.answer(99, Reply::Confirmed { yes: true });
-        // The same holds with a desk nobody is at.
+        // The same holds with a desk nobody is at, which speaks to no one.
+        assert_eq!(Nobody.speak(speech()).await, Ok(false));
         assert!(
             !Nobody
                 .confirm(Ask {

@@ -1,10 +1,12 @@
 //! The vocabulary of a take's two ends: the audio the client captures, and how the text the
-//! server wrote reaches the application.
+//! server wrote reaches the application or the user's ears.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// The rate of [`AudioEvent::Chunk`] samples: the Realtime API's default PCM16 rate.
+/// The rate of every sample that crosses the desk, in Hz: the microphone's
+/// ([`AudioEvent::Chunk`]) and an answer's speech ([`Speech`](crate::desk::Speech)). It is the
+/// Realtime API's default PCM16 rate, and the rate of `response_format = "pcm"` speech.
 pub const SAMPLE_RATE: u32 = 24_000;
 
 /// What an audio source reports while capturing.
@@ -71,4 +73,6 @@ pub enum DeliveryOutcome {
     },
     /// Shown in the feedback bubble, where the user can copy or insert it.
     Shown,
+    /// Read aloud at the desk. The bubble shows it too.
+    Spoken,
 }

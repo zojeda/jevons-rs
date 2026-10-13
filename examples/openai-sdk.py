@@ -6,12 +6,14 @@
 
     uv run examples/openai-sdk.py [--url http://127.0.0.1:8080/v1]
 
-Needs a server with the generative and speech services enabled (see jevons.example.toml);
-sections for a missing service are skipped. Set TYPESAFE_API_KEY when the server requires a key.
+Needs a server with the generative, speech and voice services enabled (see
+jevons.example.toml); sections for a missing service are skipped. Set TYPESAFE_API_KEY when the
+server requires a key.
 """
 
 import argparse
 import os
+import tempfile
 from pathlib import Path
 
 from openai import OpenAI
@@ -79,3 +81,25 @@ if "parakeet-latest" in models:
             if event.type == "transcript.text.delta":
                 print(event.delta, end="", flush=True)
     print()
+
+if "qwen3-tts-latest" in models:
+    print("== Speech (WAV, saved as it arrives)")
+    spoken = Path(tempfile.gettempdir()) / "jevons-speech.wav"
+    with client.audio.speech.with_streaming_response.create(
+        model="qwen3-tts-latest",
+        voice="lector",
+        input="Hola. El total es $1.500, y la reunión empieza a las 15:30.",
+        response_format="wav",
+    ) as response:
+        response.stream_to_file(spoken)
+    print(f"{spoken}: {spoken.stat().st_size} bytes")
+
+    print("== Speech (24 kHz PCM16, an English voice)")
+    pcm = client.audio.speech.create(
+        model="qwen3-tts-latest",
+        voice="reader",
+        input="The build finished in 42 seconds.",
+        response_format="pcm",
+        extra_body={"language": "en"},
+    ).content
+    print(f"{len(pcm) / 48000:.1f} s of audio")

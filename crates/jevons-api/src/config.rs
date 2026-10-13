@@ -34,7 +34,7 @@ const VERSION: &str = match option_env!("JEVONS_BUILD") {
 
 #[derive(Parser, Debug)]
 #[command(
-    about = "A personal inference runtime: OpenAI-compatible chat, transcription and Realtime, and System One APIs on Burn and CubeCL",
+    about = "A personal inference runtime: OpenAI-compatible chat, transcription, Realtime and speech, and System One APIs on Burn and CubeCL",
     version = VERSION
 )]
 struct Args {
@@ -79,14 +79,14 @@ fn default_bind() -> SocketAddr {
 
 /// A model to load. Options other than `path`, `id`, `main_gpu` and `queue_capacity` apply to
 /// diffusion language models only; they are unset (`None`) unless the file names them, so a
-/// speech model that sets one is an error.
+/// speech or voice model that sets one is an error.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Model {
     /// GGUF file (DiffusionGemma) or Hugging Face checkpoint directory.
     pub path: PathBuf,
     /// Served model ID; defaults to the model's own, such as `gemmadiffusion-0.1`,
-    /// `nemotron-diffusion-3b` or `parakeet-tdt-0.6b-v3`.
+    /// `nemotron-diffusion-3b`, `parakeet-tdt-0.6b-v3` or `qwen3-tts-12hz-0.6b-base`.
     #[serde(default)]
     pub id: Option<String>,
     /// HIP device index.
@@ -145,7 +145,7 @@ impl Model {
         })
     }
 
-    /// The diffusion-only options this model sets, which a speech model must not.
+    /// The diffusion-only options this model sets, which a speech or voice model must not.
     pub fn diffusion_options(&self) -> Vec<&'static str> {
         [
             ("arch", self.arch.is_some()),
@@ -174,6 +174,9 @@ pub struct Services {
     /// OpenAI audio transcriptions and Realtime transcription sessions.
     #[serde(default)]
     pub speech: Option<Speech>,
+    /// OpenAI audio speech: text to speech.
+    #[serde(default)]
+    pub voice: Option<Voice>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -197,6 +200,22 @@ pub struct Speech {
 
 fn default_max_audio() -> f64 {
     3600.0
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Voice {
+    pub model: String,
+    /// The voice of a request that names none; the first the model lists by default.
+    #[serde(default)]
+    pub voice: Option<String>,
+    /// Longest `input` of a speech request, in characters.
+    #[serde(default = "default_max_input")]
+    pub max_input_chars: usize,
+}
+
+fn default_max_input() -> usize {
+    4096
 }
 
 fn default_true() -> bool {
@@ -317,14 +336,15 @@ impl Settings {
             ),
             ("decision", s.decision.as_ref().map(|d| d.model.as_str())),
             ("speech", s.speech.as_ref().map(|d| d.model.as_str())),
+            ("voice", s.voice.as_ref().map(|d| d.model.as_str())),
         ]
         .into_iter()
         .filter_map(|(service, model)| Some((service, model?)))
         .collect();
         if used.is_empty() {
             return Err(
-                "enable at least one of services.generative, services.decision and \
-                        services.speech"
+                "enable at least one of services.generative, services.decision, \
+                 services.speech and services.voice"
                     .into(),
             );
         }
@@ -333,6 +353,25 @@ impl Settings {
                 return Err(format!(
                     "services.{service} uses model {model:?}, which has no [models.{model}]"
                 ));
+            }
+        }
+        // Voice first: what is left for the speech check is a language service.
+        if let Some(voice) = &s.voice {
+            if let Some((other, _)) = used
+                .iter()
+                .find(|(service, model)| *service != "voice" && *model == voice.model)
+            {
+                return Err(format!(
+                    "model {:?} serves voice and {other}; a model serves voice or another \
+                     service, never both",
+                    voice.model
+                ));
+            }
+            if voice.max_input_chars == 0 {
+                return Err("services.voice.max_input_chars must be positive".into());
+            }
+            if voice.voice.as_ref().is_some_and(|v| v.trim().is_empty()) {
+                return Err("services.voice.voice must be nonempty".into());
             }
         }
         if let Some(speech) = &s.speech {
@@ -400,6 +439,9 @@ decoding = "diffusion"
 path = "/models/parakeet"
 id = "asr"
 
+[models.qwen]
+path = "/models/qwen3-tts"
+
 [services.generative]
 model = "gemma"
 [services.decision]
@@ -408,6 +450,10 @@ model = "gemma"
 model = "parakeet"
 max_audio_seconds = 600.0
 realtime = false
+[services.voice]
+model = "qwen"
+voice = "reader"
+max_input_chars = 1000
 "#;
 
     #[test]
@@ -476,6 +522,27 @@ model = "nemotron"
                 "one or the other",
             ),
             (
+                "[models.a]\npath = \"x\"\n[services.decision]\nmodel = \"a\"\n[services.voice]\nmodel = \"a\"\n",
+                "serves voice and decision",
+            ),
+            (
+                "[models.a]\npath = \"x\"\n[services.speech]\nmodel = \"a\"\n[services.voice]\nmodel = \"a\"\n",
+                "serves voice and speech",
+            ),
+            (
+                "[models.a]\npath = \"x\"\n[services.voice]\nmodel = \"a\"\nmax_input_chars = 0\n",
+                "max_input_chars must be positive",
+            ),
+            (
+                "[models.a]\npath = \"x\"\n[services.voice]\nmodel = \"a\"\nvoice = \" \"\n",
+                "services.voice.voice must be nonempty",
+            ),
+            (
+                "[models.a]\npath = \"x\"\n[services.voice]\nmodel = \"a\"\nspeed = 2\n",
+                "unknown field",
+            ),
+            ("[services.voice]\nmodel = \"a\"\n", "has no [models.a]"),
+            (
                 "[models.a]\npath = \"x\"\ndecoding = \"fast\"\n[services.decision]\nmodel = \"a\"\n",
                 "decoding",
             ),
@@ -486,6 +553,31 @@ model = "nemotron"
             let error = parse(text).unwrap_err().to_string();
             assert!(error.contains(expected), "{text:?}: {error}");
         }
+    }
+
+    #[test]
+    fn a_voice_service_names_its_model_default_voice_and_input_limit() {
+        let settings = parse(SHARED).unwrap();
+        let voice = settings.services.voice.as_ref().unwrap();
+        assert_eq!(
+            (voice.model.as_str(), voice.voice.as_deref()),
+            ("qwen", Some("reader"))
+        );
+        assert_eq!(voice.max_input_chars, 1000);
+        assert_eq!(
+            settings.models["qwen"].path,
+            PathBuf::from("/models/qwen3-tts")
+        );
+        // A voice model is no diffusion model.
+        assert_eq!(settings.diffusion_models(), vec!["gemma"]);
+        // Voice may be the only service, with the model's first voice and 4096 characters.
+        let alone = parse("[models.q]\npath = \"x\"\n[services.voice]\nmodel = \"q\"\n").unwrap();
+        let voice = alone.services.voice.as_ref().unwrap();
+        assert_eq!(
+            (voice.voice.as_deref(), voice.max_input_chars),
+            (None, 4096)
+        );
+        assert!(alone.diffusion_models().is_empty());
     }
 
     fn write(name: &str, text: &str) -> PathBuf {

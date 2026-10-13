@@ -14,17 +14,21 @@ file covers what the app does around it. The window and the bubble are in [ui](u
 
 The icon starts as loading and then follows the runtime: ready (or using a server), loading, no
 models, or failed. While a take listens it shows the microphone's level, then transcribing, then
-deciding and writing, and red after a failed take. Between takes during a recording it is the
-recording icon. Tuning GPU kernels outranks every state but listening, from a tuning event until
-four seconds after the last one. The first tuning event after a quiet period wakes the tray once,
-so the icon turns amber without waiting for its next frame.
+deciding and writing, and red after a failed take. While an answer is read aloud it shows
+speaking, from the first words the desk plays until the last one was heard, which is after the
+take has ended (R30). Between takes during a recording it is the recording icon. Tuning GPU
+kernels outranks every state but listening, speaking included: the voice is heard, and amber is
+the one sign of tuning. It does so from a tuning event until four seconds after the last one.
+The first tuning event after a quiet period wakes the tray once, so the icon turns amber without
+waiting for its next frame.
 
-Tests: `a_tuning_event_makes_tuning_active_and_notifies_once`
+Tests: `a_tuning_event_makes_tuning_active_and_notifies_once`, `tuning_outranks_every_state_but_listening`, `the_tray_stays_on_speaking_until_the_answer_was_heard`
 
 ### R2 The tray menu
 
 The menu holds: **Start dictation** or **Stop dictation**, **Start live dictation** or **Stop
-live dictation**, **Cancel the current take** (while one runs), **Cancel the tasks that run**
+live dictation**, **Cancel the current take** (while one runs or an answer is read aloud),
+**Cancel the tasks that run**
 (while one does), **Show the task's conversation** (while a task waits with one), **Machines**
 (R28), **Start takes at** (the root or
 each top-level branch), **Show context inspector**, **Live feedback**, **Pause context capture**,
@@ -35,7 +39,9 @@ and **Record it again…**; **None yet: record one** when empty; **Open the auto
 **Reload the flow tree**, **Open settings folder**, **Reset settings to the defaults…**, **Open
 logs and traces**, **Clear history** (**Logs…**, **Take traces…**, **Recorded interfaces…**,
 **Recordings…**, **Tasks that run…**, **All of it…**) and **Quit**. Reset and Clear history are disabled while a take,
-an automation or a recording runs. While automations are off (R29), one disabled line,
+an automation or a recording runs, or an answer is read aloud. An automation's **Run**, **Run
+step by step**, **Review and approve…** and **Record it again…** are disabled while a take or an
+automation runs, or an answer is read aloud. While automations are off (R29), one disabled line,
 **Automations (coming soon)**, takes the place of the recording items and **Automations**.
 
 Tests: `menu_ids_map_to_commands`, `the_machines_menu_names_each_machine_s_state_and_counts_the_tasks`
@@ -67,15 +73,16 @@ In `hold` mode, pressing a dictation hotkey starts a take and releasing it ends 
 `toggle` mode, a press starts the take and the next press of the same hotkey ends it.
 Push-to-talk and the branch hotkeys follow `hotkey_mode`, live dictation `live_hotkey_mode`, and
 an automation's hotkey `hotkey_mode`. While a take runs, key repeats and other dictation hotkeys
-change nothing.
+change nothing, except while that take reads its answer aloud (R31).
 
-Tests: none yet
+Tests: `a_press_while_a_take_reads_its_answer_aloud_starts_the_next_take`
 
 ### R7 Takes from the menu
 
 **Start dictation** starts a push-to-talk take that the menu (or a left click) stops. **Start live
 dictation** starts live dictation that the menu stops. Each says so instead when the other kind
-runs, or when the last take is still being processed.
+runs, or when the last take is still being processed. A take that reads its answer aloud gives
+way to either, as to a hotkey (R31).
 
 Tests: none yet
 
@@ -98,9 +105,10 @@ speech", "Done", or the error; a take that left a task where it was, unsure of t
 ("<Task> stayed at <state>: …"). Text that only repeats the transcript is not shown twice, an
 answer always is, and stages still open close with the take's outcome. The bubble hides four
 seconds after a take ends, eight after an error, and an answer stays until it is closed or the
-next take starts.
+next take starts. An answer read aloud is an answer all the same: it says "Answer" and stays,
+with what an answer offers ([ui](ui.md) R28, R35).
 
-Tests: `feedback_shows_phrases_as_heard_and_the_outcome_at_the_end`, `an_answer_stays_in_the_bubble_even_when_it_repeats_the_words`, `push_to_talk_feedback_keeps_the_streamed_words_as_the_transcript`, `a_waiting_task_s_turns_stay_in_the_bubble_for_the_next_take`
+Tests: `feedback_shows_phrases_as_heard_and_the_outcome_at_the_end`, `an_answer_stays_in_the_bubble_even_when_it_repeats_the_words`, `push_to_talk_feedback_keeps_the_streamed_words_as_the_transcript`, `a_waiting_task_s_turns_stay_in_the_bubble_for_the_next_take`, `a_spoken_answer_stays_in_the_bubble_as_a_shown_one_does`
 
 ### R10 Questions wait in the bubble
 
@@ -108,14 +116,16 @@ A tool call that asks shows "Run <tool>?" with its arguments, and the app's own 
 clear, approve) say what they do. Enter answers yes and Esc no; the app registers both as global
 hotkeys only while a question waits. A new question answers the one before it no. While a
 question waits, the app asks no other question of its own and says to answer the first. Cancelling
-or finishing a take answers its question no.
+or finishing a take answers its question no. Esc is registered alone while an answer is read
+aloud, to stop the voice (R30); with a question waiting it answers the question.
 
-Tests: none yet
+Tests: `escape_is_bound_only_while_an_answer_is_read_aloud_or_a_question_waits`
 
 ### R11 Cancel the current take
 
 **Cancel the current take** stops the microphone, abandons the take, answers a waiting question
-no, stops a running automation, and delivers nothing.
+no, stops a running automation, stops the voice, and delivers nothing. With no take and no
+automation running, it stops the voice alone, and the answer stays in the bubble.
 
 Tests: none yet
 
@@ -177,9 +187,11 @@ Tests: `a_recording_from_the_menu_asks_first_and_says_how_it_ends`
 Saving from the Settings tab writes the file and applies it: hotkeys are registered again when
 they changed, a moved flows folder is watched and loaded, the tools and MCP servers start again
 when the tools, the flows folder or the library changed, the runtime takes the new settings, and
-the API log starts or stops. **Live feedback** in the menu saves the setting as well.
+the API log starts or stops. The voice follows `[voice]`: turned off, it stops what it says and
+the next takes answer in the bubble, and another output device plays from the next answer on.
+**Live feedback** in the menu saves the setting as well.
 
-Tests: none yet
+Tests: `the_settings_mute_the_voice_and_name_its_device`, `a_take_may_speak_when_the_switch_is_on_and_there_is_a_speaker`
 
 ### R18 jevons commits its own writes
 
@@ -226,7 +238,8 @@ A timer whose state the machine has left does nothing and shows nothing. An answ
 decision, given in the Machines tab, runs the same way: a take of its own, whose bubble says
 which candidate was chosen. In the Machines tab,
 **Cancel all tasks** ends every task and a task's own **Cancel** ends that one; when it is the
-task the bubble follows, its conversation goes with it.
+task the bubble follows, its conversation goes with it. A timer's take that ends while another
+take runs leaves that take's icon and its held hotkey as they are.
 
 Tests: `a_timer_ends_a_task_that_waits_and_stale_timers_do_nothing`
 
@@ -321,3 +334,47 @@ listed, offered to the flow tree as a `script:` tool or run
 the setting applies at the next start.
 
 Tests: `automations_are_off_until_the_settings_turn_them_on`, `the_record_and_automation_hotkeys_bind_from_the_settings`, `the_settings_say_automations_are_coming_soon_until_they_are_turned_on`, `menu_ids_map_to_commands`
+
+### R30 The app keeps the voice within its rules
+
+The desk reads an answer aloud when the server sends its speech
+([desk](../jevons-desktop-core/desk.md) R8 to R11). The app decides when that may be heard:
+
+- A take may speak only while `[voice] speak` is on ([settings](settings.md) R22). The tray app
+  has a speaker; a headless take has none and never speaks ([cli](cli.md) R5).
+- Starting a take stops the voice before the microphone opens: push-to-talk, live dictation, the
+  words an automation needs, and a note for a recording. Nothing is read aloud while the
+  microphone is open, so a timer's take cannot talk over the user. Once it closes, the next
+  take's answer is read aloud. A microphone that does not open leaves the voice free to speak.
+- Esc stops the voice. It is a global hotkey only while an answer is still to be heard (R10).
+  The bubble's **Stop** ([ui](ui.md) R35) and the tray's **Cancel the current take** (R11) do
+  the same. A take that still makes the speech then ends by itself, with what was heard of it
+  as spoken ([pipeline](../jevons-desktop-server/pipeline.md) R20).
+- The app looks at the voice several times a second. When it starts or ends, the tray's menu,
+  the Esc key and the bubble's Stop follow, and the tray icon leaves speaking with the last word
+  (R1). A take that goes on working after its voice was stopped shows as writing.
+- The hotkeys are never registered anew while a take listens, since its own hotkey is down or
+  is pressed again to end the listening. When a take's start stops the voice, Esc stays
+  registered until the microphone closes, and stops nothing meanwhile.
+
+Neither the text read aloud nor its audio is logged: the log says that the voice was stopped,
+and nothing else about it.
+
+Tests: `starting_a_take_stops_the_voice_before_the_microphone_opens`, `a_microphone_that_does_not_open_leaves_the_voice_free_to_speak`, `stopping_the_voice_ends_that_take_s_speech_and_leaves_the_next_one_s`, `the_app_sees_the_voice_start_and_end_once_each`, `escape_is_bound_only_while_an_answer_is_read_aloud_or_a_question_waits`, `the_tray_stays_on_speaking_until_the_answer_was_heard`, `hotkeys_are_never_registered_anew_while_a_take_listens`
+
+### R31 A press while a take reads its answer aloud starts the next take
+
+A take is in its speaking stage from the moment its answer is handed to the voice route until
+all of its speech has reached the desk. The first seconds of a long answer play during that
+stage. A press that starts dictation then (a dictation hotkey, **Start dictation**, **Start live
+dictation** or a left click on the icon) stops the voice and opens the microphone at once, so
+none of what the user says is lost. The earlier take is not abandoned: the desk refuses the
+rest of its speech, and it ends by itself as spoken. The new take's work starts when the
+earlier one has ended, with what the microphone heard meanwhile, and it joins a waiting task's
+conversation as the earlier take left it. The earlier take's end leaves the new take's icon and
+held hotkey as they are.
+
+A press while a take hears, decides or writes still changes nothing (R6). Once a take has ended
+and only its voice plays, a press starts a take as usual, which stops the voice (R30).
+
+Tests: `a_press_while_a_take_reads_its_answer_aloud_starts_the_next_take`, `a_take_started_over_one_that_speaks_works_once_that_one_has_ended`, `a_spoken_answer_stays_in_the_bubble_as_a_shown_one_does`

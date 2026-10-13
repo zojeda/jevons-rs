@@ -2,17 +2,20 @@
 //!
 //! It transcribes what the user said through its speech route, moves the machines, walks the
 //! flow tree and decides, and asks the client (the [`Desk`](jevons_desktop_protocol::desk::Desk))
-//! for what only it can do: type the text, ask the user, read the screen, run its own tools.
+//! for what only it can do: type the text, read an answer aloud, ask the user, read the screen,
+//! run its own tools.
 //! Nothing here touches a platform, and the crate does not depend on the client.
 //!
 //! - [`flow`]: the flow tree, folders of TOML files that route each take through guards and
 //!   decisions to a leaf that writes, answers or calls a tool; the machines that keep tasks
 //!   across takes; the context investigator's model loop; the tool host.
-//! - [`pipeline`]: one take, from its audio and transcript through the flow tree to delivery.
+//! - [`pipeline`]: one take, from its audio and transcript through the flow tree to delivery,
+//!   and an answer's speech from the voice route to the desk.
 //! - [`session`]: one client's session: everything its takes run with, and its machines.
 //! - [`serve`]: the session served to a client over a stream of messages.
 //! - [`client`]: typed requests to the jevons API and other providers (Realtime,
-//!   transcriptions, System One, Responses), and each capability's route to its provider.
+//!   transcriptions, System One, Responses, speech), and each capability's route to its
+//!   provider.
 //! - [`forward`]: the API the app serves to other clients, forwarded to those providers.
 //! - [`config`]: the server's settings.
 #![forbid(unsafe_code)]

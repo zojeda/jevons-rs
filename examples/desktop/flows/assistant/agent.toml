@@ -1,5 +1,6 @@
-# The assistant: it answers the user in the bubble. Its machine (agent.fsm) has one state of work,
-# `ask`; tasks that take several turns, such as a search you follow up on, are states to add.
+# The assistant: it answers the user aloud and in the bubble (in the bubble alone until a voice
+# model is chosen). Its machine (agent.fsm) has one state of work, `ask`; tasks that take several
+# turns, such as a search you follow up on, are states to add.
 description = """
 The user talks to you, the assistant listening, and wants an answer shown to them rather than \
 typed: a question about what is on screen, the selected text or the open conversation ("what \

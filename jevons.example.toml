@@ -35,6 +35,14 @@ path = "~/models/parakeet-tdt-0.6b-v3"
 # id = "parakeet-tdt-0.6b-v3"
 # queue_capacity = 8
 
+# A text-to-speech model (Qwen3-TTS 12Hz Base checkpoint directory, with its speech tokenizer
+# under speech_tokenizer/). Only path, id, main_gpu and queue_capacity apply. Each
+# voices/<name>.safetensors in the directory adds a voice to the built-in lector and reader.
+[models.qwen]
+path = "~/models/qwen3-tts-12hz-0.6b-base"
+# id = "qwen3-tts-12hz-0.6b-base"
+# queue_capacity = 8
+
 # OpenAI Chat Completions, Completions and Responses.
 [services.generative]
 model = "nemotron"
@@ -49,3 +57,9 @@ model = "nemotron"
 model = "parakeet"
 # max_audio_seconds = 3600.0   # longest upload or Realtime buffer
 # realtime = true              # serve /v1/realtime
+
+# OpenAI audio speech: text to speech. Its model serves no other service.
+[services.voice]
+model = "qwen"
+# voice = "reader"             # the voice of a request that names none; the model's first
+# max_input_chars = 4096       # longest text of one request

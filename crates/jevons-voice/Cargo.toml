@@ -1,0 +1,20 @@
+[package]
+name = "jevons-voice"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = ["models"]
+# Load the built-in voice models.
+models = ["dep:jevons-models", "jevons-models/qwen3-tts"]
+# The scripted voice model, for the tests of the layers above.
+testing = []
+
+[dependencies]
+jevons-core.workspace = true
+jevons-models = { workspace = true, optional = true }
+
+[lints]
+workspace = true

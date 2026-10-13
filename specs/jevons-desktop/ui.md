@@ -133,9 +133,11 @@ Tests: none yet
 The Takes tab lists the newest takes first, at most 50. Each shows its transcript, its route drawn
 as the Route card draws it with the model's probability for each branch it asked about, the leaf,
 the output, the delivery, the tool calls and the timings, and **Copy trace as JSON** copies the
-whole trace. New takes arriving while the tab shows are added on top.
+whole trace. A badge says how the take ended: typed, answered (shown in the bubble), spoken (read
+aloud), clipboard, nothing typed, or failed. New takes arriving while the tab shows are added on
+top.
 
-Tests: `new_takes_arriving_while_the_takes_page_shows_rebuild_in_blitz`
+Tests: `new_takes_arriving_while_the_takes_page_shows_rebuild_in_blitz`, `a_take_s_badge_says_how_it_ended`
 
 ### R15 The Flows tab draws the tree
 
@@ -220,8 +222,9 @@ with what serves it now or "not served" under its name; each provider's address 
 button per kind that adds one under a free name, and Remove, which sends what it served back to
 the default), dictation (the hotkeys and their hold or toggle mode, live
 feedback, the inspector hotkey, the microphone, the language, whether to ask the decision model,
-the most tokens a generation writes), a push-to-talk hotkey per top-level branch, the record
-hotkey and one per automation, and privacy (characters per field, the clipboard, the API log).
+the most tokens a generation writes), the voice (R36), a push-to-talk hotkey per top-level
+branch, the record hotkey and one per automation, and privacy (characters per field, the
+clipboard, the API log).
 While automations are off ([app](app.md) R29), their card says **Coming soon** and how to try
 them, and offers no hotkey. A
 hotkey field records the combination pressed, as an accelerator the global hotkeys accept.
@@ -250,10 +253,12 @@ Tests: `saving_applies_only_the_edits_onto_settings_changed_meanwhile`
 
 ### R23 The Models tab manages the models
 
-The Models tab shows the models folder (**Choose folder…** moves it), the model each service uses
-(**GGUF file…** or **Checkpoint folder…** points at one already on disk without copying it, and
+The Models tab shows the models folder (**Choose folder…** moves it), the model each of the four
+services uses (generative, decision, speech and voice: **Checkpoint folder…**, and for
+generative and decision **GGUF file…**, points at one already on disk without copying it, and
 **Automatic** takes the catalog's), whether speech serves Realtime, and the approximate memory of
-the selected models. A `runtime_config` in use says the selections are ignored.
+the selected models. The card says that answers show in the bubble until a voice model is
+downloaded or chosen. A `runtime_config` in use says the selections are ignored.
 
 Tests: none yet
 
@@ -391,3 +396,32 @@ Turning the switch off keeps the machine shown, and a machine picked then stays 
 is picked.
 
 Tests: `a_state_s_work_shows_its_branches_and_the_way_a_take_goes_through_them`, `a_machine_picked_in_the_tray_shows_in_the_machines_tab`, `a_running_task_shows_under_its_agent_with_its_state_and_can_be_cancelled`
+
+### R35 An answer read aloud offers Stop
+
+While the voice reads the answer the bubble shows, the bubble offers **Stop (Esc)**. Before the
+take has ended it is the only button; after, it comes first, before the answer's own (R28). It
+stops the voice and leaves the answer in the bubble ([app](app.md) R30). It goes once the last
+word was heard or the voice was stopped, and does not show while the voice reads another take's
+answer. A task's conversation offers it the same way (R30). While the speech is made the
+bubble's status reads "Speaking…".
+
+Tests: `an_answer_read_aloud_offers_stop_while_the_voice_plays_and_keeps_its_buttons`, `a_spoken_answer_stays_in_the_bubble_as_a_shown_one_does`
+
+### R36 The Voice card says whether answers are read aloud, and where
+
+The Settings tab's Voice card holds **Speak answers** (`[voice] speak`: off, every leaf that asks
+for voice answers in the bubble), the output device (`[voice] output`: the default device, or one
+of those the speaker lists; a device the settings name that is not connected still shows as the
+choice), and the voice the voice route asks its provider to speak in (`[routes] voice`'s
+`voice`; empty is the provider's own). While the app's own voice model serves the voice, the
+voices it lists are chosen among: "The model's own (<name>)" first, then each by name, and a
+voice the settings name that the model does not list still shows, as not listed. For any other
+provider, and for one chosen on the page and not saved yet, the name is typed. Naming a voice
+for the app's own model writes the route, clearing it leaves the route out of the file again,
+and another provider is asked for its own voice until one is named. The card says when nothing serves the voice, so answers show in the
+bubble, and when the voice route goes to another provider, to which the text of each answer
+read aloud is sent. The Voice route's provider and model are edited with the other routes
+(R20). The card's edits are saved with the rest (R21, R22).
+
+Tests: `the_voice_card_turns_speaking_off_and_names_the_device_and_what_serves_it`, `the_voice_to_speak_in_is_the_voice_route_s_and_goes_with_its_provider`, `the_voices_a_provider_lists_are_chosen_among_and_others_are_typed`, `saving_applies_only_the_edits_onto_settings_changed_meanwhile`

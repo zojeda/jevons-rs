@@ -9,7 +9,7 @@ jevons is a tray app. Press a hotkey in any application and speak. It reads wher
 Everything runs locally. The speech, decision and language models run inside the app on an AMD GPU, through a Rust inference runtime built on [Burn](https://github.com/tracel-ai/burn) and [CubeCL](https://github.com/tracel-ai/cubecl). That runtime is also a server with OpenAI-compatible and [System One](https://docs.typesafe.ai/introduction) APIs (see [The runtime](#the-runtime)).
 
 > [!IMPORTANT]
-> **Hardware:** an AMD RDNA3-class GPU (32-lane waves with WMMA, such as the Radeon 8060S / `gfx1151`) and ROCm/HIP; NVIDIA (CUDA) GPUs and CPU inference are not supported yet. The default models need about 20 GB of GPU memory for DiffusionGemma and 1.2 GB for Parakeet. The desktop app is complete on Windows; Linux has the basics, and macOS has no tray or hotkey yet (see [Platform status](#platform-status)). All figures here come from one machine, a Radeon 8060S (ROCm 7.2.1).
+> **Hardware:** an AMD RDNA3-class GPU (32-lane waves with WMMA, such as the Radeon 8060S / `gfx1151`) and ROCm/HIP; NVIDIA (CUDA) GPUs and CPU inference are not supported yet. The default models need about 20 GB of GPU memory for DiffusionGemma, 1.2 GB for Parakeet and 2 GB for Qwen3-TTS, the voice model, if you add it. The desktop app is complete on Windows; Linux has the basics, and macOS has no tray or hotkey yet (see [Platform status](#platform-status)). All figures here come from one machine, a Radeon 8060S (ROCm 7.2.1).
 
 ## The desktop app
 
@@ -61,7 +61,7 @@ From WSL, `just desktop-windows` does the same natively on Windows. It mirrors y
 
 The app starts in the tray, with no console window. The [Desktop workflow](.github/workflows/desktop.yml) also builds it for Windows and Linux on every push to `dev` and `main`: download the package from the run's artifacts. The package and the executable in it are named for the build, the platform and the GPU backend with the driver release it needs, such as `jevons-desktop-0.1.0-dev.57.g065def7-windows-x86_64-hip-rocm7.2.exe` (ROCm/HIP 7.2); its `README.txt` says what to install.
 
-1. **Download the models.** Open the window (**Show context inspector** in the tray menu) and go to **Models**. Press **Download** on DiffusionGemma (about 18 GB, with its vision projector) and Parakeet (2.5 GB). They go to `~/jevons/models`, or to a folder you choose. Nothing downloads by itself, and **Use existing…** points at models already on disk.
+1. **Download the models.** Open the window (**Show context inspector** in the tray menu) and go to **Models**. Press **Download** on DiffusionGemma (about 18 GB, with its vision projector) and Parakeet (2.5 GB), and on Qwen3-TTS (2.5 GB) if you want answers read aloud. They go to `~/jevons/models`, or to a folder you choose. Nothing downloads by itself, and **Use existing…** points at models already on disk.
 2. **Wait for the first load.** The icon is blue while the models load. On the first runs on a machine it turns amber while GPU kernels are tuned, which takes a few minutes and is cached for later runs.
 3. **Dictate.** When the icon glows cyan, hold `Ctrl+Alt+Space` in any text field and speak. Hold `F9` for live dictation. **Settings** changes the hotkeys, the hold-or-toggle mode, the microphone and the language. Set the language if you always speak one: the transcript then stays in that language's alphabet.
 
@@ -108,7 +108,7 @@ jevons writes the built-in tree ([examples/desktop/flows](examples/desktop/flows
 
 ### The tray icon
 
-<img src="crates/jevons-desktop/assets/tray.png" alt="Tray states: ready, loading, tuning, no models, failed, listening (quiet and loud), transcribing, writing" width="680">
+<img src="crates/jevons-desktop/assets/tray.png" alt="Tray states: ready, loading, tuning, no models, failed, listening (quiet and loud), transcribing, writing, speaking (three frames)" width="900">
 
 From left to right: ready (cyan), models loading (blue), kernels tuning (amber), no models (grey), a failed take (red), listening (the waveform follows your voice), transcribing and writing.
 
@@ -203,10 +203,11 @@ The desktop app reads through one set of platform traits, decides in the platfor
 
 ## The runtime
 
-The app's models run on a Rust inference runtime, which is also a server for other tools. It offers three services behind APIs that existing clients already speak:
+The app's models run on a Rust inference runtime, which is also a server for other tools. It offers four services behind APIs that existing clients already speak:
 
 - **Generative:** free-form chat and text from diffusion language models, through the OpenAI-compatible Chat Completions, Completions and Responses APIs (streaming, function tools and JSON Schema output included), for OpenAI SDKs, agent frameworks, Open WebUI and other clients.
 - **Speech:** speech to text, through the OpenAI-compatible transcriptions API for uploads (subtitles and word timestamps included) and Realtime transcription over a WebSocket for live dictation.
+- **Voice:** text to speech, through the OpenAI-compatible speech API: WAV or 24 kHz PCM, streamed sentence by sentence while the model speaks, in Spanish, English and eight more languages.
 - **Decision:** typed, probabilistic answers (yes/no, choice, rubric scores) about a state and a set of questions, read from a diffusion model's masked canvas in one pass, through the [System One](https://docs.typesafe.ai/introduction) API.
 
 Everything is Rust: model code, GPU kernels (written in CubeCL and compiled at runtime for the device), audio decoding and the HTTP server. There is no Python, llama.cpp or C/C++ build. Each model runs on its own worker thread with a bounded queue, so a transcription never waits behind a long generation.
@@ -220,7 +221,7 @@ flowchart TB
 
     subgraph api["API layer · jevons-api"]
         direction LR
-        openai["openai/<br/>chat · completions · responses<br/>audio · realtime"]
+        openai["openai/<br/>chat · completions · responses<br/>audio · realtime · speech"]
         systemone["system_one/<br/>questions → slots → answers"]
         workers["workers/<br/>one thread per model<br/>bounded queues"]
     end
@@ -230,6 +231,7 @@ flowchart TB
         generative["Generative<br/>jevons-generative<br/>chat framing · streaming · stop sequences"]
         decision["Decision<br/>jevons-decision<br/>canvas reads · samples · probabilities"]
         speech["Speech<br/>jevons-speech<br/>windows · words · segments · live passes"]
+        voice["Voice<br/>jevons-voice<br/>cleaning · sentences · numbers in words · voices"]
     end
 
     diffusion["Diffusion layer · jevons-diffusion<br/>DiffusionEngine: prompt cache · answer codes · thoughts<br/>decoding: diffusion · self-speculation · autoregressive"]
@@ -239,6 +241,7 @@ flowchart TB
         gemma["DiffusionGemma<br/>jevons-gemma4-diffusion"]
         nemotron["Nemotron-Labs-Diffusion<br/>jevons-nemotron-diffusion"]
         parakeet["Parakeet TDT<br/>jevons-parakeet"]
+        qwen["Qwen3-TTS<br/>jevons-qwen3-tts"]
     end
 
     subgraph runtimes["GPU runtimes"]
@@ -248,34 +251,39 @@ flowchart TB
     end
 
     gpu["HIP · AMD GPU"]
-    foundation["Foundation: jevons-core (model contracts) · jevons-formats (GGUF, safetensors)<br/>jevons-tokenizer · jevons-audio (decoding, resampling, mel, VAD)"]
+    foundation["Foundation: jevons-core (model contracts) · jevons-formats (GGUF, safetensors)<br/>jevons-tokenizer · jevons-audio (decoding, resampling, mel, VAD, PCM16 and WAV out)"]
 
     clients -- "HTTP · SSE · WebSocket" --> api
     desktop -- "embedded, or a route to it" --> api
     openai --> generative
     openai --> speech
+    openai --> voice
     systemone --> decision
     generative --> diffusion
     decision --> diffusion
     diffusion --> gemma
     diffusion --> nemotron
     speech --> parakeet
+    voice --> qwen
     gemma --> cubecl
     gemma --> burn
     nemotron --> burn
     parakeet --> burn
+    qwen --> cubecl
+    qwen --> burn
     cubecl --> gpu
     burn --> gpu
 ```
 
 - **Desktop** (`jevons-desktop`, over `jevons-desktop-server`, the platform-free client `jevons-desktop-core`, `jevons-desktop-protocol` between the two, and `jevons-machine`, which knows what a state machine is and nothing about the desktop): the desktop agent. The server decides what to do with a take (the pipeline, the flow tree, the machines, the inference routes) and asks the client for what happens at your desk (typing, confirming, reading the screen, automations). Each platform layer (accessibility context, microphone, text input, hotkey, tray) is a trait with a per-OS implementation. It loads the API layer in-process, optionally exposing it on a port.
-- **API layer** (`jevons-api`): routes, authentication, settings and the wire formats. OpenAI requests become Generative or Speech calls, and System One questions compile into Decision reads. Each loaded model gets one worker thread: the diffusion worker serves both Generative and Decision jobs on one engine, and the speech worker runs live Realtime passes ahead of queued uploads. The `jevons-rs` binary is a thin wrapper around it.
+- **API layer** (`jevons-api`): routes, authentication, settings and the wire formats. OpenAI requests become Generative, Speech or Voice calls, and System One questions compile into Decision reads. Each loaded model gets one worker thread: the diffusion worker serves both Generative and Decision jobs on one engine, the speech worker runs live Realtime passes ahead of queued uploads, and the voice worker streams a speech's audio as the model produces it. The `jevons-rs` binary is a thin wrapper around it.
 - **Services** take typed Rust requests and return typed results, with no HTTP or async code, and JSON only as data (tool arguments, schemas, structured answers):
   - **Generative** (`jevons-generative`) frames conversations, reserves an optional thought, and streams the answer while holding back text that could still become a stop sequence.
   - **Decision** (`jevons-decision`) reads every answer slot's distribution over its candidates from one canvas forward, averages samples and chunks slots that exceed one canvas. It also has the `jevons-scm` CLI.
   - **Speech** (`jevons-speech`) windows recordings longer than one model pass into words and segments, and runs single passes for live utterances.
+  - **Voice** (`jevons-voice`) takes the Markdown out of a text, cuts it into sentences, writes each sentence's numbers in the words of its language (Spanish or English), and has the model speak one sentence at a time.
 - **Diffusion layer** (`jevons-diffusion`): the part Generative and Decision share. `DiffusionEngine` owns a loaded diffusion model with its chat framing, verified answer codes and context limits, and generates bounded token runs (thoughts and answers) with masked or uniform-noise diffusion, self-speculation or autoregressive decoding.
-- **Models** implement the contracts in `jevons-core` (`DiffusionModel`, `SpeechModel`), and `jevons-models` detects which one a model file holds. DiffusionGemma runs on hand-tuned CubeCL kernels, which its forward calls as Burn operations, while Nemotron-Labs-Diffusion and Parakeet run on Burn's own layers, all on the same CubeCL runtime and HIP device.
+- **Models** implement the contracts in `jevons-core` (`DiffusionModel`, `SpeechModel`, `VoiceModel`), and `jevons-models` detects which one a model file holds. DiffusionGemma runs on hand-tuned CubeCL kernels, which its forward calls as Burn operations, and Qwen3-TTS makes each audio frame the same way, over kernels of its own. Nemotron-Labs-Diffusion and Parakeet run on Burn's own layers. All share one CubeCL runtime and HIP device.
 
 ### Models
 
@@ -284,6 +292,7 @@ flowchart TB
 | [DiffusionGemma 26B-A4B](https://ai.google.dev/gemma/docs/diffusiongemma/model_card) (GGUF, Q4_K_M; image input with its vision projector) | Diffusion language model (MoE) | CubeCL kernels | Generative, Decision |
 | [Nemotron-Labs-Diffusion](https://huggingface.co/nvidia/Nemotron-Labs-Diffusion-VLM-8B) 8B VLM or [3B](https://huggingface.co/nvidia/Nemotron-Labs-Diffusion-3B) (safetensors) | Diffusion language model, with self-speculative autoregressive decoding | Burn | Generative, Decision |
 | [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) (safetensors) | Speech recognition, 25 European languages including Spanish and English | Burn | Speech |
+| [Qwen3-TTS 12Hz 0.6B Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base) (safetensors, with its codec under `speech_tokenizer/`) | Text to speech at 24 kHz, ten languages including Spanish and English | Burn, with CubeCL kernels | Voice |
 
 A settings file declares each model once and points services at it: Generative and Decision usually share one loaded diffusion model (one engine and queue, the masked canvas used or not per request), and can also use two different ones. The architecture is detected from the model files. Obtain the models yourself and check their licenses.
 
@@ -302,21 +311,26 @@ decoding = "self-speculation"
 [models.parakeet]
 path = "~/models/parakeet-tdt-0.6b-v3"
 
+[models.qwen]
+path = "~/models/qwen3-tts-12hz-0.6b-base"
+
 [services.generative]              # OpenAI chat, completions, responses
 model = "nemotron"
 [services.decision]                # System One, on the same engine
 model = "nemotron"
 [services.speech]                  # transcriptions and Realtime
 model = "parakeet"
+[services.voice]                   # text to speech
+model = "qwen"
 ```
 
 ```bash
 cargo run --release --locked -p jevons-rs -- --config jevons.toml
 ```
 
-Without `--config`, the server reads `./jevons.toml` or `~/.config/jevons/config.toml`. [jevons.example.toml](jevons.example.toml) lists every key: per model the served `id`, context and batch sizes, decoding, seed, prompt cache and queue capacity; per service its model, and for speech the audio limit and Realtime switch. `--bind` overrides the address; set `TYPESAFE_API_KEY` to require a bearer key on `/v1/*`.
+Without `--config`, the server reads `./jevons.toml` or `~/.config/jevons/config.toml`. [jevons.example.toml](jevons.example.toml) lists every key: per model the served `id`, context and batch sizes, decoding, seed, prompt cache and queue capacity; per service its model, for speech the audio limit and Realtime switch, and for voice the default voice and the text limit. `--bind` overrides the address; set `TYPESAFE_API_KEY` to require a bearer key on `/v1/*`.
 
-The first start on a new GPU compiles and tunes kernels for a few minutes; later starts reuse the caches in `~/.cache/diffusion-cubecl` (DiffusionGemma) and `~/.cache/jevons-burn` (Burn models). Every loaded model is listed by `GET /v1/models`, under its ID and aliases: the model that serves Decision (or the only diffusion model) answers to `jev-latest`, and Parakeet to `parakeet-latest`, which the examples below use.
+The first start on a new GPU compiles and tunes kernels for a few minutes; later starts reuse the caches in `~/.cache/diffusion-cubecl` (DiffusionGemma) and `~/.cache/jevons-burn` (Burn models). Every loaded model is listed by `GET /v1/models`, under its ID and aliases: the model that serves Decision (or the only diffusion model) answers to `jev-latest`, Parakeet to `parakeet-latest` and Qwen3-TTS to `qwen3-tts-latest`, which the examples below use.
 
 ### API examples
 
@@ -377,6 +391,22 @@ uv run examples/realtime.py examples/speech-es.flac --url ws://127.0.0.1:8080/v1
 
 `GET /v1/realtime` speaks the OpenAI Realtime protocol for transcription sessions (the GA events and the beta `transcription_session.*` ones). Clients stream PCM16 (or G.711) audio. A server-side turn detector commits each turn at a pause, or the client commits it. Words agreed by consecutive passes arrive as deltas while the user speaks, and the final transcript follows each turn. The example script streams a file at real-time pace; the OpenAI SDK's `client.realtime.connect(...)` works too.
 
+#### Voice: speech
+
+```bash
+curl http://127.0.0.1:8080/v1/audio/speech -H "Content-Type: application/json" \
+  --data-binary @examples/audio-speech.json --output speech.wav
+```
+
+```python
+with client.audio.speech.with_streaming_response.create(
+    model="qwen3-tts-latest", voice="lector", input="Son las 15:30.", response_format="wav"
+) as speech:
+    speech.stream_to_file("speech.wav")
+```
+
+The body streams as the model speaks, one sentence at a time: `wav` (the default) at the model's 24 kHz, or `pcm`. The text may hold Markdown and digits: the service drops the marks and says numbers, amounts, times and dates in Spanish or English words. The voices `reader` and `lector` are built in, a request that names none is spoken in `reader`, and `language` fixes the language in place of a guess per sentence. MP3, a `speed` other than 1 and `instructions` are rejected with `400`. See [text to speech](docs/api.md#text-to-speech).
+
 #### Decision: System One
 
 ```bash
@@ -401,7 +431,7 @@ The [example](examples/system-one.json) asks three question types about a constr
 
 ### Clients
 
-- **OpenAI SDKs** (Python, JavaScript and others): set `base_url` to `http://127.0.0.1:8080/v1`. Chat, Responses, Completions, transcriptions and Realtime transcription sessions all parse into the SDKs' own types.
+- **OpenAI SDKs** (Python, JavaScript and others): set `base_url` to `http://127.0.0.1:8080/v1`. Chat, Responses, Completions, transcriptions, speech and Realtime transcription sessions all parse into the SDKs' own types.
 - **Open WebUI:** add an OpenAI connection with the base URL above for chat. For dictation and voice calls, set Admin Panel → Settings → Audio → Speech-to-Text to the *OpenAI* engine with the same URL and model `parakeet-tdt-0.6b-v3`, and use *Web API* for text to speech. The model selector picks the chat model; dictation always uses the Audio setting.
 - **jevons-desktop:** tray dictation and automation in any application, routed by a flow tree per app, page and field (see [Desktop app](docs/desktop.md)).
 - **TypeSafe SDKs:** set `TYPESAFE_BASE_URL=http://127.0.0.1:8080` and use `jev-latest`. No connection to TypeSafe or Codiv infrastructure is needed.
@@ -424,7 +454,7 @@ See [benchmarks](benchmarks/README.md) for methods, per-case results and compari
 | Guide | Contents |
 | --- | --- |
 | [Desktop app](docs/desktop.md) | The tray app: the flow tree, the context inspector, settings, model downloads, platform status |
-| [HTTP API](docs/api.md) | Routes, settings, OpenAI-compatible generation, speech to text, Realtime, limits, errors |
+| [HTTP API](docs/api.md) | Routes, settings, OpenAI-compatible generation, speech to text, Realtime, text to speech, limits, errors |
 | [System One](docs/system-one.md) | The masked canvas, text and image examples, extensions |
 | [Build and hardware](docs/build.md) | ROCm/WSL setup, hardware, runtime options, image input |
 | [Diffusion and canvas inference](docs/inference.md) | Denoising, answer slots, probability math, masked diffusion decoding |
@@ -441,3 +471,5 @@ The DiffusionGemma answer-slot canvas approach used here is inspired by [OpenJev
 Credit also goes to Google DeepMind for [DiffusionGemma](https://ai.google.dev/gemma/docs/diffusiongemma/model_card), and to Daniel Han (`danielhanchen`) and the llama.cpp contributors for the native DiffusionGemma support in [PR #24423](https://github.com/ggml-org/llama.cpp/pull/24423). This project first ran on that work, pinned at commit [`12e0a9627d02`](https://github.com/ggml-org/llama.cpp/commit/12e0a9627d02c6395fd4bbf2aadff93d0d46a0e4), and its CubeCL runtime was validated against it: tokenizer, prompt framing, vision preprocessing, image prefill and the diffusion sampler follow that implementation. The llama.cpp backend has since been removed; no C/C++ toolchain or submodule is needed.
 
 Speech to text runs NVIDIA's [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) (CC BY 4.0), ported from the Hugging Face `ParakeetForTDT` implementation and checked against it. The speech fixtures are a [LibriSpeech](https://www.openslr.org/12) utterance (CC BY 4.0), via `hf-internal-testing/librispeech_asr_dummy`, and the opening of *Cuentos rusos* read for [LibriVox](https://librivox.org/) (public domain).
+
+Text to speech runs Alibaba's [Qwen3-TTS 12Hz 0.6B Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base) (Apache-2.0), ported from the [`qwen-tts`](https://pypi.org/project/qwen-tts/) package and checked against it. The built-in voices come from the two speech fixtures: `reader`, the default, from the LibriSpeech utterance and `lector` from the LibriVox reading.

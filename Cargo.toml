@@ -27,8 +27,10 @@ jevons-machine = { path = "crates/jevons-machine" }
 jevons-models = { path = "crates/jevons-models", default-features = false }
 jevons-nemotron-diffusion = { path = "crates/jevons-nemotron-diffusion" }
 jevons-parakeet = { path = "crates/jevons-parakeet" }
+jevons-qwen3-tts = { path = "crates/jevons-qwen3-tts" }
 jevons-speech = { path = "crates/jevons-speech" }
 jevons-tokenizer = { path = "crates/jevons-tokenizer" }
+jevons-voice = { path = "crates/jevons-voice" }
 axum = "0.8"
 clap = { version = "4.6", features = ["derive", "env"] }
 rand = "0.9"
@@ -104,6 +106,8 @@ debug = "line-tables-only"
 # Windows HIP library names; see third_party/cubecl-hip-sys/README.jevons.md.
 [patch.crates-io]
 cubecl-hip-sys = { path = "third_party/cubecl-hip-sys" }
+# The kernel cache did not open on Windows; see third_party/cubecl-environment/README.jevons.md.
+cubecl-environment = { path = "third_party/cubecl-environment" }
 # derive_more imports that clash with cubecl's derive_more features; see
 # third_party/stylo/README.jevons.md.
 stylo = { path = "third_party/stylo" }

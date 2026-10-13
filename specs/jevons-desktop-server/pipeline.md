@@ -3,11 +3,11 @@
 [Back to jevons-desktop-server](spec.md)
 
 A take is one dictation: the context when it starts, the microphone's audio, the transcript, the
-walk through the flow tree, and the delivery of the leaf's text into the application, the bubble
-or the clipboard. Live dictation is a take that ends phrases at pauses and shows them as they are
-heard. Every step goes into the take's trace, and live updates feed the tray and the bubble. How
-the flow tree routes a take is in [flows](flows.md), and how machines take it in
-[machines](machines.md). The server asks the desk to deliver the text; typing it only into the
+walk through the flow tree, and the delivery of the leaf's text into the application, the bubble,
+the clipboard or the voice that reads it aloud. Live dictation is a take that ends phrases at pauses
+and shows them as they are heard. Every step goes into the take's trace, and live updates feed the
+tray and the bubble. How the flow tree routes a take is in [flows](flows.md), and how machines take
+it in [machines](machines.md). The server asks the desk to deliver the text; typing it only into the
 window the take started in, once no key is held, is the client's rule
 ([desk](../jevons-desktop-core/desk.md) R2). The hotkeys' press and release, the microphone and the
 text sink are in jevons-desktop.
@@ -78,20 +78,23 @@ Tests: `a_hotkey_entry_starts_below_the_root_without_its_decision`
 A decision request gets 60 seconds and a generation 120. When the decision model gives no answer
 in time, the take's decisions take their fallbacks, nothing is generated, and the words are used
 as heard, with a note in the trace. A generation for the application that runs out of time uses
-the words as heard; one for the bubble fails the take.
+the words as heard; one for the bubble or the voice fails the take. The voice route gets 60
+seconds for each next piece of an answer's audio, the first included; past that the answer is
+left to the bubble, and the take does not fail (R21).
 
-Tests: `a_stalled_decision_types_the_transcript_without_generating`
+Tests: `a_stalled_decision_types_the_transcript_without_generating`, `a_voice_route_that_fails_or_gives_nothing_in_time_leaves_the_answer_in_the_bubble`
 
 ### R9 Updates report each stage in order
 
 A take reports, in order: the meter's levels and the words heard while it listens, `Transcribing`
 and `Thinking` as it goes, and each stage it runs (a decision with its branches, an
-investigation, writing, answering, a tool call, an agent) followed by what that stage chose or
-produced and whether it worked. A running stage can report what it does now. Stages nest: a
-stage's end closes the latest one still open. Generated text streams as it is written, and the
-machines report where they are.
+investigation, writing, answering, a tool call, an agent, speaking) followed by what that stage
+chose or produced and whether it worked. A running stage can report what it does now. Stages
+nest: a stage's end closes the latest one still open. Generated text streams as it is written,
+`Speaking` says the desk took the first of an answer's speech, and the machines report where
+they are.
 
-Tests: `every_decision_and_the_generation_report_their_stages_in_order`
+Tests: `every_decision_and_the_generation_report_their_stages_in_order`, `an_answer_is_read_aloud_a_stretch_at_a_time_and_shown_too`
 
 ### R10 Live dictation ends phrases at pauses
 
@@ -117,10 +120,11 @@ Tests: `live_dictation_shows_each_phrase_and_types_the_whole_text_once_stopped`,
 ### R12 A leaf's text goes where its output says
 
 Text for the target goes to the application (R13). Text for the clipboard is copied there. An
-answer for the bubble is shown there, and is never typed or copied. A leaf whose text is empty
-delivers nothing, with a note in the trace.
+answer for the bubble is shown there, and is never typed or copied. An answer for the voice is
+read aloud (R19) and shown in the bubble too, and is never typed or copied either. A leaf whose
+text is empty delivers nothing, with a note in the trace, and nothing is said.
 
-Tests: `a_question_is_answered_in_the_bubble_and_never_typed`, `words_needing_no_edits_are_typed_after_one_merged_decision`
+Tests: `a_question_is_answered_in_the_bubble_and_never_typed`, `words_needing_no_edits_are_typed_after_one_merged_decision`, `an_answer_is_read_aloud_a_stretch_at_a_time_and_shown_too`
 
 ### R13 Text goes only into the window the take started in
 
@@ -148,14 +152,17 @@ A take's trace holds its id, its turn in a live take, when it started, the conte
 audio, how it was transcribed, the transcript, where it started, every node it went through with
 the guards, decisions and investigations, the leaf, the tool calls, the machines' transitions, the
 generation's request and output, the text delivered and how, the timings of each step, the notes,
-and the error. Its route names the nodes after the root, joined with `→`.
+and the error. Its route names the nodes after the root, joined with `→`. A spoken answer adds
+two timings, `voice_first` (from the request to the first stretch the desk took) and `voice`
+(the whole of it), and the trace never holds audio.
 
-Tests: `words_needing_no_edits_are_typed_after_one_merged_decision`, `every_decision_and_the_generation_report_their_stages_in_order`
+Tests: `words_needing_no_edits_are_typed_after_one_merged_decision`, `every_decision_and_the_generation_report_their_stages_in_order`, `an_answer_is_read_aloud_a_stretch_at_a_time_and_shown_too`
 
 ### R16 Logs never hold what was said
 
 A take's log lines name its steps, timings, sizes and outcome, never the transcript, the context's
-text or the text delivered.
+text, the text delivered or read aloud, or any audio. A spoken answer logs its times and the
+seconds of audio.
 
 Tests: none yet
 
@@ -176,3 +183,43 @@ Empty hotkeys bind nothing. A key chord reads as modifiers and then one key, ign
 writes back as `ctrl+shift+k`.
 
 Tests: `the_record_and_automation_hotkeys_bind_from_the_settings`, `chords_read_modifiers_then_one_key_and_write_back_the_same`
+
+### R19 An answer is read aloud a stretch at a time
+
+For a leaf that speaks ([flows](flows.md) R51), the pipeline posts the leaf's text to the voice
+route with the route's model and voice, as PCM ([client](client.md) R29). It gathers the audio
+into stretches of 4,800 samples, 200 ms, and hands each to the desk under the take's number as
+soon as it is full, so the first words play while the rest is made. The end goes as the last
+stretch, marked so, with whatever is left: nothing, when the audio ended on a stretch's edge.
+The desk answers each once it has queued it, so the take ends when the speech is made, well
+before it is heard. The take reports a `speaking` stage, `Speaking` when the desk took the first
+stretch, and at the end the seconds of audio handed over.
+
+Tests: `an_answer_is_read_aloud_a_stretch_at_a_time_and_shown_too`, `an_answer_s_speech_crosses_the_stream_to_the_client_s_speaker`
+
+### R20 A desk that stops speaking ends the request
+
+When the desk answers that it does not speak the take (it has no speaker, the user stopped the
+voice, the microphone opened, a newer take speaks), the pipeline asks for no more: it drops the
+answer's stream, which hangs up on the provider, and the stage ends as `stopped`.
+
+Tests: `a_desk_that_stops_ends_the_request_and_what_it_took_counts_as_spoken`
+
+### R21 What keeps an answer from being heard is a note, never an error
+
+The bubble holds the answer either way. The delivery is `spoken` when the desk took at least one
+stretch, and `shown` otherwise, with a note saying why:
+
+| What happened | Outcome | Note |
+| --- | --- | --- |
+| The desk does not speak the take from its first stretch | `shown` | "Not read aloud: the desk is not speaking" |
+| The desk cannot play | `shown` | "Not read aloud: " and the desk's error, such as "no output device" |
+| The voice route fails | `shown` | "Not read aloud: <provider>/<model> failed: " and its error |
+| It gives no audio within the time limit, or answers with none | `shown` | "Not read aloud: no speech from <provider>/<model> within 60 s", or "… answered with no audio" |
+| The route fails or stalls after the desk took some | `spoken` | "The voice stopped early: " and why |
+| The desk stops after it took some | `spoken` | none |
+
+After a route that failed or stalled midway, the desk is told that nothing follows, with a last
+stretch that holds no samples. None of these sets the take's error.
+
+Tests: `a_voice_route_that_fails_or_gives_nothing_in_time_leaves_the_answer_in_the_bubble`, `the_client_s_desk_plays_the_speech_or_says_why_it_does_not`, `a_desk_that_stops_ends_the_request_and_what_it_took_counts_as_spoken`

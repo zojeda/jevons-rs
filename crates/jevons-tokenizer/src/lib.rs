@@ -3,3 +3,4 @@
 
 pub mod gemma4;
 pub mod hf;
+pub mod qwen;

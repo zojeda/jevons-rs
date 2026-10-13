@@ -117,7 +117,11 @@ Tests: `shared_branches_load_once_and_filter_with_only`, `shared_branch_mistakes
 branch folder, and only one; with any other output they have none. An `action` other than
 `insert` needs `output = "target"`, and a transcript cannot `rewrite`.
 
-Tests: `leaves_have_no_branches_and_actions_fit_their_output`, `a_tool_with_next_passes_its_result_to_its_branch`
+`output = "voice"` is for `generate.toml` alone. On a transcript, a tool or a run it is a load
+error: only what the language model writes is read aloud. A generation that asks for voice
+cannot have a `schema`, since nobody listens to JSON.
+
+Tests: `leaves_have_no_branches_and_actions_fit_their_output`, `a_tool_with_next_passes_its_result_to_its_branch`, `only_a_generation_without_a_schema_answers_aloud`
 
 ### R12 Tool and run nodes name what the settings register
 
@@ -175,7 +179,8 @@ Tests: `results_have_shapes_and_guards_check_values_that_exist`
 A `generate.toml` with a `[schema]`, written as an investigation's, asks the model for JSON in
 that shape. The answer is made to fit it: unknown fields are dropped, numbers and labels in text
 are read, and what does not fit is null. The leaf's text is the answer as written; what reads the
-result later reads its fields. A `schema` that is not a shape is a load error.
+result later reads its fields. A `schema` that is not a shape is a load error, and so is one on a
+leaf that answers aloud (R11).
 
 Tests: `a_generation_with_a_schema_answers_in_fields_later_states_read`, `results_have_shapes_and_guards_check_values_that_exist`
 
@@ -343,12 +348,15 @@ Tests: `words_needing_no_edits_are_typed_after_one_merged_decision`, `a_rewrite_
 
 A generation sends the gathered instructions plus one for its output and action, and its `prompt`
 or a default input: the context, the values found, and the words framed as dictation, an
-instruction with the text to rewrite, or a question for the bubble. It writes at most the nearest
+instruction with the text to rewrite, or a question for the bubble or the voice. The bubble's
+instruction says it renders Markdown, and to use it where it helps reading. The voice's says the
+answer is heard: plain sentences, no Markdown, no lists, numbers as one says them. So a node's
+own instructions need not say how to format an answer. It writes at most the nearest
 `max_output_tokens`, or the settings' default. Without a language model it uses the words as
-heard. A generation past `generation_timeout` fails for the bubble and uses the words as heard
-elsewhere.
+heard. A generation past `generation_timeout` fails for the bubble and the voice, and uses the
+words as heard elsewhere.
 
-Tests: `a_rewrite_of_the_selection_generates_with_the_branch_instructions`, `a_question_is_answered_in_the_bubble_and_never_typed`
+Tests: `a_rewrite_of_the_selection_generates_with_the_branch_instructions`, `a_question_is_answered_in_the_bubble_and_never_typed`, `an_answer_is_read_aloud_a_stretch_at_a_time_and_shown_too`
 
 ### R35 Every step is traced
 
@@ -366,6 +374,22 @@ decisions, and through a machine root's `said` from its first state. It stops at
 first decision the model would make, listing its candidates.
 
 Tests: `the_preview_follows_guards_and_rules_and_stops_at_the_model`, `the_example_contexts_route_to_their_branches`
+
+### R51 A voice leaf speaks only where it will be heard
+
+Before it generates, a leaf with `output = "voice"` decides whether it speaks: a `voice` route is
+served, and the take's settings let it speak.
+
+- **It speaks.** The model gets the voice's instruction (R34), the text streams to the bubble as
+  an answer, and the leaf's output is `voice`: the pipeline reads it aloud
+  ([pipeline](pipeline.md) R19).
+- **It does not.** It is a `bubble` leaf in everything: the instruction, the stage, the leaf's
+  output in the trace and the delivery. No speech is asked for, and nothing notes it.
+
+A leaf whose text is the user's own words as heard (no language model, a decision model that
+did not answer) shows them and never reads them back.
+
+Tests: `an_answer_is_read_aloud_a_stretch_at_a_time_and_shown_too`, `a_voice_leaf_is_a_bubble_leaf_where_nothing_speaks_or_the_voice_is_off`, `the_user_s_own_words_are_shown_and_never_read_back`
 
 ## The built-in tree
 
@@ -397,13 +421,19 @@ a selection, `rewrite` with text in the field, and `verbatim`. `code` and `termi
 
 Tests: `the_example_contexts_route_to_their_branches`, `the_preview_follows_guards_and_rules_and_stops_at_the_model`, `in_a_terminal_the_words_are_dictated_and_never_rewritten`
 
-### R40 `ask` answers in the bubble, from Slack's extracts in Slack
+### R40 `ask` answers aloud and in the bubble, from Slack's extracts in Slack
 
-`assistant`'s state `ask` answers in the bubble and never types. In Slack it reads the open conversation, its latest
-messages and the channels with lazy extracts (`slack_conversation`, `slack_messages`,
+`assistant`'s state `ask` never types. Its four leaves (`any`, `chat`, `slack`, `web-chat`) say
+`output = "voice"`: the answer is read aloud where a voice is served and the user left it on,
+and it is in the bubble either way (R51). `ask/instructions.md` says what to answer and leaves
+the format to the output's own instruction (R34). In Slack it reads the open conversation, its
+latest messages and the channels with lazy extracts (`slack_conversation`, `slack_messages`,
 `slack_channels`), and `assistant/ask/slack` answers from them.
 
-Tests: `a_question_is_answered_in_the_bubble_and_never_typed`, `in_slack_the_built_in_ask_branch_answers_from_the_root_s_slack_extracts`, `the_example_contexts_route_to_their_branches`
+The research example (`examples/desktop/machines/research`) answers the same way: its
+`answering` and `reading/summary` leaves say `output = "voice"`.
+
+Tests: `a_question_is_answered_in_the_bubble_and_never_typed`, `in_slack_the_built_in_ask_branch_answers_from_the_root_s_slack_extracts`, `the_example_contexts_route_to_their_branches`, `the_built_in_assistant_answers_aloud_and_leaves_the_format_to_the_output`
 
 ## Files jevons writes
 
@@ -454,9 +484,11 @@ Tests: `init_writes_the_tree_once_and_agents_md_until_it_is_edited`, `an_unedite
 folder's files match one of those trees (line endings aside, leaving out `AGENTS.md`,
 `TOOLS.md`, `_schemas/` and dot files), `init` removes the files the current tree lacks and the
 folders that leaves empty, writes those that changed, and notes the upgrade. The next `init`
-changes nothing.
+changes nothing. The last tree whose `ask` leaves answered in the bubble alone is among them: a
+folder still at it gets the leaves that speak, their instructions and the agent's file, and
+nothing else is written or removed.
 
-Tests: `an_unedited_earlier_built_in_tree_is_brought_up_to_date_and_an_edited_one_is_not`
+Tests: `an_unedited_earlier_built_in_tree_is_brought_up_to_date_and_an_edited_one_is_not`, `an_unedited_tree_from_before_the_voice_gets_the_leaves_that_speak`
 
 ### R47 An edited tree is never touched
 

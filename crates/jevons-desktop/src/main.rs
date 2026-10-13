@@ -10,6 +10,7 @@
 //! `--check-automations`, `--dry-run <name>` and `--run <name>` check, replay and run the
 //! automations library. `--reset-settings` puts the default settings folder back (its git
 //! history keeps the earlier one), and `--clear <what>` clears logs, traces and recordings.
+//! `--say <text>` speaks through the voice route, or writes a WAV file with `--out`.
 #![forbid(unsafe_code)]
 // A tray app: no console window on Windows. Logs go to a file; --replay output can be redirected.
 #![cfg_attr(windows, windows_subsystem = "windows")]
@@ -24,6 +25,7 @@ mod settings;
 mod tray;
 mod tuning;
 mod ui;
+mod voice;
 
 use crate::config::{DesktopConfig, default_config_file};
 use agent::{Agent, Command, Layers, View};
@@ -31,7 +33,8 @@ use clap::Parser;
 use jevons_desktop_core::context::ContextSnapshot;
 use jevons_desktop_core::fake::FileAudioSource;
 use jevons_desktop_core::history::{self, History};
-use jevons_desktop_core::platform::{AudioSource, MenuCommand};
+use jevons_desktop_core::platform::{AudioSource, MenuCommand, SAMPLE_RATE, Speaker};
+use jevons_desktop_server::client::{Pcm16, Route, Routes, SpeechRequest};
 use jevons_desktop_server::flow::{FlowTree, defaults};
 use jevons_desktop_server::pipeline::{self, TakeStart};
 use std::path::{Path, PathBuf};
@@ -133,6 +136,12 @@ struct Args {
     /// restarts) or `all`; several separated by commas.
     #[arg(long, value_name = "WHAT", value_enum, value_delimiter = ',')]
     clear: Vec<Clear>,
+    /// Speak this text through the voice route, on the settings' output device, and exit.
+    #[arg(long, value_name = "TEXT", conflicts_with_all = ["replay", "transcript", "serve", "server"])]
+    say: Option<String>,
+    /// With --say: write the speech to this WAV file in place of playing it.
+    #[arg(long, value_name = "WAV", requires = "say")]
+    out: Option<PathBuf>,
     /// Check that GPU `INDEX` lets this process in, and exit. The app runs a copy of itself
     /// with this before it first loads models, to wait for a GPU that does not answer yet.
     #[arg(long, value_name = "INDEX", hide = true)]
@@ -177,6 +186,7 @@ impl Args {
             || self.reset_settings
             || !self.clear.is_empty()
             || self.serve
+            || self.say.is_some()
     }
 }
 
@@ -274,6 +284,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if args.serve {
         return serve(config, config_file);
+    }
+    if let Some(text) = &args.say {
+        return say(text, args.out.as_deref(), &config, &config_file);
     }
     desktop(config, config_file)
 }
@@ -666,26 +679,7 @@ fn replay(
     // However the run ends, the models unload before the process does.
     let _unload = runtime::ShutdownOnDrop(runtime.clone());
     runtime.apply(&config, &config_file);
-    let routes = loop {
-        changed.recv()?;
-        match runtime.status() {
-            runtime::Status::Loading => continue,
-            status @ runtime::Status::WaitingForGpu { .. } => {
-                eprintln!("note: {}", status.describe());
-                continue;
-            }
-            status => match runtime.routes() {
-                Some(routes) => {
-                    // A provider that does not answer leaves its capabilities out.
-                    if matches!(status, runtime::Status::Failed(_)) {
-                        eprintln!("note: {}", status.describe());
-                    }
-                    break routes;
-                }
-                None => return Err(status.describe().into()),
-            },
-        }
-    };
+    let routes = served_routes(&runtime, &changed)?;
     let tokio = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -708,13 +702,8 @@ fn replay(
         }
         return Err("the flow tree has problems; see above".into());
     }
-    let dictation = &config.dictation;
-    let settings = pipeline::Settings {
-        language: dictation.language.clone(),
-        decide: dictation.decide,
-        max_output_tokens: dictation.max_output_tokens,
-        ..pipeline::Settings::default()
-    };
+    // A headless run has no speaker: a leaf that asks for voice answers as the bubble's does.
+    let settings = config.take_settings(false);
     let flows = Arc::new(flows);
     let traces = tokio.block_on(async {
         // The server's side, in this process. Headless runs never run a tool that asks
@@ -774,6 +763,161 @@ fn replay(
         Some(e) => Err(e.into()),
         None => Ok(()),
     }
+}
+
+/// Waits for the runtime to serve what the settings route, and returns the routes. With
+/// nothing served it fails with the runtime's status; a provider that does not answer is a
+/// note, and its capabilities are left out.
+fn served_routes(
+    runtime: &runtime::Runtime,
+    changed: &std::sync::mpsc::Receiver<()>,
+) -> Result<Routes, Box<dyn std::error::Error>> {
+    loop {
+        changed.recv()?;
+        match runtime.status() {
+            runtime::Status::Loading => continue,
+            status @ runtime::Status::WaitingForGpu { .. } => {
+                eprintln!("note: {}", status.describe());
+                continue;
+            }
+            status => match runtime.routes() {
+                Some(routes) => {
+                    if matches!(status, runtime::Status::Failed(_)) {
+                        eprintln!("note: {}", status.describe());
+                    }
+                    return Ok(routes);
+                }
+                None => return Err(status.describe().into()),
+            },
+        }
+    }
+}
+
+/// `--say`: the text through the voice route, played on the settings' output device, or
+/// written as a WAV file with `--out`. Only the voice is loaded and asked: it speaks whatever
+/// the "Speak answers" switch says, since the command asks for it.
+fn say(
+    text: &str,
+    out: Option<&Path>,
+    config: &DesktopConfig,
+    config_file: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (ready, changed) = std::sync::mpsc::channel();
+    let runtime = runtime::Runtime::start(move || {
+        let _ = ready.send(());
+    });
+    // However the run ends, the model unloads before the process does.
+    let _unload = runtime::ShutdownOnDrop(runtime.clone());
+    runtime.only(crate::config::Capability::Voice);
+    runtime.apply(config, config_file);
+    let nothing = "nothing serves the voice: choose a voice model in the Models tab, or route \
+                   `voice` to a provider in jevons-server.toml";
+    let routes = match served_routes(&runtime, &changed) {
+        Ok(routes) => routes,
+        // No model at all is this command's own case to explain; a voice model that did not
+        // load, or a provider that does not answer, says what is wrong itself.
+        Err(_) if runtime.status() == runtime::Status::NoModels => return Err(nothing.into()),
+        Err(e) => return Err(e),
+    };
+    let route = routes.voice.ok_or(nothing)?;
+    let tokio = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let began = std::time::Instant::now();
+    let mut first: Option<u128> = None;
+    let samples = match out {
+        Some(file) => {
+            let mut all = Vec::new();
+            tokio.block_on(speech(&route, text, |stretch| {
+                first.get_or_insert_with(|| began.elapsed().as_millis());
+                all.extend_from_slice(stretch);
+                true
+            }))?;
+            std::fs::write(file, wav(&all)).map_err(|e| format!("{}: {e}", file.display()))?;
+            println!("wrote {}", file.display());
+            all.len()
+        }
+        None => {
+            let mut playback = audio::CpalSpeaker.start(config.voice.output.as_deref())?;
+            let samples = tokio.block_on(speech(&route, text, |stretch| {
+                first.get_or_insert_with(|| began.elapsed().as_millis());
+                playback.play(stretch)
+            }))?;
+            // All of it is queued long before the last word is heard.
+            while playback.playing() {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            samples
+        }
+    };
+    println!(
+        "{:.1} s of speech from {}; the first audio after {} ms, all of it after {} ms",
+        samples as f64 / f64::from(SAMPLE_RATE),
+        route.name(),
+        first.unwrap_or_default(),
+        began.elapsed().as_millis()
+    );
+    Ok(())
+}
+
+/// Asks `route` for `text` as speech and hands the samples to `heard` as they arrive, mono
+/// PCM16 at [`SAMPLE_RATE`]. Returns how many came. It ends early when `heard` answers false
+/// or the provider gives nothing for as long as a take would wait.
+async fn speech(
+    route: &Route,
+    text: &str,
+    mut heard: impl FnMut(&[i16]) -> bool,
+) -> Result<usize, String> {
+    let limit = pipeline::Settings::default().voice_timeout;
+    let late = || {
+        format!(
+            "no speech from {} within {} s",
+            route.name(),
+            limit.as_secs()
+        )
+    };
+    let failed = |e| format!("{} failed: {e}", route.name());
+    let request = SpeechRequest {
+        model: route.model.clone(),
+        input: text.to_string(),
+        voice: route.voice.clone(),
+        language: None,
+    };
+    let mut stream = tokio::time::timeout(limit, route.client.speak(&request))
+        .await
+        .map_err(|_| late())?
+        .map_err(failed)?;
+    let mut pcm = Pcm16::default();
+    let mut samples = Vec::new();
+    let mut count = 0;
+    loop {
+        let piece = tokio::time::timeout(limit, stream.next())
+            .await
+            .map_err(|_| late())?
+            .map_err(failed)?;
+        let Some(bytes) = piece else { break };
+        samples.clear();
+        pcm.push(&bytes, &mut samples);
+        count += samples.len();
+        if !samples.is_empty() && !heard(&samples) {
+            return Err("the output device stopped playing".into());
+        }
+    }
+    if count == 0 {
+        return Err(format!("{} answered with no audio", route.name()));
+    }
+    Ok(count)
+}
+
+/// A WAV file of mono PCM16 at [`SAMPLE_RATE`].
+fn wav(samples: &[i16]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(44 + samples.len() * 2);
+    bytes.extend(jevons_audio::wav_header(
+        SAMPLE_RATE,
+        u32::try_from(samples.len()).ok(),
+    ));
+    bytes.extend(samples.iter().flat_map(|sample| sample.to_le_bytes()));
+    bytes
 }
 
 /// The client's side of a headless take: the interface is read within the privacy settings
@@ -863,6 +1007,8 @@ fn replay_on(
         language: dictation.language.clone(),
         decide: dictation.decide,
         max_output_tokens: dictation.max_output_tokens,
+        // A headless run has no speaker.
+        voice: false,
     };
     let tokio = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -1158,6 +1304,7 @@ fn start_agent(
                     recorder: platform::recorder(),
                     sink: platform::text_sink(),
                     audio: Box::new(audio::CpalSource),
+                    speaker: Box::new(audio::CpalSpeaker),
                     tray,
                 };
                 let agent = Agent::new(
@@ -1201,6 +1348,147 @@ mod tests {
             runtime.has_ended(),
             "the runtime thread still runs after the panic"
         );
+    }
+
+    /// A provider that answers each request for speech with `samples` as raw PCM, and keeps
+    /// what it was asked. A model called `none` gets an error.
+    fn provider(samples: Vec<i16>) -> (Route, Arc<Mutex<Vec<serde_json::Value>>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let kept = asked.clone();
+        std::thread::spawn(move || {
+            for socket in listener.incoming() {
+                let Ok(mut socket) = socket else { break };
+                // The whole request: its head, then as many bytes as the head announces.
+                let mut request = Vec::new();
+                let mut buffer = [0u8; 4096];
+                let body = loop {
+                    let read = socket.read(&mut buffer).unwrap();
+                    request.extend_from_slice(&buffer[..read]);
+                    let Some(head) = request.windows(4).position(|w| w == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let length = String::from_utf8_lossy(&request[..head])
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    if request.len() >= head + 4 + length {
+                        break request[head + 4..].to_vec();
+                    }
+                };
+                let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                let refused = body["model"] == "none";
+                kept.lock().unwrap().push(body);
+                let (status, kind, bytes): (_, _, Vec<u8>) = if refused {
+                    (
+                        "404 Not Found",
+                        "application/json",
+                        br#"{"error": {"message": "The model `none` does not exist"}}"#.to_vec(),
+                    )
+                } else {
+                    let pcm = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+                    ("200 OK", "audio/pcm", pcm)
+                };
+                let head = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: {kind}\r\ncontent-length: {}\r\n\
+                     connection: close\r\n\r\n",
+                    bytes.len()
+                );
+                let _ = socket.write_all(head.as_bytes());
+                let _ = socket.write_all(&bytes);
+            }
+        });
+        let client = jevons_desktop_server::client::Client::new(&base, None);
+        let route = Route::ours(client, "box", "qwen3-tts").in_voice(Some("lucia".into()));
+        (route, asked)
+    }
+
+    #[test]
+    fn say_speaks_text_and_out_names_a_wav_file_for_it() {
+        let say = Args::try_parse_from(["jevons-desktop", "--say", "Son las cinco."]).unwrap();
+        assert_eq!(say.say.as_deref(), Some("Son las cinco."));
+        assert!(say.out.is_none() && say.headless());
+        let out = ["jevons-desktop", "--say", "Hola", "--out", "hola.wav"];
+        let file = Args::try_parse_from(out).unwrap();
+        assert_eq!(file.out, Some(PathBuf::from("hola.wav")));
+        // A file needs something to say, and a take is another command.
+        assert!(Args::try_parse_from(["jevons-desktop", "--out", "hola.wav"]).is_err());
+        let both = ["jevons-desktop", "--say", "Hola", "--transcript", "hola"];
+        assert!(Args::try_parse_from(both).is_err());
+        assert!(Args::try_parse_from(["jevons-desktop", "--say", "Hola", "--serve"]).is_err());
+    }
+
+    #[tokio::test]
+    async fn said_text_goes_to_the_voice_route_and_comes_back_as_a_wav_file() {
+        let said: Vec<i16> = (0..2_400).map(|n| (n % 200 - 100) * 50).collect();
+        let (route, asked) = provider(said.clone());
+        let mut heard = Vec::new();
+        let count = speech(&route, "Son las cinco.", |stretch| {
+            heard.extend_from_slice(stretch);
+            true
+        })
+        .await
+        .unwrap();
+        assert_eq!((count, &heard), (2_400, &said));
+        // What was asked: the route's model in its voice, the text, as raw PCM.
+        assert_eq!(
+            asked.lock().unwrap()[0],
+            serde_json::json!({"model": "qwen3-tts", "input": "Son las cinco.", "voice": "lucia",
+                               "response_format": "pcm"})
+        );
+        // The file: a 44-byte header for mono PCM16 at 24 kHz with its true sizes, then the
+        // samples, which decode back as they were.
+        let file = wav(&heard);
+        assert_eq!(file.len(), 44 + 4_800);
+        assert_eq!(
+            (&file[0..4], &file[8..16], &file[36..40]),
+            (&b"RIFF"[..], &b"WAVEfmt "[..], &b"data"[..])
+        );
+        let field = |at: usize| u32::from_le_bytes(file[at..at + 4].try_into().unwrap());
+        assert_eq!(
+            (field(4), field(24), field(40)),
+            (36 + 4_800, 24_000, 4_800)
+        );
+        let limits = jevons_audio::AudioLimits {
+            max_bytes: 1 << 20,
+            max_seconds: 10.0,
+        };
+        let decoded = jevons_audio::decode_audio(file, Some("wav"), SAMPLE_RATE, limits).unwrap();
+        assert_eq!(jevons_audio::to_pcm16(&decoded), said);
+        // A speaker that stops playing ends the command, and so does a provider that refuses.
+        let stopped = speech(&route, "Hola.", |_| false).await;
+        assert_eq!(stopped, Err("the output device stopped playing".into()));
+        let none = Route::ours(route.client.clone(), "box", "none");
+        let refused = speech(&none, "Hola.", |_| true).await.unwrap_err();
+        assert!(
+            refused.starts_with("box/none failed:") && refused.contains("does not exist"),
+            "{refused}"
+        );
+    }
+
+    #[tokio::test]
+    async fn said_text_plays_through_a_speaker_until_it_was_heard() {
+        use jevons_desktop_core::fake::RecordingSpeaker;
+        let (route, _) = provider(vec![7; 1_200]);
+        let mut speaker = RecordingSpeaker::new();
+        let mut playback = speaker.start(Some("Headphones")).unwrap();
+        let count = speech(&route, "Hola.", |stretch| playback.play(stretch))
+            .await
+            .unwrap();
+        assert_eq!(count, 1_200);
+        // Queued, and still to be heard: the command waits for it.
+        assert!(playback.playing());
+        speaker.hear();
+        assert!(!playback.playing());
+        let played = speaker.played();
+        assert_eq!(played[0].device.as_deref(), Some("Headphones"));
+        assert_eq!(played[0].samples, vec![7; 1_200]);
     }
 
     #[test]

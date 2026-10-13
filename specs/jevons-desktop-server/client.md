@@ -2,12 +2,12 @@
 
 [Back to jevons-desktop-server](spec.md)
 
-The client speaks to the jevons API, embedded in the app or on a server, and to other providers
-of the same APIs: typed requests for Realtime sessions, transcription uploads, System One
-decisions, Responses and Chat Completions, with the API log that can record them. Each capability
-has a route to its provider, and a decision route knows what its provider takes. The forwarder
-serves the same APIs to other clients. The wire formats themselves belong to jevons-api; the
-client mirrors them without sharing its types.
+The client speaks to the jevons API, embedded in the app or on a server, and to other providers of
+the same APIs: typed requests for Realtime sessions, transcription uploads, System One decisions,
+Responses, Chat Completions and speech, with the API log that can record the ones that hold no
+audio. Each capability has a route to its provider, and a decision route knows what its provider
+takes. The forwarder serves the same APIs to other clients. The wire formats themselves belong to
+jevons-api; the client mirrors them without sharing its types.
 Turning the settings' providers and routes into live routes is in jevons-desktop
 ([runtime](../jevons-desktop/runtime.md)).
 
@@ -90,8 +90,9 @@ long it took, the exact request body, and the response. A decision's response is
 answer. A streamed call's response is the assembled text, the number of events, and every event
 that is not a text delta. A call that fails also records its error, and one dropped before its
 answer (a time limit or a cancelled take) records that. With the log off, nothing is written.
+A request for speech is never recorded, on or off: neither its text nor its audio.
 
-Tests: `the_log_holds_each_call_s_request_and_response_only_while_it_is_on`
+Tests: `the_log_holds_each_call_s_request_and_response_only_while_it_is_on`, `the_api_log_never_holds_a_speech_request_or_its_audio`
 
 ### R9 The API log never holds keys and stays bounded
 
@@ -139,9 +140,9 @@ Removed: now [models](../jevons-desktop-core/models.md) R9.
 
 ### R19 Each capability has a route
 
-A take reaches inference through four routes, each a provider's client, the model to ask it for,
-the provider's name and its decision profile: speech (uploads), Realtime, decisions and
-generation. A capability with no route is not served.
+A take reaches inference through five routes, each a provider's client, the model to ask it for,
+the provider's name and its decision profile: speech (uploads), Realtime, decisions, generation
+and the voice. A capability with no route is not served.
 
 - A take streams to the Realtime route when there is one, and uploads to the speech route when
   there is none, when the session cannot open or when it fails. Live dictation needs the Realtime
@@ -149,10 +150,11 @@ generation. A capability with no route is not served.
 - Decisions, the root's and machines' included, go to the decision route.
 - Generation, tool arguments the model writes, the investigator and the automation author go to
   the generation route.
+- An answer read aloud goes to the voice route, which also holds the voice to speak in.
 
 A route is named `<provider>/<model>` in traces, such as `openrouter/typesafe/jev-1.13`.
 
-Tests: `each_capability_goes_to_its_own_provider`, `realtime_404_falls_back_to_batch_upload`
+Tests: `each_capability_goes_to_its_own_provider`, `realtime_404_falls_back_to_batch_upload`, `an_answer_is_read_aloud_a_stretch_at_a_time_and_shown_too`
 
 ### R20 A decision provider has a profile
 
@@ -195,12 +197,13 @@ Tests: `questions_over_a_provider_s_limit_go_in_several_requests`, `questions_ov
 The forwarder is the API the app serves to other clients. A `/v1/*` request goes to the provider
 of the route that asks for the request's model: the `model` of a JSON body, the `model` field of a
 multipart form, or `model` in the query. A model no route names goes to the route of the path's
-capability: `/v1/audio/transcriptions` to speech, `/v1/realtime` to Realtime, `/v1/systemone` to
-decisions, and `/v1/responses`, `/v1/chat/completions` and `/v1/completions` to generation. So a
-provider's other names for its models (`jev-latest`) still reach it. With neither, the answer is
-404 "No route serves <path> for the model <model>", and no provider is asked.
+capability: `/v1/audio/transcriptions` to speech, `/v1/audio/speech` to the voice,
+`/v1/realtime` to Realtime, `/v1/systemone` to decisions, and `/v1/responses`,
+`/v1/chat/completions` and `/v1/completions` to generation. So a provider's other names for its
+models (`jev-latest`) still reach it. With neither, the answer is 404 "No route serves <path>
+for the model <model>", and no provider is asked.
 
-Tests: `a_request_goes_to_the_provider_of_its_model_with_that_provider_s_key`, `an_upload_goes_to_the_speech_provider_as_it_was_sent`, `the_routes_are_the_forwarder_s_targets`
+Tests: `a_request_goes_to_the_provider_of_its_model_with_that_provider_s_key`, `an_upload_goes_to_the_speech_provider_as_it_was_sent`, `the_routes_are_the_forwarder_s_targets`, `a_request_for_speech_goes_to_the_voice_provider_and_its_audio_comes_back_whole`
 
 ### R24 Forwarded requests carry the provider's key, never the client's
 
@@ -218,21 +221,22 @@ Tests: `the_app_s_key_is_asked_for_and_the_providers_keys_stay_with_the_app`
 The method, path, query, body and headers go to the provider as they came, but for the headers of
 one connection (`Host`, `Content-Length`, `Connection`, `Transfer-Encoding`, `Upgrade`, `TE`,
 `Trailer`), `Accept-Encoding` (the answer is asked for uncompressed, so the API log reads it) and
-`Authorization`. The answer's status, headers and body come back the same way, the
-body as it arrives, so a stream of events streams. A request body over 64 MiB is refused with
-413, and a provider that cannot be reached is a 502 "Cannot reach <provider>: …".
+`Authorization`. The answer's status, headers and body come back the same way, the body as it
+arrives, so a stream of events streams and audio passes byte for byte. A request body over 64 MiB is
+refused with 413, and a provider that cannot be reached is a 502 "Cannot reach <provider>: …".
 
-Tests: `an_answer_comes_back_as_the_provider_gave_it`, `a_request_goes_to_the_provider_of_its_model_with_that_provider_s_key`, `an_upload_goes_to_the_speech_provider_as_it_was_sent`
+Tests: `an_answer_comes_back_as_the_provider_gave_it`, `a_request_goes_to_the_provider_of_its_model_with_that_provider_s_key`, `an_upload_goes_to_the_speech_provider_as_it_was_sent`, `a_request_for_speech_goes_to_the_voice_provider_and_its_audio_comes_back_whole`
 
 ### R26 Health and the model listing are the forwarder's own
 
 `GET /health` answers `{"status": "ok", "services": {...}}` with the model of the generation,
-decision and speech routes, in jevons-api's shape, so another jevons app can use this one as a
-`jevons` provider. `GET /v1/models` lists the models the routes ask for, each once, in System
+decision, speech and voice routes (`generative`, `decision`, `speech`, `voice`; null where there
+is no route), in jevons-api's shape, so another jevons app can use this one as a `jevons`
+provider. `GET /v1/models` lists the models the routes ask for, each once, in System
 One's shape (`models`) and OpenAI's (`object`, `data`), with the provider's name as the owner. No
 provider is asked for either, and neither holds a key.
 
-Tests: `the_app_s_key_is_asked_for_and_the_providers_keys_stay_with_the_app`
+Tests: `the_app_s_key_is_asked_for_and_the_providers_keys_stay_with_the_app`, `a_request_for_speech_goes_to_the_voice_provider_and_its_audio_comes_back_whole`
 
 ### R27 A Realtime session passes both ways
 
@@ -249,6 +253,39 @@ With `privacy.log_api` on, a forwarded request with a JSON body appends one reco
 "POST /v1/systemone → <provider>", the request body, and the answer's status with its body (as
 JSON when it is, as text for a stream of events, cut at 1 MiB and marked `truncated`). A provider
 that cannot be reached records its error, and an answer the client stopped reading records that.
-Uploads and Realtime sessions are not logged, and no key is.
+Uploads and Realtime sessions are not logged, and no key is. A request to `/v1/audio/speech` is
+not logged either, though its body is JSON: it holds the text to speak, and its answer is audio.
 
 Tests: `the_api_log_holds_forwarded_calls_and_never_a_key_or_audio`
+
+### R29 Speech is asked for as PCM, and streams back
+
+A speech request posts JSON to `/v1/audio/speech`: the `model`, the `input` text,
+`response_format = "pcm"`, and a `voice` and a `language` only when they are set. The answer is
+mono PCM16 little-endian at 24 kHz, and its bytes are passed on as they arrive, in pieces of any
+size; a sample that a piece's end cuts in two is joined with its other half, and an odd byte at
+the very end is dropped. Dropping the stream hangs up, which is how the provider learns to stop.
+An error status keeps the provider's message (R2). An answer in another audio format, such as
+`audio/mpeg`, is refused before a byte of it is played.
+
+Tests: `speech_is_asked_for_as_pcm_and_its_bytes_come_as_they_arrive`, `a_speech_request_that_fails_keeps_the_provider_s_message`, `samples_cut_by_a_piece_s_end_are_joined`
+
+### R30 Health may name a voice model
+
+`GET /health` of a jevons provider names its voice model under `services.voice`, as it names the
+speech model under `speech`. A server with no voice model, or from before the voice, leaves the
+key out or null: it serves none.
+
+Tests: `health_names_the_voice_model_when_the_server_has_one`
+
+### R31 The voice route names its provider, its model and a voice
+
+`[routes] voice = { provider, model, voice }` in `jevons-server.toml` sends speech requests to a
+provider. Left out, it goes to `embedded` like the others. `model` may be left out where the
+provider names its own, and is needed elsewhere. `voice` is the voice to speak in, as the
+provider names it; left out, the provider's default. It belongs to this route alone: on another
+route it is refused with "[routes] generation takes no `voice`: only the voice route speaks in
+one". `[models.voice]` chooses the model the embedded provider loads for it, as the other
+services choose theirs.
+
+Tests: `the_voice_route_names_its_provider_its_model_and_the_voice_to_speak_in`, `each_capability_goes_to_the_provider_its_route_names`

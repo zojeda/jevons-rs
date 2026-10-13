@@ -18,7 +18,10 @@ use std::path::{Path, PathBuf};
 pub enum Service {
     Generative,
     Decision,
+    /// Speech to text.
     Speech,
+    /// Text to speech.
+    Voice,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -32,7 +35,8 @@ pub struct CatalogEntry {
     pub repo: String,
     #[serde(default = "main")]
     pub revision: String,
-    /// Globs over the repository's file paths.
+    /// Globs over the repository's file paths, subfolders included: each file keeps its path
+    /// under the model's folder.
     pub files: Vec<String>,
     /// For single-file models (GGUF): the file to load. Directories load as a whole.
     #[serde(default)]
@@ -149,6 +153,32 @@ pub fn builtin() -> Vec<CatalogEntry> {
             memory_gb: 1.5,
             extra: Vec::new(),
         },
+        CatalogEntry {
+            id: "qwen3-tts-12hz-0.6b-base".into(),
+            name: "Qwen3-TTS 12Hz 0.6B Base (voice, 10 languages)".into(),
+            services: vec![Service::Voice],
+            repo: "Qwen/Qwen3-TTS-12Hz-0.6B-Base".into(),
+            revision: main(),
+            // The codec that turns its codes into sound is in the same repository, under
+            // `speech_tokenizer/`.
+            files: [
+                "config.json",
+                "generation_config.json",
+                "vocab.json",
+                "merges.txt",
+                "tokenizer_config.json",
+                "model.safetensors",
+                "speech_tokenizer/config.json",
+                "speech_tokenizer/model.safetensors",
+            ]
+            .map(String::from)
+            .to_vec(),
+            model_file: None,
+            mmproj_file: None,
+            license: "Apache-2.0".into(),
+            memory_gb: 2.5,
+            extra: Vec::new(),
+        },
     ]
 }
 
@@ -201,6 +231,38 @@ impl CatalogEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_voice_model_is_listed_last_with_its_codec_from_the_same_repository() {
+        let entries = builtin();
+        let voice = entries.last().unwrap();
+        assert_eq!(voice.id, "qwen3-tts-12hz-0.6b-base");
+        assert_eq!(voice.repo, "Qwen/Qwen3-TTS-12Hz-0.6B-Base");
+        assert_eq!(voice.services, [Service::Voice]);
+        assert!(voice.serves(Service::Voice) && !voice.serves(Service::Speech));
+        // It is the only one that speaks, and no other entry gained the service.
+        let speaking: Vec<&str> = entries
+            .iter()
+            .filter(|e| e.serves(Service::Voice))
+            .map(|e| e.id.as_str())
+            .collect();
+        assert_eq!(speaking, ["qwen3-tts-12hz-0.6b-base"]);
+        // The model and its codec, each a path of the one repository: no extra source.
+        assert!(voice.extra.is_empty());
+        for file in ["model.safetensors", "speech_tokenizer/model.safetensors"] {
+            assert!(voice.files.iter().any(|f| f == file), "{file}");
+        }
+        // A checkpoint directory loads as a whole.
+        assert_eq!(
+            voice.model_path(Path::new("/m")),
+            Path::new("/m/qwen3-tts-12hz-0.6b-base")
+        );
+        // `models.toml` may name the service too.
+        let text =
+            "id = \"v\"\nname = \"V\"\nservices = [\"voice\"]\nrepo = \"a/b\"\nfiles = [\"*\"]";
+        let entry: CatalogEntry = toml::from_str(text).unwrap();
+        assert_eq!(entry.services, [Service::Voice]);
+    }
 
     #[test]
     fn user_entries_extend_and_override_the_builtin_catalog() {

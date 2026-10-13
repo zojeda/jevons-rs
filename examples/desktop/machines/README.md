@@ -15,7 +15,10 @@ two quiet minutes end it.
   search the news with no model; otherwise the decision model chooses between the news and the
   web by their descriptions (`search/searching/`).
 - **Reading a result.** "Leeme …", "resumime …" or "read …" fetches that page and says what it
-  says in the bubble (`search/reading/`). Opening a result in the browser asks first.
+  says (`search/reading/`). Opening a result in the browser asks first.
+- **Hearing it.** The answer and the page's summary are `output = "voice"`: read aloud when a
+  voice model is served, and in the bubble either way. Heard, the results come without their
+  addresses.
 - **Starting one.** Only on a search word ("Search …", "Busca …", "Buscame …") or a request for
   news ("Noticias de …", "Dame las últimas noticias …"), after at most two words of lead-in.
   Anything else is for the agent only while a search waits. While one waits, the same words

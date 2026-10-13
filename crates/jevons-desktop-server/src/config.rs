@@ -187,14 +187,17 @@ pub enum Capability {
     Decision,
     /// Responses and chat.
     Generation,
+    /// Text to speech: an answer read aloud.
+    Voice,
 }
 
 impl Capability {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Speech,
         Self::Realtime,
         Self::Decision,
         Self::Generation,
+        Self::Voice,
     ];
 
     /// Its key in `[routes]`.
@@ -204,6 +207,7 @@ impl Capability {
             Self::Realtime => "realtime",
             Self::Decision => "decision",
             Self::Generation => "generation",
+            Self::Voice => "voice",
         }
     }
 }
@@ -217,6 +221,21 @@ pub struct RouteTo {
     /// this is left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// For the `voice` route alone: the voice to speak in, as the provider names it. Its
+    /// default one when this is left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<String>,
+}
+
+impl RouteTo {
+    /// A route to `provider`, which names its own model.
+    pub fn to(provider: impl Into<String>) -> Self {
+        Self {
+            provider: provider.into(),
+            model: None,
+            voice: None,
+        }
+    }
 }
 
 /// `[routes]`: each capability's provider. One left out goes to `embedded`; `realtime` left out
@@ -232,6 +251,8 @@ pub struct Routes {
     pub decision: Option<RouteTo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generation: Option<RouteTo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voice: Option<RouteTo>,
 }
 
 impl Routes {
@@ -245,6 +266,7 @@ impl Routes {
             Capability::Realtime => self.realtime.as_ref(),
             Capability::Decision => self.decision.as_ref(),
             Capability::Generation => self.generation.as_ref(),
+            Capability::Voice => self.voice.as_ref(),
         }
     }
 
@@ -254,6 +276,7 @@ impl Routes {
             Capability::Realtime => &mut self.realtime,
             Capability::Decision => &mut self.decision,
             Capability::Generation => &mut self.generation,
+            Capability::Voice => &mut self.voice,
         } = route;
     }
 }
@@ -286,6 +309,9 @@ pub struct Models {
     pub decision: Option<ModelRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub speech: Option<ModelRef>,
+    /// The model that reads answers aloud.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voice: Option<ModelRef>,
     /// Serve Realtime transcription (live text while speaking).
     pub realtime: bool,
 }
@@ -298,6 +324,7 @@ impl Default for Models {
             generative: None,
             decision: None,
             speech: None,
+            voice: None,
             realtime: true,
         }
     }
@@ -330,16 +357,14 @@ impl ServerConfig {
             let kind = self.provider(&speech.provider)?.kind;
             return kind.names_its_models().then_some(speech);
         }
-        Some(RouteTo {
-            provider: EMBEDDED.into(),
-            model: None,
-        })
+        Some(RouteTo::to(EMBEDDED))
     }
 
     /// What is wrong with the providers and routes, if anything: a route to a provider that
     /// is not there, a provider with no address, a route with no model where the provider
-    /// cannot name its own, an override out of range, or one model name on two providers
-    /// (other clients' requests are forwarded by model name).
+    /// cannot name its own, a `voice` on a route that does not speak, an override out of
+    /// range, or one model name on two providers (other clients' requests are forwarded by
+    /// model name).
     pub fn check_routes(&self) -> Result<(), String> {
         for (name, provider) in &self.providers {
             if provider.kind != ProviderKind::Embedded && provider.url().is_none() {
@@ -363,6 +388,11 @@ impl ServerConfig {
                 continue;
             };
             let key = capability.key();
+            if route.voice.is_some() && capability != Capability::Voice {
+                return Err(format!(
+                    "[routes] {key} takes no `voice`: only the voice route speaks in one"
+                ));
+            }
             let Some(provider) = self.provider(&route.provider) else {
                 return Err(format!(
                     "[routes] {key} names the provider {:?}, which [providers] does not have",
@@ -478,6 +508,8 @@ decision = { provider = "openrouter", model = "typesafe/jev-1.13" }
             config.route(Capability::Generation).unwrap().provider,
             EMBEDDED
         );
+        // The voice goes to the models loaded here too, unless its route says otherwise.
+        assert_eq!(config.route(Capability::Voice), Some(RouteTo::to(EMBEDDED)));
         // Speech on a provider that only takes uploads leaves Realtime off.
         let uploads = routed(
             "[providers.cloud]\nkind = \"openai-compatible\"\nurl = \"https://stt.example\"\n\
@@ -488,6 +520,48 @@ decision = { provider = "openrouter", model = "typesafe/jev-1.13" }
         // Saved, it loads back the same.
         let back: ServerConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
         assert_eq!(back, config);
+    }
+
+    #[test]
+    fn the_voice_route_names_its_provider_its_model_and_the_voice_to_speak_in() {
+        let config = routed(
+            "[providers.cloud]\nkind = \"openai-compatible\"\nurl = \"https://tts.example\"\n\
+             [routes]\nvoice = { provider = \"cloud\", model = \"tts-1\", voice = \"nova\" }\n",
+        );
+        assert_eq!(config.check_routes(), Ok(()));
+        let voice = config.route(Capability::Voice).unwrap();
+        assert_eq!(
+            (voice.provider.as_str(), voice.model.as_deref()),
+            ("cloud", Some("tts-1"))
+        );
+        assert_eq!(voice.voice.as_deref(), Some("nova"));
+        assert_eq!(Capability::Voice.key(), "voice");
+        assert_eq!(Capability::ALL.len(), 5);
+        // Saved, it loads back the same.
+        let back: ServerConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(back, config);
+        // A provider that names its own model may leave it out, and the voice too.
+        let ours = routed("[routes]\nvoice = { provider = \"embedded\" }\n");
+        assert_eq!(ours.check_routes(), Ok(()));
+        // One that does not needs the model, as for any capability.
+        let unnamed = routed(
+            "[providers.cloud]\nkind = \"openai-compatible\"\nurl = \"https://tts.example\"\n\
+             [routes]\nvoice = { provider = \"cloud\" }\n",
+        );
+        assert_eq!(
+            unnamed.check_routes().unwrap_err(),
+            "[routes] voice needs a `model`: cloud does not say which it serves"
+        );
+        // A voice is the voice route's alone: on another route it is an error, never ignored.
+        let stray =
+            routed("[routes]\ngeneration = { provider = \"embedded\", voice = \"nova\" }\n");
+        assert_eq!(
+            stray.check_routes().unwrap_err(),
+            "[routes] generation takes no `voice`: only the voice route speaks in one"
+        );
+        // The model that speaks is chosen like the others.
+        let chosen = routed("[models.voice]\npath = \"D:/models/qwen3-tts-12hz-0.6b-base\"\n");
+        assert!(chosen.models.voice.is_some());
     }
 
     #[test]

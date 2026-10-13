@@ -155,6 +155,12 @@ fn detect_checkpoint(dir: &Path) -> Result<Architecture> {
             dir.display()
         )));
     }
+    if crate::voice::is_voice_checkpoint(&config) {
+        return Err(Error::UnsupportedModel(format!(
+            "{} is a text-to-speech model; use it for services.voice",
+            dir.display()
+        )));
+    }
     Err(Error::UnsupportedModel(format!(
         "checkpoint model_type {model_type:?} is not supported"
     )))

@@ -1,5 +1,5 @@
-//! The OpenAI-compatible wire contracts: Chat Completions, Completions, Responses and audio
-//! transcriptions.
+//! The OpenAI-compatible wire contracts: Chat Completions, Completions, Responses, audio
+//! transcriptions and audio speech.
 //!
 //! Requests are validated into a [`jevons_generative::GenerationRequest`], with function tools
 //! and structured output formats for the Generative service's tool steps; parameters that would
@@ -13,6 +13,7 @@ mod error;
 mod realtime;
 mod request;
 mod response;
+mod speech;
 mod tools;
 
 pub use audio::{Body, ResponseFormat, TranscriptStream, TranscriptionRequest};
@@ -20,3 +21,4 @@ pub use error::OpenAiError;
 pub use realtime::{AudioFormat, Command, EventError, Session, SessionConfig, TurnDetection};
 pub use request::{Api, OpenAiRequest};
 pub use response::{Call, Event, Stream};
+pub use speech::{PCM_SAMPLE_RATE, SpeechAudio, SpeechFormat, SpeechRequest};

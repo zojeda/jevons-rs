@@ -1904,7 +1904,14 @@ impl<'a> Turn<'a> {
                     .value
                     .clone()
                     .unwrap_or_else(|| Value::String(text.clone()));
-                crate::pipeline::deliver_leaf(self.env, &self.start, leaf, self.trace).await;
+                crate::pipeline::deliver_leaf(
+                    self.env,
+                    &self.start,
+                    leaf,
+                    self.updates,
+                    self.trace,
+                )
+                .await;
                 // A task keeps it until it ends; an agent until the take is over, so the states
                 // one take runs through read each other's.
                 let instance = self.forest.instances.get_mut(&id).expect("it runs");
@@ -2010,7 +2017,8 @@ impl<'a> Turn<'a> {
         .await
         {
             Ok((Walked::Leaf(leaf), _)) => {
-                crate::pipeline::deliver_leaf(self.env, &self.start, leaf, self.trace).await
+                crate::pipeline::deliver_leaf(self.env, &self.start, leaf, self.updates, self.trace)
+                    .await
             }
             Ok((Walked::Machine(_), _)) => {
                 self.trace.error =

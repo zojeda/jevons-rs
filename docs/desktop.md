@@ -33,6 +33,7 @@ Each commit holds only the files jevons wrote, so your own edits to flows and au
 - **Live dictation:** hold its hotkey (default `F9`) while speaking, or press it to start and again to stop in toggle mode; the tray menu's **Start live dictation** toggles it too. While you speak, the feedback bubble shows the words as they are recognized. Nothing is typed until you stop: then the whole transcript goes through the flow tree, like a push-to-talk take. The app ends a phrase at each pause (0.7 s of quiet at the microphone, or every 20 s of nonstop speech) and keeps all the audio. While push-to-talk runs from a held hotkey, a keyboard hook drops that key's auto-repeats, which Windows would otherwise send to the focused application (a held F10 toggles most applications' menu bar).
 - **Live feedback:** a bubble above the tray icon follows each take: the words as they are recognized, then each stage as it runs. A decision's branches light up in turn until it chooses, and then the chosen one stays lit with its probability. An investigation shows what it reads, generation shows the words written, and tool calls and agents show each call. A running stage has moving dots, and a finished one has a check or a cross. At the end the bubble says whether the text was inserted or left on the clipboard. It never takes the focus, lets clicks through, and closes a few seconds after the take ends. Turn it off with the tray menu's **Live feedback** or in Settings.
 - **Answers:** a branch whose output is `bubble` (such as the assistant's `ask/`) streams its answer into a larger bubble instead of typing it, even with live feedback off. The answer renders as Markdown (headings, **bold** and *italics*, lists and task lists, quotes, inline code and code blocks, tables), and scrolls with the mouse wheel while it streams and after. It stays until you close it or start another take. Once it is complete the bubble takes clicks: **Copy** puts the answer on the clipboard as plain text and **Copy raw** as the Markdown written, both leaving the bubble open; **Select text** shows the answer's Markdown in a text field, where you can select any part (drag, or Ctrl+A) and copy it with Ctrl+C, and **Done selecting** goes back to the formatted answer; **Insert** types it into the window the take started in (with the usual checks), and **Close** dismisses it.
+- **Spoken answers:** a branch whose output is `voice` (the assistant's `ask/` leaves, once a voice model is served) also reads its answer aloud. See [Voice output](#voice-output).
 - **Confirmations:** before a tool runs, the bubble shows the tool and its arguments and waits: **Run** or Enter runs it, **Cancel** or Esc does not. Enter and Esc are taken only while a call waits, and a call nobody answers within a minute is cancelled. The bubble asks even when live feedback is off. Headless runs never run a tool that asks first.
 - **Left-click** the tray icon to toggle dictation.
 - **Other hotkeys** (set in Settings, by clicking a field and pressing the combination): one to show the inspector, and one per top-level branch of the flow tree to start the take there instead of at the root (such as a hotkey that always asks).
@@ -45,9 +46,39 @@ The tray icon shows what is happening:
 - a waveform that follows your voice while listening;
 - green dots while transcribing;
 - violet dots while deciding and writing;
+- a cyan waveform that moves by itself while an answer is read aloud;
 - red after a failed take.
 
 The context is read **when the hotkey is pressed**, so the text goes to the field you started in. It is delivered only into that same window, and only once every key is released. If you switched windows, or held keys for more than two seconds, the text stays on the clipboard and the inspector says so.
+
+## Voice output
+
+jevons can read an answer aloud. A flow leaf asks for it with `output = "voice"`, as the built-in assistant's four `ask/` leaves do. The answer still streams into the bubble, where it stays with **Copy** and **Insert**. Once it is written, its text goes to the voice model, and the speech plays as it is made: the first sentence starts while the rest is still synthesized.
+
+- **Turning it on.** Nothing speaks until something serves the voice. Download Qwen3-TTS in the **Models** tab (about 2.5 GB of memory while loaded), or route `voice` to another provider. Until then the same leaves answer in the bubble, with Markdown.
+- **Speak answers.** The switch on the Settings tab's **Voice** card (`speak` under `[voice]` in `jevons-desktop.toml`) mutes every leaf at once: they answer in the bubble, and what is being said stops. Others in the room hear a spoken answer, and an answer may quote your screen.
+- **Output device.** The same card chooses the device (`output`); left alone, it is the system's default one. A change applies from the next answer on.
+- **The voice.** The card's **Voice** field names the voice to speak in (`voice` on the `voice` route in `jevons-server.toml`). With the app's own model it lists the model's voices: `reader` (from an English reader's clip) and `lector` (from a Spanish one) are built in, and each voice file in the model folder's `voices/` adds one. For another provider, type the name as that provider calls it. Left alone, the provider speaks in its own: `reader` for the app's model.
+- **Stopping it.** Esc stops the voice. jevons takes Esc as a global hotkey only while an answer is being read. **Stop** in the bubble and **Cancel the current take** in the tray menu do the same. The answer stays in the bubble.
+- **Talking over it.** Starting a take stops the voice before the microphone opens, and nothing is read aloud while you speak, so jevons never hears itself and a timer's answer cannot talk over you. You can press the hotkey while jevons is still speaking: the voice stops, the microphone opens at once, and your take is worked on as soon as the one that was speaking has ended. A press while a take is still transcribing, deciding or writing does nothing, as before.
+- **The tray icon** shows the cyan waveform from the first word to the last, also after the take has ended.
+- **From a terminal.** `jevons-desktop --say "Son las cinco y media."` speaks a text through the voice route and exits. Add `--out speech.wav` to write a WAV file (mono, 16-bit, 24 kHz) in place of playing it, which checks the voice on a machine with no sound card. It prints how long the speech is and when the first audio came. Of the app's own models it loads the voice model alone.
+- **Another provider.** Any server with OpenAI's `POST /v1/audio/speech` that answers raw PCM can speak in place of the app's model:
+
+  ```toml
+  [providers.cloud]
+  kind = "openai-compatible"
+  url = "https://tts.example"
+  key = "${env:TTS_API_KEY}"
+
+  [routes]
+  voice = { provider = "cloud", model = "tts-1", voice = "nova" }
+  ```
+
+  Such a route sends the text of every answer read aloud to that provider, as a `generation` route sends the prompt. The Voice card says so while it is set.
+- **When it cannot speak.** A voice model that fails to load leaves dictation working: the Runtime card says why, and answers show in the bubble. A provider that gives no speech within 60 seconds, or a device that goes away, ends the reading; the answer is in the bubble either way, and the take's trace notes what happened.
+
+Neither the speech nor its text is written to the log, and these calls never reach the API log. A take's trace holds the answer's text, as it does for an answer shown.
 
 ## How a take works
 
@@ -55,7 +86,7 @@ The context is read **when the hotkey is pressed**, so the text goes to the fiel
 2. **Transcription.** Audio streams to `/v1/realtime` as 24 kHz PCM16, and the live text appears in the window. The app commits the turn itself when you finish. When Realtime is off or fails, the recording is uploaded to `/v1/audio/transcriptions` instead.
 3. **Machines and the flow tree.** The flows root is a state machine waiting in `idle`, and the take is `said` there (or for the task that waits for it, see [Machines](#machines-tasks-that-wait-for-you)). Its transitions lead to `dictate`, `ask` and `run`, and are chosen like a decision's branches. That state's folder is then walked: at each decision, branches whose guards fail drop out; `select = "rules"` takes the highest priority, and otherwise `/v1/systemone` chooses by the branches' descriptions. When one decision leads straight into another, both are asked in one request, so dictation usually costs a single decision call. Investigations along the way read more of the screen (see below).
 4. **Leaf.** A `generate.toml` leaf streams text from `/v1/responses` with the instructions gathered from the root down; a `transcript.toml` leaf uses the words as heard.
-5. **Delivery.** Text for the application is pasted (the previous clipboard text is restored afterwards), typed, set through the accessibility API, or copied, as the path's `delivery` says. Answers show in the bubble; clipboard leaves copy.
+5. **Delivery.** Text for the application is pasted (the previous clipboard text is restored afterwards), typed, set through the accessibility API, or copied, as the path's `delivery` says. Answers show in the bubble, voice leaves also read them aloud, and clipboard leaves copy.
 
 Every step goes into a trace: the context, each node with the guards it checked, every decision request and its probabilities, the investigations, the exact prompt, the output, the delivery and the timings. The last 50 traces are in the **Takes** tab.
 
@@ -331,11 +362,12 @@ The **Settings** tab edits the runtime, dictation and privacy settings. A change
   - Turning exposure on or off, or changing the port, rebinds the listener without reloading the models.
 - **Providers and routes.** Where each capability runs; see [below](#providers-and-routes).
 - **Dictation.** The hotkeys (push-to-talk, live dictation, inspector, and one per top-level branch), live feedback, the microphone, language (detected when empty), whether to ask the decision model (when off, decisions take their fallback), and the most tokens a generation may write unless a node sets its own.
+- **Voice.** Whether answers are read aloud, the output device, and the voice to speak in; see [Voice output](#voice-output).
 - **Privacy.** How many characters of each field to keep, whether to include the clipboard, and the API log. Reading windows other than the take's own has no control in the tab: set `read_other_windows` and `readable_apps` under `[privacy]` in the settings file.
 
 ### Providers and routes
 
-The app asks models for four things, and each can come from a different place:
+The app asks models for five things, and each can come from a different place:
 
 | Capability | What it is | Requests |
 | --- | --- | --- |
@@ -343,8 +375,9 @@ The app asks models for four things, and each can come from a different place:
 | Live speech | The same, streamed while you speak | `/v1/realtime` |
 | Decisions | The flow tree's and machines' choices | `/v1/systemone` |
 | Generation | Rewrites, answers, the investigator | `/v1/responses`, `/v1/chat/completions` |
+| Voice | An answer's text to speech | `/v1/audio/speech` |
 
-By default all four run on the models the app loads (the `embedded` provider). To send one
+By default all five run on the models the app loads (the `embedded` provider). To send one
 elsewhere, add a provider and route the capability to it, in the Settings tab or in `jevons-server.toml`:
 
 ```toml
@@ -364,7 +397,8 @@ generation = { provider = "box" }
 - **Kinds.** `jevons` is a jevons server (`http://127.0.0.1:8080`, key from `TYPESAFE_API_KEY`). `openrouter` is OpenRouter (`https://openrouter.ai/api`, key from `OPENROUTER_API_KEY`), which serves Jev through System One and many language models. `openai-compatible` is any other server with OpenAI's API; give its root as `url`, without `/v1`.
 - **Keys.** `${env:NAME}` reads the key from the environment, so it stays out of the file, which the app keeps in a git repository.
 - **Models.** An embedded or jevons provider names its own model for each capability, so the route needs none. Other providers need `model`.
-- **What gets loaded.** Only the models of the capabilities routed to `embedded`. With decisions and generation elsewhere, the app loads the speech model alone.
+- **What gets loaded.** Only the models of the capabilities routed to `embedded`. With decisions and generation elsewhere, the app loads the speech model, and the voice model when there is one.
+- **Voice** is served once its provider has a voice model, and its route may name the `voice` to speak in. A voice route to another provider sends each spoken answer's text there.
 - **Live speech** follows speech when that is embedded or on a jevons server, and falls back to uploads when the stream cannot open.
 - **A provider that fails** (a server that does not answer) is reported in the tray and the Settings tab; the capabilities on the others keep working.
 
@@ -377,14 +411,14 @@ How sure the decision model must be for a machine to take its choice (`min_proba
 The **Models** tab manages the models the app runs.
 
 - **Models folder.** Models live in `~/jevons/models` (`C:\Users\<you>\jevons\models`) unless you choose another folder. Each model goes in its own subfolder.
-- **First start.** Nothing downloads by itself. Open the Models tab and press **Download** on DiffusionGemma (about 18 GB with its vision projector) and Parakeet (2.5 GB); once downloaded, they are used for every service without a selected model.
+- **First start.** Nothing downloads by itself. Open the Models tab and press **Download** on DiffusionGemma (about 18 GB with its vision projector) and Parakeet (2.5 GB); once downloaded, they are used for every service without a selected model. Qwen3-TTS is optional: download it to have answers read aloud.
 - **Catalog.**
-  - When a service has no model selected, the first downloaded entry that serves it is used, in catalog order: DiffusionGemma for generative and decision, Parakeet for speech.
-  - Built in: DiffusionGemma 26B-A4B Q4_K_M from [unsloth/diffusiongemma-26B-A4B-it-GGUF](https://huggingface.co/unsloth/diffusiongemma-26B-A4B-it-GGUF), Nemotron-Labs-Diffusion 3B and VLM 8B (generative and decision), and Parakeet TDT 0.6B v3 (speech).
+  - When a service has no model selected, the first downloaded entry that serves it is used, in catalog order: DiffusionGemma for generative and decision, Parakeet for speech, Qwen3-TTS for voice. Downloading the voice model is what turns the voice on; **Speak answers** in Settings mutes it.
+  - Built in: DiffusionGemma 26B-A4B Q4_K_M from [unsloth/diffusiongemma-26B-A4B-it-GGUF](https://huggingface.co/unsloth/diffusiongemma-26B-A4B-it-GGUF), Nemotron-Labs-Diffusion 3B and VLM 8B (generative and decision), Parakeet TDT 0.6B v3 (speech), and Qwen3-TTS 12Hz 0.6B Base (voice).
   - The DiffusionGemma repository has no vision projector, so its entry also fetches `mmproj-diffusiongemma-26b-a4b-f16.gguf` from [FreedomAISVR/DiffusionGemma-26B-A4B-it-MXFP4-GGUF](https://huggingface.co/FreedomAISVR/DiffusionGemma-26B-A4B-it-MXFP4-GGUF) into the same folder.
   - **Download** fetches the files from Hugging Face. It resumes interrupted files with an HTTP range and checks each large file against the repository's SHA-256.
   - Nothing downloads unless you press the button. Set `HF_TOKEN` for gated repositories.
-- **Selected models.** **Use for …** assigns a downloaded model to a service. **Use existing…** points a service at a model already on disk (a GGUF file or a checkpoint folder) without copying it. Generative and decision on the same model share one engine.
+- **Selected models.** **Use for …** assigns a downloaded model to a service. **GGUF file…** and **Checkpoint folder…** point a service at a model already on disk without copying it; the speech and voice models are checkpoint folders. Generative and decision on the same model share one engine.
 - **Other models.** Add a Hugging Face repository with file globs under *Add a Hugging Face model*, or write the entry into `models.toml` next to the settings file:
 
   ```toml
@@ -438,6 +472,8 @@ For the automations library (the settings' one, or `--library <dir>`):
 
 `--check-flows [DIR]` checks a flows folder (the settings' one by default), printing every problem with its file and line, and fails when there is one. `--init-flows [DIR]` writes the built-in tree into a folder that has none and refreshes `AGENTS.md`, the schemas and `.taplo.toml`.
 
+`--say <text>` speaks a text through the voice route and exits, and `--out <file>` writes it as a WAV file in place of playing it (see [Voice output](#voice-output)). A headless take never speaks: a leaf that asks for voice answers as a bubble's does.
+
 `--reset-settings` puts the defaults back in the settings folder, and `--clear <what>` clears history (see [The settings folder and its history](#the-settings-folder-and-its-history) and [Logs and traces](#logs-and-traces)).
 
 ### The server alone, and a client of it
@@ -468,6 +504,7 @@ Every platform layer is a trait in `jevons-desktop-core::platform`, the client. 
 | Investigations | UI Automation: windows and their element trees | not yet | not yet |
 | Text input | paste, type (SendInput) or set value (UI Automation) | clipboard (Wayland input method, X11 XTest, uinput planned) | clipboard (CGEvent planned) |
 | Microphone | CPAL (WASAPI) | CPAL (ALSA/PulseAudio) | CPAL (CoreAudio) |
+| Speaker | CPAL (WASAPI) | CPAL (ALSA/PulseAudio) | CPAL (CoreAudio) |
 | Hotkey, tray | global-hotkey, tray-icon | global-hotkey (X11), tray-icon (AppIndicator) | not yet |
 | Automation actions | UI Automation patterns, SendInput clicks and keys | not yet | not yet |
 | Recording demonstrations | a low-level hook and UI Automation | not yet | not yet |

@@ -4,8 +4,8 @@
 
 Without flags, `jevons-desktop` starts the tray app. Its flags run one thing headless and exit:
 takes from audio or text, checks of a flows folder or an automations library, XPath queries,
-automation dry runs and runs, writing an automation from a recording, a settings reset and
-history clears. Headless commands print their result on standard output, log to standard error,
+automation dry runs and runs, writing an automation from a recording, a settings reset,
+history clears, and a text spoken through the voice route. Headless commands print their result on standard output, log to standard error,
 and exit with an error when what they ran failed.
 
 ## Requirements
@@ -22,7 +22,7 @@ Tests: none yet
 Any flag below makes the run headless: its log goes to standard error, and standard output holds
 only its result. Without one, the app runs in the tray and logs to its file.
 
-Tests: `flow_commands_take_an_optional_folder`, `clearing_takes_kinds_of_history_or_all_of_it`
+Tests: `flow_commands_take_an_optional_folder`, `clearing_takes_kinds_of_history_or_all_of_it`, `say_speaks_text_and_out_names_a_wav_file_for_it`
 
 ### R3 `--replay` runs one take from an audio file
 
@@ -49,9 +49,10 @@ snapshot in `--context <json>`, or empty. `--flow <branch>` starts the take at t
 The tools run as a dry run on both sides with no one to confirm them: MCP servers are started
 and listed, and nothing runs. A flow tree with problems prints them and fails. Progress (the words heard, each
 stage with ✓ or ✗, the machines' states) goes to standard error. The command fails with the first
-take's error.
+take's error. A headless take has no speaker and never speaks: a leaf that asks for voice
+answers as a bubble's does ([settings](settings.md) R22).
 
-Tests: none yet
+Tests: `a_take_may_speak_when_the_switch_is_on_and_there_is_a_speaker`
 
 ### R6 `--deliver` types the result
 
@@ -178,3 +179,20 @@ app runs it in a copy of itself before it first loads models ([runtime](runtime.
 build without the embedded runtime it succeeds without checking anything.
 
 Tests: none yet
+
+### R18 `--say` speaks a text through the voice route
+
+`--say <text>` asks the settings' voice route for the text as speech, in the route's voice,
+plays it on the output device `[voice] output` names (the default one otherwise), waits until
+the last word was heard, and exits. `--out <file>` writes the speech to that file in place of
+playing it, as a mono PCM16 WAV at 24 kHz, so the voice can be checked on a machine with no
+sound card; `--out` needs `--say`. It speaks even with `[voice] speak` off, since the command
+asks for it. Of the app's own models it loads the voice model alone ([runtime](runtime.md) R1). It prints the file written,
+then how many seconds of speech came from which route, when the first audio came and when all
+of it had. It fails when nothing serves the voice, with the runtime's own message when a voice
+model did not load or a provider does not answer, when the provider refuses or gives nothing
+for 60 seconds, when it answers with no audio, and when the device stops playing. The text is
+never logged. `--say` cannot be combined with `--replay`, `--transcript`, `--serve` or
+`--server`.
+
+Tests: `say_speaks_text_and_out_names_a_wav_file_for_it`, `said_text_goes_to_the_voice_route_and_comes_back_as_a_wav_file`, `said_text_plays_through_a_speaker_until_it_was_heard`

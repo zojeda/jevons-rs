@@ -34,12 +34,13 @@ The file has three sections, and every key outside this table is an error:
 | `[services.generative]` | `model` |
 | `[services.decision]` | `model` |
 | `[services.speech]` | `model`, `max_audio_seconds` (3600.0), `realtime` (true) |
+| `[services.voice]` | `model`, `voice` (the first the model lists), `max_input_chars` (4096) |
 
 `decoding` takes `diffusion`, `self-speculation` or `autoregressive`. `arch` takes `auto`,
 `gemma4-diffusion` or `nemotron-diffusion`; at startup, a named architecture that differs from
 the one detected in the files is an error.
 
-Tests: `services_share_a_model_declared_once`, `generative_and_decision_may_use_different_models`, `inconsistent_settings_are_errors`
+Tests: `services_share_a_model_declared_once`, `generative_and_decision_may_use_different_models`, `inconsistent_settings_are_errors`, `a_voice_service_names_its_model_default_voice_and_input_limit`
 
 ### R3 Paths
 
@@ -56,7 +57,9 @@ Loading fails with `Invalid settings file <path>: ...` when:
 - a service names a model with no `[models.<name>]`;
 - a declared model serves no service;
 - one model serves both Speech and Generative or Decision;
+- one model serves Voice and any other service (R8);
 - `max_audio_seconds` is not a positive finite number;
+- `max_input_chars` is 0, or `services.voice.voice` is blank;
 - a model's `queue_capacity` is 0 or its `id` is blank;
 - a model's `decoding` is not one of the three names;
 - `bind` is not a socket address, or the TOML does not parse.
@@ -82,6 +85,16 @@ Tests: `flags_override_the_file_and_a_missing_file_is_an_error`
 
 `arch`, `mmproj`, `context_size`, `batch_size`, `prompt_cache`, `seed` and `decoding` apply to
 diffusion language models. A speech model that sets any of them fails at startup with a message
-that names the keys it set.
+that names the keys it set, and so does a voice model.
 
 Tests: none yet
+
+### R8 The voice service
+
+`[services.voice]` names the model that serves `POST /v1/audio/speech`. `voice` is the voice of
+a request that names none, and `max_input_chars` the longest `input` a request may carry. Voice
+may be the only service. Its model serves no other service: naming it under Generative, Decision
+or Speech too fails with `model "<name>" serves voice and <service>`. A voice model is no
+diffusion model, so it takes only `path`, `id`, `main_gpu` and `queue_capacity`.
+
+Tests: `a_voice_service_names_its_model_default_voice_and_input_limit`, `inconsistent_settings_are_errors`

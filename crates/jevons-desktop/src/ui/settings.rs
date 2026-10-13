@@ -6,7 +6,7 @@ use crate::agent::Command;
 use crate::config::{
     Capability, DesktopConfig, EMBEDDED, HotkeyMode, Provider, ProviderKind, RouteTo,
 };
-use crate::runtime::Status;
+use crate::runtime::{Status, Voices};
 use dioxus::prelude::*;
 use std::collections::BTreeMap;
 
@@ -33,6 +33,7 @@ fn route_label(capability: Capability) -> &'static str {
         Capability::Realtime => "Live speech",
         Capability::Decision => "Decisions",
         Capability::Generation => "Generation",
+        Capability::Voice => "Voice",
     }
 }
 
@@ -51,6 +52,7 @@ fn route_to(config: &mut DesktopConfig, capability: Capability, provider: Option
     let route = provider.map(|provider| RouteTo {
         provider,
         model: None,
+        voice: None,
     });
     set_route(config, capability, route);
 }
@@ -62,6 +64,37 @@ fn route_model(config: &mut DesktopConfig, capability: Capability, model: &str) 
     };
     route.model = Some(model.trim().to_string()).filter(|m| !m.is_empty());
     set_route(config, capability, Some(route));
+}
+
+/// Names the voice the voice route asks its provider to speak in; empty is the provider's own.
+fn route_voice(config: &mut DesktopConfig, voice: &str) {
+    let Some(mut route) = config.route(Capability::Voice) else {
+        return;
+    };
+    route.voice = Some(voice.trim().to_string()).filter(|v| !v.is_empty());
+    set_route(config, Capability::Voice, Some(route));
+}
+
+/// The voices to choose among for the voice route, when its provider lists them: the model's
+/// own first, then each by name. A voice the settings name that the provider does not list
+/// still shows as the choice. `None` when the provider lists none, and the name is typed.
+fn voice_choices(listed: Option<&Voices>, named: Option<&str>) -> Option<Vec<Choice>> {
+    let listed = listed.filter(|voices| !voices.names.is_empty())?;
+    let mut choices = vec![Choice {
+        value: None,
+        label: format!("The model's own ({})", listed.default),
+    }];
+    choices.extend(listed.names.iter().map(|name| Choice {
+        value: Some(name.clone()),
+        label: name.clone(),
+    }));
+    if let Some(named) = named.filter(|n| listed.names.iter().all(|name| name != n)) {
+        choices.push(Choice {
+            value: Some(named.to_string()),
+            label: format!("{named} (not listed)"),
+        });
+    }
+    Some(choices)
 }
 
 /// Sets a route, leaving it out of the file when it is what a route left out means.
@@ -318,6 +351,9 @@ pub fn SettingsPage(rev: u64) -> Element {
     let status = view.runtime.clone();
     let served = view.served.clone();
     let devices = view.devices.clone();
+    let speakers = view.speakers.clone();
+    let listed = view.voices.clone();
+    let serving_voice = view.config.route(Capability::Voice).map(|r| r.provider);
     let entries = view.flows.entries();
     let automations = view.automations.clone();
     drop(view);
@@ -353,6 +389,47 @@ pub fn SettingsPage(rev: u64) -> Element {
         value: Some(m.name.clone()),
         label: m.name.clone(),
     }));
+    let mut outputs = vec![Choice {
+        value: None,
+        label: "Default output device".into(),
+    }];
+    outputs.extend(speakers.iter().map(|s| Choice {
+        value: Some(s.name.clone()),
+        label: s.name.clone(),
+    }));
+    // A device the settings name that is not plugged in now still shows as the choice.
+    if let Some(named) = d
+        .voice
+        .output
+        .clone()
+        .filter(|n| speakers.iter().all(|s| s.name != *n))
+    {
+        outputs.push(Choice {
+            label: format!("{named} (not connected)"),
+            value: Some(named),
+        });
+    }
+    let voice_route = d.route(Capability::Voice);
+    let voice_name = voice_route
+        .as_ref()
+        .and_then(|r| r.voice.clone())
+        .unwrap_or_default();
+    // Where the text of a spoken answer goes when the voice is not this app's own.
+    let voice_elsewhere = voice_route
+        .as_ref()
+        .filter(|r| {
+            d.provider(&r.provider)
+                .is_some_and(|p| p.kind != ProviderKind::Embedded)
+        })
+        .map(|r| r.provider.clone());
+    let voice_served = served.contains_key(Capability::Voice.key());
+    // The voices listed are those of the provider that serves the voice now. Another provider
+    // chosen on this page, and not saved yet, names its own.
+    let voices = listed
+        .as_ref()
+        .filter(|_| voice_route.as_ref().map(|r| &r.provider) == serving_voice.as_ref());
+    let voice_choices = voice_choices(voices, Some(voice_name.as_str()).filter(|n| !n.is_empty()));
+    let voice_chosen = Some(voice_name.clone()).filter(|n| !n.is_empty());
 
     rsx! {
         div { class: "spread",
@@ -566,6 +643,48 @@ pub fn SettingsPage(rev: u64) -> Element {
             }
         }
 
+        div { class: "dx-card", "data-card": "voice",
+            div { class: "dx-card-header",
+                div {
+                    div { class: "dx-card-title", "Voice" }
+                    div { class: "dx-card-description", "Answers read aloud. Starting a take stops the voice, and so do Esc, the bubble's Stop and the tray's Cancel" }
+                }
+            }
+            div { class: "dx-card-content",
+                div { class: "field",
+                    span { class: "field-label", "Speak answers" }
+                    Switch { checked: d.voice.speak,
+                        label: "Read aloud the answers of the flows that ask for it (off: they show in the bubble)".to_string(),
+                        onchange: move |on| draft.edit(|c| c.voice.speak = on) }
+                }
+                div { class: "field",
+                    span { class: "field-label", "Output device" }
+                    Select { value: d.voice.output.clone(), choices: outputs,
+                        onchange: move |o| draft.edit(|c| c.voice.output = o) }
+                }
+                div { class: "field",
+                    div { class: "stack",
+                        span { class: "field-label", "Voice" }
+                        span { class: "field-hint", "As the voice route's provider names it" }
+                    }
+                    if let Some(choices) = voice_choices {
+                        Select { value: voice_chosen, choices,
+                            onchange: move |v: Option<String>| draft.edit(|c| route_voice(c, v.as_deref().unwrap_or_default())) }
+                    } else {
+                        input { class: "dx-input mono", placeholder: "the provider's own voice",
+                            value: "{voice_name}",
+                            oninput: move |e| draft.edit(|c| route_voice(c, &e.value())) }
+                    }
+                }
+                if !voice_served {
+                    p { class: "muted", "Nothing serves the voice yet, so answers show in the bubble: download a voice model in the Models tab, or route Voice to a provider above." }
+                }
+                if let Some(provider) = &voice_elsewhere {
+                    p { class: "warn", "The voice route goes to {provider}: the text of each answer read aloud is sent there." }
+                }
+            }
+        }
+
         div { class: "dx-card",
             div { class: "dx-card-header",
                 div {
@@ -717,7 +836,8 @@ mod tests {
             config.routes.generation,
             Some(RouteTo {
                 provider: EMBEDDED.into(),
-                model: Some("gemma".into())
+                model: Some("gemma".into()),
+                voice: None,
             })
         );
         route_model(&mut config, Capability::Generation, "");
@@ -731,12 +851,84 @@ mod tests {
     }
 
     #[test]
+    fn the_voice_to_speak_in_is_the_voice_route_s_and_goes_with_its_provider() {
+        let mut config = DesktopConfig::default();
+        // Named for the app's own model, it is a route of its own.
+        route_voice(&mut config, " lector ");
+        assert_eq!(
+            config.routes.voice,
+            Some(RouteTo {
+                provider: EMBEDDED.into(),
+                model: None,
+                voice: Some("lector".into()),
+            })
+        );
+        assert_eq!(config.check_routes(), Ok(()));
+        // Cleared, the route is what a route left out means, and is not written.
+        route_voice(&mut config, "");
+        assert_eq!(config.routes, Default::default());
+        // A voice is a provider's: another provider is asked for its own until one is typed.
+        add_provider(&mut config, ProviderKind::Jevons);
+        route_voice(&mut config, "lector");
+        route_to(&mut config, Capability::Voice, Some("jevons".into()));
+        assert_eq!(config.routes.voice.clone().unwrap().voice, None);
+        route_voice(&mut config, "reader");
+        route_model(&mut config, Capability::Voice, "qwen3-tts-latest");
+        let voice = config.routes.voice.clone().unwrap();
+        assert_eq!(
+            (
+                voice.provider.as_str(),
+                voice.model.as_deref(),
+                voice.voice.as_deref()
+            ),
+            ("jevons", Some("qwen3-tts-latest"), Some("reader"))
+        );
+        assert_eq!(config.check_routes(), Ok(()));
+    }
+
+    #[test]
+    fn the_voices_a_provider_lists_are_chosen_among_and_others_are_typed() {
+        // A provider that does not say which voices it has: the name is typed.
+        assert_eq!(voice_choices(None, None), None);
+        assert_eq!(voice_choices(Some(&Voices::default()), Some("nova")), None);
+        // The app's own model lists them: its own voice first, by name, then each one.
+        let listed = Voices {
+            names: vec!["lector".into(), "reader".into()],
+            default: "lector".into(),
+        };
+        let labels = |named: Option<&str>| -> Vec<(Option<String>, String)> {
+            voice_choices(Some(&listed), named)
+                .unwrap()
+                .into_iter()
+                .map(|choice| (choice.value, choice.label))
+                .collect()
+        };
+        let own = (None, "The model's own (lector)".to_string());
+        let each = [
+            (Some("lector".to_string()), "lector".to_string()),
+            (Some("reader".to_string()), "reader".to_string()),
+        ];
+        assert_eq!(
+            labels(None),
+            [own.clone(), each[0].clone(), each[1].clone()]
+        );
+        assert_eq!(labels(Some("reader")).len(), 3);
+        // A voice the settings name that the model does not have stays the choice, and says so.
+        assert_eq!(
+            labels(Some("lucia"))[3],
+            (Some("lucia".to_string()), "lucia (not listed)".to_string())
+        );
+    }
+
+    #[test]
     fn saving_applies_only_the_edits_onto_settings_changed_meanwhile() {
         let base = DesktopConfig::default();
         // Edited here: the hotkey, and the live hotkey cleared.
         let mut edited = base.clone();
         edited.dictation.hotkey = "F8".into();
         edited.dictation.live_hotkey = None;
+        edited.voice.speak = false;
+        edited.voice.output = Some("Headphones".into());
         // Meanwhile, elsewhere: the tray's live feedback, an approval, a branch hotkey.
         let mut latest = base.clone();
         latest.dictation.live_feedback = !base.dictation.live_feedback;
@@ -751,6 +943,8 @@ mod tests {
         let merged = merge(&base, &edited, &latest);
         assert_eq!(merged.dictation.hotkey, "F8");
         assert_eq!(merged.dictation.live_hotkey, None);
+        assert!(!merged.voice.speak);
+        assert_eq!(merged.voice.output.as_deref(), Some("Headphones"));
         assert_eq!(
             merged.dictation.live_feedback,
             latest.dictation.live_feedback

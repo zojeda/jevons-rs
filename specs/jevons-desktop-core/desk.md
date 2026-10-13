@@ -6,20 +6,23 @@ The desk is the client's side of the boundary with the server
 ([jevons-desktop-protocol](../jevons-desktop-protocol/spec.md) R2): `LocalDesk` carries out what the
 server asks with this machine's platform layers, in the app's own process. The client's safety
 rules live here, whatever the server asks for: text goes only into the window a take started in,
-a tool runs only once the user said yes, the screen is read within the privacy settings, and an
-automation runs only in the version the user approved.
+speech plays one take at a time and never while the microphone is open, a tool runs only once
+the user said yes, the screen is read within the privacy settings, and an automation runs only in
+the version the user approved.
 
 ## Requirements
 
 ### R1 Each part of the desk is optional
 
-A desk is built from the parts at hand: a text sink, an extract reader, the investigations'
-`Looks`, a confirmer and the automations library. Without a sink nothing is delivered. Without a
-reader an extract is empty in its shape, with "No interface reader is available here". Without
-`Looks` no investigation opens ("No context investigator is available here"). Without a confirmer
-every confirmation is denied. Without the library it offers no tools and serves no `script`.
+A desk is built from the parts at hand: a text sink, a voice over the platform's speaker, an extract
+reader, the investigations' `Looks`, a confirmer and the automations library. Without a sink nothing
+is delivered. Without a speaker nothing is said: `speak` answers that the desk does not speak the
+take. Without a reader an extract is empty in its shape, with "No interface reader is available
+here". Without `Looks` no investigation opens ("No context investigator is available here"). Without
+a confirmer every confirmation is denied. Without the library it offers no tools and serves no
+`script`.
 
-Tests: `a_declined_tool_call_takes_the_denied_transition`, `each_capability_goes_to_its_own_provider`, `a_desk_that_cannot_look_answers_empty_with_its_note`
+Tests: `a_declined_tool_call_takes_the_denied_transition`, `each_capability_goes_to_its_own_provider`, `a_desk_that_cannot_look_answers_empty_with_its_note`, `a_desk_speaks_through_its_speaker_and_one_without_is_silent`
 
 ### R2 Text goes only into the window the take started in
 
@@ -86,3 +89,57 @@ A desk in dry-run mode checks `allow` and asks as always, and then answers
 tool. Headless takes use it.
 
 Tests: `a_dry_run_checks_and_asks_as_always_and_runs_nothing`
+
+### R8 Speech plays through the platform's speaker
+
+`Speaker` is the audio output layer: it lists the output devices and starts a playback on one
+(the default when none is named). A playback takes mono PCM16 at the protocol's rate without
+waiting for it to be heard, says whether any of it is still to be heard, and stops when it is
+stopped or dropped. `Voice` is the desk's part over it. `speak` queues each stretch of a take's
+speech on that take's playback, in order, and starts one playback for a take, with its first
+stretch that holds samples. `speaking` names the take until its last stretch came and all of it
+was heard. A speaker that cannot start fails `speak` with its error, and a device that goes away
+while it plays ends that take's voice.
+
+Tests: `a_take_s_speech_plays_in_order_until_it_was_heard`, `a_speaker_that_cannot_play_says_why_and_one_that_goes_away_ends_the_take`, `the_client_s_desk_plays_the_speech_or_says_why_it_does_not`
+
+### R9 One take speaks at a time, and a newer one replaces it
+
+A stretch of speech from another take than the one that plays stops that one at once, drops what
+it had queued, and plays the newer take's. What is left of the older take's speech is refused,
+and does not cut the newer one. A stretch that holds no samples starts nothing and cuts nobody.
+
+Tests: `a_newer_take_s_speech_replaces_the_one_that_plays`
+
+### R10 Nothing plays while the microphone is open
+
+The app tells the voice when the microphone opens and closes (`set_listening`). Opening it stops
+what plays, so jevons never hears itself, and while it is open every stretch is refused, so a
+timer's take cannot talk over the user. Once it closes the next take speaks; one that was cut or
+refused stays so.
+
+Tests: `nothing_plays_while_the_microphone_is_open`
+
+### R11 A take whose voice ended early speaks no more
+
+`stop` ends what plays and names the take it stopped. From then on every stretch of that take
+answers that the desk does not speak it, which is how the server learns to stop making the
+speech. The same holds for a take that was replaced, refused once, or whose device went away: its
+speech never starts again in the middle. The next take speaks as usual.
+
+Tests: `a_stopped_take_speaks_no_more`, `a_newer_take_s_speech_replaces_the_one_that_plays`
+
+### R12 `[voice]` turns the voice off and chooses its device
+
+The client's settings, `jevons-desktop.toml`, hold a `[voice]` table:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `speak` | `true` | Read aloud the answers of the flow leaves that ask for it. Off, they are shown in the bubble and nothing is said |
+| `output` | none | The output device's name; the default device when left out |
+
+Any other key is an error, and a table left at its defaults is not written back. A voice that
+follows them (`configure`) speaks nothing while `speak` is off, stopping what plays when it is
+turned off, and plays on `output` from the next take's speech on.
+
+Tests: `the_voice_speaks_on_the_default_device_unless_the_settings_say_otherwise`, `the_settings_turn_the_voice_off_and_choose_its_device`, `the_example_settings_file_parses`

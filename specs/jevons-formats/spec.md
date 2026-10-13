@@ -134,7 +134,10 @@ Tests: `sharded_checkpoints_read_tensors_from_the_indexed_shard`
 
 `names` lists tensor names in sorted order. `tensor` and `read` fail with `Missing` for an unknown
 name. `read` returns a tensor's raw little-endian bytes, and `read_into` fails with `Format` unless
-the buffer has the tensor's byte length. `read_f32` widens F32, F16 and BF16 tensors to `f32` and
-fails with `Format` for other dtypes.
+the buffer has the tensor's byte length. `read_range_into` reads the bytes of a tensor from an
+offset into it, and fails with `Format` when the range ends outside the tensor. `read_f32` widens
+F32, F16 and BF16 tensors to `f32` and fails with `Format` for other dtypes. `read_rows_f32` widens
+the rows of a matrix it is asked for, in that order, and fails with `Format` for a row the matrix
+lacks or a tensor that is not a matrix.
 
-Tests: `sharded_checkpoints_read_tensors_from_the_indexed_shard`
+Tests: `sharded_checkpoints_read_tensors_from_the_indexed_shard`, `a_range_of_a_tensor_reads_without_the_rest`

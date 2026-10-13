@@ -18,6 +18,7 @@ jevons-decision.workspace = true
 jevons-diffusion.workspace = true
 jevons-generative.workspace = true
 jevons-speech.workspace = true
+jevons-voice.workspace = true
 axum = { workspace = true, features = ["multipart", "ws"] }
 base64.workspace = true
 clap.workspace = true
@@ -31,6 +32,8 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+# The scripted voice model.
+jevons-voice = { workspace = true, features = ["testing"] }
 futures-util = { workspace = true, features = ["sink"] }
 tokio = { workspace = true, features = ["io-util"] }
 tokio-tungstenite.workspace = true

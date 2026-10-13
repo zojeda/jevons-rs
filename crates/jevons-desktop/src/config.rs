@@ -4,14 +4,15 @@
 
 use jevons_desktop_core::catalog::{CatalogEntry, Service};
 pub use jevons_desktop_core::config::{
-    AutomationSettings, ClientConfig, ConfigError, Dictation, HotkeyMode, default_config_file,
-    user_dir,
+    AutomationSettings, ClientConfig, ConfigError, Dictation, HotkeyMode, VoiceSettings,
+    default_config_file, user_dir,
 };
 use jevons_desktop_protocol::context::Privacy;
 pub use jevons_desktop_server::config::{
     Capability, EMBEDDED, Logging, McpConfig, ModelRef, Models, Provider, ProviderKind, RouteTo,
     Routes, Server, ServerConfig, ToolConfig,
 };
+use jevons_desktop_server::pipeline;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -44,6 +45,7 @@ pub struct DesktopConfig {
     pub routes: Routes,
     pub models: Models,
     pub dictation: Dictation,
+    pub voice: VoiceSettings,
     pub privacy: Privacy,
     /// The server's `log_api`.
     pub log_api: bool,
@@ -97,6 +99,7 @@ impl DesktopConfig {
             routes: server.routes,
             models: server.models,
             dictation: client.dictation,
+            voice: client.voice,
             privacy: client.privacy,
             log_api: server.privacy.log_api,
             flows_dir: server.flows_dir,
@@ -112,6 +115,7 @@ impl DesktopConfig {
     pub fn client(&self) -> ClientConfig {
         ClientConfig {
             dictation: self.dictation.clone(),
+            voice: self.voice.clone(),
             privacy: self.privacy.clone(),
             tools: self.desk_tools.clone(),
             mcp: self.desk_mcp.clone(),
@@ -221,11 +225,24 @@ impl DesktopConfig {
     pub fn exposed_key(&self) -> Option<String> {
         self.server().exposed_key()
     }
+
+    /// What a take runs with, of these settings. It may read its answer aloud when the
+    /// settings say so and this side has a `speaker` to play it; otherwise a leaf that asks
+    /// for voice answers in the bubble.
+    pub fn take_settings(&self, speaker: bool) -> pipeline::Settings {
+        pipeline::Settings {
+            language: self.dictation.language.clone(),
+            decide: self.dictation.decide,
+            max_output_tokens: self.dictation.max_output_tokens,
+            voice: self.voice.speak && speaker,
+            ..pipeline::Settings::default()
+        }
+    }
 }
 
 /// These selections with each unset service filled from the first downloaded catalog entry
 /// that serves it, in catalog order (DiffusionGemma first for language, then Parakeet for
-/// speech). Explicit selections are kept.
+/// speech and Qwen3-TTS for voice). Explicit selections are kept.
 pub fn with_downloaded(models: &Models, folder: &Path, catalog: &[CatalogEntry]) -> Models {
     let pick = |service: Service| {
         catalog
@@ -242,6 +259,7 @@ pub fn with_downloaded(models: &Models, folder: &Path, catalog: &[CatalogEntry])
         models.generative = models.generative.or_else(|| pick(Service::Generative));
         models.decision = models.decision.or_else(|| pick(Service::Decision));
         models.speech = models.speech.or_else(|| pick(Service::Speech));
+        models.voice = models.voice.or_else(|| pick(Service::Voice));
     }
     models
 }
@@ -285,13 +303,84 @@ mod tests {
     }
 
     #[test]
+    fn the_voice_settings_and_route_load_back_each_from_its_own_file() {
+        let dir = std::env::temp_dir().join(format!("jevons-desktop-voice-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("jevons-desktop.toml");
+        let mut config = DesktopConfig::default();
+        // By default answers are read aloud on the default device, and neither file says so.
+        assert!(config.voice.speak && config.voice.output.is_none());
+        config.save(&file).unwrap();
+        let client = std::fs::read_to_string(&file).unwrap();
+        let server = std::fs::read_to_string(server_file(&file)).unwrap();
+        assert!(!client.contains("[voice]"), "{client}");
+        assert!(!server.contains("voice"), "{server}");
+        // The switch and the device are the client's; the route, its voice and the model the
+        // server's.
+        config.voice.speak = false;
+        config.voice.output = Some("Headphones".into());
+        config.providers.insert(
+            "cloud".into(),
+            Provider {
+                url: Some("https://tts.example".into()),
+                ..Provider::of(ProviderKind::OpenaiCompatible)
+            },
+        );
+        config.routes.voice = Some(RouteTo {
+            provider: "cloud".into(),
+            model: Some("tts-1".into()),
+            voice: Some("nova".into()),
+        });
+        config.models.voice = Some(ModelRef {
+            path: "/models/qwen3-tts".into(),
+            mmproj: None,
+            catalog: Some("qwen3-tts-12hz-0.6b-base".into()),
+        });
+        assert_eq!(config.check_routes(), Ok(()));
+        config.save(&file).unwrap();
+        assert_eq!(DesktopConfig::load(&file).unwrap(), config);
+        let client = std::fs::read_to_string(&file).unwrap();
+        let server = std::fs::read_to_string(server_file(&file)).unwrap();
+        assert!(
+            client.contains("[voice]") && client.contains("output = \"Headphones\""),
+            "{client}"
+        );
+        assert!(!client.contains("nova") && server.contains("voice = \"nova\""));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_take_may_speak_when_the_switch_is_on_and_there_is_a_speaker() {
+        let mut config = DesktopConfig::default();
+        config.dictation.language = Some("es".into());
+        config.dictation.max_output_tokens = 300;
+        let settings = config.take_settings(true);
+        assert!(settings.voice);
+        assert_eq!(
+            (settings.language.as_deref(), settings.max_output_tokens),
+            (Some("es"), 300)
+        );
+        // A side with no speaker (a headless run) never asks a take to speak.
+        assert!(!config.take_settings(false).voice);
+        // "Speak answers" off: a leaf that asks for voice answers in the bubble.
+        config.voice.speak = false;
+        assert!(!config.take_settings(true).voice);
+    }
+
+    #[test]
     fn downloaded_catalog_models_fill_unset_services_with_gemma_first() {
         let folder = std::env::temp_dir().join(format!("jevons-defaults-{}", std::process::id()));
         let catalog = jevons_desktop_core::catalog::builtin();
+        // A folder with no voice model has none to use.
+        assert_eq!(
+            with_downloaded(&Models::default(), &folder, &catalog).voice,
+            None
+        );
         for id in [
             "diffusiongemma-26b-a4b-q4_k_m",
             "nemotron-labs-diffusion-3b",
             "parakeet-tdt-0.6b-v3",
+            "qwen3-tts-12hz-0.6b-base",
         ] {
             let dir = folder.join(id);
             std::fs::create_dir_all(&dir).unwrap();
@@ -326,6 +415,11 @@ mod tests {
             chosen.speech.unwrap().path,
             Path::new("/mine"),
             "explicit choices stay"
+        );
+        // Downloading the voice model is what turns the voice on: it is used like the others.
+        assert_eq!(
+            chosen.voice.unwrap().catalog.as_deref(),
+            Some("qwen3-tts-12hz-0.6b-base")
         );
         std::fs::remove_dir_all(folder).unwrap();
     }

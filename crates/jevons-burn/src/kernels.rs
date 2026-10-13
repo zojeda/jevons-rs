@@ -6,7 +6,7 @@
 //! row in the same order regardless of the batch size. [`f16_linear`] runs it directly on
 //! Burn tensors' buffers.
 use burn::backend::{Backend, Dispatch, DispatchDevice, backend_extension, tensor::FloatTensor};
-use burn::tensor::{DType, Shape, Tensor};
+use burn::tensor::{DType, Device, Shape, Tensor};
 use burn_cubecl::{CubeBackend, kernel::into_contiguous, ops::numeric::empty_device_dtype};
 use jevons_kernels::gemm::{self, Plan, QMatrix, SplitScratch};
 use jevons_kernels::{Buf, Gpu};
@@ -98,7 +98,12 @@ impl GemmOps for CubeBackend {
 
 /// Whether `tensor` lives on a CubeCL device (the kernels have no CPU implementation).
 pub fn supports_kernels(tensor: &Tensor<2>) -> bool {
-    matches!(tensor.device().as_dispatch(), DispatchDevice::Cube(_))
+    on_cube(&tensor.device())
+}
+
+/// Whether `device` is a CubeCL device, where FP16 weights use the tuned GEMM.
+pub fn on_cube(device: &Device) -> bool {
+    matches!(device.as_dispatch(), DispatchDevice::Cube(_))
 }
 
 /// Largest activation magnitude sent to the FP16 GEMM by [`f16_linear_scaled`].
@@ -132,6 +137,11 @@ pub fn f16_linear_scaled(x: Tensor<2>, weight: &Tensor<2>) -> Tensor<2> {
 mod tests {
     use super::*;
     use burn::tensor::Distribution;
+
+    #[test]
+    fn the_cpu_device_is_not_a_cubecl_device() {
+        assert!(!on_cube(&Device::flex()));
+    }
 
     #[test]
     #[ignore = "Requires a HIP GPU"]

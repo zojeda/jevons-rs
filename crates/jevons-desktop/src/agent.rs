@@ -6,6 +6,8 @@ use crate::config::{Capability, DesktopConfig, HotkeyMode};
 use crate::runtime::{Runtime, Status};
 use crate::settings;
 use crate::tray::Tray;
+use crate::voice::VoiceControl;
+use futures_util::future::BoxFuture;
 use jevons_desktop_core::automation::author::{self, Authored, Planner};
 use jevons_desktop_core::automation::check::CheckReport;
 use jevons_desktop_core::automation::host::AutomationHost;
@@ -21,7 +23,7 @@ use jevons_desktop_core::look::{Looks, PathCache};
 use jevons_desktop_core::platform::{
     AudioDevice, AudioSource, Binding, CaptureHandle, ContextInspector, ContextProvider,
     DeliveryOutcome, HotkeyAction, HotkeyEvent, MachineEntry, MenuCommand, MenuModel, Recorder,
-    RecordingHandle, TextSink, TrayBackend, UiActor, UiElement, WindowEntry,
+    RecordingHandle, Speaker, TextSink, TrayBackend, UiActor, UiElement, WindowEntry,
 };
 use jevons_desktop_core::reader::Reader;
 use jevons_desktop_core::recorded::RecordedTree;
@@ -36,7 +38,7 @@ use jevons_desktop_server::flow::machine::runtime::{
 use jevons_desktop_server::flow::tools::ToolHost;
 use jevons_desktop_server::flow::walk::{self, FlowStep};
 use jevons_desktop_server::flow::{Catalog, FlowError, FlowTree, defaults};
-use jevons_desktop_server::pipeline::{self, StageKind, TakeStart, Trace, Update};
+use jevons_desktop_server::pipeline::{StageKind, TakeStart, Trace, Update};
 use jevons_desktop_server::session::{Event as SessionEvent, Session as ServerSession};
 use jevons_desktop_tools::ToolSet;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -189,6 +191,8 @@ pub enum BubbleAction {
     },
     /// Types the answer into the window the take started in.
     Insert,
+    /// Stops the voice that reads the answer aloud. The answer stays in the bubble.
+    Stop,
     Close,
 }
 
@@ -340,6 +344,7 @@ impl Feedback {
                     StageKind::Investigating => "Reading the screen…".into(),
                     StageKind::Writing => "Writing…".into(),
                     StageKind::Answering => "Answering…".into(),
+                    StageKind::Speaking => "Speaking…".into(),
                     StageKind::Calling => format!("Calling {}…", stage.label),
                 };
                 self.stages.push(StageView {
@@ -371,6 +376,7 @@ impl Feedback {
             Update::State(path) => self.state = path.clone(),
             // Whoever holds the conversation joins it to the bubble.
             Update::Task { .. } => {}
+            Update::Speaking => {}
         }
         true
     }
@@ -378,6 +384,18 @@ impl Feedback {
     /// Whether the bubble animates: the take works and has not ended.
     pub fn animating(&self) -> bool {
         self.working && !self.done && self.confirm.is_none()
+    }
+
+    /// Whether the take is in its speaking stage: its answer is written, and is being made
+    /// into speech and handed to the desk.
+    pub fn speaking_stage(&self) -> bool {
+        !self.done
+            && self
+                .stages
+                .iter()
+                .rev()
+                .find(|stage| stage.ok.is_none())
+                .is_some_and(|stage| stage.kind == StageKind::Speaking)
     }
 
     /// The take's outcome.
@@ -397,7 +415,11 @@ impl Feedback {
             String::new()
         };
         self.failed = trace.error.is_some();
-        self.answer = trace.delivery == Some(DeliveryOutcome::Shown);
+        // An answer read aloud is still an answer to read: it stays as a shown one does.
+        self.answer = matches!(
+            trace.delivery,
+            Some(DeliveryOutcome::Shown | DeliveryOutcome::Spoken)
+        );
         if self.answer {
             self.output = trace.output.clone();
         }
@@ -407,7 +429,7 @@ impl Feedback {
             (None, Some(DeliveryOutcome::OnClipboard { reason })) => {
                 format!("On the clipboard: {reason}")
             }
-            (None, Some(DeliveryOutcome::Shown)) => "Answer".into(),
+            (None, Some(DeliveryOutcome::Shown | DeliveryOutcome::Spoken)) => "Answer".into(),
             (None, None) if trace.notes.iter().any(|n| n.starts_with("Too short")) => {
                 "Too short to hold speech".into()
             }
@@ -485,6 +507,12 @@ pub struct View {
     pub context_backend: &'static str,
     pub sink_backend: &'static str,
     pub devices: Vec<AudioDevice>,
+    /// The output devices the voice can play on.
+    pub speakers: Vec<AudioDevice>,
+    /// The voices the voice route's provider lists, when it says which it has.
+    pub voices: Option<crate::runtime::Voices>,
+    /// The take whose answer is being read aloud, while any of it is still to be heard.
+    pub speaking: Option<u64>,
     pub config: DesktopConfig,
     pub config_file: PathBuf,
     /// Set when the window should show itself.
@@ -689,6 +717,117 @@ struct Active {
     task: Option<tokio::task::JoinHandle<()>>,
     /// A note for the recording, transcribed only.
     note: bool,
+    /// The take whose voice this one's start stopped, and this take's work, which starts once
+    /// that take has ended.
+    after: Option<(u64, BoxFuture<'static, ()>)>,
+    /// The conversation this take joins when its words turn out to be for that task.
+    joins: Joins,
+}
+
+/// A waiting task and its conversation, as a take's bubble joins it. A take that started over
+/// one still reading its answer aloud gets the conversation as that take leaves it.
+type Joins = Arc<Mutex<Option<(u64, Feedback)>>>;
+
+impl Active {
+    /// Starts the take's work. After a take whose voice this one stopped, the work waits
+    /// until that take has ended: the microphone is open meanwhile, and what it hears waits
+    /// with it.
+    fn work(&mut self, before: Option<u64>, work: BoxFuture<'static, ()>) {
+        match before {
+            Some(before) => self.after = Some((before, work)),
+            None => self.task = Some(tokio::spawn(work)),
+        }
+    }
+
+    /// Whether this take's work waits for the take `earlier` to end.
+    fn waits_for(&self, earlier: u64) -> bool {
+        self.after
+            .as_ref()
+            .is_some_and(|(before, _)| *before == earlier)
+    }
+
+    /// The take `ended`. True when this take's work waited for it, and starts now.
+    fn ended(&mut self, ended: u64) -> bool {
+        if !self.waits_for(ended) {
+            return false;
+        }
+        if let Some((_, work)) = self.after.take() {
+            self.task = Some(tokio::spawn(work));
+        }
+        true
+    }
+}
+
+/// What a press that starts dictation does, given the take that runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Press {
+    /// No take runs: one starts.
+    Start,
+    /// The take listens since a press of this same hotkey: it stops listening.
+    Finish,
+    /// The take reads its answer aloud: its voice stops and the next take starts.
+    Interrupt,
+    /// A take hears, decides or writes: nothing changes.
+    Ignore,
+}
+
+/// What a press of the dictation hotkey `id` does. `speaking` says whether a take is in its
+/// speaking stage.
+fn press(active: Option<&Active>, id: u32, speaking: impl FnOnce(u64) -> bool) -> Press {
+    match active {
+        None => Press::Start,
+        Some(a) if a.source == Some(id) && !a.held && a.capture.is_some() => Press::Finish,
+        Some(a) if speaking(a.id) => Press::Interrupt,
+        Some(_) => Press::Ignore,
+    }
+}
+
+/// Whether a take runs with its microphone open.
+fn listens(active: Option<&Active>) -> bool {
+    active.is_some_and(|take| take.capture.is_some())
+}
+
+/// Every hotkey the settings define, plus Enter and Escape while a question waits (`asking`),
+/// or Escape alone while an answer is read aloud (`speaking`): it stops the voice.
+fn bindings(config: &DesktopConfig, asking: bool, speaking: bool) -> Vec<Binding> {
+    let mut bindings = Binding::from_settings(&config.dictation);
+    bindings.extend(Binding::for_automations(&config.automation));
+    if asking {
+        bindings.push(Binding {
+            accelerator: "Enter".into(),
+            action: HotkeyAction::Confirm(true),
+        });
+    }
+    if asking || speaking {
+        bindings.push(Binding {
+            accelerator: "Escape".into(),
+            action: HotkeyAction::Confirm(false),
+        });
+    }
+    bindings
+}
+
+/// How many seconds a finished take's bubble stays: long enough to read the outcome, errors
+/// longer. `None` is until it is closed or the next take starts: an answer, shown or read
+/// aloud, since reading it may take a while, and the conversation of a task that `waits`.
+fn hides_after(waits: bool, failed: bool, answer: bool) -> Option<u64> {
+    match (waits, failed, answer) {
+        (true, _, _) | (false, false, true) => None,
+        (false, true, _) => Some(8),
+        (false, false, false) => Some(4),
+    }
+}
+
+/// The tray state between takes: recording, else the voice while an answer is still to be
+/// heard, else ready.
+fn resting(recording: bool, speaking: bool) -> TrayState {
+    if recording {
+        TrayState::Recording
+    } else if speaking {
+        TrayState::Speaking { frame: 0 }
+    } else {
+        TrayState::Idle
+    }
 }
 
 /// A demonstration being recorded.
@@ -716,6 +855,11 @@ pub struct Agent {
     paths: Arc<Mutex<PathCache>>,
     sink: Arc<Mutex<Box<dyn TextSink>>>,
     audio: Box<dyn AudioSource>,
+    /// The desk's voice: what reads answers aloud, and when it must be silent.
+    voice: VoiceControl,
+    /// The voice started or ended while a take listened: the hotkeys are registered anew,
+    /// with or without Escape, once the microphone has closed.
+    hotkeys_stale: bool,
     /// The tools the settings register, the library's automations among them.
     tools: Arc<ToolHost>,
     /// The automations library, and what runs them.
@@ -777,6 +921,7 @@ pub struct Layers {
     pub recorder: Arc<dyn Recorder>,
     pub sink: Box<dyn TextSink>,
     pub audio: Box<dyn AudioSource>,
+    pub speaker: Box<dyn Speaker>,
     pub tray: Option<Tray>,
 }
 
@@ -818,6 +963,7 @@ impl Agent {
         let paths = Arc::new(Mutex::new(PathCache::open(PathCache::default_file())));
         // The client's side of the app: one desk, which the server's parts reach it through.
         let desk_tools = Arc::new(ToolSet::new(&config.desk_tools, &config.desk_mcp));
+        let voice = VoiceControl::new(layers.speaker, &config.voice);
         let desk = local_desk(
             &config,
             &sink,
@@ -826,6 +972,7 @@ impl Agent {
             &confirm,
             &automations,
             &desk_tools,
+            &voice,
         );
         let tools = Arc::new(ToolHost::new(&config.tools, &config.mcp).with_desk(desk.clone()));
         let (tree, report) = defaults::open(&flows_dir, &tools.catalog());
@@ -840,7 +987,7 @@ impl Agent {
         let flows = Arc::new(flows);
         // The server's side of the app, in this process: it runs the takes, and its timers.
         let (session, mut events) =
-            ServerSession::open(desk, flows.clone(), take_settings(&config));
+            ServerSession::open(desk, flows.clone(), config.take_settings(true));
         session.set_tools(Some(tools.clone()));
         // The tasks that run are kept in the data folder, and come back once a provider
         // answers.
@@ -888,6 +1035,8 @@ impl Agent {
             paths,
             sink,
             audio: layers.audio,
+            voice,
+            hotkeys_stale: false,
             hotkeys: std::collections::HashMap::new(),
             confirming: None,
             accelerators: std::collections::HashMap::new(),
@@ -908,6 +1057,7 @@ impl Agent {
             view.context_backend = agent.context.name();
             view.sink_backend = agent.sink.lock().expect("the sink lock").name();
             view.devices = agent.audio.devices();
+            view.speakers = agent.voice.devices();
             view.config = agent.config.clone();
             view.config_file = agent.config_file.clone();
             if !prepared.notes.is_empty() {
@@ -955,6 +1105,10 @@ impl Agent {
     pub async fn run(mut self, mut commands: mpsc::UnboundedReceiver<Command>) {
         let mut watch = tokio::time::interval(Duration::from_millis(500));
         watch.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // The voice ends by itself, once the last word was heard: nothing says so, so the
+        // agent looks.
+        let mut voice = tokio::time::interval(Duration::from_millis(150));
+        voice.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 command = commands.recv() => {
@@ -972,6 +1126,7 @@ impl Agent {
                         self.refresh_context(false);
                     }
                 }
+                _ = voice.tick() => self.follow_voice(),
             }
         }
     }
@@ -999,7 +1154,10 @@ impl Agent {
         let live = self.active.as_ref().is_some_and(|a| a.live);
         let running = self.session.view();
         let menu = MenuModel {
-            busy: self.active.is_some() || self.running.is_some(),
+            // The voice counts: Cancel stays enabled while an answer is read aloud.
+            busy: self.active.is_some()
+                || self.running.is_some()
+                || self.voice.speaking().is_some(),
             dictating: self.active.as_ref().is_some_and(|a| !a.live),
             live,
             entries: self.flows.entries(),
@@ -1043,7 +1201,13 @@ impl Agent {
                 }
                 Some(HotkeyAction::Confirm(yes)) => {
                     let yes = *yes;
-                    self.confirmed(yes);
+                    if !yes && self.confirming.is_none() {
+                        // With no question to answer, Escape is bound only while an answer
+                        // is read aloud.
+                        self.stop_voice();
+                    } else {
+                        self.confirmed(yes);
+                    }
                 }
                 Some(HotkeyAction::Record) => self.record_pressed(id),
                 Some(HotkeyAction::Automation { name }) => {
@@ -1280,7 +1444,7 @@ impl Agent {
                 }
                 if self.active.is_none() {
                     let state = match status {
-                        Status::Ready { .. } | Status::Remote { .. } => TrayState::Idle,
+                        Status::Ready { .. } | Status::Remote { .. } => self.resting(),
                         Status::Failed(_) => TrayState::Error,
                         Status::Loading | Status::WaitingForGpu { .. } => TrayState::Loading,
                         _ => TrayState::Offline,
@@ -1288,9 +1452,11 @@ impl Agent {
                     self.set_tray(state);
                 }
                 let served = served(self.runtime.routes().as_ref());
+                let voices = self.runtime.voices();
                 let mut view = self.view();
                 view.runtime = Some(status);
                 view.served = served;
+                view.voices = voices;
                 drop(view);
                 self.repaint();
             }
@@ -1407,6 +1573,10 @@ impl Agent {
         match command {
             MenuCommand::ToggleDictation => self.toggle(),
             MenuCommand::ToggleLiveDictation => self.toggle_live(),
+            // Nothing runs but the voice: it stops, and the answer stays in the bubble.
+            MenuCommand::CancelTake if self.active.is_none() && self.running.is_none() => {
+                self.stop_voice();
+            }
             MenuCommand::CancelTake => {
                 if let Some(active) = &self.active {
                     tracing::info!(take = active.id, "Take cancelled");
@@ -1563,19 +1733,32 @@ impl Agent {
     }
 
     /// A dictation hotkey went down: it starts a take, or stops the one it started in toggle
-    /// mode. Key repeats and other hotkeys while a take runs change nothing.
+    /// mode. Key repeats and other hotkeys while a take runs change nothing, except while that
+    /// take reads its answer aloud: the voice stops and the next take starts.
     fn hotkey_pressed(&mut self, id: u32, entry: Option<String>, live: bool, mode: HotkeyMode) {
-        match &self.active {
-            None => self.begin(entry, Some(id), live, mode == HotkeyMode::Hold, None),
-            Some(a) if a.source == Some(id) && !a.held && a.capture.is_some() => self.stop_take(),
-            Some(_) => {}
+        match press(self.active.as_ref(), id, |take| self.speaks(take)) {
+            Press::Start | Press::Interrupt => {
+                self.begin(entry, Some(id), live, mode == HotkeyMode::Hold, None)
+            }
+            Press::Finish => self.stop_take(),
+            Press::Ignore => {}
         }
+    }
+
+    /// Whether the take `take` is in its speaking stage, as its bubble has it.
+    fn speaks(&self, take: u64) -> bool {
+        self.view()
+            .feedback
+            .as_ref()
+            .is_some_and(|f| f.take == take && f.speaking_stage())
     }
 
     /// Starts or stops push-to-talk dictation from the menu.
     fn toggle(&mut self) {
         match &self.active {
             Some(active) if !active.live && active.capture.is_some() => self.stop_take(),
+            // A take that reads its answer aloud gives way, as at a hotkey's press.
+            Some(active) if self.speaks(active.id) => self.begin(None, None, false, false, None),
             Some(active) if active.live => self.notice("Live dictation is running"),
             Some(_) => self.notice("The last take is still being processed"),
             None => self.begin(None, None, false, false, None),
@@ -1585,10 +1768,67 @@ impl Agent {
     fn toggle_live(&mut self) {
         match &self.active {
             Some(active) if active.live && active.capture.is_some() => self.stop_take(),
+            Some(active) if self.speaks(active.id) => self.begin(None, None, true, false, None),
             Some(active) if active.live => {}
             Some(_) => self.notice("Finish the current take first"),
             None => self.begin(None, None, true, false, None),
         }
+    }
+
+    /// Stops the voice: Escape, the bubble's Stop and the tray's Cancel. A take that still
+    /// makes the speech ends by itself, with what was heard of it as spoken.
+    fn stop_voice(&mut self) {
+        if self.voice.stop() {
+            tracing::info!("The voice was stopped");
+        }
+        self.follow_voice();
+    }
+
+    /// Registers the hotkeys as the voice needs them now: with Escape while it speaks. Never
+    /// while a take listens: its hotkey is down, or is pressed again to end the listening, and
+    /// registering every hotkey anew under it could lose that release or bring a second press.
+    /// It waits for the microphone to close; Escape bound a little longer stops nothing.
+    fn rebind(&mut self) {
+        if listens(self.active.as_ref()) {
+            self.hotkeys_stale = true;
+            return;
+        }
+        self.hotkeys_stale = false;
+        if let Some(tray) = &self.tray {
+            tray.hotkeys(self.bindings());
+        }
+    }
+
+    /// The microphone closed: the hotkeys the voice left to register are registered now.
+    fn microphone_closed(&mut self) {
+        if self.hotkeys_stale {
+            self.rebind();
+        }
+    }
+
+    /// Follows the voice as it starts and ends: the bubble's Stop, the Escape key, the
+    /// tray's Cancel and its icon. It changes nothing while the voice is as it was.
+    fn follow_voice(&mut self) {
+        let Some(speaking) = self.voice.changed() else {
+            return;
+        };
+        let shown = {
+            let mut view = self.view();
+            view.speaking = speaking;
+            view.tray
+        };
+        self.rebind();
+        // The icon leaves speaking with the last word. A take that goes on after its voice
+        // was stopped is at work.
+        if speaking.is_none() && matches!(shown, TrayState::Speaking { .. }) {
+            self.set_tray(if self.active.is_some() {
+                TrayState::Thinking { frame: 0 }
+            } else {
+                self.resting()
+            });
+        }
+        self.publish_menu();
+        self.repaint();
     }
 
     fn notice(&mut self, message: &str) {
@@ -2128,21 +2368,13 @@ impl Agent {
         walk::preview(&self.flows, snapshot, entry)
     }
 
-    /// Every hotkey the settings define, plus Enter and Esc while a tool call waits.
+    /// The hotkeys to register now: the settings', and Enter and Escape as they apply.
     fn bindings(&self) -> Vec<Binding> {
-        let mut bindings = Binding::from_settings(&self.config.dictation);
-        bindings.extend(Binding::for_automations(&self.config.automation));
-        if self.confirming.is_some() {
-            bindings.push(Binding {
-                accelerator: "Enter".into(),
-                action: HotkeyAction::Confirm(true),
-            });
-            bindings.push(Binding {
-                accelerator: "Escape".into(),
-                action: HotkeyAction::Confirm(false),
-            });
-        }
-        bindings
+        bindings(
+            &self.config,
+            self.confirming.is_some(),
+            self.voice.speaking().is_some(),
+        )
     }
 
     /// Shows a tool call in the bubble and waits for the user.
@@ -2208,6 +2440,10 @@ impl Agent {
 
     /// The bubble's answer buttons.
     fn bubble(&mut self, action: BubbleAction) {
+        if action == BubbleAction::Stop {
+            self.stop_voice();
+            return;
+        }
         if let BubbleAction::Copy { raw } = action {
             let Some(output) = self
                 .view()
@@ -2235,7 +2471,7 @@ impl Agent {
         };
         self.repaint();
         match action {
-            BubbleAction::Close | BubbleAction::Copy { .. } => {}
+            BubbleAction::Close | BubbleAction::Copy { .. } | BubbleAction::Stop => {}
             BubbleAction::Insert => {
                 let sink = self.sink.clone();
                 let view = self.view.clone();
@@ -2394,6 +2630,9 @@ impl Agent {
         let privacy_changed = config.privacy != self.config.privacy;
         self.config = config;
         crate::config::log_api(self.config.log_api);
+        // Turned off, the voice stops what it says; another device plays the next answer.
+        self.voice.configure(&self.config.voice);
+        self.follow_voice();
         self.automations
             .set_settings(self.config.automation.clone());
         if hotkeys_changed && let Some(tray) = &self.tray {
@@ -2433,9 +2672,10 @@ impl Agent {
             &self.confirm,
             &self.automations,
             &self.desk_tools,
+            &self.voice,
         );
         self.session.set_desk(desk.clone());
-        self.session.set_settings(take_settings(&self.config));
+        self.session.set_settings(self.config.take_settings(true));
         if tools_changed || flows_changed || library_changed || privacy_changed {
             self.tools =
                 Arc::new(ToolHost::new(&self.config.tools, &self.config.mcp).with_desk(desk));
@@ -2601,7 +2841,9 @@ impl Agent {
     }
 
     /// Starts a take: push-to-talk, or live dictation when `live`. `source` is the hotkey that
-    /// started it; when `held`, its release ends the take.
+    /// started it; when `held`, its release ends the take. Over a take that reads its answer
+    /// aloud, the voice stops and the microphone opens at once, and this take's work starts
+    /// when that take has ended: the desk refuses the rest of its speech, which ends it.
     fn begin(
         &mut self,
         entry: Option<String>,
@@ -2621,10 +2863,12 @@ impl Agent {
         // Read the context first, before the user's focus can move.
         let context = self.snapshot().unwrap_or_default();
         let (audio, audio_events) = mpsc::unbounded_channel();
-        let capture = match self
-            .audio
-            .start(self.config.dictation.microphone.as_deref(), audio)
-        {
+        // The voice stops before the microphone opens, and is silent while it is open.
+        let capture = match self.voice.listen(
+            self.audio.as_mut(),
+            self.config.dictation.microphone.as_deref(),
+            audio,
+        ) {
             Ok(capture) => capture,
             Err(e) => {
                 self.notice(&format!("Cannot open the microphone: {e}"));
@@ -2632,6 +2876,9 @@ impl Agent {
                 return;
             }
         };
+        // The take this one starts over, which was reading its answer aloud: it goes on by
+        // itself to its end.
+        let before = self.active.take().map(|earlier| earlier.id);
         let (finish, finished) = oneshot::channel();
         let start = TakeStart {
             id,
@@ -2642,7 +2889,7 @@ impl Agent {
         // The bubble starts with this take alone. A waiting task's conversation joins it only
         // once the words turn out to be for that task: until then they may be dictation, and
         // earlier turns above them would read as part of what is being said.
-        let joins = self.thread_task.zip(self.thread.clone());
+        let joins: Joins = Arc::new(Mutex::new(self.thread_task.zip(self.thread.clone())));
         {
             let mut view = self.view();
             view.dictating = true;
@@ -2676,6 +2923,8 @@ impl Agent {
             finish: Some(finish),
             task: None,
             note: false,
+            after: None,
+            joins: joins.clone(),
         });
         // Keep the held hotkey's repeats out of the focused application while the take runs.
         if held && let Some(accelerator) = source.and_then(|id| self.accelerators.get(&id)) {
@@ -2687,7 +2936,7 @@ impl Agent {
         let updates = self.watch_updates(id, joins);
         let commands = self.commands.clone();
         let session = self.session.clone();
-        let task = tokio::spawn(async move {
+        let work = async move {
             let trace = if live {
                 session
                     .live(start, audio_events, finished, &updates, flows)
@@ -2698,19 +2947,15 @@ impl Agent {
                     .await
             };
             let _ = commands.send(Command::TakeFinished(Box::new(trace)));
-        });
+        };
         if let Some(active) = &mut self.active {
-            active.task = Some(task);
+            active.work(before, Box::pin(work));
         }
         self.repaint();
     }
 
     /// Shows a take's progress (or a timer's) in the tray and the bubble.
-    fn watch_updates(
-        &self,
-        id: u64,
-        joins: Option<(u64, Feedback)>,
-    ) -> mpsc::UnboundedSender<Update> {
+    fn watch_updates(&self, id: u64, joins: Joins) -> mpsc::UnboundedSender<Update> {
         let (updates, mut received) = mpsc::unbounded_channel();
         let view = self.view.clone();
         let mut tray = self.tray.clone();
@@ -2749,7 +2994,9 @@ impl Agent {
                         feedback.apply(&update);
                         // The words are for the task whose conversation waited: its earlier
                         // turns go above this one.
-                        if let (Update::Task { instance }, Some((task, thread))) = (&update, &joins)
+                        if let Update::Task { instance } = &update
+                            && let Some((task, thread)) =
+                                joins.lock().expect("the conversation lock").as_ref()
                             && instance == task
                         {
                             feedback.join(thread);
@@ -2773,6 +3020,8 @@ impl Agent {
                         }
                         Update::Transcribing => Some(TrayState::Transcribing { frame: 0 }),
                         Update::Thinking => Some(TrayState::Thinking { frame: 0 }),
+                        // The desk plays the answer's first words.
+                        Update::Speaking => Some(TrayState::Speaking { frame: 0 }),
                         Update::Stage(_)
                         | Update::Progress(_)
                         | Update::StageDone { .. }
@@ -2804,7 +3053,7 @@ impl Agent {
     /// user's answer to an unsure decision. Its bubble shows `status` while it runs, unless
     /// another take is in the way.
     fn own_take(&mut self, take: u64, instance: u64, status: String) {
-        let updates = self.watch_updates(take, None);
+        let updates = self.watch_updates(take, Joins::default());
         self.timer_updates.insert(take, updates);
         if self.active.is_none() {
             // The take of the task the conversation is of joins it.
@@ -2857,13 +3106,12 @@ impl Agent {
     fn stop_take(&mut self) {
         crate::hold::release();
         if let Some(active) = &mut self.active {
-            if let Some(capture) = active.capture.take() {
-                capture.stop();
-            }
+            self.voice.close(active.capture.take());
             if let Some(finish) = active.finish.take() {
                 let _ = finish.send(());
             }
         }
+        self.microphone_closed();
         self.view().dictating = false;
         self.set_tray(TrayState::Transcribing { frame: 0 });
         self.publish_menu();
@@ -2890,17 +3138,25 @@ impl Agent {
         self.confirmed(false);
         self.view().feedback = None;
         if let Some(mut active) = self.active.take() {
-            if let Some(capture) = active.capture.take() {
-                capture.stop();
-            }
+            self.voice.close(active.capture.take());
             if let Some(task) = active.task.take() {
                 task.abort();
             }
         }
+        // What the take was reading aloud stops with it.
+        self.voice.stop();
+        self.microphone_closed();
+        self.follow_voice();
     }
 
     fn finished(&mut self, trace: Trace) {
-        crate::hold::release();
+        let take = trace.take;
+        // A take that ends while another listens (a timer's, or one whose voice the next
+        // take's start stopped) leaves that take's hotkey, icon and bubble alone.
+        let own = self.active.as_ref().is_none_or(|a| a.id == take);
+        if own {
+            crate::hold::release();
+        }
         self.confirmed(false);
         save_trace(&trace);
         // What jevons typed during a recording is a step of it.
@@ -2917,11 +3173,10 @@ impl Agent {
         }
         if self.active.as_ref().is_some_and(|a| a.id == trace.take) {
             // The source may have ended by itself (a device error).
-            if let Some(active) = self.active.take()
-                && let Some(capture) = active.capture
-            {
-                capture.stop();
+            if let Some(active) = self.active.take() {
+                self.voice.close(active.capture);
             }
+            self.microphone_closed();
         }
         let failed = trace.error.is_some();
         // A task that still waits keeps its conversation in the bubble, for the next turn. The
@@ -2937,7 +3192,9 @@ impl Agent {
             .map(Feedback::conversation);
         let conversation = {
             let mut view = self.view();
-            view.dictating = false;
+            if own {
+                view.dictating = false;
+            }
             view.notice = trace.error.clone().or_else(|| match &trace.delivery {
                 Some(DeliveryOutcome::OnClipboard { reason }) => {
                     Some(format!("The text is on the clipboard: {reason}"))
@@ -2961,15 +3218,7 @@ impl Agent {
                     feedback.task = false;
                     feedback.turns.clear();
                 }
-                // Long enough to read the outcome, errors longer; an answer stays until Close
-                // (or the next take), since reading it may take a while, and so does the
-                // conversation of a task that waits.
-                let shown = match (waits, failed, feedback.answer) {
-                    (true, _, _) | (false, false, true) => None,
-                    (false, true, _) => Some(8),
-                    (false, false, false) => Some(4),
-                };
-                if let Some(seconds) = shown {
+                if let Some(seconds) = hides_after(waits, failed, feedback.answer) {
                     let commands = self.commands.clone();
                     let take = trace.take;
                     tokio::spawn(async move {
@@ -3005,22 +3254,29 @@ impl Agent {
             self.thread = None;
             self.thread_task = None;
         }
-        self.set_tray(if failed {
-            TrayState::Error
-        } else {
-            self.resting()
-        });
+        if own {
+            self.set_tray(if failed {
+                TrayState::Error
+            } else {
+                self.resting()
+            });
+        } else if let Some(active) = &mut self.active
+            && active.waits_for(take)
+        {
+            // The take whose voice this one's start stopped has ended. This one joins the
+            // conversation as that take left it, and its work starts.
+            *active.joins.lock().expect("the conversation lock") =
+                self.thread_task.zip(self.thread.clone());
+            active.ended(take);
+        }
         self.publish_menu();
         self.repaint();
     }
 
-    /// The tray state between takes.
+    /// The tray state between takes. It stays on speaking after a take ends, while its
+    /// answer is still to be heard.
     fn resting(&self) -> TrayState {
-        if self.recording.is_some() {
-            TrayState::Recording
-        } else {
-            TrayState::Idle
-        }
+        resting(self.recording.is_some(), self.voice.speaking().is_some())
     }
 
     /// Shows a message in the bubble for a few seconds, unless a take has it.
@@ -3547,10 +3803,11 @@ impl Agent {
             return;
         }
         let (audio, audio_events) = mpsc::unbounded_channel();
-        let capture = match self
-            .audio
-            .start(self.config.dictation.microphone.as_deref(), audio)
-        {
+        let capture = match self.voice.listen(
+            self.audio.as_mut(),
+            self.config.dictation.microphone.as_deref(),
+            audio,
+        ) {
             Ok(capture) => capture,
             Err(e) => {
                 self.notice(&format!("Cannot open the microphone: {e}"));
@@ -3590,6 +3847,8 @@ impl Agent {
             finish: Some(finish),
             task: None,
             note: true,
+            after: None,
+            joins: Joins::default(),
         });
         if let Some(accelerator) = self.accelerators.get(&source) {
             crate::hold::hold(accelerator);
@@ -3617,11 +3876,10 @@ impl Agent {
 
     fn recording_note(&mut self, said: Result<String, String>) {
         crate::hold::release();
-        if let Some(active) = self.active.take()
-            && let Some(capture) = active.capture
-        {
-            capture.stop();
+        if let Some(active) = self.active.take() {
+            self.voice.close(active.capture);
         }
+        self.microphone_closed();
         match (said, &self.recording) {
             (Ok(text), Some(recording)) => {
                 let first = {
@@ -3664,6 +3922,7 @@ fn served(routes: Option<&Routes>) -> BTreeMap<&'static str, String> {
         (Capability::Realtime, &routes.realtime),
         (Capability::Decision, &routes.decision),
         (Capability::Generation, &routes.generation),
+        (Capability::Voice, &routes.voice),
     ]
     .into_iter()
     .filter_map(|(capability, route)| Some((capability.key(), route.as_ref()?.name())))
@@ -3704,8 +3963,9 @@ impl Planner for RoutePlanner {
 }
 
 /// The client's desk over this machine's layers: it types through the sink, reads the
-/// interface within the privacy settings, asks in the bubble and runs the library's
-/// automations.
+/// interface within the privacy settings, asks in the bubble, runs the library's automations
+/// and reads answers aloud through the app's voice.
+#[allow(clippy::too_many_arguments)]
 fn local_desk(
     config: &DesktopConfig,
     sink: &Arc<Mutex<Box<dyn TextSink>>>,
@@ -3714,6 +3974,7 @@ fn local_desk(
     confirm: &mpsc::UnboundedSender<Confirmation>,
     automations: &Arc<AutomationHost>,
     tools: &Arc<ToolSet>,
+    voice: &VoiceControl,
 ) -> Arc<dyn Desk> {
     let privacy = &config.privacy;
     let reader = Reader::new(inspector.clone(), privacy.clone());
@@ -3725,18 +3986,9 @@ fn local_desk(
             .with_looks(Arc::new(looks))
             .with_confirmer(Arc::new(ChannelConfirmer::new(confirm.clone())))
             .with_automations(automations.clone())
-            .with_tools(tools.clone()),
+            .with_tools(tools.clone())
+            .with_speaker(voice.desk()),
     )
-}
-
-/// What a take runs with, of the client's settings.
-fn take_settings(config: &DesktopConfig) -> pipeline::Settings {
-    pipeline::Settings {
-        language: config.dictation.language.clone(),
-        decide: config.dictation.decide,
-        max_output_tokens: config.dictation.max_output_tokens,
-        ..pipeline::Settings::default()
-    }
 }
 
 fn commit_in_background(repository: Option<Repository>, paths: Vec<PathBuf>, message: String) {
@@ -3907,6 +4159,222 @@ pub fn open_folder(dir: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::VoiceSettings;
+    use jevons_desktop_core::fake::RecordingSpeaker;
+    use jevons_desktop_protocol::desk::Speech;
+    use jevons_desktop_server::pipeline::Stage;
+
+    /// A microphone that is open.
+    struct Listening;
+
+    impl CaptureHandle for Listening {
+        fn stop(self: Box<Self>) {}
+    }
+
+    /// The take `id` as the agent holds it: started by `source`, `held` or pressed, and
+    /// `listening` or past it.
+    fn running(id: u64, source: Option<u32>, held: bool, listening: bool) -> Active {
+        Active {
+            id,
+            live: false,
+            source,
+            held,
+            capture: listening.then(|| Box::new(Listening) as Box<dyn CaptureHandle>),
+            finish: None,
+            task: None,
+            note: false,
+            after: None,
+            joins: Joins::default(),
+        }
+    }
+
+    #[test]
+    fn a_press_while_a_take_reads_its_answer_aloud_starts_the_next_take() {
+        let silent = |_| false;
+        // No take runs: a dictation hotkey starts one.
+        assert_eq!(press(None, 1, silent), Press::Start);
+        // A take that listens: its own hotkey ends the listening in toggle mode, and another
+        // hotkey or a held key's repeat changes nothing.
+        let toggled = running(7, Some(1), false, true);
+        assert_eq!(press(Some(&toggled), 1, silent), Press::Finish);
+        assert_eq!(press(Some(&toggled), 2, silent), Press::Ignore);
+        let held = running(7, Some(1), true, true);
+        assert_eq!(press(Some(&held), 1, silent), Press::Ignore);
+        // Transcribing, deciding or writing: a press does nothing.
+        let working = running(7, Some(1), false, false);
+        assert_eq!(press(Some(&working), 1, silent), Press::Ignore);
+        // In its speaking stage the take gives way, to any dictation hotkey.
+        let speaks = |take| take == 7;
+        assert_eq!(press(Some(&working), 1, speaks), Press::Interrupt);
+        assert_eq!(press(Some(&working), 2, speaks), Press::Interrupt);
+        // The take that started over it listens: its hotkey still ends that.
+        let next = running(8, Some(1), false, true);
+        assert_eq!(press(Some(&next), 1, speaks), Press::Finish);
+        assert_eq!(press(Some(&next), 2, speaks), Press::Ignore);
+    }
+
+    #[test]
+    fn hotkeys_are_never_registered_anew_while_a_take_listens() {
+        // The voice stops when a take starts, which unbinds Escape: with the take's hotkey
+        // held, or about to be pressed again, that waits for the microphone to close.
+        assert!(listens(Some(&running(1, Some(1), true, true))));
+        assert!(listens(Some(&running(1, Some(1), false, true))));
+        // Once the take is past listening, or with none, they are registered at once.
+        assert!(!listens(Some(&running(1, Some(1), true, false))));
+        assert!(!listens(None));
+    }
+
+    #[tokio::test]
+    async fn a_take_started_over_one_that_speaks_works_once_that_one_has_ended() {
+        let (done, mut worked) = mpsc::unbounded_channel();
+        let work = |take: u64| -> BoxFuture<'static, ()> {
+            let done = done.clone();
+            Box::pin(async move {
+                let _ = done.send(take);
+            })
+        };
+        // With no take before it, a take's work starts at once.
+        let mut first = running(1, Some(1), true, true);
+        first.work(None, work(1));
+        assert_eq!(worked.recv().await, Some(1));
+        // Take 2 started while take 1 read its answer aloud: its microphone is open, and its
+        // work waits for take 1 to end.
+        let mut second = running(2, Some(1), true, true);
+        second.work(Some(1), work(2));
+        tokio::task::yield_now().await;
+        assert!(worked.try_recv().is_err() && second.task.is_none());
+        // Another take that ends meanwhile, such as a timer's, starts nothing.
+        assert!(!second.ended(9));
+        tokio::task::yield_now().await;
+        assert!(worked.try_recv().is_err());
+        // Take 1 ends, as spoken: take 2's work starts, once.
+        assert!(second.ended(1));
+        assert_eq!(worked.recv().await, Some(2));
+        assert!(!second.ended(1));
+    }
+
+    #[test]
+    fn escape_is_bound_only_while_an_answer_is_read_aloud_or_a_question_waits() {
+        let config = DesktopConfig::default();
+        let answers = |asking: bool, speaking: bool| -> Vec<(String, bool)> {
+            bindings(&config, asking, speaking)
+                .into_iter()
+                .filter_map(|binding| match binding.action {
+                    HotkeyAction::Confirm(yes) => Some((binding.accelerator, yes)),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert!(answers(false, false).is_empty());
+        // While jevons speaks, Escape alone: it stops the voice.
+        assert_eq!(answers(false, true), [("Escape".to_string(), false)]);
+        // A question takes Enter too, and Escape is bound once whatever plays.
+        let question = [("Enter".to_string(), true), ("Escape".to_string(), false)];
+        assert_eq!(answers(true, false), question);
+        assert_eq!(answers(true, true), question);
+        // The settings' hotkeys are bound all along.
+        let dictates = |speaking: bool| {
+            bindings(&config, false, speaking)
+                .iter()
+                .any(|b| b.action == HotkeyAction::Dictate { entry: None })
+        };
+        assert!(dictates(false) && dictates(true));
+    }
+
+    #[tokio::test]
+    async fn the_tray_stays_on_speaking_until_the_answer_was_heard() {
+        let speaker = RecordingSpeaker::new();
+        let voice = VoiceControl::new(Box::new(speaker.clone()), &VoiceSettings::default());
+        let desk = LocalDesk::default().with_speaker(voice.desk());
+        let between_takes = |recording: bool| resting(recording, voice.speaking().is_some());
+        assert_eq!(between_takes(false), TrayState::Idle);
+        // A take ends once all its speech is queued, well before the last word plays.
+        let answer = Speech {
+            take: 1,
+            samples: vec![1; 8],
+            last: true,
+        };
+        assert_eq!(desk.speak(answer).await, Ok(true));
+        assert_eq!(between_takes(false), TrayState::Speaking { frame: 0 });
+        // A recording shows whatever else happens between takes.
+        assert_eq!(between_takes(true), TrayState::Recording);
+        speaker.hear();
+        assert_eq!(between_takes(false), TrayState::Idle);
+        // Stopped, it is over at once.
+        let more = Speech {
+            take: 2,
+            samples: vec![1; 8],
+            last: false,
+        };
+        assert_eq!(desk.speak(more).await, Ok(true));
+        assert_eq!(between_takes(false), TrayState::Speaking { frame: 0 });
+        assert!(voice.stop());
+        assert_eq!(between_takes(false), TrayState::Idle);
+    }
+
+    #[test]
+    fn a_spoken_answer_stays_in_the_bubble_as_a_shown_one_does() {
+        // The take as the server reports it: the answer streams in, then its speech is made.
+        let mut feedback = Feedback {
+            take: 3,
+            ..Feedback::default()
+        };
+        feedback.apply(&Update::Answering);
+        feedback.apply(&Update::Output("It is five o'clock.".into()));
+        assert!(feedback.answer && !feedback.speaking_stage());
+        feedback.apply(&Update::Stage(Stage::new(StageKind::Speaking, "voice")));
+        assert_eq!(feedback.status, "Speaking…");
+        assert!(feedback.speaking_stage() && feedback.animating());
+        feedback.apply(&Update::Speaking);
+        assert!(feedback.speaking_stage());
+        assert_eq!(feedback.output, "It is five o'clock.");
+        // A stage under it, such as a tool the take calls next, is no speaking stage.
+        feedback.apply(&Update::StageDone {
+            detail: "2.1 s".into(),
+            chosen: None,
+            ok: true,
+        });
+        assert!(!feedback.speaking_stage());
+        let mut trace = Trace::new(&TakeStart {
+            id: 3,
+            context: ContextSnapshot::default(),
+            entry: Some("ask".into()),
+        });
+        trace.transcript = "What time is it".into();
+        trace.output = "It is five o'clock.".into();
+        trace.delivery = Some(DeliveryOutcome::Spoken);
+        feedback.finish(&trace);
+        assert!(feedback.answer && feedback.done && !feedback.speaking_stage());
+        assert_eq!(feedback.status, "Answer");
+        assert_eq!(feedback.latest_output(), "It is five o'clock.");
+        // It stays until it is closed or the next take starts, with Copy and Insert, where
+        // text typed into the application leaves after four seconds.
+        assert_eq!(hides_after(false, false, feedback.answer), None);
+        assert_eq!(hides_after(false, false, false), Some(4));
+        assert_eq!(hides_after(false, true, true), Some(8));
+        assert_eq!(hides_after(true, true, false), None);
+        // A take that ended while its speech was still being made closes that stage.
+        let mut cut = Feedback::default();
+        cut.apply(&Update::Stage(Stage::new(StageKind::Speaking, "voice")));
+        cut.finish(&trace);
+        assert!(!cut.speaking_stage());
+    }
+
+    #[test]
+    fn the_served_list_names_what_speaks() {
+        use jevons_desktop_server::client::{Client, Route};
+        assert!(served(None).is_empty());
+        let client = Client::new("http://127.0.0.1:1", None);
+        let routes = Routes {
+            generation: Some(Route::ours(client.clone(), "embedded", "gemma")),
+            voice: Some(Route::ours(client, "box", "qwen3-tts-12hz-0.6b-base")),
+            ..Routes::default()
+        };
+        let served = served(Some(&routes));
+        assert_eq!(served["voice"], "box/qwen3-tts-12hz-0.6b-base");
+        assert_eq!(served["generation"], "embedded/gemma");
+        assert!(!served.contains_key("speech"));
+    }
 
     #[test]
     fn a_recording_from_the_menu_asks_first_and_says_how_it_ends() {

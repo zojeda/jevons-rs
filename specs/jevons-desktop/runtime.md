@@ -18,12 +18,16 @@ For the capabilities routed to the embedded provider, the model selections, with
 service filled from the downloaded catalog (`models.toml` included), become a jevons-rs settings
 file: one model entry per distinct model path and projector, so services on the same model share
 one engine, and the speech service serves Realtime as `[models] realtime` says when Realtime is
-routed here. A capability routed elsewhere loads no model: with decisions and generation on
-other providers, only the speech model is loaded, and with every capability elsewhere, none.
+routed here. The voice model, when one is selected or downloaded, becomes `[services.voice]`
+with its model alone: the runtime's own default voice and limits apply. A capability routed
+elsewhere loads no model: with decisions and generation on other providers, only the speech and
+voice models are loaded, and with every capability elsewhere, none. A run that needs one
+capability alone loads only that capability's model: `--say` loads the voice model and no other
+([cli](cli.md) R18).
 `[models] runtime_config` loads that jevons-rs settings file instead, as it is, relative to the
 desktop settings file when it is relative.
 
-Tests: `services_on_the_same_model_share_one_model_entry`, `generated_settings_are_valid_for_the_runtime`, `only_the_models_of_capabilities_routed_here_are_loaded`
+Tests: `services_on_the_same_model_share_one_model_entry`, `generated_settings_are_valid_for_the_runtime`, `only_the_models_of_capabilities_routed_here_are_loaded`, `the_voice_model_is_loaded_when_the_voice_is_routed_here`
 
 ### R2 No model means no runtime
 
@@ -89,17 +93,23 @@ Tests: none yet
 
 ### R10 Each capability is served by the provider its route names
 
-The runtime builds one route per capability from the settings. A route asks for its own `model`,
-else the one its provider names for that capability: the embedded provider names the models it
-loaded, and a jevons server the ones its `/health` lists (it is taken to stream speech). A
-provider of another kind is not asked what it serves. Each route carries its provider's decision
-profile, with what the provider sets of it. A capability whose provider names no model for it is
-not served; Realtime is not served by an embedded provider that does not stream.
+The runtime builds one route per capability from the settings, the voice among them. A route
+asks for its own `model`, else the one its provider names for that capability: the embedded
+provider names the models it loaded, and a jevons server the ones its `/health` lists (it is
+taken to stream speech). A provider of another kind is not asked what it serves. Each route
+carries its provider's decision profile, with what the provider sets of it, and the voice route
+the voice to speak in when the settings name one. A capability whose provider names no model
+for it is not served; Realtime is not served by an embedded provider that does not stream. With
+no voice served, a leaf that asks for voice answers in the bubble
+([flows](../jevons-desktop-server/flows.md) R51). A voice served alone counts as something
+served. The embedded provider also says which voices its voice model lists and which one a
+request that names none gets, for the Settings tab to choose among ([ui](ui.md) R36); the
+other providers are not asked, and their voice is typed.
 
 With no embedded model loaded and every capability served elsewhere, the status reads "Using
 <name> (<url>), …".
 
-Tests: `each_route_takes_its_own_model_or_the_one_its_provider_names`
+Tests: `each_route_takes_its_own_model_or_the_one_its_provider_names`, `the_voices_listed_are_those_of_the_provider_that_serves_the_voice`
 
 ### R11 A provider that fails leaves the others running
 
@@ -108,7 +118,14 @@ served. A jevons server that cannot be reached, or embedded models that do not l
 runtime's status with "<name> (<url>): <error>" or the loader's message, and the capabilities on
 the providers that do answer are still served.
 
-Tests: none yet
+The voice model is the one embedded model that may fail by itself. It loads last. When it does
+not load, the speech, decision and generation models stay loaded and served, no voice is
+served, and the status fails with "The voice model did not load, so nothing serves it:
+<error>", which the Settings tab's Runtime card and the status bar show. The same settings
+applied again load nothing anew and say so again. Any other embedded model that fails leaves
+none of them loaded, as before.
+
+Tests: `a_voice_model_that_does_not_load_leaves_the_runtime_up_and_says_why`
 
 ### R12 The process ends after the models are unloaded
 

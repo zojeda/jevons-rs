@@ -2,3 +2,4 @@
 
 pub mod diffusion;
 pub mod speech;
+pub mod voice;

@@ -33,6 +33,43 @@ def transcribe(url, headers):
     assert body["segments"] and 15 < body["duration"] < 17, body
 
 
+def speak(url, headers, health):
+    """Speaks the request fixture through the speech route and checks the WAV stream."""
+    voice = health["voice"]
+    assert voice["default_voice"] in voice["voices"], voice
+    example = Path(__file__).resolve().parents[1] / "examples/audio-speech.json"
+    body = json.loads(example.read_text())
+    body["model"] = health["services"]["voice"]
+    body["voice"] = voice["default_voice"]
+
+    def post(body):
+        request = Request(url + "/v1/audio/speech", data=json.dumps(body).encode(), headers=headers)
+        try:
+            response = urlopen(request, timeout=180)
+        except HTTPError as error:
+            response = error
+        with response:
+            assert response.headers.get("x-typesafe-request-id"), "Missing request ID"
+            return response.status, response.headers.get("Content-Type"), response.read()
+
+    status, content_type, audio = post(body)
+    assert status == 200 and content_type == "audio/wav", (status, content_type)
+    assert audio[:4] == b"RIFF" and audio[8:12] == b"WAVE", audio[:12]
+    # A streamed header: the length was unknown when it left.
+    assert audio[4:8] == audio[40:44] == b"\xff\xff\xff\xff", audio[:44]
+    rate = int.from_bytes(audio[24:28], "little")
+    assert rate == voice["sample_rate"], (rate, voice)
+    seconds = (len(audio) - 44) / 2 / rate
+    assert len(audio) % 2 == 0 and 2 < seconds < 60, seconds
+    status, content_type, pcm = post(dict(body, input="Hola.", response_format="pcm"))
+    assert status == 200 and content_type == "audio/pcm", (status, content_type)
+    assert pcm and len(pcm) % 2 == 0, len(pcm)
+    status, _, error = post(dict(body, voice="nobody"))
+    assert status == 400 and json.loads(error)["error"]["param"] == "voice", error
+    status, _, error = post(dict(body, instructions="Speak cheerfully."))
+    assert status == 400 and json.loads(error)["error"]["code"] == "unsupported_parameter", error
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:8080")
@@ -60,8 +97,13 @@ def main():
     names = {model["name"] for model in models["models"]}
     if "parakeet-latest" in names:
         transcribe(args.url, headers)
+    status, health = call("/health")
+    assert status == 200, health
+    if health["services"]["voice"]:
+        assert health["services"]["voice"] in names, names
+        speak(args.url, headers, health)
     if "jev-latest" not in names:
-        print("Speech model OK; no language model is loaded")
+        print("Speech and voice routes OK; no language model is loaded")
         return
     example = Path(__file__).resolve().parents[1] / "examples/system-one.json"
     request = json.loads(example.read_text())

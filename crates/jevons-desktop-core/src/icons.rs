@@ -3,7 +3,8 @@
 //! `crates/jevons-desktop/assets/jevons.png` so it reads at tray size. It glows cyan when ready,
 //! blue while the models load, amber while GPU kernels are being tuned, grey when no model is
 //! loaded and red after a failed take. While listening the tray shows a waveform that follows the microphone level, and
-//! while the take is transcribed or generated, advancing dots (both ported from bot-rs).
+//! while the take is transcribed or generated, advancing dots (both ported from bot-rs). While
+//! an answer is read aloud it shows a waveform in the alien's own cyan that moves by itself.
 
 use crate::levels::MAX_LEVEL;
 use std::time::Duration;
@@ -38,6 +39,10 @@ pub enum TrayState {
     Tuning,
     /// A demonstration is being recorded.
     Recording,
+    /// An answer is being read aloud.
+    Speaking {
+        frame: u8,
+    },
 }
 
 impl TrayState {
@@ -59,12 +64,16 @@ impl TrayState {
                 "jevons: recording what you do (hold the record hotkey to say what the task is; \
                  stop or discard it from the tray menu)"
             }
+            Self::Speaking { .. } => "jevons: speaking…",
         }
     }
 
     /// Whether the icon animates on a timer (listening animates with the audio level).
     pub fn animates(self) -> bool {
-        matches!(self, Self::Transcribing { .. } | Self::Thinking { .. })
+        matches!(
+            self,
+            Self::Transcribing { .. } | Self::Thinking { .. } | Self::Speaking { .. }
+        )
     }
 
     /// The same state one animation frame later.
@@ -74,6 +83,9 @@ impl TrayState {
                 frame: (frame + 1) % 3,
             },
             Self::Thinking { frame } => Self::Thinking {
+                frame: (frame + 1) % 3,
+            },
+            Self::Speaking { frame } => Self::Speaking {
                 frame: (frame + 1) % 3,
             },
             other => other,
@@ -104,6 +116,7 @@ pub fn frames() -> Vec<(TrayState, Vec<u8>)> {
         )
     }));
     frames.push((TrayState::Recording, alien(SIZE, MAGENTA)));
+    frames.extend((0..3).map(|frame| (TrayState::Speaking { frame }, voice(frame))));
     frames
 }
 
@@ -121,6 +134,7 @@ pub fn frame_index(state: TrayState) -> usize {
         TrayState::Transcribing { frame } => transcribing + usize::from(frame % 3),
         TrayState::Thinking { frame } => transcribing + 3 + usize::from(frame % 3),
         TrayState::Recording => transcribing + 6,
+        TrayState::Speaking { frame } => transcribing + 7 + usize::from(frame % 3),
     }
 }
 
@@ -256,13 +270,25 @@ fn paint(x: f32, y: f32, detailed: bool) -> Paint {
 }
 
 fn wave(level: u8) -> Vec<u8> {
+    let level = usize::from(level.min(MAX_LEVEL));
+    let halves = [5, 9, 13, 9, 5].map(|tallest| 2 + level * tallest / usize::from(MAX_LEVEL));
+    bars(halves, [190, 255, 176, 255])
+}
+
+/// The voice's waveform: the alien's cyan, with a crest that moves from frame to frame.
+fn voice(frame: u8) -> Vec<u8> {
+    const SHAPES: [[usize; 5]; 3] = [[4, 9, 13, 9, 4], [9, 13, 6, 13, 9], [13, 5, 10, 5, 13]];
+    let [r, g, b] = CYAN.map(|c| c as u8);
+    bars(SHAPES[usize::from(frame % 3)], [r, g, b, 255])
+}
+
+/// Five bars around the middle line, each `half` pixels up and down.
+fn bars(halves: [usize; 5], color: [u8; 4]) -> Vec<u8> {
     let mut pixels = vec![0; (SIZE * SIZE * 4) as usize];
-    for i in 0..5 {
-        let half =
-            2 + (usize::from(level.min(MAX_LEVEL)) * [5, 9, 13, 9, 5][i]) / usize::from(MAX_LEVEL);
+    for (i, half) in halves.into_iter().enumerate() {
         for y in 16 - half..16 + half {
             for x in 3 + i * 6..6 + i * 6 {
-                put(&mut pixels, x, y, [190, 255, 176, 255]);
+                put(&mut pixels, x, y, color);
             }
         }
     }
@@ -337,6 +363,27 @@ mod tests {
     fn louder_audio_draws_taller_bars() {
         let lit = |p: &[u8]| p.chunks(4).filter(|c| c[3] > 0).count();
         assert!(lit(&wave(16)) > lit(&wave(4)));
+    }
+
+    #[test]
+    fn speaking_shows_a_cyan_waveform_that_moves_by_itself() {
+        let frames = frames();
+        let shown: Vec<&Vec<u8>> = (0..3)
+            .map(|frame| &frames[frame_index(TrayState::Speaking { frame })].1)
+            .collect();
+        // Three frames, each its own picture, in the alien's cyan.
+        assert!(shown[0] != shown[1] && shown[1] != shown[2] && shown[0] != shown[2]);
+        for pixels in &shown {
+            let lit = pixels.chunks(4).find(|p| p[3] == 255).unwrap();
+            assert_eq!(lit, [34, 230, 242, 255]);
+        }
+        // It is not the listening waveform, which is green and follows the microphone.
+        assert!((0..=MAX_LEVEL).all(|level| &wave(level) != shown[0]));
+        let start = TrayState::Speaking { frame: 0 };
+        assert!(start.animates());
+        assert_eq!(start.advance(), TrayState::Speaking { frame: 1 });
+        assert_eq!(start.advance().advance().advance(), start);
+        assert_eq!(start.tooltip(), "jevons: speaking…");
     }
 
     #[test]

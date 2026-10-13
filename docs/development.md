@@ -4,7 +4,7 @@
 
 ## Workspace
 
-The workspace is layered: the API on top, three services, the diffusion layer the Generative and Decision services share, the models, the GPU runtimes, and a foundation of shared contracts and formats. Each crate depends only on layers below it. The README's [architecture diagram](../README.md#architecture) shows the whole stack.
+The workspace is layered: the API on top, four services, the diffusion layer the Generative and Decision services share, the models, the GPU runtimes, and a foundation of shared contracts and formats. Each crate depends only on layers below it. The README's [architecture diagram](../README.md#architecture) shows the whole stack.
 
 | Layer | Crate | Responsibility |
 | --- | --- | --- |
@@ -13,22 +13,24 @@ The workspace is layered: the API on top, three services, the diffusion layer th
 | | `jevons-desktop-core` | The platform-free client: the platform traits, the desk the server calls (delivery and paste safety, confirmations, extract reads, investigations' elements), XPath over accessibility trees, automations, recording, the client's settings, tray frames, the model catalog and downloads |
 | | `jevons-desktop-tools` | The tools either side runs from its settings: programs, HTTP requests, addresses opened, MCP servers |
 | | `jevons-desktop-protocol` | What the server and the client say to each other: context snapshots, delivery, extracts and their grammar, shapes, the `Desk` trait |
-| API | `jevons-api` | Routes, authentication, settings, the wire formats, the model workers and Realtime sessions; `load` starts the workers, `serve` serves them on a listener, and `run` does both for the server |
+| API | `jevons-api` | Routes, authentication, settings, the wire formats, the model workers and Realtime sessions; `load` starts the workers (`load_optional` goes on without a service that may fail), `serve` serves them on a listener, and `run` does both for the server |
 | | `jevons-rs` | The server binary (`main.rs`: logging, then `jevons_api::run`) |
 | Services | `jevons-generative` | Free-form answers: chat framing, the answer budget, an optional thought, streaming with stop-sequence holdback (`Generate`) |
 | | `jevons-decision` | Restricted-canvas reads: slot preparation, chunking, samples, sequential reads, restricted softmax (`Decide`); the `jevons-scm` CLI and the `golden` example |
 | | `jevons-speech` | Windowed transcription of recordings, words and segments, single live passes (`Transcriber`) |
+| | `jevons-voice` | A text prepared for a voice model and spoken sentence by sentence: cleaning, sentences, each sentence's language, numbers in Spanish and English words, the default voice (`Synthesizer`); the scripted `fake` model (feature `testing`) |
 | Diffusion | `jevons-diffusion` | `DiffusionEngine`: the loaded model, chat format, verified answer codes, context limits, prompt parts with images; thought and token generation (masked and uniform diffusion, self-speculation, autoregressive); samplers; the scripted `fake` model (feature `testing`) |
-| Models | `jevons-models` | Detect a model's architecture and load its `DiffusionModel` (DiffusionGemma with feature `gemma4`, Nemotron with `nemotron`) or `SpeechModel` (Parakeet with `parakeet`) |
+| Models | `jevons-models` | Detect a model's architecture and load its `DiffusionModel` (DiffusionGemma with feature `gemma4`, Nemotron with `nemotron`), `SpeechModel` (Parakeet with `parakeet`) or `VoiceModel` (Qwen3-TTS with `qwen3-tts`) |
 | | `jevons-gemma4-diffusion` | DiffusionGemma text and vision runtime: tuned CubeCL kernels (MoE routing, visibility-aware attention, fused norms, plus the shared GEMM), with the text model's forward as Burn operations over them |
 | | `jevons-nemotron-diffusion` | Nemotron-Labs-Diffusion on Burn: Ministral-3 decoder, Pixtral vision tower and projector, image preprocessing |
 | | `jevons-parakeet` | Parakeet TDT on Burn: FastConformer encoder with relative-position attention, LSTM prediction network, greedy token-and-duration decoding |
+| | `jevons-qwen3-tts` | Qwen3-TTS (12 Hz, Base) on Burn: the talker that writes each audio frame's first code, the code predictor for the other fifteen, the streamed codec decoder, voices as speaker vectors |
 | GPU runtimes | `jevons-kernels` | Shared tuned CubeCL kernels: device buffers and the quantized / FP16-weight GEMM, callable on Burn tensors' buffers |
 | | `jevons-burn` | Shared Burn 0.22 runtime: HIP device, weight streaming, norms, rotary embedding, grouped-query attention, KV cache, the tuned GEMM as a Burn backend extension |
-| Foundation | `jevons-core` | The `DiffusionModel` and `SpeechModel` contracts, errors, model configuration, image decoding, prefill diagnostics, transcript types |
+| Foundation | `jevons-core` | The `DiffusionModel`, `SpeechModel` and `VoiceModel` contracts, errors, model configuration, image decoding, prefill diagnostics, transcript types |
 | | `jevons-formats` | GGUF, GGML quantization and safetensors readers |
-| | `jevons-tokenizer` | Gemma 4 (GGUF) and Hugging Face `tokenizer.json` tokenizers |
-| | `jevons-audio` | Bounded decoding of uploads (Symphonia, Opus via opuscule), resampling, PCM16 and G.711, log-mel features, voice activity detection |
+| | `jevons-tokenizer` | Gemma 4 (GGUF) and Hugging Face `tokenizer.json` tokenizers, and Qwen's BPE from `vocab.json` and `merges.txt` |
+| | `jevons-audio` | Bounded decoding of uploads (Symphonia, Opus via opuscule), resampling, PCM16 and G.711, log-mel features, voice activity detection, and the output half: f32 to PCM16 and WAV |
 
 The project was previously named `llama-cpp-system-one`, after its original llama.cpp backend, which has been removed. The server binary is `jevons-rs`; the SCM CLI binary is `jevons-scm`.
 
@@ -38,23 +40,25 @@ The project was previously named `llama-cpp-system-one`, after its original llam
 | `jevons-desktop-server` | `flow::{spec, guard, tree, walk, frame, template, defaults, investigate, investigator, tools, machine}`, `pipeline`, `client::{realtime, responses, systemone, transcriptions, route, log}`, `forward`, `config` |
 | `jevons-desktop-core` | `platform`, `desk`, `delivery`, `confirm`, `reader`, `look`, `xpath`, `automation`, `recording`, `config`, `git`, `history`, `levels`, `icons`, `catalog`, `download`, `fake` |
 | `jevons-desktop-protocol` | `context`, `delivery`, `extract`, `xpath`, `shape`, `desk` |
-| `jevons-api` | `http`, `handlers`, `middleware`, `error`, `config`, `server`, `realtime`, `openai::{request, response, audio, realtime, error}`, `system_one::{request, compiler, response, error}`, `workers::{diffusion, speech}` |
+| `jevons-api` | `http`, `handlers`, `middleware`, `error`, `config`, `server`, `realtime`, `openai::{request, response, tools, audio, speech, realtime, error}`, `system_one::{request, compiler, response, error}`, `workers::{diffusion, speech, voice}` |
 | `jevons-generative` | `generate`, `request` |
 | `jevons-decision` | `read`, `request`, `probability` |
 | `jevons-speech` | `transcriber` |
+| `jevons-voice` | `synthesizer`, `clean`, `sentences`, `language`, `numbers::{es, en}`, `fake` |
 | `jevons-diffusion` | `engine`, `sampler::{uniform, masked}`, `fake` |
-| `jevons-models` | `detect`, `gemma4`, `speech` |
+| `jevons-models` | `detect`, `gemma4`, `speech`, `voice` |
 | `jevons-gemma4-diffusion` | `vision_input`, `gpu::{gemm, attention, ops, tune, vision}`, `model`, `model::burn`, `vision` |
 | `jevons-nemotron-diffusion` | `config`, `rope`, `image`, `vision`, `model` |
 | `jevons-parakeet` | `config`, `encoder`, `decoder`, `model` |
+| `jevons-qwen3-tts` | `config`, `prompt`, `stack`, `talker`, `sample`, `codec`, `fused`, `gpu`, `weights`, `model` |
 | `jevons-kernels` | `gemm` |
 | `jevons-burn` | `device`, `weights`, `layers`, `kernels` |
-| `jevons-core` | `error`, `profile`, `config`, `image`, `model`, `speech` |
-| `jevons-audio` | `decode`, `resample`, `pcm`, `mel`, `vad` |
+| `jevons-core` | `error`, `profile`, `config`, `image`, `model`, `speech`, `voice` |
+| `jevons-audio` | `decode`, `resample`, `pcm`, `wav`, `mel`, `vad` |
 
 Put each change in the layer it belongs to:
 - **Wire formats and HTTP policy** go in `jevons-api`: OpenAI and System One validation and rendering, status codes, auth, queues.
-- **Service policy** goes in its service crate: chat framing and streaming, read orchestration, windowing and segments. Services take typed requests and return typed results, with no HTTP or async code. They use JSON only as data (tool arguments, schemas and structured answers) and in their CLIs, never to parse request bodies.
+- **Service policy** goes in its service crate: chat framing and streaming, read orchestration, windowing and segments, the text a voice model reads. Services take typed requests and return typed results, with no HTTP or async code. They use JSON only as data (tool arguments, schemas and structured answers) and in their CLIs, never to parse request bodies.
 - **What Generative and Decision share** goes in `jevons-diffusion`: token generation, decoding modes, the prompt cache discipline.
 - **Architecture specifics** (chat markers, image encoding, weights) go in the model implementation.
 - **Desktop behaviour** shared by every OS goes in `jevons-desktop-server` when it is about what to do with a take (pipeline, flow tree, machines, inference) and in `jevons-desktop-core` when it happens at the user's desk (delivery, reading the screen, automations, tray states). Neither depends on the other: what crosses is in `jevons-desktop-protocol`. Only the implementations of the platform traits go in `jevons-desktop/src/platform`.
@@ -120,6 +124,15 @@ cargo test --release -p jevons-speech --lib -- --ignored --exact \
 
 They compare against the dump from `scripts/reference/parakeet_dump.py` (directory `PARAKEET_GOLDEN`, default `parakeet-tdt-0.6b-v3`): the mel features, the encoder (relative RMS error), the exact greedy tokens, frames and text of an English and a Spanish clip, and a 186-second recording windowed against one reference pass (word error rate). Server tests drive the speech worker, the transcription route and Realtime sessions over a real WebSocket with a scripted model, without a GPU.
 
+For Qwen3-TTS, set `QWEN3_TTS_MODEL` to the checkpoint directory and run:
+
+```bash
+cargo test --release -p jevons-qwen3-tts --lib -- --ignored --test-threads=1
+QWEN3_TTS_DEVICE=cpu cargo test --release -p jevons-qwen3-tts --lib -- --ignored --test-threads=1
+```
+
+The second line runs the same tests on the CPU device in f32, without a GPU. They compare against the dump from `scripts/reference/qwen3_tts_dump.py` (directory `QWEN3_TTS_GOLDEN`, default `qwen3-tts-12hz-0.6b-base`): the prompt the talker reads, its hidden states, the greedy codes of each frame, and the codec decoder's audio from the reference's codes, in one pass and in chunks. Sampling makes audio differ run to run, so no test compares sampled audio. Server tests drive the voice worker and the speech route with the scripted model of `jevons_voice::fake`, without a GPU.
+
 Against a running service, run `python3 scripts/smoke-test.py` with the server's `TYPESAFE_API_KEY` if configured.
 
 Where WSL has no ROCm but Windows has the HIP SDK, `just windows-cargo` runs the same commands natively on Windows, in the clone `just desktop-windows` builds in, after making it match the working tree:
@@ -152,6 +165,13 @@ uv run scripts/reference/nemotron_dump.py "$NEMOTRON_MODEL" ~/.cache/jevons/gold
 # es_long is any recording over two minutes (the tests used a 186 s LibriVox chapter).
 uv run scripts/reference/parakeet_dump.py "$PARAKEET_MODEL" ~/.cache/jevons/golden/parakeet-tdt-0.6b-v3 \
   en=examples/speech-en.flac es=examples/speech-es.flac es_long=long-spanish.flac
+# A Qwen3-TTS voice from a recording (the speaker encoder runs here, in Python, once), then
+# references from the qwen-tts package (CPU, F32), per case NAME=VOICE.safetensors:LANGUAGE:TEXT.
+# LANGUAGE is the language's English name, and the tests need a case named es.
+uv run scripts/reference/qwen3_tts_voice.py "$QWEN3_TTS_MODEL" examples/speech-es.flac lector.safetensors
+uv run scripts/reference/qwen3_tts_voice.py "$QWEN3_TTS_MODEL" examples/speech-en.flac reader.safetensors
+uv run scripts/reference/qwen3_tts_dump.py "$QWEN3_TTS_MODEL" ~/.cache/jevons/golden/qwen3-tts-12hz-0.6b-base \
+  es=lector.safetensors:Spanish:"Hola, ¿cómo estás hoy?" en=reader.safetensors:English:"Good morning."
 ```
 
 The engine golden uses `DIFFUSION_MODEL` (and `DIFFUSION_MMPROJ` for the image fixture) and writes to `<root>/<architecture>-engine`.

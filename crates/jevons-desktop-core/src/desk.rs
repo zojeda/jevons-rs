@@ -1,10 +1,12 @@
 //! The desk in the app's own process: what the server asks is carried out with the platform's
 //! layers, and the client's safety rules apply here. Text goes only into the window the take
-//! started in, once no key is held; a tool runs only once the user said yes; the screen is read
-//! within the privacy settings; and an automation runs only in the version the user approved.
+//! started in, once no key is held; speech plays one take at a time and never while the
+//! microphone is open; a tool runs only once the user said yes; the screen is read within the
+//! privacy settings; and an automation runs only in the version the user approved.
 //!
-//! Each part is optional: a desk without a sink delivers nothing, one without a reader reads
-//! nothing, and so on, which is what dry runs and tests want.
+//! Each part is optional: a desk without a sink delivers nothing, one without a speaker says
+//! nothing, one without a reader reads nothing, and so on, which is what dry runs and tests
+//! want.
 //!
 //! The client's tools are its settings file's (`[tools.<name>]`, `[mcp.<name>]`) and the
 //! automations library's (`script:<name>`). Whatever the server asks, a tool runs only for a
@@ -16,11 +18,12 @@ use crate::delivery::deliver_text;
 use crate::look::Looks;
 use crate::platform::TextSink;
 use crate::reader::Reader;
+use crate::voice::Voice;
 use futures_util::future::BoxFuture;
 use jevons_desktop_protocol::delivery::DeliveryOutcome;
 use jevons_desktop_protocol::desk::{
     Ask, ClientTool, ClientTools, Delivery, Desk, Look, Looked, NO_INVESTIGATOR, NO_READER,
-    NOT_CONFIRMED, Opened, Read, unread,
+    NOT_CONFIRMED, Opened, Read, Speech, unread,
 };
 use jevons_desktop_protocol::extract::{Extract, Extracted, ReadScreen};
 use jevons_desktop_tools::{ToolSet, allowed};
@@ -31,6 +34,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Default)]
 pub struct LocalDesk {
     sink: Option<Arc<Mutex<Box<dyn TextSink>>>>,
+    voice: Option<Arc<Voice>>,
     reader: Option<Arc<Reader>>,
     looks: Option<Arc<Looks>>,
     confirmer: Option<Arc<ChannelConfirmer>>,
@@ -43,6 +47,13 @@ impl LocalDesk {
     /// Delivers text through `sink`.
     pub fn with_sink(mut self, sink: Arc<Mutex<Box<dyn TextSink>>>) -> Self {
         self.sink = Some(sink);
+        self
+    }
+
+    /// Speaks through `voice`, which plays on the platform's speaker. Whoever builds the desk
+    /// keeps the voice too: it is how the app says the microphone is open, and stops it.
+    pub fn with_speaker(mut self, voice: Arc<Voice>) -> Self {
+        self.voice = Some(voice);
         self
     }
 
@@ -103,6 +114,15 @@ impl Desk for LocalDesk {
                     deliver_text(sink, delivery.take, delivery.window, delivery.request).await
                 }
                 None => Ok(None),
+            }
+        })
+    }
+
+    fn speak(&self, speech: Speech) -> BoxFuture<'_, Result<bool, String>> {
+        Box::pin(async move {
+            match &self.voice {
+                Some(voice) => voice.speak(speech),
+                None => Ok(false),
             }
         })
     }

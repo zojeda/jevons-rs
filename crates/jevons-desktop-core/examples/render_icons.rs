@@ -29,6 +29,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         TrayState::Listening { level: 14 },
         TrayState::Transcribing { frame: 0 },
         TrayState::Thinking { frame: 1 },
+        TrayState::Speaking { frame: 0 },
+        TrayState::Speaking { frame: 1 },
+        TrayState::Speaking { frame: 2 },
     ];
     let frames = icons::frames();
     let (scale, gap) = (2, 12);

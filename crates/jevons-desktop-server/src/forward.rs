@@ -1,6 +1,7 @@
 //! Forwarding: the API the app serves to other clients. A `/v1/*` request goes to the provider
 //! that serves its model, with that provider's key in place of the client's, and the answer
-//! streams back as it comes. Nothing is rewritten, so a client sees what the provider said.
+//! streams back as it comes, text or audio. Nothing is rewritten, so a client sees what the
+//! provider said.
 //!
 //! The provider is the one a route asks for the request's model; a model no route names goes
 //! to the route of the path's capability (`/v1/systemone` to the decision route), which is how
@@ -62,6 +63,7 @@ pub fn targets(routes: &Routes) -> Vec<Target> {
         (Capability::Realtime, &routes.realtime),
         (Capability::Decision, &routes.decision),
         (Capability::Generation, &routes.generation),
+        (Capability::Voice, &routes.voice),
     ]
     .into_iter()
     .filter_map(|(capability, route)| {
@@ -81,6 +83,7 @@ pub fn targets(routes: &Routes) -> Vec<Target> {
 fn capability(path: &str) -> Option<Capability> {
     match path {
         "/v1/audio/transcriptions" => Some(Capability::Speech),
+        "/v1/audio/speech" => Some(Capability::Voice),
         "/v1/realtime" => Some(Capability::Realtime),
         "/v1/systemone" => Some(Capability::Decision),
         "/v1/responses" | "/v1/chat/completions" | "/v1/completions" => {
@@ -242,6 +245,7 @@ async fn health(State(forwarder): State<Forwarder>) -> Json<Value> {
             "generative": model(Capability::Generation),
             "decision": model(Capability::Decision),
             "speech": model(Capability::Speech),
+            "voice": model(Capability::Voice),
         },
     }))
 }
@@ -307,8 +311,10 @@ async fn forward(State(forwarder): State<Forwarder>, request: Request) -> Respon
         Some(query) => format!("{}{path}?{query}", target.base),
         None => format!("{}{path}", target.base),
     };
-    // The API log keeps decision and generation calls: JSON bodies, never audio.
-    let logged = json.filter(|_| log::enabled()).map(|request| {
+    // The API log keeps decision and generation calls: JSON bodies, never audio. A request for
+    // speech has a JSON body too, and its answer is audio: neither is kept.
+    let speaks = capability(path) == Some(Capability::Voice);
+    let logged = json.filter(|_| log::enabled() && !speaks).map(|request| {
         Call::start(
             format!("{} {path} → {}", parts.method, target.provider),
             &request,
@@ -531,9 +537,12 @@ mod tests {
     /// What a fake provider got: the path, the key it came with, and the body.
     type Got = Arc<Mutex<Vec<(String, String, Vec<u8>)>>>;
 
+    /// The audio the fake provider speaks: bytes that are no text.
+    const SPOKEN: [u8; 6] = [0x00, 0x80, 0xff, 0x7f, 0xfe, 0xc3];
+
     /// A provider that answers every `/v1/*` POST with its name, an event stream on
-    /// `/v1/responses`, a 422 on `/v1/refused`, the headers it got on `/v1/headers`, and
-    /// echoes a Realtime session when `streams`.
+    /// `/v1/responses`, audio on `/v1/audio/speech`, a 422 on `/v1/refused`, the headers it
+    /// got on `/v1/headers`, and echoes a Realtime session when `streams`.
     async fn provider(name: &'static str, streams: bool) -> (String, Got) {
         let got = Got::default();
         let seen = got.clone();
@@ -560,6 +569,9 @@ mod tests {
                         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\n",
                     )
                         .into_response(),
+                    "/v1/audio/speech" => {
+                        ([(header::CONTENT_TYPE, "audio/pcm")], SPOKEN.to_vec()).into_response()
+                    }
                     // Which of the client's headers arrived.
                     "/v1/headers" => Json(json!({
                         "tag": parts.headers.get("x-tag").and_then(|v| v.to_str().ok()),
@@ -611,8 +623,8 @@ mod tests {
         }
     }
 
-    /// The forwarder behind the key `app-key`, with speech and Realtime on `box`, decisions on
-    /// `openrouter` and generation on `embedded`.
+    /// The forwarder behind the key `app-key`, with speech, Realtime and the voice on `box`,
+    /// decisions on `openrouter` and generation on `embedded`.
     async fn forwarder() -> (String, [Got; 3]) {
         let (speech, heard) = provider("box", true).await;
         let (decision, decided) = provider("openrouter", false).await;
@@ -628,6 +640,7 @@ mod tests {
                 &decision,
             ),
             target(Capability::Generation, "gemma", "embedded", &generation),
+            target(Capability::Voice, "qwen3-tts", "box", &speech),
         ]);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -661,6 +674,22 @@ mod tests {
                 base: "http://box:8080".into(),
                 key: Some("secret".into()),
             }]
+        );
+        // The voice route is a target too, and its requests are the speech path's.
+        let client = Client::new("http://box:8080", None);
+        let routes = Routes {
+            voice: Some(Route::ours(client, "box", "qwen3-tts")),
+            ..Routes::default()
+        };
+        let targets = targets(&routes);
+        assert_eq!(
+            (targets[0].capability, targets[0].model.as_str()),
+            (Capability::Voice, "qwen3-tts")
+        );
+        assert_eq!(capability("/v1/audio/speech"), Some(Capability::Voice));
+        assert_eq!(
+            capability("/v1/audio/transcriptions"),
+            Some(Capability::Speech)
         );
     }
 
@@ -807,7 +836,7 @@ mod tests {
         assert_eq!(
             health,
             json!({"status": "ok", "services": {"generative": "gemma",
-                "decision": "typesafe/jev-1.13", "speech": "parakeet"}})
+                "decision": "typesafe/jev-1.13", "speech": "parakeet", "voice": "qwen3-tts"}})
         );
         // The models listed are the routes', each once, and no key is in the listing.
         let listing = http.get(format!("{base}/v1/models")).send().await.unwrap();
@@ -828,7 +857,7 @@ mod tests {
             .iter()
             .map(|m| m["id"].as_str().unwrap())
             .collect();
-        assert_eq!(ids, ["parakeet", "typesafe/jev-1.13", "gemma"]);
+        assert_eq!(ids, ["parakeet", "typesafe/jev-1.13", "gemma", "qwen3-tts"]);
         assert_eq!(models["models"][1]["name"], "typesafe/jev-1.13");
         assert!(!listing.contains("key-of"), "{listing}");
     }
@@ -857,6 +886,45 @@ mod tests {
         assert!(find(&sent, &audio).is_some(), "the audio arrives whole");
         assert_eq!(form_field(&sent, "model").as_deref(), Some("parakeet"));
         assert_eq!(form_field(&sent, "language"), None);
+    }
+
+    #[tokio::test]
+    async fn a_request_for_speech_goes_to_the_voice_provider_and_its_audio_comes_back_whole() {
+        let (base, [heard, decided, written]) = forwarder().await;
+        // By the path: the model is one no route names, another name of the provider's.
+        let body = json!({"model": "qwen3-tts-latest", "input": "Son las cinco.",
+            "response_format": "pcm"});
+        let answer = post_json(&base, "/v1/audio/speech", body.clone()).await;
+        assert_eq!(answer.status(), 200);
+        assert_eq!(answer.headers()[header::CONTENT_TYPE], "audio/pcm");
+        // The audio is the provider's, byte for byte: it is no text to read or rewrite.
+        assert_eq!(answer.bytes().await.unwrap().as_ref(), SPOKEN);
+        let (path, key, sent) = heard.lock().unwrap()[0].clone();
+        assert_eq!(
+            (path.as_str(), key.as_str()),
+            ("/v1/audio/speech", "Bearer key-of-box")
+        );
+        assert_eq!(serde_json::from_slice::<Value>(&sent).unwrap(), body);
+        assert!(decided.lock().unwrap().is_empty() && written.lock().unwrap().is_empty());
+        // With no voice route, nothing serves it.
+        let silent = Forwarder::new(None);
+        silent.route(vec![target(Capability::Speech, "parakeet", "box", &base)]);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let unserved = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(silent.serve(listener, std::future::pending()));
+        let answer = post_json(&unserved, "/v1/audio/speech", json!({"input": "hola"})).await;
+        assert_eq!(answer.status(), 404);
+        assert_eq!(
+            answer.json::<Value>().await.unwrap()["detail"]["message"],
+            "No route serves /v1/audio/speech"
+        );
+        let health: Value = reqwest::get(format!("{unserved}/health"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(health["services"]["voice"], Value::Null);
     }
 
     #[tokio::test]
@@ -958,6 +1026,14 @@ mod tests {
             .bytes()
             .await
             .unwrap();
+        // A request for speech has a JSON body, and its answer is audio: neither is written.
+        let speech = json!({"model": "qwen3-tts", "input": marker, "response_format": "pcm"});
+        let audio = post_json(&base, "/v1/audio/speech", speech)
+            .await
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(audio.as_ref(), SPOKEN);
         log::set(None);
         // Other tests' calls may land in the file while it is on: only this test's count.
         let text = std::fs::read_to_string(&file).unwrap();
@@ -973,6 +1049,7 @@ mod tests {
             records[0]["response"],
             json!({"status": 200, "body": {"provider": "openrouter"}})
         );
+        assert!(!text.contains("/v1/audio/speech"), "{text}");
         assert_eq!(records[1]["api"], "POST /v1/responses → embedded");
         let events = records[1]["response"]["body"].as_str().unwrap();
         assert!(events.starts_with("data: {"), "{events}");

@@ -234,13 +234,21 @@ both in one request.
 
 | Field | Meaning |
 |---|---|
-| `output` | `target` (default): into the application the take started in. `bubble`: shown by the tray icon, with Copy and Insert. `clipboard`. `none`. |
+| `output` | `target` (default): into the application the take started in. `bubble`: shown by the tray icon, with Copy and Insert. `voice` (`generate.toml` only): read aloud, and shown in the bubble too. `clipboard`. `none`. |
 | `action` | With `target`: `insert` at the cursor (default), `replace` the selection, or `rewrite` the selection or whole field following what the user said. A transcript cannot rewrite. |
 | `prompt` | `generate.toml` only: the model's input. By default: the context, the investigations and what the user said. |
 | `[schema]` | `generate.toml` only: the answer's shape, written as an investigation's `schema`. The model answers in JSON, and later states read its fields: `{state.field}`. |
 
 Text goes into the target only if the same window is still in front once the user lets go of the
 keys; otherwise it waits on the clipboard.
+
+An answer for the bubble may use Markdown, which the bubble renders; the model is told so. With
+`output = "voice"` it is told the answer is heard: plain sentences, no Markdown, no lists, numbers
+as one says them. So leave the format out of your own instructions, and the same leaf reads well
+either way: where no voice model is served, or the user turned the voice off, a `voice` leaf is a
+`bubble` leaf. Others in the room hear a spoken answer, and jevons never speaks while it listens.
+A `voice` leaf takes no `[schema]`, and the user's own words are never read back to them: with no
+language model they are shown.
 
 ## `tool.toml`
 

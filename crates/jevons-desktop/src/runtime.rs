@@ -87,6 +87,16 @@ impl Status {
     }
 }
 
+/// The voices a provider's voice model speaks in, when the provider says: the app's own model
+/// does.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Voices {
+    /// As the model lists them.
+    pub names: Vec<String>,
+    /// The voice of a request that names none.
+    pub default: String,
+}
+
 /// A provider that answers: how to reach it, and the model it names for each capability
 /// (a route that names its own model needs none of them).
 #[derive(Clone, Debug)]
@@ -95,6 +105,9 @@ pub struct Served {
     pub speech: Option<String>,
     pub decision: Option<String>,
     pub generation: Option<String>,
+    pub voice: Option<String>,
+    /// The voices of its voice model, when it lists them.
+    pub voices: Option<Voices>,
     /// Whether it streams speech (Realtime).
     pub realtime: bool,
 }
@@ -107,6 +120,8 @@ impl Served {
             speech: None,
             decision: None,
             generation: None,
+            voice: None,
+            voices: None,
             realtime: true,
         }
     }
@@ -117,6 +132,7 @@ impl Served {
             Capability::Realtime => self.speech.clone().filter(|_| self.realtime),
             Capability::Decision => self.decision.clone(),
             Capability::Generation => self.generation.clone(),
+            Capability::Voice => self.voice.clone(),
         }
     }
 }
@@ -134,6 +150,7 @@ pub fn routes(config: &DesktopConfig, served: &BTreeMap<String, Served>) -> Rout
             model: to.model.or_else(|| server.model(capability))?,
             provider: to.provider,
             profile: Profile::of(&provider),
+            voice: to.voice,
         })
     };
     Routes {
@@ -141,7 +158,15 @@ pub fn routes(config: &DesktopConfig, served: &BTreeMap<String, Served>) -> Rout
         realtime: route(Capability::Realtime),
         decision: route(Capability::Decision),
         generation: route(Capability::Generation),
+        voice: route(Capability::Voice),
     }
+}
+
+/// The voices the voice route's provider lists, for the settings to choose among. `None` when
+/// that provider does not answer, serves no voice, or does not say.
+pub fn voices(config: &DesktopConfig, served: &BTreeMap<String, Served>) -> Option<Voices> {
+    let to = config.route(Capability::Voice)?;
+    served.get(&to.provider)?.voices.clone()
 }
 
 /// The providers the routes use, by name.
@@ -163,6 +188,7 @@ pub struct Local {
     pub realtime: bool,
     pub decision: bool,
     pub generation: bool,
+    pub voice: bool,
 }
 
 impl Local {
@@ -178,11 +204,40 @@ impl Local {
             realtime: embedded(Capability::Realtime),
             decision: embedded(Capability::Decision),
             generation: embedded(Capability::Generation),
+            voice: embedded(Capability::Voice),
         }
     }
 
     fn any(self) -> bool {
-        self.speech || self.decision || self.generation
+        self.speech || self.decision || self.generation || self.voice
+    }
+
+    /// These, cut down to the one capability a run asked for alone, if it did.
+    fn only(self, capability: Option<Capability>) -> Self {
+        match capability {
+            None => self,
+            Some(Capability::Speech) => Self {
+                speech: self.speech,
+                ..Self::default()
+            },
+            Some(Capability::Realtime) => Self {
+                speech: self.speech,
+                realtime: self.realtime,
+                ..Self::default()
+            },
+            Some(Capability::Decision) => Self {
+                decision: self.decision,
+                ..Self::default()
+            },
+            Some(Capability::Generation) => Self {
+                generation: self.generation,
+                ..Self::default()
+            },
+            Some(Capability::Voice) => Self {
+                voice: self.voice,
+                ..Self::default()
+            },
+        }
     }
 }
 
@@ -258,8 +313,12 @@ fn expose(
 struct Shared {
     status: Status,
     routes: Option<Routes>,
+    /// The voices the voice route's provider lists.
+    voices: Option<Voices>,
     /// What serves desktop clients, when the app does.
     host: Option<Arc<Host>>,
+    /// The one capability whose model is loaded here, when a run needs no other.
+    only: Option<Capability>,
 }
 
 /// How long [`Runtime::shutdown`] waits for the models to unload before it gives up. A load in
@@ -452,7 +511,9 @@ impl Runtime {
         let shared = Arc::new(Mutex::new(Shared {
             status: Status::NoModels,
             routes: None,
+            voices: None,
             host: None,
+            only: None,
         }));
         let (apply, requests) = mpsc::channel();
         let (ending, ended) = mpsc::channel();
@@ -481,6 +542,13 @@ impl Runtime {
     /// settings are applied.
     pub fn serve(&self, host: Arc<Host>) {
         self.shared.lock().expect("the runtime lock").host = Some(host);
+    }
+
+    /// Loads the model of `capability` alone, from the next time settings are applied: a run
+    /// that needs one model, such as `--say`, loads no other. Capabilities on other providers
+    /// are routed as usual.
+    pub fn only(&self, capability: Capability) {
+        self.shared.lock().expect("the runtime lock").only = Some(capability);
     }
 
     /// Unloads the models, ends the thread and waits for both; a load in progress ends first.
@@ -514,6 +582,11 @@ impl Runtime {
     pub fn routes(&self) -> Option<Routes> {
         self.shared.lock().expect("the runtime lock").routes.clone()
     }
+
+    /// The voices the voice route's provider lists, when it says.
+    pub fn voices(&self) -> Option<Voices> {
+        self.shared.lock().expect("the runtime lock").voices.clone()
+    }
 }
 
 fn run(requests: mpsc::Receiver<Option<Request>>, shared: Arc<Mutex<Shared>>, changed: impl Fn()) {
@@ -522,7 +595,7 @@ fn run(requests: mpsc::Receiver<Option<Request>>, shared: Arc<Mutex<Shared>>, ch
         .thread_name("runtime-io")
         .build()
         .expect("the Tokio runtime builds");
-    let set = |status: Status, routes: Option<Routes>| {
+    let set = |status: Status, routes: Option<Routes>, voices: Option<Voices>| {
         let status = match status {
             Status::Failed(e) => Status::Failed(explain(e)),
             other => other,
@@ -534,6 +607,7 @@ fn run(requests: mpsc::Receiver<Option<Request>>, shared: Arc<Mutex<Shared>>, ch
         let mut shared = shared.lock().expect("the runtime lock");
         shared.status = status;
         shared.routes = routes;
+        shared.voices = voices;
         drop(shared);
         changed();
     };
@@ -557,7 +631,7 @@ fn run(requests: mpsc::Receiver<Option<Request>>, shared: Arc<Mutex<Shared>>, ch
         if let Err(e) = config.check_routes() {
             tokio.block_on(embedded.unload());
             let _ = expose(&tokio, &mut exposed, &config, None, None);
-            set(Status::Failed(e), None);
+            set(Status::Failed(e), None, None);
             continue;
         }
         // What does not answer is said, and the capabilities on the providers that do still
@@ -567,7 +641,8 @@ fn run(requests: mpsc::Receiver<Option<Request>>, shared: Arc<Mutex<Shared>>, ch
         let mut local = false;
         let providers = used(&config);
         // The models in this app: only those of the capabilities routed here are loaded.
-        let wanted = Local::of(&config);
+        let only = shared.lock().expect("the runtime lock").only;
+        let wanted = Local::of(&config).only(only);
         let settings = if wanted.any() {
             let catalog_file = file.parent().unwrap_or(Path::new(".")).join("models.toml");
             let (catalog, _) = jevons_desktop_core::catalog::load(&catalog_file);
@@ -594,7 +669,7 @@ fn run(requests: mpsc::Receiver<Option<Request>>, shared: Arc<Mutex<Shared>>, ch
                                 let advice = lasted >= GPU_PATIENCE;
                                 if said != Some(advice) {
                                     said = Some(advice);
-                                    set(Status::WaitingForGpu { advice }, None);
+                                    set(Status::WaitingForGpu { advice }, None, None);
                                 }
                             },
                         );
@@ -607,16 +682,19 @@ fn run(requests: mpsc::Receiver<Option<Request>>, shared: Arc<Mutex<Shared>>, ch
                             }
                         }
                     }
-                    set(Status::Loading, None);
+                    set(Status::Loading, None, None);
                 }
                 match embedded.apply(&tokio, &settings, &file) {
-                    Ok(server) => {
+                    Ok((server, unserved)) => {
                         local = true;
                         for (name, provider) in &providers {
                             if provider.kind == ProviderKind::Embedded {
                                 served.insert(name.clone(), server.clone());
                             }
                         }
+                        // A voice model that did not load: the others are served, and the
+                        // status says why nothing speaks.
+                        failures.extend(unserved);
                     }
                     Err(e) => failures.push(e),
                 }
@@ -636,6 +714,7 @@ fn run(requests: mpsc::Receiver<Option<Request>>, shared: Arc<Mutex<Shared>>, ch
                         speech: health.services.speech,
                         decision: health.services.decision,
                         generation: health.services.generative,
+                        voice: health.services.voice,
                         ..Served::unnamed(client)
                     },
                     Err(e) => {
@@ -650,10 +729,12 @@ fn run(requests: mpsc::Receiver<Option<Request>>, shared: Arc<Mutex<Shared>>, ch
             served.insert(name.clone(), server);
         }
         let routes = routes(&config, &served);
+        let voices = voices(&config, &served).filter(|_| routes.voice.is_some());
         let any = routes.speech.is_some()
             || routes.realtime.is_some()
             || routes.decision.is_some()
-            || routes.generation.is_some();
+            || routes.generation.is_some()
+            || routes.voice.is_some();
         let routes = any.then_some(routes);
         // Other clients get what the routes serve, on the address the settings expose.
         let host = shared.lock().expect("the runtime lock").host.clone();
@@ -674,7 +755,7 @@ fn run(requests: mpsc::Receiver<Option<Request>>, shared: Arc<Mutex<Shared>>, ch
                 api,
             }
         };
-        set(status, routes);
+        set(status, routes, voices);
     }
     let _ = expose(&tokio, &mut exposed, &DesktopConfig::default(), None, None);
     tokio.block_on(embedded.unload());
@@ -741,6 +822,7 @@ pub fn runtime_settings(
         ("generative", &models.generative, wanted.generation),
         ("decision", &models.decision, wanted.decision),
         ("speech", &models.speech, wanted.speech),
+        ("voice", &models.voice, wanted.voice),
     ] {
         if let Some(model) = model.as_ref().filter(|_| wanted_here) {
             let mut entry = toml::Table::new();
@@ -762,7 +844,7 @@ pub fn runtime_settings(
 
 #[cfg(feature = "embedded")]
 mod embedded {
-    use super::Served;
+    use super::{Served, Voices};
     use jevons_api::config::Settings;
     use jevons_api::{AppState, Workers};
     use jevons_desktop_server::client::Client;
@@ -776,6 +858,9 @@ mod embedded {
         settings: String,
         state: AppState,
         workers: Workers,
+        /// What did not load, of the services that may fail: said with every status until
+        /// other settings are loaded.
+        unserved: Vec<String>,
     }
 
     /// The embedded API's listener: a loopback port and a key only this app knows.
@@ -831,23 +916,39 @@ mod embedded {
         }
 
         /// Loads the models of `settings` unless they are loaded, and serves them to this
-        /// app alone. The listener keeps its port and key while the models stay.
+        /// app alone. The listener keeps its port and key while the models stay. A voice
+        /// model that fails to load leaves the others loaded and served: why it failed comes
+        /// back beside what is served.
         pub fn apply(
             &mut self,
             tokio: &tokio::runtime::Runtime,
             settings: &str,
             file: &Path,
-        ) -> Result<Served, String> {
+        ) -> Result<(Served, Vec<String>), String> {
             if self.needs_load(settings) {
                 tokio.block_on(self.unload());
                 let parsed = Settings::parse(settings, file).map_err(|e| e.to_string())?;
-                let (state, workers) = tokio
-                    .block_on(jevons_api::load(&parsed))
+                let loaded = tokio
+                    .block_on(jevons_api::load_optional(
+                        &parsed,
+                        &[jevons_api::Service::Voice],
+                    ))
                     .map_err(|e| e.to_string())?;
                 self.loaded = Some(Loaded {
                     settings: settings.to_string(),
-                    state,
-                    workers,
+                    state: loaded.state,
+                    workers: loaded.workers,
+                    unserved: loaded
+                        .unserved
+                        .iter()
+                        .map(|failed| {
+                            format!(
+                                "The {} model did not load, so nothing serves it: {}",
+                                failed.service.name(),
+                                failed.error
+                            )
+                        })
+                        .collect(),
                 });
             }
             let loaded = self.loaded.as_ref().expect("the models are loaded");
@@ -880,7 +981,7 @@ mod embedded {
             }
             let listener = self.listener.as_ref().expect("the listener runs");
             let state = &loaded.state;
-            Ok(Served {
+            let served = Served {
                 client: Client::new(
                     &format!("http://{}", listener.address),
                     Some(listener.key.clone()),
@@ -888,8 +989,14 @@ mod embedded {
                 speech: state.speech.as_ref().map(|s| s.model_id.clone()),
                 decision: state.decision.as_ref().map(|s| s.model_id.clone()),
                 generation: state.generative.as_ref().map(|s| s.model_id.clone()),
+                voice: state.voice.as_ref().map(|s| s.model_id.clone()),
+                voices: state.voice.as_ref().map(|s| Voices {
+                    names: s.info.voices.clone(),
+                    default: s.default_voice.clone(),
+                }),
                 realtime: state.speech.as_ref().is_some_and(|s| s.realtime),
-            })
+            };
+            Ok((served, loaded.unserved.clone()))
         }
     }
 }
@@ -922,7 +1029,7 @@ mod embedded {
             _: &tokio::runtime::Runtime,
             _: &str,
             _: &Path,
-        ) -> Result<Served, String> {
+        ) -> Result<(Served, Vec<String>), String> {
             Err(
                 "this build has no embedded runtime: route every capability to another provider"
                     .into(),
@@ -1056,6 +1163,7 @@ mod tests {
         realtime: true,
         decision: true,
         generation: true,
+        voice: true,
     };
 
     fn model(path: &str) -> Option<ModelRef> {
@@ -1133,7 +1241,8 @@ generation = { provider = "box" }
                 speech: true,
                 realtime: true,
                 decision: false,
-                generation: false
+                generation: false,
+                voice: true
             }
         );
         let models = Models {
@@ -1152,12 +1261,150 @@ generation = { provider = "box" }
         // With every capability elsewhere, nothing is.
         let none = Local::of(&config(
             "[providers.box]\nkind = \"jevons\"\n[routes]\nspeech = { provider = \"box\" }\n\
-             decision = { provider = \"box\" }\ngeneration = { provider = \"box\" }\n",
+             decision = { provider = \"box\" }\ngeneration = { provider = \"box\" }\n\
+             voice = { provider = \"box\" }\n",
         ));
         assert_eq!(none, Local::default());
         assert_eq!(runtime_settings(&models, file, none).unwrap(), None);
         // By default all of them are here.
         assert_eq!(Local::of(&DesktopConfig::default()), ALL);
+    }
+
+    #[test]
+    fn the_voice_model_is_loaded_when_the_voice_is_routed_here() {
+        let models = Models {
+            generative: model("/m/gemma"),
+            decision: model("/m/gemma"),
+            speech: model("/m/parakeet"),
+            voice: model("/m/qwen3-tts"),
+            ..Models::default()
+        };
+        let file = Path::new("/c/jevons-desktop.toml");
+        let services = |wanted: Local| -> Vec<String> {
+            let Some(text) = runtime_settings(&models, file, wanted).unwrap() else {
+                return Vec::new();
+            };
+            let table: toml::Table = toml::from_str(&text).unwrap();
+            table["services"]
+                .as_table()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect()
+        };
+        // With every capability here, the voice model is a model and a service of its own.
+        let text = runtime_settings(&models, file, ALL).unwrap().unwrap();
+        let table: toml::Table = toml::from_str(&text).unwrap();
+        assert_eq!(table["models"].as_table().unwrap().len(), 3);
+        let voice = table["services"]["voice"]["model"].as_str().unwrap();
+        assert_eq!(
+            table["models"][voice]["path"].as_str(),
+            Some("/m/qwen3-tts")
+        );
+        // The voice on another provider: its model stays on disk.
+        let elsewhere = Local::of(&config(
+            "[providers.cloud]\nkind = \"openai-compatible\"\nurl = \"https://tts.example\"\n\
+             [routes]\nvoice = { provider = \"cloud\", model = \"tts-1\" }\n",
+        ));
+        assert!(!elsewhere.voice && elsewhere.generation);
+        assert_eq!(services(elsewhere), ["decision", "generative", "speech"]);
+        // A run that only speaks (`--say`) loads the voice model and no other.
+        assert_eq!(services(ALL.only(Some(Capability::Voice))), ["voice"]);
+        assert_eq!(services(elsewhere.only(Some(Capability::Voice))), [""; 0]);
+        assert_eq!(services(ALL.only(Some(Capability::Decision))), ["decision"]);
+        assert_eq!(ALL.only(None), ALL);
+        // No voice model chosen or downloaded: nothing speaks, and the rest loads as before.
+        let silent = Models {
+            voice: None,
+            ..models.clone()
+        };
+        let text = runtime_settings(&silent, file, ALL).unwrap().unwrap();
+        assert!(!text.contains("voice"), "{text}");
+    }
+
+    #[test]
+    fn the_voices_listed_are_those_of_the_provider_that_serves_the_voice() {
+        let client = |port: u16| Client::new(&format!("http://127.0.0.1:{port}"), None);
+        let lists = Voices {
+            names: vec!["lector".into(), "reader".into()],
+            default: "lector".into(),
+        };
+        let served = BTreeMap::from([
+            (
+                "embedded".to_string(),
+                Served {
+                    voice: Some("qwen3-tts-12hz-0.6b-base".into()),
+                    voices: Some(lists.clone()),
+                    ..Served::unnamed(client(1))
+                },
+            ),
+            (
+                "box".to_string(),
+                Served {
+                    voice: Some("qwen3-tts-12hz-0.6b-base".into()),
+                    ..Served::unnamed(client(2))
+                },
+            ),
+        ]);
+        // The app's own voice model says which voices it has, and the route may name one.
+        let ours = config("[routes]\nvoice = { provider = \"embedded\", voice = \"reader\" }\n");
+        assert_eq!(voices(&ours, &served), Some(lists));
+        assert_eq!(
+            voices(&DesktopConfig::default(), &served).unwrap().default,
+            "lector"
+        );
+        let route = routes(&ours, &served).voice.unwrap();
+        assert_eq!(
+            (route.name().as_str(), route.voice.as_deref()),
+            ("embedded/qwen3-tts-12hz-0.6b-base", Some("reader"))
+        );
+        // A provider elsewhere serves the voice without listing its voices: the name is typed.
+        let theirs = config(
+            "[providers.box]\nkind = \"jevons\"\n[routes]\nvoice = { provider = \"box\" }\n",
+        );
+        assert_eq!(voices(&theirs, &served), None);
+        assert!(routes(&theirs, &served).voice.is_some());
+        // No provider answers, or the app has no voice model: there is nothing to list.
+        assert_eq!(voices(&ours, &BTreeMap::new()), None);
+        let silent = BTreeMap::from([("embedded".to_string(), Served::unnamed(client(1)))]);
+        assert_eq!(voices(&ours, &silent), None);
+        assert!(routes(&ours, &silent).voice.is_none());
+    }
+
+    #[cfg(feature = "embedded")]
+    #[test]
+    fn a_voice_model_that_does_not_load_leaves_the_runtime_up_and_says_why() {
+        let tokio = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // A voice model folder that is not there, and no other model: nothing is loaded on
+        // any device.
+        let missing = std::env::temp_dir().join(format!("jevons-no-voice-{}", std::process::id()));
+        let models = Models {
+            voice: Some(ModelRef {
+                path: missing.join("qwen3-tts"),
+                mmproj: None,
+                catalog: None,
+            }),
+            ..Models::default()
+        };
+        let file = missing.join("jevons-desktop.toml");
+        let settings = runtime_settings(&models, &file, ALL).unwrap().unwrap();
+        let mut embedded = embedded::Embedded::default();
+        let (served, unserved) = embedded.apply(&tokio, &settings, &file).unwrap();
+        // The runtime is up and serves no voice: a leaf that asks for it answers in the bubble.
+        assert_eq!((served.voice, served.voices), (None, None));
+        assert_eq!(unserved.len(), 1, "{unserved:?}");
+        assert!(
+            unserved[0].starts_with("The voice model did not load, so nothing serves it: "),
+            "{unserved:?}"
+        );
+        // The same settings applied again load nothing anew, and still say so.
+        assert!(!embedded.needs_load(&settings));
+        let (_, again) = embedded.apply(&tokio, &settings, &file).unwrap();
+        assert_eq!(again, unserved);
+        tokio.block_on(embedded.unload());
     }
 
     #[test]
@@ -1233,6 +1480,8 @@ generation = { provider = "box" }
                     speech: Some("parakeet".into()),
                     decision: Some("gemma".into()),
                     generation: Some("gemma".into()),
+                    voice: None,
+                    voices: None,
                     realtime: true,
                     client: client(1),
                 },
@@ -1285,11 +1534,19 @@ generation = { provider = "box" }
         let models = Models {
             decision: model("/m/nemotron"),
             speech: model("/m/parakeet"),
+            voice: model("/m/qwen3-tts"),
             ..Models::default()
         };
         let file = Path::new("/c/jevons-desktop.toml");
         let text = runtime_settings(&models, file, ALL).unwrap().unwrap();
         let settings = jevons_api::config::Settings::parse(&text, file).unwrap();
         assert!(settings.services.speech.unwrap().realtime);
+        // The voice service names its model, and takes the runtime's own default voice.
+        let voice = settings.services.voice.unwrap();
+        assert_eq!(
+            settings.models[&voice.model].path,
+            Path::new("/m/qwen3-tts")
+        );
+        assert_eq!(voice.voice, None);
     }
 }

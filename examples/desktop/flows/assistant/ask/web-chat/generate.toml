@@ -1,6 +1,6 @@
 # The same for chat apps in a browser.
 description = "In a chat application in a browser"
-output = "bubble"
+output = "voice"
 
 [when]
 url = ["https://web.whatsapp.com/*", "https://app.slack.com/*", "https://teams.microsoft.com/*", "https://discord.com/*"]

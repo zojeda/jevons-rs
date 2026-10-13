@@ -6,11 +6,13 @@ jevons-tokenizer turns text into token IDs and back for the supported model fami
 reads DiffusionGemma's vocabulary from GGUF metadata and tokenizes as the pinned llama.cpp does,
 token for token. `hf` loads a Hugging Face `tokenizer.json` (byte-level BPE such as Tekken, and
 the Parakeet vocabulary) and implements `TextTokenizer`, keeping user text from encoding to a
-chat marker.
+chat marker. `qwen` builds Qwen's byte-level BPE from a checkpoint's `vocab.json` and `merges.txt`,
+for checkpoints that ship no `tokenizer.json`.
 
 ## Scope
 
-jevons-tokenizer owns `gemma4::Tokenizer` with `TokenizerError`, and `hf::HfTokenizer`.
+jevons-tokenizer owns `gemma4::Tokenizer` with `TokenizerError`, `hf::HfTokenizer` and
+`qwen::QwenBpe`.
 
 It leaves to other crates:
 
@@ -19,8 +21,8 @@ It leaves to other crates:
   adapter in `jevons-models`.
 - Chat markers and framing: the model crates, through `ChatFormat`.
 
-The Hugging Face tokenizer runs on the `tokenizers` crate without its C and C++ features, so the
-crate needs no C/C++ build.
+The Hugging Face and Qwen tokenizers run on the `tokenizers` crate without its C and C++
+features, so the crate needs no C/C++ build.
 
 ## Requirements
 
@@ -156,3 +158,22 @@ or one outside the vocabulary fails with `InvalidInput`, and a decoder failure w
 `piece(id)` returns the vocabulary entry as stored, such as `▁word`.
 
 Tests: none yet
+
+### R17 Qwen BPE loads from a vocabulary and its merges
+
+`QwenBpe::from_files` builds a byte-level BPE from `vocab.json` and `merges.txt`. `encode` composes
+the text (NFC), cuts it into pieces and merges inside each piece. The pieces are those of the
+`qwen-tts` package, which loads `Qwen2Tokenizer` with `transformers`' `fix_mistral_regex` pattern:
+a word with the character before it, ending where an upper-case letter follows a lower-case one;
+one digit; a run of punctuation with the slashes and line breaks after it; line breaks; other
+whitespace. A missing file fails with `ModelLoad`, and a file the tokenizer cannot read with
+`UnsupportedModel`.
+
+Tests: `text_merges_inside_words_and_a_word_keeps_its_leading_space`, `a_word_ends_where_an_upper_case_letter_follows_a_lower_case_one`, `decomposed_letters_are_composed_before_encoding`, `missing_files_fail_as_a_model_that_does_not_load`, `prompts_match_the_reference`
+
+### R18 Qwen BPE reads text as plain text
+
+`QwenBpe::encode` parses no added token: a chat marker written in the text encodes as its
+characters, never as the marker's id.
+
+Tests: `a_chat_marker_in_text_stays_plain_text`

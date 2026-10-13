@@ -13,11 +13,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const SERVICES: [(Service, &str); 3] = [
+const SERVICES: [(Service, &str); 4] = [
     (Service::Generative, "generative"),
     (Service::Decision, "decision"),
     (Service::Speech, "speech"),
+    (Service::Voice, "voice"),
 ];
+
+/// Whether a service's model may be a single GGUF file. The speech and voice models are
+/// checkpoint folders.
+fn takes_gguf(service: Service) -> bool {
+    matches!(service, Service::Generative | Service::Decision)
+}
 
 #[derive(Default)]
 struct Download {
@@ -54,6 +61,7 @@ fn selection(config: &DesktopConfig, service: Service) -> Option<&ModelRef> {
         Service::Generative => config.models.generative.as_ref(),
         Service::Decision => config.models.decision.as_ref(),
         Service::Speech => config.models.speech.as_ref(),
+        Service::Voice => config.models.voice.as_ref(),
     }
 }
 
@@ -62,6 +70,7 @@ fn selection_mut(config: &mut DesktopConfig, service: Service) -> &mut Option<Mo
         Service::Generative => &mut config.models.generative,
         Service::Decision => &mut config.models.decision,
         Service::Speech => &mut config.models.speech,
+        Service::Voice => &mut config.models.voice,
     }
 }
 
@@ -174,7 +183,7 @@ pub fn ModelsPage(rev: u64) -> Element {
                 div {
                     div { class: "dx-card-title", "Selected models" }
                     div { class: "dx-card-description",
-                        "A service without a selection uses the first downloaded catalog model that serves it: DiffusionGemma, then Parakeet for speech."
+                        "A service without a selection uses the first downloaded catalog model that serves it: DiffusionGemma, then Parakeet for speech and Qwen3-TTS for voice. Until a voice model is downloaded or chosen, answers show in the bubble."
                     }
                 }
                 if memory > 0.0 {
@@ -200,8 +209,9 @@ pub fn ModelsPage(rev: u64) -> Element {
                             div { class: "row",
                                 span { class: "mono grow wrap-anywhere", "{current}" }
                                 // A GGUF file (DiffusionGemma), or a checkpoint folder (Nemotron,
-                                // Parakeet): one dialog each, so cancelling one opens nothing else.
-                                if service != Service::Speech {
+                                // Parakeet, Qwen3-TTS): one dialog each, so cancelling one opens
+                                // nothing else.
+                                if takes_gguf(service) {
                                     button { class: "dx-button", "data-style": "outline", "data-size": "xs",
                                         onclick: move |_| {
                                             let picked = rfd::FileDialog::new().add_filter("GGUF", &["gguf"]).pick_file();

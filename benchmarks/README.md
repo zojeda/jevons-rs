@@ -12,6 +12,7 @@ Measurements of the System One API (typed answers from the diffusion language mo
 | [nemotron-2026-09-25](nemotron-2026-09-25/README.md) | Nemotron-Labs-Diffusion 3B and self-speculative decoding |
 | [cubecl](cubecl/README.md) | CubeCL kernel and backend comparisons |
 | [gemma-latency-2026-10-10](gemma-latency-2026-10-10/README.md) | DiffusionGemma before and after sampling on the device, one forward per read and the forward through Burn, interleaved on Windows |
+| [voice-2026-10-12](voice-2026-10-12/README.md) | Qwen3-TTS on the fused kernels: time per frame, time to first audio, the cold start with and without the kernel cache, fidelity against the reference |
 
 # System One
 

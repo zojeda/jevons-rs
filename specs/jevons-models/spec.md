@@ -3,8 +3,8 @@
 ## Purpose
 
 `jevons-models` tells which architecture a model's files hold and loads it. Diffusion models load as
-a `DiffusionModel` (DiffusionGemma, Nemotron-Labs-Diffusion) and speech models as a `SpeechModel`
-(Parakeet TDT), on the calling thread. It names the model IDs and routing aliases the server serves
+a `DiffusionModel` (DiffusionGemma, Nemotron-Labs-Diffusion), speech models as a `SpeechModel`
+(Parakeet TDT) and voice models as a `VoiceModel` (Qwen3-TTS), on the calling thread. It names the model IDs and routing aliases the server serves
 by default, and adapts the DiffusionGemma runtime to the `DiffusionModel` contract.
 
 ## Scope
@@ -14,15 +14,18 @@ It owns:
 - `detect`: architecture detection from a GGUF file or a Hugging Face checkpoint directory, `--arch`
   resolution, default model IDs and `-latest` aliases.
 - `speech`: speech detection, default speech model IDs and `load_speech`.
+- `voice`: voice detection, default voice model IDs and `load_voice`.
 - `gemma4`: the DiffusionGemma adapter. Its chat markers, answer-code pieces, image limits and
   prompt-cache switch live here; the GPU runtime under it is `jevons-gemma4-diffusion`.
 
 It leaves to other crates:
 
-- Model configuration and its validation to `jevons-core` (`ModelConfig`, `SpeechConfig`).
+- Model configuration and its validation to `jevons-core` (`ModelConfig`, `SpeechConfig`,
+  `VoiceConfig`).
 - GGUF reading to `jevons-formats`.
-- The runtimes to `jevons-gemma4-diffusion`, `jevons-nemotron-diffusion` and `jevons-parakeet`. The
-  Nemotron and Parakeet crates implement their contracts themselves.
+- The runtimes to `jevons-gemma4-diffusion`, `jevons-nemotron-diffusion`, `jevons-parakeet` and
+  `jevons-qwen3-tts`. The Nemotron, Parakeet and Qwen3-TTS crates implement their contracts
+  themselves.
 - Samplers and the answer-code check to `jevons-diffusion`; served names and aliases to
   `jevons-api`.
 
@@ -154,3 +157,23 @@ recomputes the whole prompt. The prefill profile counts calls, batches, processe
 and processed plus reused tokens equal the prompt length.
 
 Tests: `model_reads_preserve_reproducibility_across_requests`
+
+### R15 Voice checkpoints
+
+A checkpoint directory whose `config.json` has `model_type` `qwen3_tts` is Qwen3-TTS (`qwen3-tts`,
+alias `qwen3-tts-latest`) when its `tts_model_type` is `base` and its `tokenizer_type` is
+`qwen3_tts_tokenizer_12hz`. Another kind or tokenizer fails with `UnsupportedModel`, naming a
+12Hz Base checkpoint, and so does any other model type. The default model ID is
+`qwen3-tts-12hz-0.6b-base` when `tts_model_size` is `0b6`, `qwen3-tts-12hz-1.7b-base` when it is
+`1b7`, and the architecture ID otherwise. `detect` and `detect_speech` fail on a voice checkpoint
+with `UnsupportedModel` pointing to `services.voice`.
+
+Tests: `qwen3_tts_base_checkpoints_are_voice_models_and_others_are_not`
+
+### R16 Voice models load on the calling thread
+
+`load_voice` loads the checkpoint directory as a `VoiceModel` on the calling thread. A binary
+built without the `qwen3-tts` feature fails with `UnsupportedModel` ("support is not built into
+this binary").
+
+Tests: none yet

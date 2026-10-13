@@ -1,5 +1,6 @@
-//! Typed requests to the jevons API and to other providers of the same APIs, and the routes
-//! that send each capability to its provider. The jevons server parses requests by hand, so
+//! Typed requests to the jevons API and to other providers of the same APIs (decisions,
+//! generation, transcription, speech), and the routes that send each capability to its
+//! provider. The jevons server parses requests by hand, so
 //! these mirror its schemas rather than share types with it (which would also pull in the
 //! inference stack).
 
@@ -8,6 +9,7 @@ pub mod log;
 mod realtime;
 mod responses;
 mod route;
+mod speech;
 mod systemone;
 mod transcriptions;
 
@@ -15,6 +17,7 @@ pub use chat::{ChatMessage, ChatReply, ChatRequest};
 pub use realtime::{RealtimeEvent, RealtimeReader, RealtimeWriter, Turns};
 pub use responses::{Reasoning, ResponseRequest};
 pub use route::{EXTERNAL_MAX_QUESTIONS, MIN_PROBABILITY, Profile, Route, Routes};
+pub use speech::{Pcm16, SpeechRequest, SpeechStream};
 pub use systemone::{
     Answer, DecisionRequest, DecisionResponse, NoulCriteria, Question, Usage, probability_of,
 };
@@ -56,7 +59,10 @@ pub struct Health {
 pub struct Services {
     pub generative: Option<String>,
     pub decision: Option<String>,
+    /// Speech to text.
     pub speech: Option<String>,
+    /// Text to speech; a server that has none may leave the key out.
+    pub voice: Option<String>,
 }
 
 impl Client {
@@ -147,5 +153,29 @@ mod tests {
             "Unknown field"
         );
         assert_eq!(error_message("plain"), "plain");
+    }
+
+    #[test]
+    fn health_names_the_voice_model_when_the_server_has_one() {
+        let health: Health = serde_json::from_str(
+            r#"{"status": "ok", "services": {"generative": "gemma", "decision": "gemma",
+                "speech": "parakeet", "voice": "qwen3-tts-12hz-0.6b-base"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            health.services.voice.as_deref(),
+            Some("qwen3-tts-12hz-0.6b-base")
+        );
+        assert_eq!(health.services.speech.as_deref(), Some("parakeet"));
+        // A server from before the voice, or with no voice model, serves none.
+        let silent: Health = serde_json::from_str(
+            r#"{"status": "ok", "services": {"generative": "gemma", "decision": null,
+                "speech": null}}"#,
+        )
+        .unwrap();
+        assert_eq!(silent.services.voice, None);
+        let null: Health =
+            serde_json::from_str(r#"{"status": "ok", "services": {"voice": null}}"#).unwrap();
+        assert_eq!(null.services.voice, None);
     }
 }

@@ -85,6 +85,7 @@ moves to `changes/archive/`.
 | [jevons-generative](jevons-generative/spec.md) | Free-form answers, streaming, tool calls and structured answers |
 | [jevons-decision](jevons-decision/spec.md) | Restricted-canvas reads and probabilities, `jevons-scm` |
 | [jevons-speech](jevons-speech/spec.md) | Windowed transcription, words and segments |
+| [jevons-voice](jevons-voice/spec.md) | Text prepared for a voice model and spoken sentence by sentence |
 | **Diffusion layer** | |
 | [jevons-diffusion](jevons-diffusion/spec.md) | `DiffusionEngine`, decoding modes, samplers, the fake model |
 | **Models** | |
@@ -92,6 +93,7 @@ moves to `changes/archive/`.
 | [jevons-gemma4-diffusion](jevons-gemma4-diffusion/spec.md) | DiffusionGemma on tuned CubeCL kernels, its forward as Burn operations |
 | [jevons-nemotron-diffusion](jevons-nemotron-diffusion/spec.md) | Nemotron-Labs-Diffusion on Burn |
 | [jevons-parakeet](jevons-parakeet/spec.md) | Parakeet TDT on Burn |
+| [jevons-qwen3-tts](jevons-qwen3-tts/spec.md) | Qwen3-TTS on Burn |
 | **GPU runtimes** | |
 | [jevons-kernels](jevons-kernels/spec.md) | Shared tuned CubeCL kernels: buffers, quantized and FP16 GEMM |
 | [jevons-burn](jevons-burn/spec.md) | The Burn runtime: HIP device, weight streaming, attention, KV cache |
@@ -103,3 +105,4 @@ moves to `changes/archive/`.
 | **Changes** | |
 | [changes/desktop-server](changes/desktop-server/proposal.md) | Machines, agents and tasks; the desktop server, client and protocol |
 | [changes/gemma-vision-on-burn](changes/gemma-vision-on-burn/proposal.md) | The Gemma 4 vision encoder on `jevons-burn`'s layers: measured, and it does not hold its rule |
+| [changes/voice-output](changes/voice-output/proposal.md) | Voice as a leaf's output: a Voice service on an open-weight text-to-speech model, `/v1/audio/speech`, and the desk that speaks |

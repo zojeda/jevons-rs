@@ -1,10 +1,12 @@
 //! One take: stream the microphone to the transcriber, walk the flow tree to a leaf, and send
-//! the leaf's text where it says: into the application, the bubble or the clipboard.
+//! the leaf's text where it says: into the application, the bubble, the clipboard, or the
+//! voice that reads it aloud.
 //!
 //! Every step is recorded in a [`Trace`] for the inspector.
 
 use crate::client::{
-    ClientError, DecisionRequest, DecisionResponse, RealtimeEvent, ResponseRequest, Routes, Turns,
+    ClientError, DecisionRequest, DecisionResponse, Pcm16, RealtimeEvent, ResponseRequest, Route,
+    Routes, SpeechRequest, Turns,
 };
 use crate::context::ContextSnapshot;
 use crate::flow::frame::Frame;
@@ -17,7 +19,7 @@ use crate::flow::{FlowTree, Kind};
 use jevons_desktop_protocol::delivery::{
     Action, AudioEvent, DeliveryMethod, DeliveryOutcome, DeliveryRequest, SAMPLE_RATE,
 };
-use jevons_desktop_protocol::desk::{Delivery, Desk};
+use jevons_desktop_protocol::desk::{Delivery, Desk, Speech};
 pub use jevons_desktop_protocol::take::{Stage, StageKind, Update};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -115,6 +117,8 @@ impl Phrases {
 const LIVE_DRAIN: Duration = Duration::from_secs(5);
 /// How long to wait for the final transcript after the take ends.
 const TRANSCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
+/// The speech the desk is handed at a time: about 200 ms.
+const SPEECH_STRETCH: usize = SAMPLE_RATE as usize / 5;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
@@ -127,6 +131,12 @@ pub struct Settings {
     pub decision_timeout: Duration,
     /// How long generation may take before the transcript is typed as heard.
     pub generation_timeout: Duration,
+    /// Whether a take may speak its answer. Off, a leaf that asks for voice answers in the
+    /// bubble.
+    pub voice: bool,
+    /// How long the voice route may take to give the next of an answer's audio, the first of
+    /// it included, before the answer is left to the bubble.
+    pub voice_timeout: Duration,
 }
 
 impl Default for Settings {
@@ -137,6 +147,8 @@ impl Default for Settings {
             max_output_tokens: 1024,
             decision_timeout: Duration::from_secs(60),
             generation_timeout: Duration::from_secs(120),
+            voice: true,
+            voice_timeout: Duration::from_secs(60),
         }
     }
 }
@@ -145,14 +157,14 @@ impl Default for Settings {
 #[derive(Clone)]
 pub struct Env {
     /// Each capability's provider and model: speech (Realtime first, uploads as the
-    /// fallback), decisions and generation.
+    /// fallback), decisions, generation and the voice.
     pub routes: Routes,
     /// The flow tree takes walk (the last one that loaded without errors).
     pub flows: Arc<FlowTree>,
     pub settings: Settings,
-    /// The client: it delivers the text, asks the user, reads the screen and runs its own
-    /// tools. With no one at it (`Nobody`), the text is only recorded, tool calls that need
-    /// confirmation are denied, and nothing is read.
+    /// The client: it delivers the text, speaks, asks the user, reads the screen and runs its
+    /// own tools. With no one at it (`Nobody`), the text is only recorded, nothing is said,
+    /// tool calls that need confirmation are denied, and nothing is read.
     pub desk: Arc<dyn Desk>,
     /// Answers `[investigate]` questions; without it their answers are empty.
     pub investigator: Option<Arc<dyn Investigate>>,
@@ -377,7 +389,7 @@ async fn finish_take(
     .await;
     trace.time("walk", walked);
     match walk {
-        Ok((Walked::Leaf(leaf), _)) => deliver_leaf(env, start, leaf, &mut trace).await,
+        Ok((Walked::Leaf(leaf), _)) => deliver_leaf(env, start, leaf, updates, &mut trace).await,
         Ok((Walked::Machine(_), _)) => {
             trace.error = Some("A machine runs only below a machine at the flows root".into())
         }
@@ -387,7 +399,13 @@ async fn finish_take(
 }
 
 /// Sends a leaf's text where it goes, and records it on the trace.
-pub(crate) async fn deliver_leaf(env: &Env, start: &TakeStart, leaf: Leaf, trace: &mut Trace) {
+pub(crate) async fn deliver_leaf(
+    env: &Env,
+    start: &TakeStart,
+    leaf: Leaf,
+    updates: &mpsc::UnboundedSender<Update>,
+    trace: &mut Trace,
+) {
     let take = start.id;
     tracing::info!(take, leaf = %leaf.node, output = ?leaf.output, "Walked the flow tree");
     trace.output = leaf.text.clone();
@@ -418,6 +436,9 @@ pub(crate) async fn deliver_leaf(env: &Env, start: &TakeStart, leaf: Leaf, trace
                 }
             }
             Output::Bubble => trace.delivery = Some(DeliveryOutcome::Shown),
+            Output::Voice => {
+                trace.delivery = Some(speak(env, start.id, &leaf.text, updates, trace).await)
+            }
             Output::None | Output::Next => {}
         }
     }
@@ -431,10 +452,173 @@ pub(crate) async fn deliver_leaf(env: &Env, start: &TakeStart, leaf: Leaf, trace
             DeliveryOutcome::Delivered { method } => format!("{method:?}"),
             DeliveryOutcome::OnClipboard { .. } => "clipboard".into(),
             DeliveryOutcome::Shown => "bubble".into(),
+            DeliveryOutcome::Spoken => "voice".into(),
         }),
         error = trace.error.is_some(),
         "Delivered"
     );
+}
+
+/// How far an answer's speech got.
+#[derive(Default)]
+struct Spoken {
+    /// The stretches the desk took.
+    stretches: usize,
+    samples: usize,
+    /// When the desk took the first one, from the request.
+    first_ms: Option<u64>,
+}
+
+/// How an answer's speech ended, when nothing failed.
+enum SpeechEnd {
+    /// All of it reached the desk.
+    Whole,
+    /// The desk does not speak this take, or stopped: the rest was not asked for.
+    Refused,
+}
+
+/// Reads an answer aloud: asks the voice route for `text` as speech and hands it to the desk a
+/// stretch at a time, as it arrives. The bubble holds the answer either way, so whatever keeps
+/// it from being heard is a note and never fails the take. Spoken when the desk took any of it.
+async fn speak(
+    env: &Env,
+    take: u64,
+    text: &str,
+    updates: &mpsc::UnboundedSender<Update>,
+    trace: &mut Trace,
+) -> DeliveryOutcome {
+    let began = Instant::now();
+    let _ = updates.send(Update::Stage(Stage::new(StageKind::Speaking, "voice")));
+    let mut spoken = Spoken::default();
+    let end = match &env.routes.voice {
+        Some(route) => stream_speech(env, route, take, text, updates, began, &mut spoken).await,
+        None => Err("nothing serves the voice".into()),
+    };
+    let heard = spoken.stretches > 0;
+    if heard && end.is_err() {
+        // The desk is told that nothing follows, so what it holds plays out and ends.
+        let close = Speech {
+            take,
+            samples: Vec::new(),
+            last: true,
+        };
+        let _ = env.desk.speak(close).await;
+    }
+    let (detail, ok) = match &end {
+        Ok(SpeechEnd::Whole) => (None, true),
+        Ok(SpeechEnd::Refused) if heard => (Some("stopped".to_string()), true),
+        Ok(SpeechEnd::Refused) => {
+            trace
+                .notes
+                .push("Not read aloud: the desk is not speaking".into());
+            (Some("not spoken".into()), false)
+        }
+        Err(why) if heard => {
+            trace.notes.push(format!("The voice stopped early: {why}"));
+            (None, false)
+        }
+        Err(why) => {
+            trace.notes.push(format!("Not read aloud: {why}"));
+            (Some("not spoken".into()), false)
+        }
+    };
+    let seconds = spoken.samples as f64 / f64::from(SAMPLE_RATE);
+    let _ = updates.send(Update::StageDone {
+        detail: detail.unwrap_or_else(|| format!("{seconds:.1} s")),
+        chosen: None,
+        ok,
+    });
+    if let Some(first) = spoken.first_ms {
+        trace.timings.push(("voice_first".into(), first));
+    }
+    trace.time("voice", began);
+    // Sizes and times alone: neither the text nor the audio is logged.
+    tracing::info!(
+        take,
+        ms = began.elapsed().as_millis() as u64,
+        first_ms = spoken.first_ms,
+        audio_seconds = seconds,
+        whole = matches!(end, Ok(SpeechEnd::Whole)),
+        "Spoke"
+    );
+    if heard {
+        DeliveryOutcome::Spoken
+    } else {
+        DeliveryOutcome::Shown
+    }
+}
+
+/// The request and its stream: every full stretch goes to the desk at once, and what is left
+/// goes with the end, marked as the last. A desk that answers no ends it, and so does a route
+/// that gives nothing for `voice_timeout`: dropping the stream hangs up, so the provider stops.
+async fn stream_speech(
+    env: &Env,
+    route: &Route,
+    take: u64,
+    text: &str,
+    updates: &mpsc::UnboundedSender<Update>,
+    began: Instant,
+    spoken: &mut Spoken,
+) -> Result<SpeechEnd, String> {
+    let limit = env.settings.voice_timeout;
+    let late = || {
+        format!(
+            "no speech from {} within {} s",
+            route.name(),
+            limit.as_secs()
+        )
+    };
+    let failed = |e: ClientError| format!("{} failed: {e}", route.name());
+    let request = SpeechRequest {
+        model: route.model.clone(),
+        input: text.to_string(),
+        voice: route.voice.clone(),
+        // Left to the provider, which tells each sentence's language by its words: an answer
+        // may quote another language than the one the user speaks.
+        language: None,
+    };
+    let mut stream = tokio::time::timeout(limit, route.client.speak(&request))
+        .await
+        .map_err(|_| late())?
+        .map_err(failed)?;
+    let mut pcm = Pcm16::default();
+    let mut samples = Vec::new();
+    loop {
+        let piece = tokio::time::timeout(limit, stream.next())
+            .await
+            .map_err(|_| late())?
+            .map_err(failed)?;
+        let whole = piece.is_none();
+        if let Some(bytes) = piece {
+            pcm.push(&bytes, &mut samples);
+        }
+        if whole && spoken.samples == 0 && samples.is_empty() {
+            return Err(format!("{} answered with no audio", route.name()));
+        }
+        while whole || samples.len() >= SPEECH_STRETCH {
+            let rest = samples.split_off(samples.len().min(SPEECH_STRETCH));
+            let stretch = std::mem::replace(&mut samples, rest);
+            let last = whole && samples.is_empty();
+            let count = stretch.len();
+            let speech = Speech {
+                take,
+                samples: stretch,
+                last,
+            };
+            if !env.desk.speak(speech).await? {
+                return Ok(SpeechEnd::Refused);
+            }
+            if spoken.stretches == 0 {
+                spoken.first_ms = Some(began.elapsed().as_millis() as u64);
+                let _ = updates.send(Update::Speaking);
+            }
+            spoken.stretches += 1;
+            spoken.samples += count;
+            if last {
+                return Ok(SpeechEnd::Whole);
+            }
+        }
+    }
 }
 
 /// Streams the take to Realtime when possible and returns the transcript; falls back to an
@@ -796,8 +980,9 @@ mod tests {
     use crate::session::Session;
     use axum::Json;
     use axum::routing::{get, post};
+    use futures_util::future::BoxFuture;
     use jevons_desktop_core::desk::LocalDesk;
-    use jevons_desktop_core::fake::RecordingSink;
+    use jevons_desktop_core::fake::{RecordingSink, RecordingSpeaker};
     use jevons_desktop_protocol::desk::Nobody;
     use jevons_desktop_protocol::take::TakeSettings;
     use jevons_desktop_protocol::wire::{ToClient, ToServer, VERSION, attend, in_process};
@@ -898,7 +1083,8 @@ mod tests {
         (Client::new(&base, None), seen)
     }
 
-    /// Every capability on one server of ours.
+    /// Every capability on one server of ours, but the voice: nothing speaks unless a test
+    /// adds its route.
     fn routes(client: Client) -> Routes {
         let route = |model: &str| Some(Route::ours(client.clone(), "embedded", model));
         Routes {
@@ -906,6 +1092,7 @@ mod tests {
             realtime: route("parakeet"),
             decision: route("jev"),
             generation: route("jev"),
+            voice: None,
         }
     }
 
@@ -1003,6 +1190,7 @@ mod tests {
             model: "typesafe/jev-1.13".into(),
             provider: "openrouter".into(),
             profile: Profile::external(),
+            voice: None,
         }
     }
 
@@ -1019,6 +1207,7 @@ mod tests {
                 realtime: None,
                 decision: Some(external(decision)),
                 generation: Some(Route::ours(generation, "embedded", "gemma")),
+                voice: None,
             },
             ..env(Client::new("http://127.0.0.1:9", None), Some(&sink))
         };
@@ -1321,6 +1510,668 @@ mod tests {
                 .unwrap()
                 .contains("The user asked: hello world")
         );
+    }
+
+    /// How a fake voice provider answers a request for speech.
+    #[derive(Clone)]
+    enum Voiced {
+        /// These samples, in pieces of this many bytes.
+        Says(Vec<i16>, usize),
+        /// Speech that never ends: 50 ms more every few milliseconds.
+        NeverEnds,
+        /// It accepts the request and then sends nothing.
+        Silent,
+        /// These samples, and then nothing more, without ending.
+        Stalls(Vec<i16>),
+        /// An error status with its message.
+        Refuses,
+    }
+
+    #[derive(Clone, Default)]
+    struct Voicing {
+        requests: Arc<Mutex<Vec<Value>>>,
+        /// The pieces a never-ending answer has sent so far.
+        pieces: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    /// A voice provider, and the route to it: the model `qwen3-tts` in the voice `lucia`.
+    async fn voice(voiced: Voiced) -> (Route, Voicing) {
+        use axum::response::IntoResponse;
+        use futures_util::{StreamExt, stream};
+        use std::sync::atomic::Ordering;
+        type Piece = Result<Vec<u8>, std::io::Error>;
+        let voicing = Voicing::default();
+        let kept = voicing.clone();
+        let speak = move |Json(body): Json<Value>| {
+            let (kept, voiced) = (kept.clone(), voiced.clone());
+            async move {
+                kept.requests.lock().unwrap().push(body);
+                let pcm = |samples: &[i16]| -> Vec<u8> {
+                    samples.iter().flat_map(|s| s.to_le_bytes()).collect()
+                };
+                let audio: stream::BoxStream<'static, Piece> = match voiced {
+                    Voiced::Says(samples, size) => {
+                        let pieces: Vec<Piece> =
+                            pcm(&samples).chunks(size).map(|p| Ok(p.to_vec())).collect();
+                        stream::iter(pieces).boxed()
+                    }
+                    Voiced::NeverEnds => stream::unfold(kept.pieces.clone(), |pieces| async {
+                        tokio::time::sleep(Duration::from_millis(2)).await;
+                        pieces.fetch_add(1, Ordering::Relaxed);
+                        Some((Ok(vec![0u8; 2400]), pieces))
+                    })
+                    .boxed(),
+                    Voiced::Silent => stream::pending().boxed(),
+                    Voiced::Stalls(samples) => stream::iter([Ok(pcm(&samples))])
+                        .chain(stream::pending())
+                        .boxed(),
+                    Voiced::Refuses => {
+                        let error =
+                            json!({"error": {"message": "The voice worker is not running"}});
+                        return (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(error))
+                            .into_response();
+                    }
+                };
+                (
+                    [("content-type", "audio/pcm")],
+                    axum::body::Body::from_stream(audio),
+                )
+                    .into_response()
+            }
+        };
+        let app = axum::Router::new().route("/v1/audio/speech", post(speak));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let route = Route::ours(Client::new(&base, None), "embedded", "qwen3-tts")
+            .in_voice(Some("lucia".into()));
+        (route, voicing)
+    }
+
+    static NOBODY: Nobody = Nobody;
+
+    /// A desk that listens: it keeps every stretch of speech it is asked to play, and refuses
+    /// from the `stops_at`-th on, as a desk whose voice was stopped does.
+    #[derive(Default)]
+    struct Ears {
+        asked: Mutex<Vec<Speech>>,
+        stops_at: Option<usize>,
+    }
+
+    impl Ears {
+        fn stopping_at(stretch: usize) -> Self {
+            Self {
+                stops_at: Some(stretch),
+                ..Self::default()
+            }
+        }
+
+        fn asked(&self) -> Vec<Speech> {
+            self.asked.lock().unwrap().clone()
+        }
+    }
+
+    impl Desk for Ears {
+        fn speak(&self, speech: Speech) -> BoxFuture<'_, Result<bool, String>> {
+            let mut asked = self.asked.lock().unwrap();
+            let speaking = self.stops_at.is_none_or(|at| asked.len() < at);
+            asked.push(speech);
+            Box::pin(async move { Ok(speaking) })
+        }
+
+        fn deliver(
+            &self,
+            delivery: Delivery,
+        ) -> BoxFuture<'_, Result<Option<DeliveryOutcome>, String>> {
+            NOBODY.deliver(delivery)
+        }
+
+        fn confirm(&self, ask: jevons_desktop_protocol::desk::Ask) -> BoxFuture<'_, bool> {
+            NOBODY.confirm(ask)
+        }
+
+        fn read(
+            &self,
+            read: jevons_desktop_protocol::desk::Read,
+        ) -> BoxFuture<'_, jevons_desktop_protocol::extract::Extracted> {
+            NOBODY.read(read)
+        }
+
+        fn look(
+            &self,
+            look: jevons_desktop_protocol::desk::Look,
+        ) -> BoxFuture<'_, jevons_desktop_protocol::desk::Opened> {
+            NOBODY.look(look)
+        }
+
+        fn look_step(
+            &self,
+            session: u64,
+            tool: String,
+            arguments: Value,
+        ) -> BoxFuture<'_, jevons_desktop_protocol::desk::Looked> {
+            NOBODY.look_step(session, tool, arguments)
+        }
+
+        fn look_end(&self, session: u64, remember: bool) -> BoxFuture<'_, Option<String>> {
+            NOBODY.look_end(session, remember)
+        }
+
+        fn tools(&self) -> jevons_desktop_protocol::desk::ClientTools {
+            NOBODY.tools()
+        }
+
+        fn run_tool(
+            &self,
+            reference: String,
+            arguments: Value,
+            node: String,
+            confirm: bool,
+        ) -> BoxFuture<'_, Result<Value, String>> {
+            NOBODY.run_tool(reference, arguments, node, confirm)
+        }
+    }
+
+    /// The built-in tree with a generation model that answers `ANSWER`, the voice on `route`,
+    /// and `desk` at the other end.
+    async fn voiced_env(route: Route, desk: Arc<dyn Desk>) -> (Env, Seen) {
+        let (client, seen) = server(prefer(&[]), ANSWER).await;
+        let mut env = env(client, None);
+        env.routes.voice = Some(route);
+        env.desk = desk;
+        (env, seen)
+    }
+
+    const ANSWER: &str = "Son las cinco.";
+
+    /// A question for the built-in assistant, as take 7: its trace and what it reported.
+    async fn asked(env: &Env) -> (Trace, Vec<Update>) {
+        let (updates, mut reported) = mpsc::unbounded_channel();
+        let start = TakeStart {
+            id: 7,
+            context: context(None),
+            entry: None,
+        };
+        let trace = run_transcript(env, start, "Pregunta: ¿qué hora es?", &updates).await;
+        let mut all = Vec::new();
+        while let Ok(update) = reported.try_recv() {
+            all.push(update);
+        }
+        (trace, all)
+    }
+
+    /// What a take reported of its voice: the speaking stage, the first sound, and its end.
+    fn voiced(updates: &[Update]) -> Vec<String> {
+        let all = stages(updates);
+        let from = all.iter().position(|s| s == "Speaking voice");
+        from.map_or_else(Vec::new, |from| all[from..].to_vec())
+    }
+
+    /// The stages a take reported, and when its speech began, without the text.
+    fn stages(updates: &[Update]) -> Vec<String> {
+        updates
+            .iter()
+            .filter_map(|update| match update {
+                Update::Stage(stage) => Some(format!("{:?} {}", stage.kind, stage.label)),
+                Update::StageDone { detail, ok, .. } => Some(format!("→ {detail} {ok}")),
+                Update::Answering => Some("answering".into()),
+                Update::Speaking => Some("speaking".into()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn ramp(samples: usize) -> Vec<i16> {
+        (0..samples).map(|i| (i % 1000) as i16 - 500).collect()
+    }
+
+    #[tokio::test]
+    async fn an_answer_is_read_aloud_a_stretch_at_a_time_and_shown_too() {
+        // Half a second of speech, in pieces that cut samples in two.
+        let said = ramp(12_000);
+        let (route, voicing) = voice(Voiced::Says(said.clone(), 1001)).await;
+        let ears = Arc::new(Ears::default());
+        let (env, seen) = voiced_env(route, ears.clone()).await;
+        let (trace, updates) = asked(&env).await;
+        assert_eq!(trace.error, None, "{:?}", trace.notes);
+        assert_eq!(trace.notes, Vec::<String>::new());
+        let leaf = trace.leaf.as_ref().unwrap();
+        assert_eq!(
+            (leaf.node.as_str(), leaf.output),
+            ("assistant/ask/any", Output::Voice)
+        );
+        assert_eq!(trace.delivery, Some(DeliveryOutcome::Spoken));
+        assert_eq!(trace.output, ANSWER);
+        // The model wrote for the ear: plain sentences, and nothing about the bubble.
+        let generation = seen.generations.lock().unwrap()[0].clone();
+        let instructions = generation["instructions"].as_str().unwrap();
+        assert!(instructions.contains("read aloud"), "{instructions}");
+        assert!(instructions.contains("no Markdown"), "{instructions}");
+        assert!(!instructions.contains("bubble"), "{instructions}");
+        let input = generation["input"].as_str().unwrap();
+        assert!(input.contains("The user asked: Pregunta"), "{input}");
+        // The voice route was asked for the answer's text, in its voice, as PCM.
+        assert_eq!(
+            voicing.requests.lock().unwrap().clone(),
+            [
+                json!({"model": "qwen3-tts", "input": ANSWER, "voice": "lucia",
+                "response_format": "pcm"})
+            ]
+        );
+        // The desk got it in stretches of 200 ms, in order, the last one marked.
+        let stretches = ears.asked();
+        let shape: Vec<(u64, usize, bool)> = stretches
+            .iter()
+            .map(|s| (s.take, s.samples.len(), s.last))
+            .collect();
+        assert_eq!(shape, [(7, 4800, false), (7, 4800, false), (7, 2400, true)]);
+        let heard: Vec<i16> = stretches.into_iter().flat_map(|s| s.samples).collect();
+        assert_eq!(heard, said);
+        // The text streamed to the bubble as an answer, then the voice had its stage.
+        assert!(updates.contains(&Update::Output(ANSWER.into())));
+        assert_eq!(
+            stages(&updates),
+            [
+                "Deciding what to do",
+                "→ preferred true",
+                "Deciding ask",
+                "→ rules true",
+                "Answering answer",
+                "answering",
+                "→ 3 words true",
+                "Speaking voice",
+                "speaking",
+                "→ 0.5 s true",
+            ]
+        );
+        // The trace times the first sound and the whole, and holds no audio.
+        let timed: Vec<&str> = trace
+            .timings
+            .iter()
+            .map(|(step, _)| step.as_str())
+            .collect();
+        assert_eq!(
+            timed,
+            ["generate", "voice_first", "voice", "deliver", "walk"]
+        );
+        let written = serde_json::to_string(&trace).unwrap();
+        assert!(!written.contains("samples"), "{written}");
+        assert!(written.contains("\"outcome\":\"spoken\""), "{written}");
+
+        // A stretch goes as soon as it is full, before the stream says whether more follows.
+        // So an answer that ends on a stretch's edge closes with one that holds nothing.
+        let (route, _) = voice(Voiced::Says(ramp(9_600), 4096)).await;
+        let ears = Arc::new(Ears::default());
+        let (env, _) = voiced_env(route, ears.clone()).await;
+        let (trace, _) = asked(&env).await;
+        assert_eq!(trace.delivery, Some(DeliveryOutcome::Spoken));
+        let shape: Vec<(usize, bool)> = ears
+            .asked()
+            .iter()
+            .map(|s| (s.samples.len(), s.last))
+            .collect();
+        assert_eq!(shape, [(4800, false), (4800, false), (0, true)]);
+    }
+
+    #[tokio::test]
+    async fn a_voice_leaf_is_a_bubble_leaf_where_nothing_speaks_or_the_voice_is_off() {
+        // The built-in `ask` leaves ask for voice. With no voice route they are the bubble's.
+        let ears = Arc::new(Ears::default());
+        let (client, seen) = server(prefer(&[]), ANSWER).await;
+        let mut unserved = env(client, None);
+        unserved.desk = ears.clone();
+        // Served, but the user turned the voice off.
+        let (route, voicing) = voice(Voiced::Says(ramp(4_800), 4096)).await;
+        let (mut muted, muted_seen) = voiced_env(route, ears.clone()).await;
+        muted.settings.voice = false;
+        for (env, seen) in [(&unserved, &seen), (&muted, &muted_seen)] {
+            let (trace, updates) = asked(env).await;
+            assert_eq!(trace.error, None, "{:?}", trace.notes);
+            assert_eq!(trace.notes, Vec::<String>::new());
+            assert_eq!(trace.leaf.as_ref().unwrap().output, Output::Bubble);
+            assert_eq!(trace.delivery, Some(DeliveryOutcome::Shown));
+            // The model wrote for the eye, as for any bubble leaf.
+            let generation = seen.generations.lock().unwrap()[0].clone();
+            let instructions = generation["instructions"].as_str().unwrap();
+            assert!(instructions.contains("small bubble"), "{instructions}");
+            assert!(instructions.contains("renders Markdown"), "{instructions}");
+            assert!(!instructions.contains("read aloud"), "{instructions}");
+            assert_eq!(
+                stages(&updates),
+                [
+                    "Deciding what to do",
+                    "→ preferred true",
+                    "Deciding ask",
+                    "→ rules true",
+                    "Answering answer",
+                    "answering",
+                    "→ 3 words true",
+                ]
+            );
+            let timed: Vec<&str> = trace
+                .timings
+                .iter()
+                .map(|(step, _)| step.as_str())
+                .collect();
+            assert_eq!(timed, ["generate", "deliver", "walk"]);
+        }
+        // No speech was asked for, and the desk heard nothing.
+        assert!(voicing.requests.lock().unwrap().is_empty());
+        assert!(ears.asked().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_user_s_own_words_are_shown_and_never_read_back() {
+        // With no language model the leaf's text is what the user said.
+        let (route, voicing) = voice(Voiced::Says(ramp(4_800), 4096)).await;
+        let ears = Arc::new(Ears::default());
+        let (mut env, seen) = voiced_env(route.clone(), ears.clone()).await;
+        env.routes.generation = None;
+        let (trace, updates) = asked(&env).await;
+        assert_eq!(trace.error, None);
+        assert_eq!(trace.output, "Pregunta: ¿qué hora es?");
+        assert_eq!(trace.leaf.as_ref().unwrap().output, Output::Bubble);
+        assert_eq!(trace.delivery, Some(DeliveryOutcome::Shown));
+        assert!(
+            trace.notes.iter().any(|n| n.contains("No language model")),
+            "{:?}",
+            trace.notes
+        );
+        assert!(seen.generations.lock().unwrap().is_empty());
+        assert_eq!(voiced(&updates), Vec::<String>::new());
+        // The same after a decision model that did not answer in time: two voice leaves below
+        // a model decision, and nothing is generated.
+        let app = axum::Router::new().route(
+            "/v1/systemone",
+            post(|| async {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                Json(json!({}))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let leaf = |about: &str| format!("description = \"{about}\"\noutput = \"voice\"");
+        let stalled = Env {
+            flows: tree_of(&[
+                ("decide.toml", "fallback = \"facts\""),
+                ("facts/generate.toml", &leaf("A question of fact")),
+                ("advice/generate.toml", &leaf("A request for advice")),
+            ]),
+            settings: Settings {
+                decision_timeout: Duration::from_millis(200),
+                ..Settings::default()
+            },
+            routes: Routes {
+                voice: Some(route),
+                ..routes(Client::new(&base, None))
+            },
+            desk: ears.clone(),
+            ..env
+        };
+        let (trace, _) = asked(&stalled).await;
+        assert_eq!(trace.error, None);
+        assert_eq!(trace.output, "Pregunta: ¿qué hora es?");
+        let leaf = trace.leaf.as_ref().unwrap();
+        assert_eq!((leaf.node.as_str(), leaf.output), ("facts", Output::Bubble));
+        assert_eq!(trace.delivery, Some(DeliveryOutcome::Shown));
+        assert!(
+            trace.notes.iter().any(|n| n.contains("did not answer")),
+            "{:?}",
+            trace.notes
+        );
+        // Neither take asked for speech.
+        assert!(voicing.requests.lock().unwrap().is_empty());
+        assert!(ears.asked().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_desk_that_stops_ends_the_request_and_what_it_took_counts_as_spoken() {
+        use std::sync::atomic::Ordering;
+        // The provider would speak forever; the desk's voice is stopped at the third stretch.
+        let (route, voicing) = voice(Voiced::NeverEnds).await;
+        let ears = Arc::new(Ears::stopping_at(2));
+        let (env, _) = voiced_env(route, ears.clone()).await;
+        let (trace, updates) = asked(&env).await;
+        assert_eq!(trace.error, None, "{:?}", trace.notes);
+        assert_eq!(trace.delivery, Some(DeliveryOutcome::Spoken));
+        assert_eq!(trace.notes, Vec::<String>::new());
+        // Two stretches played, the third was refused, and no more was asked.
+        assert_eq!(ears.asked().len(), 3);
+        assert!(ears.asked().iter().all(|s| !s.last));
+        assert_eq!(
+            voiced(&updates),
+            ["Speaking voice", "speaking", "→ stopped true"]
+        );
+        // The request ended with it: the provider stops being read, so it stops speaking.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let sent = voicing.pieces.load(Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(voicing.pieces.load(Ordering::Relaxed), sent);
+
+        // With no one at the desk the answer is shown, and the request is given up the same.
+        let (route, _) = voice(Voiced::NeverEnds).await;
+        let (env, _) = voiced_env(route, Arc::new(Nobody)).await;
+        let (trace, _) = asked(&env).await;
+        assert_eq!(trace.error, None);
+        assert_eq!(trace.delivery, Some(DeliveryOutcome::Shown));
+        assert_eq!(trace.notes, ["Not read aloud: the desk is not speaking"]);
+
+        // A desk that does not speak this take at all: the answer is shown, with why.
+        let (route, voicing) = voice(Voiced::NeverEnds).await;
+        let ears = Arc::new(Ears::stopping_at(0));
+        let (env, _) = voiced_env(route, ears.clone()).await;
+        let (trace, updates) = asked(&env).await;
+        assert_eq!(trace.error, None);
+        assert_eq!(trace.delivery, Some(DeliveryOutcome::Shown));
+        assert_eq!(trace.notes, ["Not read aloud: the desk is not speaking"]);
+        assert_eq!(ears.asked().len(), 1);
+        assert_eq!(voiced(&updates), ["Speaking voice", "→ not spoken false"]);
+        assert!(!trace.timings.iter().any(|(step, _)| step == "voice_first"));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let sent = voicing.pieces.load(Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(voicing.pieces.load(Ordering::Relaxed), sent);
+    }
+
+    #[tokio::test]
+    async fn a_voice_route_that_fails_or_gives_nothing_in_time_leaves_the_answer_in_the_bubble() {
+        // The provider refuses: the answer is shown, the take does not fail, and a note says why.
+        let (route, _) = voice(Voiced::Refuses).await;
+        let ears = Arc::new(Ears::default());
+        let (env, _) = voiced_env(route, ears.clone()).await;
+        let (trace, _) = asked(&env).await;
+        assert_eq!(trace.error, None);
+        assert_eq!(trace.output, ANSWER);
+        assert_eq!(trace.delivery, Some(DeliveryOutcome::Shown));
+        assert_eq!(
+            trace.notes,
+            [
+                "Not read aloud: embedded/qwen3-tts failed: the API answered 503: The voice worker \
+              is not running"
+            ]
+        );
+        assert!(ears.asked().is_empty());
+        // It gives no audio within the time limit: the same, and the request is given up.
+        let limit = Settings {
+            voice_timeout: Duration::from_secs(1),
+            ..Settings::default()
+        };
+        let (route, _) = voice(Voiced::Silent).await;
+        let (mut env, _) = voiced_env(route, ears.clone()).await;
+        env.settings = limit.clone();
+        let began = Instant::now();
+        let (trace, updates) = asked(&env).await;
+        assert!(began.elapsed() < Duration::from_secs(4), "it gave up");
+        assert_eq!(trace.error, None);
+        assert_eq!(trace.delivery, Some(DeliveryOutcome::Shown));
+        assert_eq!(
+            trace.notes,
+            ["Not read aloud: no speech from embedded/qwen3-tts within 1 s"]
+        );
+        assert_eq!(voiced(&updates), ["Speaking voice", "→ not spoken false"]);
+        assert!(ears.asked().is_empty());
+        // It stalls after the first words: what played was spoken, and the desk is told that
+        // nothing follows.
+        let (route, _) = voice(Voiced::Stalls(ramp(4_800))).await;
+        let (mut env, _) = voiced_env(route, ears.clone()).await;
+        env.settings = limit;
+        let (trace, updates) = asked(&env).await;
+        assert_eq!(trace.error, None);
+        assert_eq!(trace.delivery, Some(DeliveryOutcome::Spoken));
+        assert_eq!(
+            trace.notes,
+            ["The voice stopped early: no speech from embedded/qwen3-tts within 1 s"]
+        );
+        let shape: Vec<(usize, bool)> = ears
+            .asked()
+            .iter()
+            .map(|s| (s.samples.len(), s.last))
+            .collect();
+        assert_eq!(shape, [(4800, false), (0, true)]);
+        assert_eq!(
+            voiced(&updates),
+            ["Speaking voice", "speaking", "→ 0.2 s false"]
+        );
+        // A provider that answers with no audio at all spoke nothing.
+        let (route, _) = voice(Voiced::Says(Vec::new(), 1)).await;
+        let quiet = Arc::new(Ears::default());
+        let (env, _) = voiced_env(route, quiet.clone()).await;
+        let (trace, _) = asked(&env).await;
+        assert_eq!(trace.delivery, Some(DeliveryOutcome::Shown));
+        assert_eq!(
+            trace.notes,
+            ["Not read aloud: embedded/qwen3-tts answered with no audio"]
+        );
+        assert!(quiet.asked().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_client_s_desk_plays_the_speech_or_says_why_it_does_not() {
+        let said = ramp(7_000);
+        let spoken = |desk: LocalDesk| {
+            let said = said.clone();
+            async move {
+                let (route, _) = voice(Voiced::Says(said, 4096)).await;
+                let (env, _) = voiced_env(route, Arc::new(desk)).await;
+                asked(&env).await.0
+            }
+        };
+        // With a speaker, the answer is queued whole on it: the take ends, and it plays on.
+        let speaker = RecordingSpeaker::new();
+        let voice = speaker.voice();
+        let trace = spoken(LocalDesk::default().with_speaker(voice.clone())).await;
+        assert_eq!(trace.delivery, Some(DeliveryOutcome::Spoken));
+        let played = speaker.played();
+        assert_eq!(played.len(), 1);
+        assert_eq!(played[0].samples, said);
+        assert!(!played[0].stopped);
+        assert_eq!(voice.speaking(), Some(7));
+        speaker.hear();
+        assert_eq!(voice.speaking(), None);
+        // With none, it is shown.
+        let trace = spoken(LocalDesk::default()).await;
+        assert_eq!(trace.delivery, Some(DeliveryOutcome::Shown));
+        assert_eq!(trace.notes, ["Not read aloud: the desk is not speaking"]);
+        // With one that cannot play, the note says what the speaker said.
+        let broken = RecordingSpeaker::new().without_device();
+        let trace = spoken(LocalDesk::default().with_speaker(broken.voice())).await;
+        assert_eq!(trace.error, None);
+        assert_eq!(trace.delivery, Some(DeliveryOutcome::Shown));
+        assert_eq!(trace.notes, ["Not read aloud: no output device"]);
+        // While the microphone is open, nothing is said.
+        let speaker = RecordingSpeaker::new();
+        let open = speaker.voice();
+        open.set_listening(true);
+        let trace = spoken(LocalDesk::default().with_speaker(open)).await;
+        assert_eq!(trace.delivery, Some(DeliveryOutcome::Shown));
+        assert!(speaker.played().is_empty());
+        // A device that goes away after the first stretch: that much was spoken.
+        let unplugged = RecordingSpeaker::new().unplugged_after(1);
+        let trace = spoken(LocalDesk::default().with_speaker(unplugged.voice())).await;
+        assert_eq!(trace.delivery, Some(DeliveryOutcome::Spoken));
+        assert_eq!(unplugged.played()[0].samples, said[..4800]);
+    }
+
+    #[tokio::test]
+    async fn an_answer_s_speech_crosses_the_stream_to_the_client_s_speaker() {
+        let said = ramp(6_000);
+        for websocket in [false, true] {
+            let (route, _) = voice(Voiced::Says(said.clone(), 4096)).await;
+            let (client, _) = server(prefer(&[]), ANSWER).await;
+            let (session, events) = Session::open(Arc::new(Nobody), builtin(), Settings::default());
+            session.set_routes(Some(Routes {
+                voice: Some(route),
+                ..routes(client)
+            }));
+            let host = Host::new(session, events, None);
+            let speaker = RecordingSpeaker::new();
+            let desk = Arc::new(LocalDesk::default().with_speaker(speaker.voice()));
+            let mut client = connected(&host, desk, websocket).await;
+            client.welcomed().await;
+            let (trace, _) = client
+                .say(1, context(None), "Pregunta: ¿qué hora es?")
+                .await;
+            assert_eq!(trace["error"], Value::Null, "websocket: {websocket}");
+            assert_eq!(trace["delivery"], json!({"outcome": "spoken"}));
+            assert_eq!(speaker.played()[0].samples, said, "websocket: {websocket}");
+        }
+        // A client that says its takes may not speak gets its answers in the bubble.
+        let (route, voicing) = voice(Voiced::Says(said.clone(), 4096)).await;
+        let (client, _) = server(prefer(&[]), ANSWER).await;
+        let (session, events) = Session::open(Arc::new(Nobody), builtin(), Settings::default());
+        session.set_routes(Some(Routes {
+            voice: Some(route),
+            ..routes(client)
+        }));
+        let host = Host::new(session, events, None);
+        let speaker = RecordingSpeaker::new();
+        let desk: Arc<dyn Desk> = Arc::new(LocalDesk::default().with_speaker(speaker.voice()));
+        let (link, server) = in_process();
+        let serving = host.clone();
+        tokio::spawn(async move { serving.serve(server).await });
+        let (say, hear) = attend(desk, link);
+        say.send(ToServer::Hello {
+            version: VERSION,
+            key: None,
+            tools: Default::default(),
+            settings: TakeSettings {
+                voice: false,
+                ..TakeSettings::default()
+            },
+        })
+        .unwrap();
+        let mut client = Connected { say, hear };
+        client.welcomed().await;
+        let (trace, _) = client
+            .say(1, context(None), "Pregunta: ¿qué hora es?")
+            .await;
+        assert_eq!(trace["delivery"], json!({"outcome": "shown"}));
+        assert_eq!(trace["leaf"]["output"], "bubble");
+        assert!(speaker.played().is_empty());
+        assert!(voicing.requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_api_log_never_holds_a_speech_request_or_its_audio() {
+        let file =
+            std::env::temp_dir().join(format!("jevons-voice-log-{}.log", std::process::id()));
+        let _ = std::fs::remove_file(&file);
+        let (route, voicing) = voice(Voiced::Says(ramp(4_800), 4096)).await;
+        let ears = Arc::new(Ears::default());
+        let (env, _) = voiced_env(route, ears.clone()).await;
+        crate::client::log::set(Some(file.clone()));
+        let (trace, _) = asked(&env).await;
+        crate::client::log::set(None);
+        assert_eq!(trace.delivery, Some(DeliveryOutcome::Spoken));
+        assert_eq!(voicing.requests.lock().unwrap().len(), 1);
+        // Other tests' calls may land in the file while it is on. Whatever is there, no record
+        // is of a speech call: the request that holds the answer's text is the generation's.
+        let text = std::fs::read_to_string(&file).unwrap_or_default();
+        assert!(!text.contains("audio/speech"), "{text}");
+        assert!(!text.contains("response_format"), "{text}");
+        assert!(!text.contains("lucia"), "{text}");
+        let _ = std::fs::remove_file(file);
     }
 
     #[tokio::test]
@@ -3347,7 +4198,7 @@ confirm = false
             (
                 Some("the-key"),
                 VERSION + 1,
-                "the client speaks version 2, the server 1",
+                "the client speaks version 3, the server 2",
             ),
         ] {
             let (mut client, server) = in_process();

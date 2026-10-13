@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The client's settings for its takes (its `[dictation]`).
+/// The client's settings for its takes (its `[dictation]`, and its `[voice]` switch).
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct TakeSettings {
     /// The language spoken; detected when left out.
@@ -11,6 +11,9 @@ pub struct TakeSettings {
     pub decide: bool,
     /// The most tokens a generation writes, unless a flow node sets its own.
     pub max_output_tokens: u32,
+    /// Whether a take may speak its answer. Off, a leaf that asks for voice answers in the
+    /// bubble: a client with no speaker, or whose user muted it, says so here.
+    pub voice: bool,
 }
 
 impl Default for TakeSettings {
@@ -19,6 +22,7 @@ impl Default for TakeSettings {
             language: None,
             decide: true,
             max_output_tokens: 1024,
+            voice: true,
         }
     }
 }
@@ -34,7 +38,8 @@ pub enum Update {
     Heard(String),
     Transcribing,
     Thinking,
-    /// A stage of processing started: a decision, an investigation, a generation, a tool call.
+    /// A stage of processing started: a decision, an investigation, a generation, a tool call,
+    /// an answer's speech.
     /// It runs until a [`Update::StageDone`]; stages nest (an agent's tool calls), so a done
     /// closes the latest stage still open.
     Stage(Stage),
@@ -51,6 +56,8 @@ pub enum Update {
     Output(String),
     /// The text being generated is an answer for the bubble, not text for the application.
     Answering,
+    /// The desk took the first stretch of the answer's speech: it is being read aloud.
+    Speaking,
     /// The machines moved: where they are now, such as `search › answering`.
     State(String),
     /// The words are for a task that was waiting: its agent handed them to it. Until then a
@@ -69,6 +76,8 @@ pub enum StageKind {
     Writing,
     Answering,
     Calling,
+    /// The answer is synthesized and handed to the desk to play.
+    Speaking,
 }
 
 /// A stage as it starts.

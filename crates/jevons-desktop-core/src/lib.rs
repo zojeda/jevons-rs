@@ -13,6 +13,8 @@
 //! - [`forward`]: the API the app serves to other clients, forwarded to those providers.
 //! - [`delivery`], [`levels`], [`icons`]: paste safety, the microphone meter and the tray
 //!   frames.
+//! - [`voice`]: an answer's speech at the desk, one take at a time and never while the
+//!   microphone is open.
 //! - [`catalog`] and [`download`]: the model catalog and resumable, verified downloads.
 //! - [`xpath`]: XPath queries over the accessibility trees of the user's applications.
 //! - [`interface`]: the inspector's browser of a window's accessibility tree, with selectors.
@@ -44,4 +46,5 @@ pub mod platform;
 pub mod reader;
 pub mod recorded;
 pub mod recording;
+pub mod voice;
 pub mod xpath;

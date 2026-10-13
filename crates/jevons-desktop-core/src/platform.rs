@@ -186,7 +186,7 @@ pub trait ContextInspector: Send + Sync {
     }
 }
 
-/// A capture device.
+/// An audio device: one that captures, or one that plays.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct AudioDevice {
     pub name: String,
@@ -207,6 +207,25 @@ pub trait AudioSource: Send {
         device: Option<&str>,
         events: UnboundedSender<AudioEvent>,
     ) -> Result<Box<dyn CaptureHandle>, PlatformError>;
+}
+
+/// Speech as it plays. It stops when dropped or stopped.
+pub trait PlaybackHandle: Send {
+    /// Queues mono PCM16 at [`SAMPLE_RATE`] behind what is queued, without waiting for it to
+    /// be heard. False when nothing plays any more, such as a device that went away.
+    fn play(&mut self, samples: &[i16]) -> bool;
+    /// Whether any queued sample is still to be heard.
+    fn playing(&self) -> bool;
+    /// Stops at once: what is queued is dropped.
+    fn stop(self: Box<Self>);
+}
+
+/// Audio output layer.
+pub trait Speaker: Send {
+    fn devices(&self) -> Vec<AudioDevice>;
+    /// Starts playing on `device` (the default when `None`). Nothing sounds until the handle
+    /// takes samples.
+    fn start(&mut self, device: Option<&str>) -> Result<Box<dyn PlaybackHandle>, PlatformError>;
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
@@ -713,6 +732,16 @@ impl TextSink for Unsupported {
 
     fn copy(&mut self, _: &str) -> Result<(), PlatformError> {
         Err(PlatformError::Unsupported("The clipboard"))
+    }
+}
+
+impl Speaker for Unsupported {
+    fn devices(&self) -> Vec<AudioDevice> {
+        Vec::new()
+    }
+
+    fn start(&mut self, _: Option<&str>) -> Result<Box<dyn PlaybackHandle>, PlatformError> {
+        Err(PlatformError::Unsupported("Playing audio"))
     }
 }
 

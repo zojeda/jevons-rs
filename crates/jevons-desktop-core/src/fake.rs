@@ -4,13 +4,14 @@ use crate::context::{ContextSnapshot, Privacy};
 use crate::levels::Meter;
 use crate::platform::{
     AudioDevice, AudioEvent, AudioSource, CaptureHandle, Chord, ContextInspector, ContextProvider,
-    DeliveryOutcome, DeliveryRequest, PlatformError, SAMPLE_RATE, SinkCapabilities, TextSink,
-    UiAction, UiElement, WindowEntry,
+    DeliveryOutcome, DeliveryRequest, PlatformError, PlaybackHandle, SAMPLE_RATE, SinkCapabilities,
+    Speaker, TextSink, UiAction, UiElement, WindowEntry,
 };
 use crate::recorded::{
     Deed, DemonstratedStep, Demonstration, RecordedElement, RecordedInspector, RecordedTree,
     RecordedWindow,
 };
+use crate::voice::Voice;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -166,6 +167,127 @@ impl TextSink for RecordingSink {
     fn copy(&mut self, text: &str) -> Result<(), PlatformError> {
         self.recorded.lock().unwrap().clipboard = Some(text.into());
         Ok(())
+    }
+}
+
+/// What a [`RecordingSpeaker`] played in one go, from a start to its end or its stop.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Played {
+    /// The device asked for; `None` is the default one.
+    pub device: Option<String>,
+    /// Every sample queued, in order.
+    pub samples: Vec<i16>,
+    /// Whether it was cut before all of it was heard.
+    pub stopped: bool,
+    /// How many of the samples were heard.
+    heard: usize,
+    /// How many stretches were queued.
+    stretches: usize,
+}
+
+/// Records speech instead of playing it. What is queued counts as still playing until
+/// [`RecordingSpeaker::hear`] says it was heard.
+#[derive(Clone, Default)]
+pub struct RecordingSpeaker {
+    played: Arc<Mutex<Vec<Played>>>,
+    no_device: bool,
+    unplugged_after: Option<usize>,
+}
+
+impl RecordingSpeaker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Has no device to play on: starting fails.
+    pub fn without_device(mut self) -> Self {
+        self.no_device = true;
+        self
+    }
+
+    /// Takes this many stretches of a take's speech and then goes away, like a device
+    /// unplugged.
+    pub fn unplugged_after(mut self, stretches: usize) -> Self {
+        self.unplugged_after = Some(stretches);
+        self
+    }
+
+    /// The desk's voice over this speaker.
+    pub fn voice(&self) -> Arc<Voice> {
+        Arc::new(Voice::new(Box::new(self.clone())))
+    }
+
+    /// Each playback so far, in the order they started.
+    pub fn played(&self) -> Vec<Played> {
+        self.played.lock().unwrap().clone()
+    }
+
+    /// Everything queued so far has been heard.
+    pub fn hear(&self) {
+        for played in self.played.lock().unwrap().iter_mut() {
+            played.heard = played.samples.len();
+        }
+    }
+}
+
+impl Speaker for RecordingSpeaker {
+    fn devices(&self) -> Vec<AudioDevice> {
+        vec![AudioDevice {
+            name: "recording".into(),
+            default: true,
+        }]
+    }
+
+    fn start(&mut self, device: Option<&str>) -> Result<Box<dyn PlaybackHandle>, PlatformError> {
+        if self.no_device {
+            return Err(PlatformError::Failed("no output device".into()));
+        }
+        let mut played = self.played.lock().unwrap();
+        played.push(Played {
+            device: device.map(String::from),
+            ..Played::default()
+        });
+        Ok(Box::new(RecordedPlayback {
+            played: self.played.clone(),
+            index: played.len() - 1,
+            unplugged_after: self.unplugged_after,
+        }))
+    }
+}
+
+struct RecordedPlayback {
+    played: Arc<Mutex<Vec<Played>>>,
+    index: usize,
+    unplugged_after: Option<usize>,
+}
+
+impl PlaybackHandle for RecordedPlayback {
+    fn play(&mut self, samples: &[i16]) -> bool {
+        let played = &mut self.played.lock().unwrap()[self.index];
+        if self
+            .unplugged_after
+            .is_some_and(|most| played.stretches >= most)
+        {
+            return false;
+        }
+        played.stretches += 1;
+        played.samples.extend_from_slice(samples);
+        true
+    }
+
+    fn playing(&self) -> bool {
+        let played = &self.played.lock().unwrap()[self.index];
+        played.heard < played.samples.len()
+    }
+
+    fn stop(self: Box<Self>) {}
+}
+
+/// Stopped or dropped, what was not heard yet never is.
+impl Drop for RecordedPlayback {
+    fn drop(&mut self) {
+        let played = &mut self.played.lock().unwrap()[self.index];
+        played.stopped = played.heard < played.samples.len();
     }
 }
 

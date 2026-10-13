@@ -249,13 +249,8 @@ fn run(commands: UnboundedSender<Command>, ready: std::sync::mpsc::Sender<Result
             }
             _ => {}
         }
-        // Tuning outranks every state but listening, which must stay visible while speaking.
         let tuning = crate::tuning::active();
-        let display = if tuning && !matches!(state, TrayState::Listening { .. }) {
-            TrayState::Tuning
-        } else {
-            state
-        };
+        let display = displayed(state, tuning);
         if let Some(icon) = &tray
             && shown != Some(display)
         {
@@ -280,6 +275,17 @@ fn run(commands: UnboundedSender<Command>, ready: std::sync::mpsc::Sender<Result
             *control_flow = ControlFlow::Wait;
         }
     });
+}
+
+/// What the icon shows for `state` while GPU kernels are tuned or not. Tuning outranks every
+/// state but listening: the microphone's level must stay in view while the user talks. An
+/// answer read aloud is heard, so its icon gives way to the one sign there is of tuning.
+fn displayed(state: TrayState, tuning: bool) -> TrayState {
+    if tuning && !matches!(state, TrayState::Listening { .. }) {
+        TrayState::Tuning
+    } else {
+        state
+    }
 }
 
 /// What the menu shows in place of the recording and automation items while automations
@@ -555,6 +561,21 @@ fn menu_command(id: &str) -> Option<MenuCommand> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tuning_outranks_every_state_but_listening() {
+        let listening = TrayState::Listening { level: 3 };
+        assert_eq!(displayed(listening, true), listening);
+        for state in [
+            TrayState::Idle,
+            TrayState::Thinking { frame: 1 },
+            TrayState::Speaking { frame: 2 },
+            TrayState::Recording,
+        ] {
+            assert_eq!(displayed(state, true), TrayState::Tuning);
+            assert_eq!(displayed(state, false), state);
+        }
+    }
 
     #[test]
     fn the_machines_menu_names_each_machine_s_state_and_counts_the_tasks() {

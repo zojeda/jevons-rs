@@ -36,6 +36,18 @@ const DEFAULT_QUESTION: &str = "Which of these fits what the user wants?";
 /// How flow files name the tools of the automations library.
 const SCRIPTS: &str = "script";
 
+/// What a generation is told about an answer the bubble shows.
+const FOR_THE_BUBBLE: &str = "The answer is shown in a small bubble by the tray icon, which \
+    renders Markdown and scrolls. Use Markdown where it helps reading: **bold** for the key \
+    facts, short lists for steps or options, `code` and fenced code blocks for code, commands \
+    and names, a small table to compare.";
+
+/// What a generation is told about an answer that is read aloud.
+const FOR_THE_VOICE: &str = "The answer is read aloud to the user, who hears it and does not \
+    read it. Write it as you would say it: plain sentences, with no Markdown, no lists, no \
+    tables and no code. Write numbers, dates and amounts as one says them, and never spell \
+    out an address: say what it leads to.";
+
 /// An automation of the client's library, as a run node lists it.
 #[derive(Clone)]
 struct Automation {
@@ -1419,23 +1431,39 @@ impl Walker<'_> {
         self.leaf(node, self.frame.transcript.clone(), output, action)
     }
 
+    /// Whether this take reads aloud the answer of a leaf that asks for it: something serves
+    /// the voice, and the client lets its takes speak.
+    fn speaks(&self) -> bool {
+        self.env.routes.voice.is_some() && self.env.settings.voice
+    }
+
     async fn generate(&mut self, node: &Node, g: &GenerateSpec) -> Result<Leaf, ClientError> {
-        let output = g.output.unwrap_or(Output::Target);
+        // Decided before a word is written, since the model writes for the ear or for the
+        // eye. A leaf that asks for voice and will not be heard is a bubble's, all the way.
+        let output = match g.output.unwrap_or(Output::Target) {
+            Output::Voice if !self.speaks() => Output::Bubble,
+            output => output,
+        };
         let action = if output == Output::Target {
             self.feasible(g.action.unwrap_or_default())
         } else {
             Action::Insert
         };
         let heard = self.frame.transcript.clone();
+        // The user's own words are shown, never read back to them.
+        let as_heard = match output {
+            Output::Voice => Output::Bubble,
+            output => output,
+        };
         let env = self.env;
         let Some(route) = env.routes.generation.as_ref() else {
             self.note("No language model: using the words as heard");
-            return Ok(self.leaf(node, heard, output, action));
+            return Ok(self.leaf(node, heard, as_heard, action));
         };
         let model = route.model.clone();
         if self.stalled {
             self.note("The language model did not answer: using the words as heard");
-            return Ok(self.leaf(node, heard, output, action));
+            return Ok(self.leaf(node, heard, as_heard, action));
         }
         let mut instructions = self.frame.instructions.clone();
         instructions.push(
@@ -1448,10 +1476,8 @@ impl Walker<'_> {
                     "The words are an instruction: rewrite the given text accordingly and output \
                      the complete rewritten text."
                 }
-                (Output::Bubble, _) => {
-                    "The answer is shown in a small bubble by the tray icon, as plain text \
-                     without Markdown."
-                }
+                (Output::Bubble, _) => FOR_THE_BUBBLE,
+                (Output::Voice, _) => FOR_THE_VOICE,
                 (Output::Clipboard, _) => "The text goes onto the clipboard for the user to paste.",
                 _ => "",
             }
@@ -1480,11 +1506,14 @@ impl Walker<'_> {
             Some(shape) => request.answer_schema(shape.json_schema()),
             None => request,
         };
-        self.stage(match output {
-            Output::Bubble => Stage::new(StageKind::Answering, "answer"),
-            _ => Stage::new(StageKind::Writing, "text"),
+        // An answer that is read aloud is shown too: it streams to the bubble as any answer.
+        let answers = matches!(output, Output::Bubble | Output::Voice);
+        self.stage(if answers {
+            Stage::new(StageKind::Answering, "answer")
+        } else {
+            Stage::new(StageKind::Writing, "text")
         });
-        if output == Output::Bubble {
+        if answers {
             let _ = self.updates.send(Update::Answering);
         }
         let began = Instant::now();
@@ -1537,7 +1566,7 @@ impl Walker<'_> {
                     output: String::new(),
                 });
                 let seconds = self.env.settings.generation_timeout.as_secs();
-                if output == Output::Bubble {
+                if answers {
                     return Err(ClientError::Protocol(format!(
                         "no answer within {seconds} s"
                     )));
@@ -1575,7 +1604,9 @@ impl Walker<'_> {
                 ));
             }
             (Output::Target, _) => input.push_str(&format!("\nDictation: {said}")),
-            (Output::Bubble, _) => input.push_str(&format!("\nThe user asked: {said}")),
+            (Output::Bubble | Output::Voice, _) => {
+                input.push_str(&format!("\nThe user asked: {said}"))
+            }
             _ => input.push_str(&format!("\nThe user said: {said}")),
         }
         input

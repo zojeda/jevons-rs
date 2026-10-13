@@ -1,6 +1,7 @@
-//! `jevons-desktop.toml`: the client's settings. Dictation and its hotkeys, what a snapshot may
-//! keep, the tools that run on this machine, and the automations library with its approvals. The Settings panel edits and saves it;
-//! a missing file means defaults.
+//! `jevons-desktop.toml`: the client's settings. Dictation and its hotkeys, the voice that reads
+//! answers aloud, what a snapshot may keep, the tools that run on this machine, and the
+//! automations library with its approvals. The Settings panel edits and saves it; a missing
+//! file means defaults.
 
 use crate::context::Privacy;
 pub use jevons_desktop_tools::config::{McpConfig, ToolConfig, ToolKind};
@@ -12,6 +13,9 @@ use std::path::{Path, PathBuf};
 #[serde(default, deny_unknown_fields)]
 pub struct ClientConfig {
     pub dictation: Dictation,
+    /// Whether answers are read aloud, and on which device.
+    #[serde(skip_serializing_if = "VoiceSettings::is_default")]
+    pub voice: VoiceSettings,
     pub privacy: Privacy,
     /// Built-in tools that run on this machine, by name: flow nodes may call them, and each
     /// asks here before it runs unless it says otherwise.
@@ -23,6 +27,33 @@ pub struct ClientConfig {
     /// The automations library, recording demonstrations, and which versions may run.
     #[serde(skip_serializing_if = "AutomationSettings::is_default")]
     pub automation: AutomationSettings,
+}
+
+/// `[voice]`: whether jevons reads answers aloud, and where.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct VoiceSettings {
+    /// Read aloud the answers of the flow leaves that ask for it (`output = "voice"`). Off,
+    /// they are shown in the bubble and nothing is said.
+    pub speak: bool,
+    /// The output device name; the default device when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+}
+
+impl Default for VoiceSettings {
+    fn default() -> Self {
+        Self {
+            speak: true,
+            output: None,
+        }
+    }
+}
+
+impl VoiceSettings {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// `[automation]`: the automations library and the versions the user approved.
@@ -204,6 +235,27 @@ mod tests {
         let config: ClientConfig = toml::from_str(text).unwrap();
         assert_eq!(config.dictation.hotkey, "Ctrl+Alt+Space");
         assert!(!config.privacy.read_clipboard);
+        assert!(config.voice.speak);
+        assert_eq!(config.voice.output, None);
+    }
+
+    #[test]
+    fn the_voice_speaks_on_the_default_device_unless_the_settings_say_otherwise() {
+        // Left out, answers are read aloud on the default device, and nothing of it is
+        // written to a file that never set it.
+        let default: ClientConfig = toml::from_str("").unwrap();
+        assert_eq!(default.voice, VoiceSettings::default());
+        assert!(default.voice.speak && default.voice.output.is_none());
+        assert!(!toml::to_string(&default).unwrap().contains("voice"));
+        // Muted, on a named device: saved, it loads back the same.
+        let config: ClientConfig =
+            toml::from_str("[voice]\nspeak = false\noutput = \"Headphones\"\n").unwrap();
+        assert!(!config.voice.speak);
+        assert_eq!(config.voice.output.as_deref(), Some("Headphones"));
+        let back: ClientConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(back, config);
+        // A key it does not have is an error, never ignored.
+        assert!(toml::from_str::<ClientConfig>("[voice]\nvolume = 0.5\n").is_err());
     }
 
     #[test]

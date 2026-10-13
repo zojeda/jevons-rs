@@ -399,18 +399,16 @@ mod tests {
         assert_eq!(entries, ["assistant", "automations", "dictation"]);
     }
 
-    #[test]
-    fn an_unedited_earlier_built_in_tree_is_brought_up_to_date_and_an_edited_one_is_not() {
-        let dir = std::env::temp_dir().join(format!("jevons-flows-upgrade-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        // The tree before automations, as jevons wrote it (with CRLF, as on Windows).
+    /// The built-in tree as jevons wrote it at `commit` (with CRLF, as on Windows), read from
+    /// the repository's history; empty where there is none to read.
+    fn tree_at(commit: &str) -> Vec<(String, String)> {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let files: Vec<(String, String)> = std::process::Command::new("git")
+        std::process::Command::new("git")
             .args([
                 "ls-tree",
                 "-r",
                 "--name-only",
-                "c9ac58f",
+                commit,
                 "examples/desktop/flows",
             ])
             .current_dir(&root)
@@ -428,7 +426,7 @@ mod tests {
             .filter(|p: &String| !p.ends_with("AGENTS.md"))
             .filter_map(|p| {
                 let text = std::process::Command::new("git")
-                    .args(["show", &format!("c9ac58f:{p}")])
+                    .args(["show", &format!("{commit}:{p}")])
                     .current_dir(&root)
                     .output()
                     .ok()?;
@@ -437,18 +435,136 @@ mod tests {
                     String::from_utf8_lossy(&text.stdout).replace('\n', "\r\n"),
                 ))
             })
-            .collect();
+            .collect()
+    }
+
+    fn write_tree(dir: &Path, files: &[(String, String)]) {
+        for (path, text) in files {
+            let file = dir.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, text).unwrap();
+        }
+    }
+
+    #[test]
+    fn an_unedited_tree_from_before_the_voice_gets_the_leaves_that_speak() {
+        let dir = std::env::temp_dir().join(format!("jevons-flows-voice-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // The last tree whose `ask` leaves answered in the bubble.
+        let files = tree_at("9646632");
         if files.is_empty() {
             eprintln!("skipped: no git history to read the earlier tree from");
             return;
         }
-        let write = |dir: &Path| {
-            for (path, text) in &files {
-                let file = dir.join(path);
-                std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-                std::fs::write(file, text).unwrap();
-            }
-        };
+        write_tree(&dir, &files);
+        let report = init(&dir).unwrap();
+        assert!(report.notes[0].contains("earlier version"), "{report:?}");
+        // Only what changed is written: the four leaves, their instructions and the agent's
+        // file. Nothing moved, so nothing is removed.
+        let mut rewritten: Vec<&str> = report
+            .written
+            .iter()
+            .map(String::as_str)
+            .filter(|path| TREE.iter().any(|(p, _)| p == path))
+            .collect();
+        rewritten.sort();
+        assert_eq!(
+            rewritten,
+            [
+                "assistant/agent.toml",
+                "assistant/ask/any/generate.toml",
+                "assistant/ask/chat/generate.toml",
+                "assistant/ask/instructions.md",
+                "assistant/ask/slack/generate.toml",
+                "assistant/ask/web-chat/generate.toml",
+            ]
+        );
+        assert!(report.removed.is_empty(), "{report:?}");
+        let tree = FlowTree::load(&Disk::new(&dir), &Catalog::default());
+        assert!(tree.is_valid(), "{:?}", tree.errors);
+        let any = tree.find("assistant/ask/any").unwrap();
+        assert_eq!(
+            tree.node(any).spec.output(),
+            Some(crate::flow::spec::Output::Voice)
+        );
+        // Up to date now: nothing more to do.
+        assert!(init(&dir).unwrap().notes.is_empty());
+        // One the user edited keeps its bubble answers.
+        let edited = dir.with_extension("edited");
+        let _ = std::fs::remove_dir_all(&edited);
+        write_tree(&edited, &files);
+        std::fs::write(edited.join("instructions.md"), "Answer in Spanish.").unwrap();
+        let report = init(&edited).unwrap();
+        assert!(
+            !report.written.iter().any(|w| w.ends_with("generate.toml")),
+            "{report:?}"
+        );
+        let kept = std::fs::read_to_string(edited.join("assistant/ask/any/generate.toml")).unwrap();
+        assert!(kept.contains("output = \"bubble\""), "{kept}");
+        std::fs::remove_dir_all(dir).unwrap();
+        std::fs::remove_dir_all(edited).unwrap();
+    }
+
+    #[test]
+    fn the_built_in_assistant_answers_aloud_and_leaves_the_format_to_the_output() {
+        let tree = FlowTree::load(&builtin(), &Catalog::default());
+        assert!(tree.is_valid(), "{:?}", tree.errors);
+        // Every `ask` leaf asks for voice; nothing else in the tree does.
+        let mut speaking: Vec<&str> = TREE
+            .iter()
+            .filter(|(_, text)| text.contains("output = \"voice\""))
+            .map(|(path, _)| *path)
+            .collect();
+        speaking.sort();
+        assert_eq!(
+            speaking,
+            [
+                "assistant/ask/any/generate.toml",
+                "assistant/ask/chat/generate.toml",
+                "assistant/ask/slack/generate.toml",
+                "assistant/ask/web-chat/generate.toml",
+            ]
+        );
+        for leaf in ["any", "chat", "slack", "web-chat"] {
+            let id = tree.find(&format!("assistant/ask/{leaf}")).unwrap();
+            assert_eq!(
+                tree.node(id).spec.output(),
+                Some(crate::flow::spec::Output::Voice),
+                "{leaf}"
+            );
+        }
+        // Their instructions say what to answer, never how to format it: the output's own
+        // instruction does, for the bubble or for the voice.
+        let ask = tree.find("assistant/ask").unwrap();
+        let instructions = tree.node(ask).instructions_md.as_deref().unwrap();
+        assert!(
+            instructions.contains("Lead with the answer"),
+            "{instructions}"
+        );
+        assert!(!instructions.contains("Markdown"), "{instructions}");
+        assert!(!instructions.contains("bubble"), "{instructions}");
+        // The guide written into every flows folder says what `voice` is.
+        assert!(AGENTS_MD.contains("`voice` (`generate.toml` only)"));
+        // The research example's answers follow.
+        let research = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/desktop/machines/research/search");
+        for leaf in ["answering", "reading/summary"] {
+            let text = std::fs::read_to_string(research.join(leaf).join("generate.toml")).unwrap();
+            assert!(text.contains("output = \"voice\""), "{leaf}: {text}");
+        }
+    }
+
+    #[test]
+    fn an_unedited_earlier_built_in_tree_is_brought_up_to_date_and_an_edited_one_is_not() {
+        let dir = std::env::temp_dir().join(format!("jevons-flows-upgrade-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // The tree before automations, as jevons wrote it (with CRLF, as on Windows).
+        let files = tree_at("c9ac58f");
+        if files.is_empty() {
+            eprintln!("skipped: no git history to read the earlier tree from");
+            return;
+        }
+        let write = |dir: &Path| write_tree(dir, &files);
         write(&dir);
         std::fs::write(dir.join("TOOLS.md"), "generated").unwrap();
         let report = init(&dir).unwrap();
