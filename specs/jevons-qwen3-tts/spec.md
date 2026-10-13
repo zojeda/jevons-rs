@@ -148,15 +148,18 @@ Tests: `the_built_in_voices_list_reader_first`
 
 ### R10 Speaking an utterance
 
-`speak` hands the sink mono samples at 24 kHz: the first four frames as soon as they are decoded,
-then twelve frames at a time, then what is left. The decoder runs in those two chunk shapes
-alone: a last chunk short of its shape is filled by repeating its last frame, and the audio past
-its own frames is dropped, which leaves the audio before it as it was. It stops when the talker
-ends the audio, when the sink returns false, or after 600 frames (48 seconds). A voice the model lacks, a language it lacks,
-a text with nothing to speak and a text of more than 400 tokens fail with `InvalidInput` before
-anything is spoken.
+`speak` hands the sink mono samples at 24 kHz a chunk at a time: three chunks of four frames,
+the first as soon as it is decoded, then twelve frames at a time, then what is left. A speaker
+may start with the first sample, and twelve frames take longer to make than four play. After
+three short chunks the audio handed over outlasts the making of every chunk that follows, while
+a frame takes up to 40 ms to write: such a speaker never runs out of audio. The decoder runs in
+those two chunk shapes alone: a last chunk short of its shape is filled by repeating its last
+frame, and the audio past its own frames is dropped, which leaves the audio before it as it was.
+It stops when the talker ends the audio, when the sink returns false, or after 600 frames
+(48 seconds). A voice the model lacks, a language it lacks, a text with nothing to speak and a
+text of more than 400 tokens fail with `InvalidInput` before anything is spoken.
 
-Tests: `speaking_stops_when_the_sink_says_so_and_refuses_what_it_lacks`, `codec_audio_matches_the_reference`
+Tests: `speaking_stops_when_the_sink_says_so_and_refuses_what_it_lacks`, `codec_audio_matches_the_reference`, `the_audio_sent_outlasts_the_making_of_each_chunk_at_forty_ms_a_frame`
 
 ### R11 Loading
 

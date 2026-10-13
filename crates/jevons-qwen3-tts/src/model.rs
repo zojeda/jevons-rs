@@ -51,6 +51,20 @@ const _: () = assert!(MAX_TEXT_TOKENS < TEXT_ROWS[TEXT_ROWS.len() - 1]);
 /// two shapes and no other: on the GPU a new shape compiles and tunes kernels for minutes.
 const FIRST_CHUNK_FRAMES: usize = 4;
 const CHUNK_FRAMES: usize = 12;
+/// How many chunks of an utterance are of the first size. The first lets audio leave early;
+/// the others are there because a speaker may start with the first sample, and a long chunk
+/// takes longer to make than one short chunk plays. After three, the audio sent outlasts the
+/// making of every chunk that follows while a frame takes up to 40 ms.
+const FIRST_CHUNKS: usize = 3;
+
+/// The frames of an utterance's chunk, by its place among them.
+fn chunk_frames(index: usize) -> usize {
+    if index < FIRST_CHUNKS {
+        FIRST_CHUNK_FRAMES
+    } else {
+        CHUNK_FRAMES
+    }
+}
 
 /// The reference's defaults: a temperature of 0.9 over the 50 likeliest codes for both
 /// networks, and for the talker a repetition penalty and the control ids suppressed.
@@ -716,7 +730,7 @@ impl VoiceModel for Qwen3Tts {
         self.codec.reset();
         let mut pending: Vec<i32> = Vec::new();
         let groups = self.config.talker_config.num_code_groups;
-        let mut chunk = FIRST_CHUNK_FRAMES;
+        let mut chunks = 0;
         let mut writing = Instant::now();
         loop {
             let frame = self.frame(&mut take);
@@ -724,6 +738,7 @@ impl VoiceModel for Qwen3Tts {
                 pending.extend(codes);
             }
             let frames = pending.len() / groups;
+            let chunk = chunk_frames(chunks);
             if frames >= chunk || (frame.is_none() && frames > 0) {
                 let decoding = Instant::now();
                 let written = decoding - writing;
@@ -740,7 +755,7 @@ impl VoiceModel for Qwen3Tts {
                     self.timings.first_audio = started.elapsed();
                 }
                 pending.clear();
-                chunk = CHUNK_FRAMES;
+                chunks += 1;
                 if !audio(&samples) {
                     break;
                 }
@@ -900,6 +915,28 @@ mod tests {
         ] {
             assert_eq!(text_ids(&config, &text(tokens)).len(), rows, "{tokens}");
         }
+    }
+
+    #[test]
+    fn the_audio_sent_outlasts_the_making_of_each_chunk_at_forty_ms_a_frame() {
+        // A frame is 80 ms of audio. A speaker that starts with the first sample has played
+        // what was sent by the time the next chunk comes, unless that chunk comes first. At
+        // 40 ms a frame the decoder costs as much more as the frames do: 40 ms for a short
+        // chunk and 65 for a long one, from 24 and 40 at 24.5 ms a frame.
+        let making = |frames: usize| frames * 40 + if frames == CHUNK_FRAMES { 65 } else { 40 };
+        let (mut sent, mut elapsed) = (chunk_frames(0) * 80, 0);
+        for index in 1..50 {
+            let frames = chunk_frames(index);
+            elapsed += making(frames);
+            assert!(
+                elapsed <= sent,
+                "chunk {index} comes {elapsed} ms after the first, which sent {sent} ms"
+            );
+            sent += frames * 80;
+        }
+        // The first audio leaves after four frames, and the decoder keeps its two shapes.
+        assert_eq!(chunk_frames(0), FIRST_CHUNK_FRAMES);
+        assert!((0..50).all(|i| [FIRST_CHUNK_FRAMES, CHUNK_FRAMES].contains(&chunk_frames(i))));
     }
 
     #[test]
@@ -1077,15 +1114,20 @@ mod tests {
             .collect()
     }
 
-    /// `codes` decoded as `speak` decodes them: the first chunk, then the others, the last
+    /// `codes` decoded as `speak` decodes them: the first chunks, then the others, the last
     /// one filled to its shape.
     fn in_chunks(model: &mut Qwen3Tts, codes: &[i32]) -> Vec<f32> {
         let groups = model.config.talker_config.num_code_groups;
         model.codec.reset();
-        let first = codes.len().min(groups * FIRST_CHUNK_FRAMES);
-        let mut wave = model.decode_chunk(&codes[..first], FIRST_CHUNK_FRAMES);
-        for chunk in codes[first..].chunks(groups * CHUNK_FRAMES) {
-            wave.extend(model.decode_chunk(chunk, CHUNK_FRAMES));
+        let mut wave = Vec::new();
+        let mut rest = codes;
+        let mut chunks = 0;
+        while !rest.is_empty() {
+            let shape = chunk_frames(chunks);
+            let (chunk, after) = rest.split_at(rest.len().min(groups * shape));
+            wave.extend(model.decode_chunk(chunk, shape));
+            rest = after;
+            chunks += 1;
         }
         wave
     }

@@ -119,8 +119,9 @@
 - [ ] On Windows, by a person with a sound card: a spoken answer end to end, barge-in in hold
       and in toggle mode, Escape, Stop and Cancel, the tray's speaking frames, the output
       device list, a 48 kHz device without clicks between stretches. `docs/desktop.md` lists
-      each check. Ready to run since 2026-10-13: your settings serve the voice model, and
-      `--say` spoke through them into a file (7.1 s of speech, the first audio after 146 ms).
+      each check. Run so far, on 2026-10-13: a spoken answer end to end (two sentences, 12.4 s,
+      on Bluetooth headphones at 48 kHz), once your flows folder's `ask` leaves asked for
+      voice. Still to run: interrupting it, the tray and the device list, and clean sound.
 - [x] The benchmark with the tray app quit (2026-10-13): the installed app, ten sentences
       through `--say`, three runs, the screen on. Warm: 24 ms a frame, 142 to 182 ms to first
       audio, 39 to 41 s of speech in 14 to 15 s. Nothing was left to interleave it with.
@@ -129,6 +130,13 @@
       512 rows and the warm-up reads each: with an empty cache, sentences of ten new lengths
       reached first audio in 136 to 190 ms. Interleaved with the build before it, the same
       frames.
+- [x] A speaker that already plays ran out of audio inside the first word (2026-10-13): the
+      second chunk took longer to make than the first plays, and the server kept part of the
+      first. Replayed on the sound device in silence, 100 to 180 ms were missing while another
+      app played sound. An utterance opens with three short chunks now, and a stretch is one
+      frame: nothing missing while a frame takes up to 40 ms.
+- [ ] The same build on the GPU with the tray app quit: the reference tests, and the chunks'
+      timings in the model's log.
 
 ## 9. Landing
 

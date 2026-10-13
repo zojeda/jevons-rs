@@ -188,9 +188,12 @@ Tests: `the_record_and_automation_hotkeys_bind_from_the_settings`, `chords_read_
 
 For a leaf that speaks ([flows](flows.md) R51), the pipeline posts the leaf's text to the voice
 route with the route's model and voice, as PCM ([client](client.md) R29). It gathers the audio
-into stretches of 4,800 samples, 200 ms, and hands each to the desk under the take's number as
-soon as it is full, so the first words play while the rest is made. The end goes as the last
-stretch, marked so, with whatever is left: nothing, when the audio ended on a stretch's edge.
+into stretches of 1,920 samples, 80 ms, and hands each to the desk under the take's number as
+soon as it is full, so the first words play while the rest is made. A stretch is that short
+because what waits for one to fill is missing at a speaker that already plays, while the voice
+makes its next chunk: Qwen3-TTS sends whole frames of 80 ms, so none of a chunk waits. The end
+goes as the last stretch, marked so, with whatever is left: nothing, when the audio ended on a
+stretch's edge.
 The desk answers each once it has queued it, so the take ends when the speech is made, well
 before it is heard. The take reports a `speaking` stage, `Speaking` when the desk took the first
 stretch, and at the end the seconds of audio handed over.

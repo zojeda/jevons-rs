@@ -217,6 +217,13 @@ What the GPU taught on the way:
   not read yet compiled for half a second before its first audio (630 to 800 ms that once). It
   now reaches the device in 32, 128 or 512 rows, filled with text padding, which every position
   past the text carries anyway, and the warm-up reads a prompt of each count.
+- **A device that already plays starts with the first sample.** An utterance's first chunk was
+  0.32 s of audio and its second took 0.35 s to make, and the server kept 0.12 s of the first
+  until the second came. While another app played sound, the speaker ran out a tenth of a
+  second or more, 0.2 s into the first word; a device at rest starts too late to show it. An
+  utterance now opens with three chunks of four frames, and the server hands the desk
+  stretches of one frame, 80 ms. Replayed on the device in silence, no audio is missing while a
+  frame takes up to 40 ms.
 - **A cold start compiled for minutes.** CubeCL's kernel cache did not open on Windows (issue
   #17): it asked Turso for a multi-process WAL that Windows' I/O backend lacks, so every process
   compiled everything again, 162 s of it for this model. `third_party/cubecl-environment` opens
@@ -254,7 +261,7 @@ and does not read your own words back to you.
 ### The pipeline
 
 `deliver_leaf` (`pipeline.rs:390`) gains an arm. It posts the text to the `voice` route with
-`response_format = "pcm"`, gathers the stream into chunks of about 200 ms, and hands each to
+`response_format = "pcm"`, gathers the stream into stretches of 80 ms, and hands each to
 `Desk::speak`. `Update::Speaking` goes out with the first chunk.
 
 - The desk answers each chunk once it has queued it, so the take ends when the audio is

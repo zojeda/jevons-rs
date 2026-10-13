@@ -117,8 +117,11 @@ impl Phrases {
 const LIVE_DRAIN: Duration = Duration::from_secs(5);
 /// How long to wait for the final transcript after the take ends.
 const TRANSCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
-/// The speech the desk is handed at a time: about 200 ms.
-const SPEECH_STRETCH: usize = SAMPLE_RATE as usize / 5;
+/// The speech the desk is handed at a time: 80 ms. A voice model's audio comes a chunk at a
+/// time, and the next chunk may take as long to make as this one plays, so what waits here
+/// for a stretch to fill is missed by a speaker that already plays. Qwen3-TTS sends whole
+/// frames of 80 ms: nothing of a chunk waits.
+const SPEECH_STRETCH: usize = SAMPLE_RATE as usize * 2 / 25;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
@@ -1758,13 +1761,15 @@ mod tests {
                 "response_format": "pcm"})
             ]
         );
-        // The desk got it in stretches of 200 ms, in order, the last one marked.
+        // The desk got it in stretches of 80 ms, in order, the last one marked.
         let stretches = ears.asked();
         let shape: Vec<(u64, usize, bool)> = stretches
             .iter()
             .map(|s| (s.take, s.samples.len(), s.last))
             .collect();
-        assert_eq!(shape, [(7, 4800, false), (7, 4800, false), (7, 2400, true)]);
+        let mut stretched = vec![(7, 1920, false); 6];
+        stretched.push((7, 480, true));
+        assert_eq!(shape, stretched);
         let heard: Vec<i16> = stretches.into_iter().flat_map(|s| s.samples).collect();
         assert_eq!(heard, said);
         // The text streamed to the bubble as an answer, then the voice had its stage.
@@ -1810,7 +1815,9 @@ mod tests {
             .iter()
             .map(|s| (s.samples.len(), s.last))
             .collect();
-        assert_eq!(shape, [(4800, false), (4800, false), (0, true)]);
+        let mut stretched = vec![(1920, false); 5];
+        stretched.push((0, true));
+        assert_eq!(shape, stretched);
     }
 
     #[tokio::test]
@@ -2028,7 +2035,7 @@ mod tests {
             .iter()
             .map(|s| (s.samples.len(), s.last))
             .collect();
-        assert_eq!(shape, [(4800, false), (0, true)]);
+        assert_eq!(shape, [(1920, false), (1920, false), (0, true)]);
         assert_eq!(
             voiced(&updates),
             ["Speaking voice", "speaking", "→ 0.2 s false"]
@@ -2090,7 +2097,7 @@ mod tests {
         let unplugged = RecordingSpeaker::new().unplugged_after(1);
         let trace = spoken(LocalDesk::default().with_speaker(unplugged.voice())).await;
         assert_eq!(trace.delivery, Some(DeliveryOutcome::Spoken));
-        assert_eq!(unplugged.played()[0].samples, said[..4800]);
+        assert_eq!(unplugged.played()[0].samples, said[..1920]);
     }
 
     #[tokio::test]

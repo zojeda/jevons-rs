@@ -85,6 +85,60 @@ In `ab2` a frame took 25.6, 26.9 and 26.5 ms in the middle for the build before 
 same, on a machine a tenth slower than three hours earlier, minutes after a 23-minute build.
 The warm-up of a later process takes 1.5 to 1.9 s for 1.4 to 1.7.
 
+## At the speaker
+
+The figures above end where the audio leaves the model. The first answer the app read aloud, on
+2026-10-13, was two sentences: 12.4 s of speech made in 4.4 s, the model's first audio after
+143 ms. The desk's speaker took the first stretch 470 ms after the request, its device opened
+in between.
+
+`device` is a program that opens the default output device as the app does (cpal 0.18 on
+WASAPI, shared mode) and plays silence. No model runs. The device was a pair of Bluetooth
+headphones at 48 kHz:
+
+| The device | Opened after | Asked for its first buffer after |
+| --- | ---: | ---: |
+| At rest: 20 s with no stream open, or the process's first | 411 to 486 ms | 0.55 to 1.5 s |
+| It played 0.3 s before, 42 times | 120 to 203 ms, and 678 once | 168 to 255 ms, and 716 once |
+| Another stream plays | 28 to 80 ms | 30 to 82 ms |
+| A stream kept open, paused 1 to 20 s, from `play` | | 307 to 729 ms |
+
+The app opens the device when an answer's first audio comes. A device at rest adds half a
+second or more before the first word; one that already plays adds nothing. A stream kept and
+paused would save none of it.
+
+**A device that already plays ran out of audio.** An utterance's first chunk held four frames,
+0.32 s of audio, and the next held twelve, which take 335 to 375 ms to make (`lengths`). The
+server also handed the desk whole stretches of 200 ms and kept the rest of a chunk, 120 ms of
+the first one, until more came. `device` replayed that in silence and counted the audio the
+device asked for and did not find, four runs a cell and one for the device at rest:
+
+| The next chunk comes after | The device at rest | It just played | Another stream plays |
+| --- | ---: | ---: | ---: |
+| 340 ms | | none | 102 to 122 ms missing |
+| 355 ms | none | none | 132 to 142 ms |
+| 370 ms | | 2 to 12 ms | 112 to 152 ms |
+| 400 ms | | 0 to 32 ms | 172 to 182 ms |
+
+With music, a video or a call on the device, every answer went silent for a tenth of a second
+or more, 0.2 s into its first word. A device at rest starts so late that every chunk is there
+before it asks, which hid it on the first take.
+
+The same replay over other schedules, while another stream plays, three runs each. A chunk of
+four frames is taken to decode in 20 ms and one of twelve in 35 ms at 24.5 ms a frame, and as
+much longer as the frames at the other speeds:
+
+| A frame takes | 4, 12 and stretches of 200 ms: before | 4, 12, nothing kept | 4, 4, 12, nothing kept | 4, 4, 4, 12 and 200 ms | 4, 4, 4, 12, nothing kept: now |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 24.5 ms | 102 to 112 ms | none | none | none | none |
+| 28 ms | 152 to 162 ms | 32 to 42 ms | none | none | none |
+| 32 ms | 202 to 212 ms | 82 to 92 ms | none | none | none |
+| 40 ms, the bar | 312 to 322 ms | 192 to 202 ms | 62 to 72 ms | 102 ms | none |
+
+An utterance now opens with three chunks of four frames, and the server's stretch is 80 ms, one
+frame, so a chunk goes to the desk whole. A speaker that starts with the first sample has audio
+until a frame takes more than 40 ms.
+
 ## What bounds a frame
 
 A micro-benchmark of the small-row product on this model's shapes, one row, the screen on:
@@ -131,7 +185,8 @@ after the test binary had filled the same folder, and its second run started war
 - **FP16, not 8-bit.** With Q8_0 weights the predictor chose the reference's code 94 times in
   100, against 99.7 in FP16. The product kernel alone, timed later, runs a layer's products
   20% faster on 8-bit weights. The option was removed for its fidelity.
-- **Two chunk shapes.** The decoder runs four frames, then twelve at a time. Any other count
+- **Two chunk shapes.** The decoder runs chunks of four frames and of twelve: four at first,
+  three times since [the speaker ran out](#at-the-speaker), then twelve at a time. Any other count
   compiled kernels for seconds in the middle of an utterance.
 - **The kernel cache on Windows.** CubeCL asked Turso for a multi-process WAL, which Windows'
   I/O backend lacks, so the cache never opened and every process compiled everything again
@@ -176,6 +231,7 @@ Logs in the Windows clone, `target\windows-cargo\qwen-gpu{1..8}.log` and `kern-b
 | `lengths` | The text in fixed row counts, an empty cache, two processes | No sentence compiles after the warm-up: prompts read in 15 to 26 ms whatever their length. |
 | `ab2` | The build before the fix and the fix, in turn, three times each | The same frames and the same first audio. |
 | 8 | The text in fixed row counts | Run 5's counts to the code again: 175 of 175 first codes, 2,617 of 2,625 others. |
+| `device` | A program that opens the output device and plays silence, no model | What opening the device costs by its state, and the audio a first word lacks by chunk schedule. |
 
 The logs of `say`, `direct`, `ab`, `bench`, `lengths` and `ab2` are in
 `%USERPROFILE%\jevons\voice-bench\`, with the speech of the `say` run in `say.wav`, of the
