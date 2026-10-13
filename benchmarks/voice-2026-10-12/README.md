@@ -151,12 +151,14 @@ time since the first one came: below zero, a speaker that started at once had ru
 | Audio sent, less the wait, at its least | -84 and -120 ms | 169 and 174 ms |
 
 The same frames and the same first audio, and the speaker keeps a sixth of a second in hand.
-The two short chunks more cost a sentence a few milliseconds of decoding.
+The two short chunks more cost a sentence about 25 ms of decoding, 2% of an answer: 2.71 and
+2.62 times faster than real time before, 2.64 and 2.59 after.
 
 `chunks`, three runs of the new build nine minutes earlier, took 43 ms a frame (37.5 to 54),
 first audio after 218 to 306 ms, 1.5 to 1.6 times faster than real time, with no standby in the
 event log. It started a minute after 25 minutes of builds on every core, and by the next run, three
-minutes on, a frame took 25 ms again: the chip was held back after the load. Past 40 ms a
+minutes on, a frame took 25 ms again. The likeliest cause is the chip held back after the
+load; nothing measured it during the run. Past 40 ms a
 frame the audio sent fell 81 to 114 ms short before the first chunk of twelve. That is the
 bar's own edge: beyond it a speaker that already plays can still run out, about a second into
 an answer.
