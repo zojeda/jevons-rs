@@ -154,4 +154,4 @@
 - [x] Past the bar of 40 ms a frame a speaker that already plays can run out about a second
       into an answer (43 ms seen once, after long builds). A schedule that follows the
       machine's speed, short chunks until the audio sent covers the making of a long one, was
-      offered and you declined it on 2026-10-14: the fixed schedule is final.
+      offered and you declined it on 2026-10-13: the fixed schedule is final.
