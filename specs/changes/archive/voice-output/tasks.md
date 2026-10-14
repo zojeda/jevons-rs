@@ -155,3 +155,7 @@
       into an answer (43 ms seen once, after long builds). A schedule that follows the
       machine's speed, short chunks until the audio sent covers the making of a long one, was
       offered and you declined it on 2026-10-13: the fixed schedule is final.
+- [x] What stays unrun by hand, each closed by you on 2026-10-13: the first word with other
+      sound playing (the silent replay on the device and the GPU timings stand for it),
+      barge-in in toggle mode, and two of Escape, Stop and Cancel (all three call the same
+      stop, which a unit test covers).
