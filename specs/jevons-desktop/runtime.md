@@ -168,3 +168,13 @@ The tray icon stays on loading while the app waits, and the headless modes print
 and go on waiting.
 
 Tests: `a_gpu_that_answers_719_is_asked_again_until_it_lets_a_process_in`, `quitting_or_newer_settings_end_a_wait_for_the_gpu_at_once`
+
+### R14 The listener serves outside agents when the settings say
+
+With `[control] enabled` in `jevons-server.toml` and a key (`TYPESAFE_API_KEY`, else `api_key`),
+the listener on `bind:port` serves the control API ([control](../jevons-desktop-server/control.md))
+over the app's own session, whether or not the API is exposed: in the tray app over the app's own
+desk, and under `--serve` over the desk of the client connected. Without a key it is not served,
+and the log says why. Changing the switch or the key moves the listener as R6 says.
+
+Tests: none yet

@@ -13,6 +13,7 @@
 //!   and an answer's speech from the voice route to the desk.
 //! - [`session`]: one client's session: everything its takes run with, and its machines.
 //! - [`serve`]: the session served to a client over a stream of messages.
+//! - [`control`]: the control API for outside agents, over MCP and REST.
 //! - [`client`]: typed requests to the jevons API and other providers (Realtime,
 //!   transcriptions, System One, Responses, speech), and each capability's route to its
 //!   provider.
@@ -22,6 +23,7 @@
 
 pub mod client;
 pub mod config;
+pub mod control;
 pub mod flow;
 pub mod forward;
 pub mod pipeline;

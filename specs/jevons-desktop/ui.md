@@ -425,3 +425,18 @@ read aloud is sent. The Voice route's provider and model are edited with the oth
 (R20). The card's edits are saved with the rest (R21, R22).
 
 Tests: `the_voice_card_turns_speaking_off_and_names_the_device_and_what_serves_it`, `the_voice_to_speak_in_is_the_voice_route_s_and_goes_with_its_provider`, `the_voices_a_provider_lists_are_chosen_among_and_others_are_typed`, `saving_applies_only_the_edits_onto_settings_changed_meanwhile`
+
+### R37 An outside agent's messages, actions and questions show as its own
+
+An outside agent's message opens the larger bubble under the agent's name ("<agent>: <title>"),
+renders its Markdown, and offers Close, Select text and Copy, never Insert. While a take runs or
+a question waits, it waits, and the latest shows once the bubble is free: it never sits beside a
+take's words. Each action the agent takes adds a line under "<agent> is working", which hides
+eight seconds after its last action; it does not replace a take's bubble, a question or a message
+being read. The agent's question shows in a bubble of its own with its yes word, "<word>
+(Enter)" and "Cancel (Esc)"; while another question waits or a take runs it goes unanswered, and
+once answered the bubble says "Yes" or "No" for two seconds. Reading the bubble gives what it
+shows: nothing, a take, a task's conversation, a question (with its details) or a message (with
+whose it is).
+
+Tests: `an_outside_agent_s_message_actions_and_question_show_as_its_own`, `the_bubble_reads_as_what_it_shows`

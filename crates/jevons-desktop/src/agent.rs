@@ -15,6 +15,7 @@ use jevons_desktop_core::automation::host::AutomationHost;
 use jevons_desktop_core::automation::run::RunTrace;
 use jevons_desktop_core::confirm::{ChannelConfirmer, Confirmation};
 use jevons_desktop_core::context::ContextSnapshot;
+use jevons_desktop_core::control::Control;
 use jevons_desktop_core::desk::LocalDesk;
 use jevons_desktop_core::git::Repository;
 use jevons_desktop_core::history::{self, History};
@@ -31,6 +32,7 @@ use jevons_desktop_core::recorded::RecordedTree;
 use jevons_desktop_core::recording::{Session, bundle};
 use jevons_desktop_core::wake::{Gate, WakeWord};
 use jevons_desktop_core::xpath::selector::Candidate;
+use jevons_desktop_protocol::control::{Question, Show};
 use jevons_desktop_protocol::delivery::{AudioEvent, SAMPLE_RATE};
 use jevons_desktop_protocol::desk::Desk;
 use jevons_desktop_server::client::Routes;
@@ -186,6 +188,25 @@ pub enum Command {
     HideMessage(u64),
     /// A take asks before calling a tool.
     ConfirmRequested(Confirmation),
+    /// An outside agent's message for the bubble.
+    ControlShow {
+        from: String,
+        show: Show,
+    },
+    /// An action an outside agent took, for its bubble.
+    ControlActed {
+        from: String,
+        line: String,
+    },
+    /// An outside agent asks the user yes or no.
+    ControlAsk {
+        id: u64,
+        from: String,
+        question: Question,
+        reply: oneshot::Sender<bool>,
+    },
+    /// No one waits for the answer to that question any more.
+    ControlAskGone(u64),
     /// A machine's timer ran out.
     /// What the session did by itself: a timer's take.
     Session(SessionEvent),
@@ -293,6 +314,8 @@ pub struct Feedback {
     pub task: bool,
     /// The conversation's earlier turns, oldest first.
     pub turns: Vec<Turn>,
+    /// The outside agent whose message, actions or question this is.
+    pub from: Option<String>,
 }
 
 impl Feedback {
@@ -1012,6 +1035,14 @@ pub struct Agent {
     hotkeys: std::collections::HashMap<u32, HotkeyAction>,
     /// The reply to the tool call the bubble asks about.
     confirming: Option<oneshot::Sender<bool>>,
+    /// The outside agent's question the bubble asks, by its number.
+    control_question: Option<u64>,
+    /// What outside agents may do at this desk.
+    control: Arc<Control>,
+    /// A take runs, for outside agents, which do not act meanwhile.
+    taking: Arc<AtomicBool>,
+    /// An outside agent's latest message, waiting for the take's bubble to close.
+    control_waiting: Option<(String, Show)>,
     /// Each registered hotkey's accelerator, to swallow its repeats while it is held.
     accelerators: std::collections::HashMap<u32, String>,
     active: Option<Active>,
@@ -1074,6 +1105,21 @@ impl Agent {
         // The client's side of the app: one desk, which the server's parts reach it through.
         let desk_tools = Arc::new(ToolSet::new(&config.desk_tools, &config.desk_mcp));
         let voice = VoiceControl::new(layers.speaker, &config.voice);
+        // What outside agents may do here; they talk to the user in the bubble.
+        let taking = Arc::new(AtomicBool::new(false));
+        let control = Arc::new(
+            Control::new(
+                layers.inspector.clone(),
+                layers.actor.clone(),
+                config.desk_control.clone(),
+            )
+            .with_bubble(Arc::new(crate::control::AppBubble::new(
+                view.clone(),
+                commands.clone(),
+                taking.clone(),
+            )))
+            .with_keys(sink.clone()),
+        );
         let desk = local_desk(
             &config,
             &sink,
@@ -1083,6 +1129,7 @@ impl Agent {
             &automations,
             &desk_tools,
             &voice,
+            &control,
         );
         let tools = Arc::new(ToolHost::new(&config.tools, &config.mcp).with_desk(desk.clone()));
         let (tree, report) = defaults::open(&flows_dir, &tools.catalog());
@@ -1102,6 +1149,8 @@ impl Agent {
         // The tasks that run are kept in the data folder, and come back once a provider
         // answers.
         session.keep_machines_in(history::machines_file());
+        // Outside agents reach the session through the control API, when the settings serve it.
+        runtime.control(session.clone());
         let forward = commands.clone();
         tokio::spawn(async move {
             while let Some(event) = events.recv().await {
@@ -1154,6 +1203,10 @@ impl Agent {
             teaching: None,
             hotkeys: std::collections::HashMap::new(),
             confirming: None,
+            control_question: None,
+            control,
+            taking,
+            control_waiting: None,
             accelerators: std::collections::HashMap::new(),
             active: None,
             next_take: 1,
@@ -1233,6 +1286,7 @@ impl Agent {
                         break;
                     }
                     self.follow_wake();
+                    self.follow_takes();
                 }
                 _ = watch.tick() => {
                     let watching = {
@@ -1600,6 +1654,19 @@ impl Agent {
             }
             Command::TakeFinished(trace) => self.finished(*trace),
             Command::ConfirmRequested(confirmation) => self.confirm_requested(confirmation),
+            Command::ControlShow { from, show } => self.control_show(from, show),
+            Command::ControlActed { from, line } => self.control_acted(from, line),
+            Command::ControlAsk {
+                id,
+                from,
+                question,
+                reply,
+            } => self.control_ask(id, from, question, reply),
+            Command::ControlAskGone(id) => {
+                if self.control_question == Some(id) {
+                    self.confirmed(false);
+                }
+            }
             Command::Confirmed(yes) => self.confirmed(yes),
             Command::Bubble(action) => self.bubble(action),
             Command::HideMessage(shown) => {
@@ -2717,6 +2784,117 @@ impl Agent {
         );
     }
 
+    /// After every command: outside agents learn whether a take runs, and an agent's message
+    /// that waited for the take's bubble shows once it may.
+    fn follow_takes(&mut self) {
+        self.taking.store(self.active.is_some(), Ordering::Relaxed);
+        if self.active.is_none()
+            && self.confirming.is_none()
+            && let Some((from, show)) = self.control_waiting.take()
+        {
+            self.control_show(from, show);
+        }
+    }
+
+    /// An outside agent's message: an answer of its own, to read and close. During a take, or
+    /// while a question waits, it waits: it never sits beside a take's words.
+    fn control_show(&mut self, from: String, show: Show) {
+        if self.active.is_some() || self.confirming.is_some() {
+            self.control_waiting = Some((from, show));
+            return;
+        }
+        self.messages += 1;
+        let status = match &show.title {
+            Some(title) => format!("{from}: {title}"),
+            None => from.clone(),
+        };
+        self.view().feedback = Some(Feedback {
+            take: MESSAGE,
+            message: true,
+            answer: true,
+            done: true,
+            shown: self.messages,
+            status,
+            output: show.text,
+            from: Some(from),
+            ..Feedback::default()
+        });
+        self.repaint();
+    }
+
+    /// An action an outside agent took: a line in its bubble, which hides once it stops
+    /// acting. A take's bubble, a question or a message being read keep the bubble.
+    fn control_acted(&mut self, from: String, line: String) {
+        if self.active.is_some() || self.confirming.is_some() {
+            return;
+        }
+        self.messages += 1;
+        let shown = self.messages;
+        {
+            let mut view = self.view();
+            let ours = view
+                .feedback
+                .as_ref()
+                .is_some_and(|f| f.take == MESSAGE && f.from.as_ref() == Some(&from) && !f.answer);
+            if !ours && view.feedback.as_ref().is_some_and(|f| f.reading()) {
+                return;
+            }
+            if !ours {
+                view.feedback = Some(Feedback {
+                    take: MESSAGE,
+                    message: true,
+                    done: true,
+                    status: format!("{from} is working"),
+                    from: Some(from),
+                    ..Feedback::default()
+                });
+            }
+            let feedback = view.feedback.as_mut().expect("set above");
+            feedback.shown = shown;
+            feedback.stages.push(StageView {
+                kind: StageKind::Calling,
+                label: line,
+                choices: Vec::new(),
+                detail: String::new(),
+                chosen: None,
+                ok: Some(true),
+            });
+        }
+        let commands = self.commands.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(8)).await;
+            let _ = commands.send(Command::HideMessage(shown));
+        });
+        self.repaint();
+    }
+
+    /// An outside agent's question. One waiting question at a time: while another waits, or a
+    /// take runs, this one goes unanswered.
+    fn control_ask(
+        &mut self,
+        id: u64,
+        from: String,
+        question: Question,
+        reply: oneshot::Sender<bool>,
+    ) {
+        if self.active.is_some() || self.confirming.is_some() {
+            return;
+        }
+        tracing::info!(agent = %from, "An outside agent asks");
+        let call = PendingCall {
+            question: question.question,
+            details: question.details.unwrap_or_default(),
+            action: question.yes.unwrap_or_else(|| "Yes".into()),
+        };
+        // Its own bubble: whatever showed before is not part of the question.
+        self.view().feedback = None;
+        self.show_question(reply, call, &format!("{from} asks"));
+        self.control_question = Some(id);
+        if let Some(feedback) = self.view().feedback.as_mut() {
+            feedback.from = Some(from);
+        }
+    }
+
     /// Shows a question in the bubble, with `hint` above it, and waits for the user.
     fn show_question(&mut self, reply: oneshot::Sender<bool>, question: PendingCall, hint: &str) {
         if let Some(previous) = self.confirming.take() {
@@ -2747,6 +2925,15 @@ impl Agent {
         };
         tracing::info!(approved = yes, "Confirmation answered");
         let _ = reply.send(yes);
+        // An outside agent's question leaves a word of what was answered, then goes.
+        if self.control_question.take().is_some() {
+            if let Some(tray) = &self.tray {
+                tray.hotkeys(self.bindings());
+            }
+            self.view().feedback = None;
+            self.message(if yes { "Yes" } else { "No" }, 2);
+            return;
+        }
         if let Some(feedback) = self.view().feedback.as_mut() {
             feedback.confirm = None;
             feedback.status = if yes {
@@ -2992,6 +3179,9 @@ impl Agent {
             self.desk_tools =
                 Arc::new(ToolSet::new(&self.config.desk_tools, &self.config.desk_mcp));
         }
+        if self.view().config.desk_control != self.config.desk_control {
+            self.control.set_settings(self.config.desk_control.clone());
+        }
         let desk = local_desk(
             &self.config,
             &self.sink,
@@ -3001,6 +3191,7 @@ impl Agent {
             &self.automations,
             &self.desk_tools,
             &self.voice,
+            &self.control,
         );
         self.session.set_desk(desk.clone());
         self.session.set_settings(self.config.take_settings(true));
@@ -4327,6 +4518,7 @@ fn local_desk(
     automations: &Arc<AutomationHost>,
     tools: &Arc<ToolSet>,
     voice: &VoiceControl,
+    control: &Arc<Control>,
 ) -> Arc<dyn Desk> {
     let privacy = &config.privacy;
     let reader = Reader::new(inspector.clone(), privacy.clone());
@@ -4339,7 +4531,8 @@ fn local_desk(
             .with_confirmer(Arc::new(ChannelConfirmer::new(confirm.clone())))
             .with_automations(automations.clone())
             .with_tools(tools.clone())
-            .with_speaker(voice.desk()),
+            .with_speaker(voice.desk())
+            .with_control(control.clone()),
     )
 }
 

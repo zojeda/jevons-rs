@@ -26,6 +26,7 @@ Everything runs locally. The speech, decision and language models run inside the
 - **Live feedback and answers.** A bubble above the tray icon shows the words as they are recognized, then the route taken, the text written and whether it was inserted. Questions are answered there instead of being typed. It never takes the focus. Turn it off from the tray menu.
 - **Safe delivery.** Text goes only into the window the take started in, once every key is released. It is pasted with your clipboard restored, typed, set through the accessibility API, or left on the clipboard, as the flow says. If the focus moved, the text waits on the clipboard.
 - **An inspector for everything.** The window shows the live context and the route it takes through the tree, with every guard checked; every take with its decision probabilities, prompt and timings; the flow tree and its problems; the settings and the models. **New branch from the current context** writes a folder whose guard matches what you are looking at.
+- **A door for outside agents.** Claude Code, or any MCP or HTTP client with the key, can read the interfaces of the applications you list, act on them and talk to you in the bubble, through the control API (`/mcp` and `/api/v1`). Its first action in each application asks you first, and it never acts while you dictate. Off until you turn it on: see [Control API](docs/control-api.md).
 - **Private by default.** The models run in the app, and its API listens on a loopback port with a random key. You can expose it on a port for other clients, or send each capability (speech, decisions, generation) to another provider: a jevons server on another machine, OpenRouter, or any server with OpenAI's API. Logs never contain your text; full traces stay in `~/jevons/traces`.
 
 ### From speech to a leaf
@@ -454,6 +455,7 @@ See [benchmarks](benchmarks/README.md) for methods, per-case results and compari
 | Guide | Contents |
 | --- | --- |
 | [Desktop app](docs/desktop.md) | The tray app: the flow tree, the context inspector, settings, model downloads, platform status |
+| [Control API](docs/control-api.md) | Outside agents such as Claude Code: turning it on, connecting, the operations, what keeps it safe |
 | [HTTP API](docs/api.md) | Routes, settings, OpenAI-compatible generation, speech to text, Realtime, text to speech, limits, errors |
 | [System One](docs/system-one.md) | The masked canvas, text and image examples, extensions |
 | [Build and hardware](docs/build.md) | ROCm/WSL setup, hardware, runtime options, image input |

@@ -33,6 +33,25 @@ pub struct ServerConfig {
     /// MCP servers whose tools flow nodes may call, as `server:tool`.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub mcp: BTreeMap<String, McpConfig>,
+    /// The control API outside agents use.
+    #[serde(skip_serializing_if = "ControlConfig::is_default")]
+    pub control: ControlConfig,
+}
+
+/// `[control]`: the control API, `/mcp` and `/api`, for outside agents such as Claude Code.
+/// What they may do at the desk is the client's to say, in its own `[control]`.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ControlConfig {
+    /// Serve it on `[server] bind:port`. Only with a key: `TYPESAFE_API_KEY`, else
+    /// `[server] api_key`.
+    pub enabled: bool,
+}
+
+impl ControlConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// `[privacy]`: what the server writes down of what passes through it.

@@ -20,8 +20,9 @@ It owns:
   text, an answer's speech, and the trace;
 - the typed API client, each capability's route and its provider's profile, and the API log
   (`client`); the forwarder that serves other clients (`forward`);
-- the server's settings (`config`): providers and routes, the exposed API, the embedded
-  provider's models, the flows folder, the tools it runs and the API log.
+- the control API for outside agents, over MCP and REST with its OpenAPI document (`control`);
+- the server's settings (`config`): providers and routes, the exposed API, the control API, the
+  embedded provider's models, the flows folder, the tools it runs and the API log.
 
 It leaves:
 
@@ -47,6 +48,7 @@ runs against the client core's desk over fakes.
 | [tools](tools.md) | The tool host: built-in tools, MCP servers, the client's tools and confirmations |
 | [pipeline](pipeline.md) | One take from its audio to delivery, live dictation, an answer read aloud |
 | this file | The session a client's takes run in, its timers, and the host that serves it over a stream |
+| [control](control.md) | The control API for outside agents: one table of operations, MCP and REST with its OpenAPI document, the key |
 | [client](client.md) | Typed requests to the jevons API and other providers, speech among them, each capability's route and its provider's profile, forwarding for other clients, the API log |
 
 ## Requirements

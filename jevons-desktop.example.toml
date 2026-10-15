@@ -78,3 +78,13 @@ read_other_windows = false
 # slack-post = "Ctrl+Alt+P"                     # say the arguments after pressing it
 # [automation.allow]
 # slack-post = ["run", "ask/*"]                 # the flow nodes that may call it
+
+# What an outside agent (Claude Code, through the server's control API) may do at this desk. It
+# reads and acts only in the applications listed here; its first action in each asks in the
+# bubble, and a yes holds until it has been quiet for 10 minutes. It never acts while you dictate
+# or hold a key, and never reads or types into a password field.
+# [control]
+# apps = ["slack.exe", "notepad.exe"]   # process-name globs; none by default
+# confirm = "once"                      # once | every | never
+# bubble = true                         # it may show messages, ask, and read the bubble
+# max_chars = 20000                     # the most text one read returns

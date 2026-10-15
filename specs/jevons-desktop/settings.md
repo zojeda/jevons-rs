@@ -46,6 +46,7 @@ Tests: `a_missing_file_gives_defaults_and_unknown_fields_are_errors`, `the_examp
 | `[routes]` | `speech`, `realtime`, `decision`, `generation` and `voice`, each a `provider` and an optional `model` (all `embedded`); `voice` also takes the `voice` to speak in (the provider's own) |
 | `[models]` | `folder`, `runtime_config`, `generative`, `decision`, `speech` and `voice` (each a `path`, an optional `mmproj` and the `catalog` entry it came from), `realtime` (true) |
 | `[privacy]` | `log_api` (false) |
+| `[control]` | `enabled` (false): the control API for outside agents ([control](../jevons-desktop-server/control.md) R7) |
 | top level | `flows_dir`, and `[tools.<name>]` and `[mcp.<name>]`: the tools and MCP servers that run with the server |
 
 `jevons-desktop.toml`:
@@ -56,11 +57,12 @@ Tests: `a_missing_file_gives_defaults_and_unknown_fields_are_errors`, `the_examp
 | `[voice]` | `speak` (true), `output` (the default device): [desk](../jevons-desktop-core/desk.md) R12 |
 | `[privacy]` | `max_context_chars` (2000), `read_clipboard` (false), `read_other_windows` (false), `readable_apps` (none) |
 | `[tools.<name>]`, `[mcp.<name>]` | the tools and MCP servers that run on this machine ([desk](../jevons-desktop-core/desk.md) R6) |
+| `[control]` | `apps` (none), `confirm` (`once`; `every` or `never`), `bubble` (true), `max_chars` (20000): what an outside agent may do at this desk ([control](../jevons-desktop-core/control.md)) |
 | `[automation]` | `enabled` (false: automations are coming soon, [app](app.md) R29), `dir`, `recordings_dir`, `record_hotkey` (none), `hotkeys` (none), `approved` (none), `unconfirmed` (none), `allow` (none), `author_model` (the generative model) |
 
 The example files, `jevons-desktop.example.toml` and `jevons-server.example.toml`, parse.
 
-Tests: `the_example_settings_file_parses`, `saved_settings_load_back_unchanged`, `the_two_halves_make_the_settings_and_back`, `the_voice_settings_and_route_load_back_each_from_its_own_file`
+Tests: `the_example_settings_file_parses`, `saved_settings_load_back_unchanged`, `the_two_halves_make_the_settings_and_back`, `the_voice_settings_and_route_load_back_each_from_its_own_file`, `each_control_section_loads_back_from_its_own_file`
 
 ### R4 Hotkey modes are `hold` or `toggle`
 

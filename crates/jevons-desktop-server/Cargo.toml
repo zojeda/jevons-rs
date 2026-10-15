@@ -17,6 +17,8 @@ futures-util = { workspace = true, features = ["sink", "std"] }
 globset.workspace = true
 regex.workspace = true
 reqwest.workspace = true
+# The control API's MCP door: a server over streamable HTTP.
+rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

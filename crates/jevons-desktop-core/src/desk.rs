@@ -14,12 +14,14 @@
 
 use crate::automation::host::{AutomationHost, SERVER as SCRIPTS};
 use crate::confirm::ChannelConfirmer;
+use crate::control::Control;
 use crate::delivery::deliver_text;
 use crate::look::Looks;
 use crate::platform::TextSink;
 use crate::reader::Reader;
 use crate::voice::Voice;
 use futures_util::future::BoxFuture;
+use jevons_desktop_protocol::control::{Call, Caller, ControlError};
 use jevons_desktop_protocol::delivery::DeliveryOutcome;
 use jevons_desktop_protocol::desk::{
     Ask, ClientTool, ClientTools, Delivery, Desk, Look, Looked, NO_INVESTIGATOR, NO_READER,
@@ -40,6 +42,7 @@ pub struct LocalDesk {
     confirmer: Option<Arc<ChannelConfirmer>>,
     automations: Option<Arc<AutomationHost>>,
     tools: Option<Arc<ToolSet>>,
+    control: Option<Arc<Control>>,
     dry_run: bool,
 }
 
@@ -84,6 +87,13 @@ impl LocalDesk {
     /// Offers the tools the client's settings register.
     pub fn with_tools(mut self, tools: Arc<ToolSet>) -> Self {
         self.tools = Some(tools);
+        self
+    }
+
+    /// Takes outside agents' calls through `control`, which checks them against the client's
+    /// `[control]` settings.
+    pub fn with_control(mut self, control: Arc<Control>) -> Self {
+        self.control = Some(control);
         self
     }
 
@@ -268,6 +278,17 @@ impl Desk for LocalDesk {
             tool.call(arguments).await
         })
     }
+
+    fn control(&self, caller: Caller, call: Call) -> BoxFuture<'_, Result<Value, ControlError>> {
+        Box::pin(async move {
+            match self.control.clone() {
+                Some(control) => control.call(caller, call).await,
+                None => Err(ControlError::unavailable(
+                    "This desk takes no calls from outside agents",
+                )),
+            }
+        })
+    }
 }
 
 #[cfg(test)]
@@ -311,6 +332,18 @@ confirm = false
         LocalDesk::default()
             .with_confirmer(Arc::new(ChannelConfirmer::new(confirm)))
             .with_tools(Arc::new(ToolSet::new(&config.tools, &config.mcp)))
+    }
+
+    #[tokio::test]
+    async fn a_desk_without_control_takes_no_calls_from_outside_agents() {
+        let refused = LocalDesk::default()
+            .control(Caller::new("claude-code"), Call::Windows)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            refused.kind,
+            jevons_desktop_protocol::control::ErrorKind::Unavailable
+        );
     }
 
     #[tokio::test]

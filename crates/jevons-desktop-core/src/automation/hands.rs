@@ -1,6 +1,8 @@
-//! Hands: how an automation acts, with the checks every action passes first.
+//! Hands: how an automation, or an outside agent through the control API, acts, with the checks
+//! every action passes first.
 //!
-//! - An automation reads and acts only in the applications its manifest names (`apps`).
+//! - An automation reads and acts only in the applications its manifest names (`apps`); an
+//!   agent only in those the client's `[control]` settings list.
 //! - Text is never entered into a password field, and disabled elements are not acted on.
 //! - Keys and text sent to the window in front go only to one of its applications: when another
 //!   window is in front (the user switched, or bringing a window forward failed), they are
@@ -45,6 +47,8 @@ pub struct Hands {
     apps: Vec<String>,
     globs: GlobSet,
     records: Mutex<Vec<ActionRecord>>,
+    /// Whose applications they are, for refusals: "this automation's".
+    whose: String,
 }
 
 impl Hands {
@@ -69,7 +73,14 @@ impl Hands {
             apps: apps.to_vec(),
             globs: set.build().map_err(|e| format!("apps: {e}"))?,
             records: Mutex::new(Vec::new()),
+            whose: "this automation's".into(),
         })
+    }
+
+    /// Whose applications they are, as refusals say: "this automation's" unless told.
+    pub fn whose(mut self, whose: impl Into<String>) -> Self {
+        self.whose = whose.into();
+        self
     }
 
     pub fn inspector(&self) -> &Arc<dyn ContextInspector> {
@@ -125,7 +136,8 @@ impl Hands {
         match self.actor.front_app() {
             Some(app) if self.allows(&app) => Ok(()),
             Some(app) => Err(HandsError::Denied(format!(
-                "{app} is in front, which is not one of this automation's applications ({})",
+                "{app} is in front, which is not one of {} applications ({})",
+                self.whose,
                 self.apps.join(", ")
             ))),
             None => Err(HandsError::Denied(
@@ -145,12 +157,13 @@ impl Hands {
         let target = crate::xpath::label(element);
         let checked = if !self.allows(app) {
             Err(HandsError::Denied(format!(
-                "{app} is not one of this automation's applications ({})",
+                "{app} is not one of {} applications ({})",
+                self.whose,
                 self.apps.join(", ")
             )))
         } else if element.password && action.text().is_some() {
             Err(HandsError::Denied(
-                "automations never enter text into password fields".into(),
+                "text is never entered into a password field".into(),
             ))
         } else if element.enabled == Some(false)
             && !matches!(action, UiAction::ScrollIntoView | UiAction::Focus)
@@ -219,8 +232,8 @@ impl Hands {
                 .map_err(|e| HandsError::Failed(e.to_string()))
         } else {
             Err(HandsError::Denied(format!(
-                "{} is not one of this automation's applications",
-                window.app
+                "{} is not one of {} applications",
+                window.app, self.whose
             )))
         };
         self.record(

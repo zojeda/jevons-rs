@@ -4235,13 +4235,13 @@ confirm = false
             settings: TakeSettings::default(),
         };
         // A client with another key, or of another version, is told why and turned away.
+        let newer = format!(
+            "the client speaks version {}, the server {VERSION}",
+            VERSION + 1
+        );
         for (key, version, why) in [
             (Some("another"), VERSION, "the key is not the server's"),
-            (
-                Some("the-key"),
-                VERSION + 1,
-                "the client speaks version 3, the server 2",
-            ),
+            (Some("the-key"), VERSION + 1, newer.as_str()),
         ] {
             let (mut client, server) = in_process();
             let serving = host.clone();

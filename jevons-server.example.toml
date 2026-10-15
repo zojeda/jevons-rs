@@ -13,6 +13,12 @@ port = 8080
 # The key other clients send when exposed. Prefer TYPESAFE_API_KEY; never commit a key.
 # api_key = ""
 
+# The control API for outside agents such as Claude Code: MCP at /mcp, REST at /api/v1 (described
+# by /api/openapi.json), on bind:port. Served only with the key above, which agents send as
+# `Authorization: Bearer <key>`. What they may do at the desk is jevons-desktop.toml's [control].
+# [control]
+# enabled = true
+
 # Where inference comes from. `embedded`, the models this app loads ([models] below), is always
 # there, and every capability uses it unless [routes] says otherwise. Other kinds:
 #   "jevons"             a jevons server (url: http://127.0.0.1:8080; key: TYPESAFE_API_KEY)

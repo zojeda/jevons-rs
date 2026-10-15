@@ -4,13 +4,13 @@
 
 use jevons_desktop_core::catalog::{CatalogEntry, Service};
 pub use jevons_desktop_core::config::{
-    AutomationSettings, ClientConfig, ConfigError, Dictation, HotkeyMode, VoiceSettings,
-    default_config_file, user_dir,
+    AutomationSettings, ClientConfig, ConfigError, ControlSettings, Dictation, HotkeyMode,
+    VoiceSettings, default_config_file, user_dir,
 };
 use jevons_desktop_protocol::context::Privacy;
 pub use jevons_desktop_server::config::{
-    Capability, EMBEDDED, Logging, McpConfig, ModelRef, Models, Provider, ProviderKind, RouteTo,
-    Routes, Server, ServerConfig, ToolConfig,
+    Capability, ControlConfig, EMBEDDED, Logging, McpConfig, ModelRef, Models, Provider,
+    ProviderKind, RouteTo, Routes, Server, ServerConfig, ToolConfig,
 };
 use jevons_desktop_server::pipeline;
 use serde::de::DeserializeOwned;
@@ -62,6 +62,10 @@ pub struct DesktopConfig {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub desk_mcp: BTreeMap<String, McpConfig>,
     pub automation: AutomationSettings,
+    /// The server's `[control]`: whether it serves the control API.
+    pub control: ControlConfig,
+    /// The client's `[control]`: what an outside agent may do at this desk.
+    pub desk_control: ControlSettings,
 }
 
 fn read<T: DeserializeOwned + Default>(file: &Path) -> Result<T, ConfigError> {
@@ -108,6 +112,8 @@ impl DesktopConfig {
             desk_tools: client.tools,
             desk_mcp: client.mcp,
             automation: client.automation,
+            control: server.control,
+            desk_control: client.control,
         }
     }
 
@@ -120,6 +126,7 @@ impl DesktopConfig {
             tools: self.desk_tools.clone(),
             mcp: self.desk_mcp.clone(),
             automation: self.automation.clone(),
+            control: self.desk_control.clone(),
         }
     }
 
@@ -136,6 +143,7 @@ impl DesktopConfig {
             flows_dir: self.flows_dir.clone(),
             tools: self.tools.clone(),
             mcp: self.mcp.clone(),
+            control: self.control.clone(),
         }
     }
 
@@ -298,6 +306,43 @@ mod tests {
             catalog: Some("parakeet-tdt-0.6b-v3".into()),
         });
         config.save(&file).unwrap();
+        assert_eq!(DesktopConfig::load(&file).unwrap(), config);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn each_control_section_loads_back_from_its_own_file() {
+        let dir =
+            std::env::temp_dir().join(format!("jevons-desktop-control-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("jevons-desktop.toml");
+        let mut config = DesktopConfig::default();
+        // Off by default, with no application listed, and neither file says so.
+        assert!(!config.control.enabled && config.desk_control.apps.is_empty());
+        config.save(&file).unwrap();
+        assert!(
+            !std::fs::read_to_string(&file)
+                .unwrap()
+                .contains("[control]")
+        );
+        assert!(
+            !std::fs::read_to_string(server_file(&file))
+                .unwrap()
+                .contains("[control]")
+        );
+        // Serving it is the server's; what an agent may do at the desk is the client's.
+        config.control.enabled = true;
+        config.desk_control.apps = vec!["slack.exe".into()];
+        config.desk_control.confirm = jevons_desktop_protocol::control::Confirm::Every;
+        config.save(&file).unwrap();
+        let client = std::fs::read_to_string(&file).unwrap();
+        let server = std::fs::read_to_string(server_file(&file)).unwrap();
+        assert!(
+            client.contains("[control]") && client.contains("slack.exe"),
+            "{client}"
+        );
+        assert!(!client.contains("enabled"), "{client}");
+        assert!(server.contains("[control]\nenabled = true"), "{server}");
         assert_eq!(DesktopConfig::load(&file).unwrap(), config);
         std::fs::remove_dir_all(dir).unwrap();
     }

@@ -4,6 +4,7 @@
 //! file means defaults.
 
 use crate::context::Privacy;
+pub use crate::control::ControlSettings;
 pub use jevons_desktop_tools::config::{McpConfig, ToolConfig, ToolKind};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -27,6 +28,9 @@ pub struct ClientConfig {
     /// The automations library, recording demonstrations, and which versions may run.
     #[serde(skip_serializing_if = "AutomationSettings::is_default")]
     pub automation: AutomationSettings,
+    /// What an outside agent may do at this desk through the server's control API.
+    #[serde(skip_serializing_if = "ControlSettings::is_default")]
+    pub control: ControlSettings,
 }
 
 /// `[voice]`: whether jevons reads answers aloud, and where.

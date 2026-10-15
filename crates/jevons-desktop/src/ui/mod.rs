@@ -2518,6 +2518,94 @@ mod tests {
     }
 
     #[test]
+    fn an_outside_agent_s_message_actions_and_question_show_as_its_own() {
+        use crate::agent::{Feedback, PendingCall, StageView};
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        let folder = std::env::temp_dir().join(format!("jevons-ui-agent-{}", std::process::id()));
+        let view = Arc::new(Mutex::new(view(&folder)));
+        let render = |feedback: Feedback| {
+            view.lock().unwrap().feedback = Some(feedback);
+            let (commands, _received) = tokio::sync::mpsc::unbounded_channel();
+            let mut vdom = VirtualDom::new(bubble::Bubble);
+            vdom.insert_any_root_context(Box::new(Ctx {
+                view: view.clone(),
+                commands,
+            }));
+            vdom.insert_any_root_context(Box::new(bubble::Anchor {
+                tail_x: 300.0,
+                icon_below: true,
+                width: bubble::ANSWER_SIZE.0,
+            }));
+            let mut doc = DioxusDocument::new(vdom, DocumentConfig::default());
+            doc.add_user_agent_stylesheet(include_str!("bubble.css"));
+            doc.set_viewport(Viewport::new(
+                bubble::ANSWER_SIZE.0 as u32,
+                bubble::ANSWER_SIZE.1 as u32,
+                1.0,
+                ColorScheme::Dark,
+            ));
+            doc.initial_build();
+            doc.poll(None);
+            texts(&doc, ".bubble").join(" ")
+        };
+        // A message reads as an answer of the agent's own, with nowhere to insert it.
+        let shown = render(Feedback {
+            take: u64::MAX,
+            message: true,
+            answer: true,
+            done: true,
+            status: "claude-code: Posted".into(),
+            output: "Posted **3** messages".into(),
+            from: Some("claude-code".into()),
+            ..Feedback::default()
+        });
+        for expected in ["claude-code: Posted", "Posted", "3", "Close", "Copy"] {
+            assert!(shown.contains(expected), "{expected:?} in {shown}");
+        }
+        assert!(!shown.contains("Insert"), "{shown}");
+        // Its actions are lines under its name.
+        let shown = render(Feedback {
+            take: u64::MAX,
+            message: true,
+            done: true,
+            status: "claude-code is working".into(),
+            from: Some("claude-code".into()),
+            stages: vec![StageView {
+                kind: jevons_desktop_server::pipeline::StageKind::Calling,
+                label: "invoke Button \"Send\" in slack.exe".into(),
+                choices: Vec::new(),
+                detail: String::new(),
+                chosen: None,
+                ok: Some(true),
+            }],
+            ..Feedback::default()
+        });
+        assert!(shown.contains("claude-code is working"), "{shown}");
+        assert!(shown.contains("invoke Button"), "{shown}");
+        // Its question asks with its own word for yes.
+        let shown = render(Feedback {
+            take: u64::MAX,
+            message: true,
+            status: "claude-code asks".into(),
+            from: Some("claude-code".into()),
+            confirm: Some(PendingCall {
+                question: "Let claude-code act in slack.exe?".into(),
+                details: "First: invoke Button \"Send\".".into(),
+                action: "Allow".into(),
+            }),
+            ..Feedback::default()
+        });
+        for expected in [
+            "claude-code asks",
+            "Let claude-code act in slack.exe?",
+            "Allow (Enter)",
+            "Cancel (Esc)",
+        ] {
+            assert!(shown.contains(expected), "{expected:?} in {shown}");
+        }
+    }
+
+    #[test]
     fn a_waiting_task_s_bubble_shows_its_turns_and_goes_back_to_the_newest() {
         use crate::agent::{Feedback, Turn};
         use blitz_traits::shell::{ColorScheme, Viewport};
