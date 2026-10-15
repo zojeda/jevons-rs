@@ -6,9 +6,9 @@ use super::ControlApi;
 use super::ops::{self, OPS};
 use jevons_desktop_protocol::control::Caller;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
-    ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
-    ToolAnnotations,
+    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
+    Implementation, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig,
+    Tool, ToolAnnotations,
 };
 use rmcp::service::RequestContext;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -40,6 +40,9 @@ retry, ask what they want. `busy`: they are dictating or typing; wait a few seco
 - `show` puts a short Markdown message in the bubble; `ask` asks yes or no and waits; `bubble` \
 reads what the bubble shows, such as what the user just said. The bubble is small: keep it short.
 - Password fields are never read or typed into.";
+
+/// How long a client may keep the list of tools, in milliseconds.
+const LIST_TTL_MS: u64 = 60_000;
 
 /// The MCP server: the operations as tools.
 #[derive(Clone)]
@@ -121,7 +124,11 @@ impl ServerHandler for Mcp {
         _: Option<PaginatedRequestParams>,
         _: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        Ok(ListToolsResult::with_all_items(tools()))
+        // The 2026-07-28 revision asks how long a list holds and who may keep it: the tools stay
+        // as they are, behind the key.
+        Ok(ListToolsResult::with_all_items(tools())
+            .with_ttl_ms(LIST_TTL_MS)
+            .with_cache_scope(CacheScope::Private))
     }
 
     async fn call_tool(

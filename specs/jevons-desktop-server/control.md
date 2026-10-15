@@ -57,8 +57,9 @@ Tests: `mcp_lists_the_operations_and_calls_them_as_the_client_that_says_its_name
 
 ### R6 MCP clients of either revision
 
-A client of the 2026-07-28 revision calls without a session; one of an earlier revision starts
-with `initialize`. Either reads the server's instructions (under 4 KB): what to call first, how ids
+A client of the 2026-07-28 revision calls without a session, and the list of tools tells it how
+long it holds and that only this user may keep it (`ttlMs`, `cacheScope = "private"`); one of an
+earlier revision starts with `initialize`. Either reads the server's instructions (under 4 KB): what to call first, how ids
 work, the XPath vocabulary, what `denied` and `busy` mean, and how to use the bubble.
 
 Tests: `mcp_lists_the_operations_and_calls_them_as_the_client_that_says_its_name`, `each_operation_is_a_tool_with_a_whole_object_schema`

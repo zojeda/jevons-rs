@@ -274,6 +274,9 @@ mod tests {
         .unwrap();
         let tools = listed["result"]["tools"].as_array().unwrap();
         assert_eq!(tools.len(), ops::OPS.len(), "{listed}");
+        // The revision requires how long the list holds and who may keep it.
+        assert!(listed["result"]["ttlMs"].is_u64(), "{listed}");
+        assert_eq!(listed["result"]["cacheScope"], "private", "{listed}");
         let called: Value = rpc(
             json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
                 "params": {"name": "status", "arguments": {}, "_meta": meta}}),
