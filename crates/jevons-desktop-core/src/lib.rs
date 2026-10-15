@@ -47,4 +47,5 @@ pub mod reader;
 pub mod recorded;
 pub mod recording;
 pub mod voice;
+pub mod wake;
 pub mod xpath;

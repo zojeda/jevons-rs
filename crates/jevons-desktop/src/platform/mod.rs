@@ -10,7 +10,45 @@ use std::hash::{Hash, Hasher};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(windows)]
+mod media;
+#[cfg(windows)]
 mod windows;
+
+#[cfg(windows)]
+pub use media::Headphones;
+
+/// A headphone button, as Windows hands it to a media session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub enum HeadphoneButton {
+    /// Next: a double-tap on most earbuds.
+    DoubleTap,
+    /// Play or pause: a single tap.
+    Tap,
+}
+
+/// Hears the headphones' buttons, through a media session of jevons' own, until dropped. Only
+/// Windows has one.
+pub fn headphones(
+    on_button: Box<dyn Fn(HeadphoneButton) + Send + Sync>,
+) -> Result<Headphones, String> {
+    #[cfg(windows)]
+    return Headphones::start(on_button);
+    #[cfg(not(windows))]
+    {
+        drop(on_button);
+        Err("headphone buttons need Windows".into())
+    }
+}
+
+/// The headphones' buttons, where the platform has none.
+#[cfg(not(windows))]
+pub struct Headphones;
+
+#[cfg(not(windows))]
+impl Headphones {
+    pub fn pass_tap_on(&self) {}
+}
 
 /// The context provider for this platform.
 pub fn context_provider() -> Box<dyn ContextProvider> {

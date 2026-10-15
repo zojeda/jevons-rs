@@ -356,7 +356,14 @@ pub fn SettingsPage(rev: u64) -> Element {
     let serving_voice = view.config.route(Capability::Voice).map(|r| r.provider);
     let entries = view.flows.entries();
     let automations = view.automations.clone();
+    let taught = view.config.dictation.wake_spellings.join(", ");
     drop(view);
+    let teach = ctx.clone();
+    let wake_hint = if taught.is_empty() {
+        "Say it alone, then speak; Teach it after saving".to_string()
+    } else {
+        format!("Learned: {taught}")
+    };
 
     let d = draft.current();
     let dirty = draft.dirty();
@@ -607,6 +614,29 @@ pub fn SettingsPage(rev: u64) -> Element {
                     Switch { checked: d.dictation.live_hotkey_mode == HotkeyMode::Hold,
                         label: mode_label(d.dictation.live_hotkey_mode),
                         onchange: move |on| draft.edit(|c| c.dictation.live_hotkey_mode = mode(on)) }
+                }
+                div { class: "field",
+                    div { class: "stack",
+                        span { class: "field-label", "Headphones" }
+                        span { class: "field-hint", "Windows · a tap still plays and pauses music" }
+                    }
+                    Switch { checked: d.dictation.headphones,
+                        label: "Double-tap Bluetooth headphones to start live dictation; it ends at a pause".to_string(),
+                        onchange: move |on| draft.edit(|c| c.dictation.headphones = on) }
+                }
+                div { class: "field",
+                    div { class: "stack",
+                        span { class: "field-label", "Wake word" }
+                        span { class: "field-hint", "{wake_hint}" }
+                    }
+                    div { class: "row",
+                        input { class: "dx-input narrow", placeholder: "off",
+                            value: "{d.dictation.wake_word.clone().unwrap_or_default()}",
+                            oninput: move |e| draft.edit(|c| c.dictation.wake_word = Some(e.value().trim().to_string()).filter(|w| !w.is_empty())) }
+                        button { class: "dx-button", "data-style": "outline", "data-size": "sm",
+                            onclick: move |_| teach.send(Command::TeachWakeWord),
+                            "Teach it" }
+                    }
                 }
                 div { class: "field",
                     span { class: "field-label", "Live feedback" }

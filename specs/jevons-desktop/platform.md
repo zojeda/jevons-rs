@@ -109,3 +109,15 @@ route the stream follows by itself do not end it: they are logged. A device with
 name no device has, or another sample format fails the start with its message.
 
 Tests: `speech_plays_in_order_on_every_channel_and_silence_when_nothing_is_queued`, `speech_is_resampled_to_the_device_s_rate`, `a_playback_that_was_stopped_or_lost_its_device_plays_no_more`, `integer_devices_get_pcm16_with_silence_where_their_format_has_it`, `a_glitch_does_not_end_the_capture_and_a_lost_device_does`
+
+### R11 Windows hears the headphones' buttons through a media session
+
+Windows hands a Bluetooth headset's buttons only to the media session it holds current, never as
+keys. The app's session (a media player's transport controls, its own commands off) says Paused,
+shows a card titled jevons, and maps Next to a double-tap and Play or Pause to a tap; other
+buttons are ignored. Windows makes it current when it starts and once the music that played
+pauses; while music plays, the music app gets the buttons. A tap goes on as play or pause to the
+last current session that is not the app's own (named after its executable). The sessions
+Windows knows are logged once at start, by name.
+
+Tests: `a_double_tap_is_next_and_a_tap_is_play_or_pause`

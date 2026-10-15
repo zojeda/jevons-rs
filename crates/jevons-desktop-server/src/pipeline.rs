@@ -39,6 +39,10 @@ const PHRASE_PAUSE_MS: u32 = 700;
 const PHRASE_LONGEST_MS: u32 = 20_000;
 /// Live dictation: audio without speech kept before it is dropped.
 const PHRASE_IDLE_MS: u32 = 3_000;
+/// Live dictation that ends at quiet: the quiet after speech that ends the take.
+const TAKE_QUIET_MS: u32 = 3_000;
+/// Live dictation that ends at quiet: how long a take that hears no speech listens.
+const TAKE_UNSPOKEN_MS: u32 = 8_000;
 
 /// What live dictation does after a chunk of microphone audio.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,6 +61,10 @@ struct Phrases {
     speech_ms: u32,
     quiet_ms: u32,
     total_ms: u32,
+    /// Quiet since the last speech, across phrases.
+    since_speech_ms: u32,
+    /// A phrase's worth of speech was heard in the take.
+    spoke: bool,
     /// The noise floor, as an RMS level from 0 to 1.
     floor: Option<f32>,
 }
@@ -86,9 +94,12 @@ impl Phrases {
         if speech {
             self.speech_ms += ms;
             self.quiet_ms = 0;
+            self.since_speech_ms = 0;
         } else {
             self.quiet_ms += ms;
+            self.since_speech_ms += ms;
         }
+        self.spoke |= self.heard();
         let phrase = if self.heard() {
             if self.quiet_ms >= PHRASE_PAUSE_MS || self.total_ms >= PHRASE_LONGEST_MS {
                 Phrase::Commit
@@ -111,6 +122,17 @@ impl Phrases {
     /// Whether the audio since the last commit held speech.
     fn heard(&self) -> bool {
         self.speech_ms >= PHRASE_SPEECH_MS
+    }
+
+    /// Whether a take that ends at quiet is over: [`TAKE_QUIET_MS`] without speech once speech
+    /// was heard, or [`TAKE_UNSPOKEN_MS`] when none was.
+    fn quiet_ended(&self) -> bool {
+        self.since_speech_ms
+            >= if self.spoke {
+                TAKE_QUIET_MS
+            } else {
+                TAKE_UNSPOKEN_MS
+            }
     }
 }
 /// Live dictation: how long to wait for the last turn after stopping.
@@ -778,13 +800,15 @@ pub async fn run_transcript(
 /// Live dictation: the audio streams to Realtime until `stop` fires, the app ending a phrase
 /// at each pause, and `updates` shows what is heard as it is recognized. Nothing is typed while
 /// speaking: once stopped, the whole transcript goes through the same decision, generation and
-/// delivery as a take.
+/// delivery as a take. A take that `ends_at_quiet` also stops by itself after a long quiet
+/// ([`Phrases::quiet_ended`]), and says so with [`Update::StoppedListening`].
 pub async fn run_live(
     env: &Env,
     start: TakeStart,
     mut audio: mpsc::UnboundedReceiver<AudioEvent>,
     mut stop: oneshot::Receiver<()>,
     updates: &mpsc::UnboundedSender<Update>,
+    ends_at_quiet: bool,
 ) -> Trace {
     let mut trace = Trace::new(&start);
     trace.transcription = Some(TranscriptionPath::Realtime);
@@ -836,6 +860,17 @@ pub async fn run_live(
                     };
                     if let Err(e) = sent {
                         break Err(e.to_string());
+                    }
+                    if ends_at_quiet && phrases.quiet_ended() {
+                        let _ = updates.send(Update::StoppedListening);
+                        if phrases.heard() && writer.commit().await.is_ok() {
+                            in_flight += 1;
+                        }
+                        if in_flight == 0 {
+                            break Ok(());
+                        }
+                        let _ = updates.send(Update::Transcribing);
+                        deadline = Some(tokio::time::Instant::now() + LIVE_DRAIN);
                     }
                 }
                 Some(AudioEvent::Level(bands)) => {
@@ -5450,7 +5485,7 @@ allow = ["research/search/*"]
             context: context(Some("old text")),
             entry: None,
         };
-        let trace = run_live(env, start, received, stopped, &updates).await;
+        let trace = run_live(env, start, received, stopped, &updates, false).await;
         let mut shown = Vec::new();
         while let Ok(update) = seen.try_recv() {
             shown.push(update);
@@ -5492,6 +5527,39 @@ allow = ["research/search/*"]
                 |u| matches!(u, Update::StageDone { chosen: Some(c), .. } if c == "dictation")
             )
         );
+    }
+
+    #[tokio::test]
+    async fn live_dictation_that_ends_at_quiet_stops_by_itself_after_speech() {
+        let client = realtime_server(&[(&["hello"], "hello.")]).await;
+        let sink = RecordingSink::new(Some(7));
+        let env = env(client, Some(&sink));
+        // Speech, then quiet that goes on: the take is never stopped and its audio never ends.
+        let (audio, received) = mpsc::unbounded_channel();
+        for amplitude in [[6000; 4].as_slice(), &[30; 40]].concat() {
+            audio.send(AudioEvent::Chunk(chunk_at(amplitude))).unwrap();
+        }
+        let (_stop, stopped) = oneshot::channel();
+        let (updates, mut seen) = mpsc::unbounded_channel();
+        let start = TakeStart {
+            id: 3,
+            context: context(Some("old text")),
+            entry: None,
+        };
+        let live = run_live(&env, start, received, stopped, &updates, true);
+        let trace = tokio::time::timeout(Duration::from_secs(10), live)
+            .await
+            .expect("the take ends by itself");
+        assert_eq!(trace.error, None);
+        assert_eq!(trace.transcript, "hello.");
+        let typed: Vec<String> = sink.requests().into_iter().map(|r| r.text).collect();
+        assert_eq!(typed, ["hello."]);
+        let mut shown = Vec::new();
+        while let Ok(update) = seen.try_recv() {
+            shown.push(update);
+        }
+        assert!(shown.contains(&Update::StoppedListening));
+        drop(audio);
     }
 
     #[tokio::test]
@@ -5584,6 +5652,39 @@ allow = ["research/search/*"]
             .filter(|a| phrases.push(&chunk_at(*a)) == Phrase::Commit)
             .count();
         assert_eq!(commits, 2);
+    }
+
+    #[test]
+    fn a_take_that_ends_at_quiet_ends_three_seconds_after_speech() {
+        let mut phrases = Phrases::default();
+        for _ in 0..10 {
+            phrases.push(&chunk_at(6000));
+        }
+        // A pause between sentences keeps it going.
+        for _ in 0..20 {
+            phrases.push(&chunk_at(30));
+        }
+        assert!(!phrases.quiet_ended(), "2 s of quiet");
+        for _ in 0..5 {
+            phrases.push(&chunk_at(6000));
+        }
+        let ended = (0..40).position(|_| {
+            phrases.push(&chunk_at(30));
+            phrases.quiet_ended()
+        });
+        assert_eq!(ended, Some(29), "3 s of quiet ends it");
+    }
+
+    #[test]
+    fn a_take_that_ends_at_quiet_and_hears_no_speech_ends_after_eight_seconds() {
+        let mut phrases = Phrases::default();
+        // A click is not speech.
+        phrases.push(&chunk_at(6000));
+        let ended = (0..100).position(|_| {
+            phrases.push(&chunk_at(30));
+            phrases.quiet_ended()
+        });
+        assert_eq!(ended, Some(79));
     }
 
     #[test]

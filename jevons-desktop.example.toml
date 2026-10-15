@@ -13,6 +13,13 @@ hotkey_mode = "hold"
 # Live dictation: the bubble shows the words as you speak; the text is inserted when you finish.
 live_hotkey = "F9"
 live_hotkey_mode = "hold"
+# Windows: a double-tap on Bluetooth headphones starts live dictation, which ends after a quiet
+# pause (or at the next double-tap); a single tap still plays and pauses music.
+# headphones = true
+# Saying this word alone, then pausing, starts live dictation, which ends after a quiet pause.
+# The microphone stays open between takes; what it hears is only matched, never kept or logged.
+# Settings -> Teach it records how the speech model writes your way of saying it.
+# wake_word = "Jevons"
 # A bubble above the tray icon shows what dictation hears and does.
 live_feedback = true
 # inspector_hotkey = "Ctrl+Alt+I"

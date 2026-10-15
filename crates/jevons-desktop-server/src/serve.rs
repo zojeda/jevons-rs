@@ -224,8 +224,9 @@ impl Host {
                                 trace_of(&trace)
                             }
                             Said::Live => {
-                                let trace =
-                                    session.live(start, heard, finished, &updates, None).await;
+                                let trace = session
+                                    .live(start, heard, finished, &updates, None, false)
+                                    .await;
                                 trace_of(&trace)
                             }
                             Said::Transcribe => ToClient::Transcribed {

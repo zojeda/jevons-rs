@@ -36,6 +36,8 @@ pub enum Update {
     Delta(String),
     /// Live dictation: every phrase finished so far; the phrase being spoken starts over.
     Heard(String),
+    /// The take stopped listening by itself, at a quiet pause: the desk closes its microphone.
+    StoppedListening,
     Transcribing,
     Thinking,
     /// A stage of processing started: a decision, an investigation, a generation, a tool call,

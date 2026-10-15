@@ -44,3 +44,4 @@ It leaves:
 | [automations](automations.md) | The automations library, the sandboxed engine, checks, dry runs, approval and authoring |
 | [recording](recording.md) | Recording a demonstration of a task, and recorded interfaces |
 | [models](models.md) | The model catalog and downloads, tray icon frames |
+| [wake](wake.md) | The wake word: the gate that finds a word said alone, and the matcher that compares it by its sounds |

@@ -226,3 +226,14 @@ After a route that failed or stalled midway, the desk is told that nothing follo
 stretch that holds no samples. None of these sets the take's error.
 
 Tests: `a_voice_route_that_fails_or_gives_nothing_in_time_leaves_the_answer_in_the_bubble`, `the_client_s_desk_plays_the_speech_or_says_why_it_does_not`, `a_desk_that_stops_ends_the_request_and_what_it_took_counts_as_spoken`
+
+### R22 Live dictation can end at a quiet pause
+
+A live take started to end at quiet (the desk's headphones, [app](../jevons-desktop/app.md) R32)
+stops listening by itself after 3 seconds without speech, once a phrase's worth of speech (0.3
+seconds) was heard, or after 8 seconds when none was. A pause between sentences shorter than that
+keeps it going. It sends `StoppedListening` first, then goes on as a stopped take (R11): the last
+phrases are transcribed and the whole text goes through the flow tree. Remote clients' live
+takes never end at quiet.
+
+Tests: `a_take_that_ends_at_quiet_ends_three_seconds_after_speech`, `a_take_that_ends_at_quiet_and_hears_no_speech_ends_after_eight_seconds`, `live_dictation_that_ends_at_quiet_stops_by_itself_after_speech`
