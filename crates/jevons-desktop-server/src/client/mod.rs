@@ -66,7 +66,7 @@ pub struct Services {
 }
 
 impl Client {
-    /// `base` is the server root, such as `http://127.0.0.1:8080`.
+    /// `base` is the server root, such as `http://127.0.0.1:5380`.
     pub fn new(base: &str, key: Option<String>) -> Self {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))

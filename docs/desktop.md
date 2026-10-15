@@ -389,14 +389,14 @@ key = "${env:OPENROUTER_API_KEY}"
 
 [providers.box]
 kind = "jevons"
-url = "http://box.local:8080"
+url = "http://box.local:5380"
 
 [routes]
 decision = { provider = "openrouter", model = "typesafe/jev-1.13" }
 generation = { provider = "box" }
 ```
 
-- **Kinds.** `jevons` is a jevons server (`http://127.0.0.1:8080`, key from `TYPESAFE_API_KEY`). `openrouter` is OpenRouter (`https://openrouter.ai/api`, key from `OPENROUTER_API_KEY`), which serves Jev through System One and many language models. `openai-compatible` is any other server with OpenAI's API; give its root as `url`, without `/v1`.
+- **Kinds.** `jevons` is a jevons server (`http://127.0.0.1:5380`, key from `TYPESAFE_API_KEY`). `openrouter` is OpenRouter (`https://openrouter.ai/api`, key from `OPENROUTER_API_KEY`), which serves Jev through System One and many language models. `openai-compatible` is any other server with OpenAI's API; give its root as `url`, without `/v1`.
 - **Keys.** `${env:NAME}` reads the key from the environment, so it stays out of the file, which the app keeps in a git repository.
 - **Models.** An embedded or jevons provider names its own model for each capability, so the route needs none. Other providers need `model`.
 - **What gets loaded.** Only the models of the capabilities routed to `embedded`. With decisions and generation elsewhere, the app loads the speech model, and the voice model when there is one.
@@ -485,7 +485,7 @@ can run on it from another process:
 
 ```bash
 jevons-desktop --serve                         # no tray, no window: listens on [server] bind:port
-jevons-desktop --server ws://127.0.0.1:8080/desktop --transcript "hello world"
+jevons-desktop --server ws://127.0.0.1:5380/desktop --transcript "hello world"
 ```
 
 `--serve` loads the settings, the models routed to the app and the flows folder, and serves

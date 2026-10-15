@@ -20,7 +20,7 @@ It is off until you turn it on, it needs a key, and it reads and acts only where
    enabled = true
    ```
 
-   It listens on `[server] bind:port` (`127.0.0.1:8080` by default), whether or not `expose` is on.
+   It listens on `[server] bind:port` (`127.0.0.1:5380` by default), whether or not `expose` is on.
 3. Say what an agent may do at your desk, in `jevons-desktop.toml`:
 
    ```toml
@@ -44,7 +44,7 @@ environment variable:
   "mcpServers": {
     "jevons": {
       "type": "http",
-      "url": "http://127.0.0.1:8080/mcp",
+      "url": "http://127.0.0.1:5380/mcp",
       "headers": { "Authorization": "Bearer ${JEVONS_KEY}" }
     }
   }
@@ -52,13 +52,13 @@ environment variable:
 ```
 
 ```bash
-claude mcp add --transport http jevons http://127.0.0.1:8080/mcp \
+claude mcp add --transport http jevons http://127.0.0.1:5380/mcp \
   --header "Authorization: Bearer $JEVONS_KEY"
 ```
 
 Claude Code then has the tools `mcp__jevons__status`, `mcp__jevons__outline` and so on, and reads
 the server's instructions when it connects. From WSL with mirrored networking
-(`networkingMode=mirrored` in `.wslconfig`), `127.0.0.1:8080` reaches the app on Windows.
+(`networkingMode=mirrored` in `.wslconfig`), `127.0.0.1:5380` reaches the app on Windows.
 
 ## Operations
 
@@ -111,10 +111,10 @@ Operations without input take `GET` or `POST`; the others take `POST` with a JSO
 names itself in `X-Jevons-Agent`.
 
 ```bash
-curl -s -H "Authorization: Bearer $JEVONS_KEY" http://127.0.0.1:8080/api/v1/windows
+curl -s -H "Authorization: Bearer $JEVONS_KEY" http://127.0.0.1:5380/api/v1/windows
 curl -s -H "Authorization: Bearer $JEVONS_KEY" -H "X-Jevons-Agent: script" \
   -H "Content-Type: application/json" \
-  -d '{"node": "w1", "depth": 3}' http://127.0.0.1:8080/api/v1/outline
+  -d '{"node": "w1", "depth": 3}' http://127.0.0.1:5380/api/v1/outline
 ```
 
 A refusal is `{"error": {"kind", "message"}}`:

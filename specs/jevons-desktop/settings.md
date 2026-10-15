@@ -41,7 +41,7 @@ Tests: `a_missing_file_gives_defaults_and_unknown_fields_are_errors`, `the_examp
 
 | Section | Fields and defaults |
 | --- | --- |
-| `[server]` | `expose` (false), `bind` (`127.0.0.1`), `port` (8080), `api_key` (none) |
+| `[server]` | `expose` (false), `bind` (`127.0.0.1`), `port` (5380), `api_key` (none) |
 | `[providers.<name>]` | `kind` (`embedded`, `jevons`, `openrouter` or `openai-compatible`), `url` (the kind's), `key` (the kind's environment variable), `extensions`, `max_questions` and `min_probability` (the kind's profile) |
 | `[routes]` | `speech`, `realtime`, `decision`, `generation` and `voice`, each a `provider` and an optional `model` (all `embedded`); `voice` also takes the `voice` to speak in (the provider's own) |
 | `[models]` | `folder`, `runtime_config`, `generative`, `decision`, `speech` and `voice` (each a `path`, an optional `mmproj` and the `catalog` entry it came from), `realtime` (true) |
@@ -197,7 +197,7 @@ always there without being written.
 | Kind | Address when `url` is left out | Key when `key` is left out |
 | --- | --- | --- |
 | `embedded` | the app's own | the app's own |
-| `jevons` | `http://127.0.0.1:8080` | `TYPESAFE_API_KEY` |
+| `jevons` | `http://127.0.0.1:5380` | `TYPESAFE_API_KEY` |
 | `openrouter` | `https://openrouter.ai/api` | `OPENROUTER_API_KEY` |
 | `openai-compatible` | none: `url` is required | none |
 

@@ -81,7 +81,7 @@ export async function main(args = process.argv.slice(2)) {
   --seed N                  Shuffle seed, default 42 (does not set model RNG)
   --repeat N                Measured rounds, default 1
   --warmup N                Unmeasured calls per endpoint, default 0
-  --local-url URL           Default http://127.0.0.1:8080
+  --local-url URL           Default http://127.0.0.1:5380
   --remote-url URL          Default https://api.typesafe.ai
   --local-model ID          Default gemmadiffusion-latest
   --remote-model ID         Default jev-latest
@@ -115,7 +115,7 @@ Default: 72 cases × 2 endpoints = 144 calls, sequential and paired.`);
   const endpoints = values.endpoint === "both" ? ["local", "remote"] : [values.endpoint];
   if (endpoints.some((name) => !["local", "remote"].includes(name))) throw new Error("Invalid --endpoint");
   const config = {
-    local: { baseURL: baseURL(values["local-url"] ?? "http://127.0.0.1:8080"),
+    local: { baseURL: baseURL(values["local-url"] ?? "http://127.0.0.1:5380"),
       defaultModel: values["local-model"] ?? "gemmadiffusion-latest" },
     remote: { baseURL: baseURL(values["remote-url"] ?? "https://api.typesafe.ai"),
       defaultModel: values["remote-model"] ?? "jev-latest" },

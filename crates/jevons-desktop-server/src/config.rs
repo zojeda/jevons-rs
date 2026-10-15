@@ -82,7 +82,7 @@ impl Default for Server {
         Self {
             expose: false,
             bind: IpAddr::from([127, 0, 0, 1]),
-            port: 8080,
+            port: 5380,
             api_key: None,
         }
     }
@@ -110,7 +110,7 @@ impl ProviderKind {
     pub fn default_url(self) -> Option<&'static str> {
         match self {
             Self::Embedded | Self::OpenaiCompatible => None,
-            Self::Jevons => Some("http://127.0.0.1:8080"),
+            Self::Jevons => Some("http://127.0.0.1:5380"),
             Self::Openrouter => Some("https://openrouter.ai/api"),
         }
     }
@@ -460,7 +460,7 @@ mod tests {
         let text = include_str!("../../../jevons-server.example.toml");
         let config: ServerConfig = toml::from_str(text).unwrap();
         assert!(!config.server.expose);
-        assert_eq!(config.server.port, 8080);
+        assert_eq!(config.server.port, 5380);
         assert_eq!(config.check_routes(), Ok(()));
     }
 

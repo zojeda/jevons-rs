@@ -7,7 +7,7 @@
 Opens a transcription session on /v1/realtime, sends the file as 24 kHz PCM16 in 100 ms
 chunks with server-side turn detection, and prints live deltas and final transcripts.
 
-    uv run examples/realtime.py examples/speech-es.flac [--url ws://127.0.0.1:8080/v1/realtime]
+    uv run examples/realtime.py examples/speech-es.flac [--url ws://127.0.0.1:5380/v1/realtime]
         [--model parakeet-tdt-0.6b-v3] [--language es] [--fast]
 
 Set TYPESAFE_API_KEY when the server requires a key.
@@ -30,7 +30,7 @@ CHUNK = RATE // 10
 
 parser = argparse.ArgumentParser()
 parser.add_argument("audio")
-parser.add_argument("--url", default="ws://127.0.0.1:8080/v1/realtime")
+parser.add_argument("--url", default="ws://127.0.0.1:5380/v1/realtime")
 parser.add_argument("--model", default="parakeet-tdt-0.6b-v3")
 parser.add_argument("--language", default="")
 parser.add_argument("--fast", action="store_true", help="send as fast as possible")

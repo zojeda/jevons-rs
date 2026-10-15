@@ -9,7 +9,7 @@
 # with a key only the app knows.
 expose = false
 bind = "127.0.0.1"
-port = 8080
+port = 5380
 # The key other clients send when exposed. Prefer TYPESAFE_API_KEY; never commit a key.
 # api_key = ""
 
@@ -21,13 +21,13 @@ port = 8080
 
 # Where inference comes from. `embedded`, the models this app loads ([models] below), is always
 # there, and every capability uses it unless [routes] says otherwise. Other kinds:
-#   "jevons"             a jevons server (url: http://127.0.0.1:8080; key: TYPESAFE_API_KEY)
+#   "jevons"             a jevons server (url: http://127.0.0.1:5380; key: TYPESAFE_API_KEY)
 #   "openrouter"         OpenRouter (url: https://openrouter.ai/api; key: OPENROUTER_API_KEY)
 #   "openai-compatible"  any server with OpenAI's API (url required: the root, without /v1)
 # `key = "${env:NAME}"` takes the key from the environment, so it stays out of this file.
 # [providers.box]
 # kind = "jevons"
-# url = "http://box.local:8080"
+# url = "http://box.local:5380"
 #
 # [providers.openrouter]
 # kind = "openrouter"

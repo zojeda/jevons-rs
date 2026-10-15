@@ -125,7 +125,7 @@ struct Args {
     #[arg(long, conflicts_with_all = ["replay", "transcript", "server"])]
     serve: bool,
     /// With --replay or --transcript: run the take on the jevons server at this address, such
-    /// as `ws://127.0.0.1:8080/desktop`, instead of in this process. This side still reads
+    /// as `ws://127.0.0.1:5380/desktop`, instead of in this process. This side still reads
     /// the screen and, with --deliver, types.
     #[arg(long, value_name = "URL")]
     server: Option<String>,

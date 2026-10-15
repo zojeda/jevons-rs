@@ -42,7 +42,7 @@ Rust 1.95+.
 
 ```bash
 export DIFFUSION_MODEL="$HOME/models/diffusiongemma/diffusiongemma-26B-A4B-it-Q4_K_M.gguf"
-cargo run --release --locked -p jevons-rs -- --bind 127.0.0.1:8080
+cargo run --release --locked -p jevons-rs -- --bind 127.0.0.1:5380
 ```
 
 | Option | Behavior |

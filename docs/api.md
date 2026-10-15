@@ -8,7 +8,7 @@ The server reads a settings file of **models** (each loaded once) and the **serv
 
 ```toml
 [server]
-bind = "127.0.0.1:8080"
+bind = "127.0.0.1:5380"
 
 [models.gemma]
 path = "~/models/diffusiongemma/diffusiongemma-26B-A4B-it-Q4_K_M.gguf"
@@ -37,7 +37,7 @@ The file is `--config PATH` (or `JEVONS_CONFIG`), otherwise `./jevons.toml` or `
 
 | Section | Keys |
 | --- | --- |
-| `[server]` | `bind` (default `127.0.0.1:8080`), `api_key` |
+| `[server]` | `bind` (default `127.0.0.1:5380`), `api_key` |
 | `[models.<name>]` | `path` (required: GGUF file or checkpoint directory), `id` (served model ID; defaults to the model's own), `main_gpu` (0), `queue_capacity` (8). Diffusion language models only: `arch` (detected), `mmproj` (DiffusionGemma images), `context_size` (8192), `batch_size` (512), `prompt_cache` (true), `seed` (42), `decoding` (`diffusion`, `self-speculation` or `autoregressive`) |
 | `[services.generative]` | `model` |
 | `[services.decision]` | `model` |
@@ -63,7 +63,7 @@ The routes belong to the four services (see the [architecture](../README.md#arch
 | All | `GET /health` | Check model readiness and worker availability: `status` and `services`, the model IDs serving `generative`, `decision`, `speech` and `voice` (`null` for a service that is off), and `voice`, the voice model's voices, languages and sample rate. |
 
 ```bash
-curl http://127.0.0.1:8080/v1/systemone \
+curl http://127.0.0.1:5380/v1/systemone \
   -H "Authorization: Bearer $TYPESAFE_API_KEY" \
   -H "Content-Type: application/json" \
   --data-binary @examples/system-one.json
@@ -87,7 +87,7 @@ See [probability math](inference.md#from-logits-to-answers) for score and confid
 
 The served model ID depends on the architecture: `gemmadiffusion-0.1` for DiffusionGemma and `nemotron-diffusion-8b` (or `-3b`) for Nemotron-Labs-Diffusion. Change it with the model's `id`. The server accepts the architecture's alias (`gemmadiffusion-latest` or `nemotron-diffusion-latest`) as a routing alias, plus `openjev-latest` and `jev-latest` for the Decision model (or the only diffusion model), and reports the local model ID in responses. Those aliases do not identify Codiv's hosted model.
 
-For a TypeSafe client, set `TYPESAFE_BASE_URL=http://127.0.0.1:8080` and use a listed model or `jev-latest`. The server runs without a TypeSafe SDK or a connection to Codiv's infrastructure.
+For a TypeSafe client, set `TYPESAFE_BASE_URL=http://127.0.0.1:5380` and use a listed model or `jev-latest`. The server runs without a TypeSafe SDK or a connection to Codiv's infrastructure.
 
 With Node.js 20+ and a running service:
 
@@ -117,7 +117,7 @@ Images cannot be combined with `think > 0` or `sequential=true`; these combinati
 Try the [text extensions example](../examples/system-one-extensions.json):
 
 ```bash
-curl http://127.0.0.1:8080/v1/systemone \
+curl http://127.0.0.1:5380/v1/systemone \
   -H "Content-Type: application/json" \
   --data-binary @examples/system-one-extensions.json
 ```
@@ -154,7 +154,7 @@ cargo run --release --locked -p jevons-rs -- --config jevons.toml
 Adjust the SDK path for other machines; see [ROCm setup](build.md#rocmhip). Wait for `jevons-rs is ready`, then use another terminal:
 
 ```bash
-curl --fail-with-body http://127.0.0.1:8080/v1/systemone \
+curl --fail-with-body http://127.0.0.1:5380/v1/systemone \
   -H "Content-Type: application/json" \
   --data-binary @examples/hotdog.json
 ```
@@ -195,7 +195,7 @@ The same model also writes free-form text through the OpenAI Chat Completions, C
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="unused-without-a-key")
+client = OpenAI(base_url="http://127.0.0.1:5380/v1", api_key="unused-without-a-key")
 reply = client.chat.completions.create(
     model="nemotron-diffusion-8b",
     messages=[{"role": "user", "content": "What is 15% of 240?"}],
@@ -239,7 +239,7 @@ The model is served as `parakeet-tdt-0.6b-v3` (change it with the model's `id`),
 `POST /v1/audio/transcriptions` takes the OpenAI multipart form, so OpenAI SDKs and tools such as Open WebUI work unchanged:
 
 ```bash
-curl http://127.0.0.1:8080/v1/audio/transcriptions \
+curl http://127.0.0.1:5380/v1/audio/transcriptions \
   -H "Authorization: Bearer $TYPESAFE_API_KEY" \
   -F file=@examples/speech-es.flac -F model=parakeet-tdt-0.6b-v3 -F language=es
 ```
@@ -260,7 +260,7 @@ with open("examples/speech-en.flac", "rb") as audio:
 `GET /v1/realtime` opens an OpenAI Realtime [transcription session](https://platform.openai.com/docs/guides/realtime-transcription) over a WebSocket (`realtime = false` turns it off). `?intent=transcription` and `?model=` are accepted. Browsers, which cannot set headers, may pass the key as the subprotocol `openai-insecure-api-key.<key>` next to `realtime`. [examples/realtime.py](../examples/realtime.py) streams a file at real-time pace:
 
 ```bash
-uv run examples/realtime.py examples/speech-es.flac --url ws://127.0.0.1:8080/v1/realtime --language es
+uv run examples/realtime.py examples/speech-es.flac --url ws://127.0.0.1:5380/v1/realtime --language es
 ```
 
 - **Session.** The server sends `session.created`; `session.update` with `session.type = "transcription"` sets `audio.input.format` (`audio/pcm` at 24 kHz, or 8, 16 or 48 kHz; `audio/pcmu`; `audio/pcma`), `audio.input.transcription` (`model`, `language`; `prompt` only empty), `audio.input.turn_detection` and `include: ["item.input_audio_transcription.logprobs"]`. The beta `transcription_session.update` is accepted too, and the session then answers in the beta shape (`transcription_session.updated`, `conversation.item.created`).
@@ -299,7 +299,7 @@ The model is served as `qwen3-tts-12hz-0.6b-base` (change it with the model's `i
 `POST /v1/audio/speech` takes OpenAI's JSON body and answers audio, so OpenAI SDKs work unchanged:
 
 ```bash
-curl http://127.0.0.1:8080/v1/audio/speech \
+curl http://127.0.0.1:5380/v1/audio/speech \
   -H "Authorization: Bearer $TYPESAFE_API_KEY" -H "Content-Type: application/json" \
   --data-binary @examples/audio-speech.json --output speech.wav
 ```

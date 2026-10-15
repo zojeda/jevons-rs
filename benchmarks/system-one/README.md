@@ -148,7 +148,7 @@ The runner loads the repository `.env` automatically; exported environment varia
 
 | Setting | Default / override |
 | --- | --- |
-| Local root | `http://127.0.0.1:8080`; `--local-url URL` |
+| Local root | `http://127.0.0.1:5380`; `--local-url URL` |
 | Hosted root | `https://api.typesafe.ai`; `--remote-url URL` |
 | Local model | `gemmadiffusion-latest`; `--local-model ID` |
 | Hosted model | `jev-latest`; `--remote-model ID` |

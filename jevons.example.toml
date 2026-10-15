@@ -5,7 +5,7 @@
 # directory, and unknown keys are errors. `--bind` and TYPESAFE_API_KEY override the file.
 
 [server]
-bind = "127.0.0.1:8080"
+bind = "127.0.0.1:5380"
 # Bearer key for every endpoint except /health. Prefer TYPESAFE_API_KEY in the environment;
 # never commit a key.
 # api_key = ""
