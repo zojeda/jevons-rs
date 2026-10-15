@@ -9,5 +9,5 @@
 - [x] Teaching in the bubble, from a Settings button.
 - [x] The setting and the button in Settings.
 - [x] Living specs, `docs/desktop.md`, `just check-specs`.
-- [ ] Built on Windows and checked at the desk: wakes on the user's "Jevons", not on talk, a
-      video or the voice.
+- [x] Built on Windows (`1148519`) and tried at the desk by the user on 2026-10-15, who asked to
+      merge it. Not checked item by item: words from talk, a video or the voice waking it.

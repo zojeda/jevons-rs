@@ -105,5 +105,3 @@ moves to `changes/archive/`.
 | **Changes** | |
 | [changes/desktop-server](changes/desktop-server/proposal.md) | Machines, agents and tasks; the desktop server, client and protocol |
 | [changes/gemma-vision-on-burn](changes/gemma-vision-on-burn/proposal.md) | The Gemma 4 vision encoder on `jevons-burn`'s layers: measured, and it does not hold its rule |
-| [changes/headphone-button](changes/headphone-button/proposal.md) | A double-tap on Bluetooth headphones starts live dictation, which ends at a quiet pause (Windows) |
-| [changes/wake-word](changes/wake-word/proposal.md) | Saying "Jevons" starts live dictation: short isolated words go to the speech model and match by their sounds |
