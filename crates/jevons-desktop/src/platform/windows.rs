@@ -426,7 +426,7 @@ impl UiActor for UiaActor {
     fn type_text(&self, text: &str) -> Result<(), PlatformError> {
         crate::hold::own_input();
         let _mark = OwnInput;
-        WindowsSink::enigo()?.text(text).map_err(failed)
+        WindowsSink::type_keys(&mut WindowsSink::enigo()?, text)
     }
 
     fn activate(&self, window: &str) -> Result<(), PlatformError> {
@@ -590,7 +590,7 @@ fn act(element: &UIElement, action: &UiAction) -> Result<Acted, PlatformError> {
                     "its window did not come to the front, so nothing was typed",
                 ));
             }
-            WindowsSink::enigo()?.text(text).map_err(failed)?;
+            WindowsSink::type_keys(&mut WindowsSink::enigo()?, text)?;
             done("the focus and typing")
         }
         UiAction::Toggle => {
@@ -1096,6 +1096,10 @@ fn address_bar(automation: &UIAutomation, pid: Option<u32>) -> Option<String> {
     })
 }
 
+/// The pause between typed characters. WinUI text boxes, such as Windows 11 Notepad's, can take
+/// the characters of one SendInput burst out of order ("hola" became "hloa").
+const KEY_GAP: Duration = Duration::from_millis(10);
+
 /// SendInput and the clipboard.
 pub struct WindowsSink {
     keys: DeviceState,
@@ -1110,6 +1114,18 @@ impl WindowsSink {
 
     fn enigo() -> Result<Enigo, PlatformError> {
         Enigo::new(&Settings::default()).map_err(failed)
+    }
+
+    /// Types `text` one character per SendInput call, [`KEY_GAP`] apart.
+    fn type_keys(enigo: &mut Enigo, text: &str) -> Result<(), PlatformError> {
+        let mut buffer = [0; 4];
+        for (i, c) in text.chars().enumerate() {
+            if i > 0 {
+                std::thread::sleep(KEY_GAP);
+            }
+            enigo.text(c.encode_utf8(&mut buffer)).map_err(failed)?;
+        }
+        Ok(())
     }
 
     fn chord(enigo: &mut Enigo, letter: char) -> Result<(), PlatformError> {
@@ -1187,7 +1203,7 @@ impl TextSink for WindowsSink {
                         .key(Key::Backspace, Direction::Click)
                         .map_err(failed)?;
                 }
-                enigo.text(&request.text).map_err(failed)?;
+                Self::type_keys(&mut enigo, &request.text)?;
             }
             DeliveryMethod::SetValue => {
                 ask(|reply| Request::SetValue(request.text.clone(), reply))?

@@ -32,10 +32,11 @@ Tests: none yet
 ### R3 Windows types, pastes or sets the value
 
 On Windows, text for the application is pasted (the clipboard set, Ctrl+V, and the earlier
-clipboard text put back 300 ms later), typed key by key with SendInput, set through UI
-Automation's value pattern, or copied, as the delivery says. A rewrite with nothing selected sends
-Ctrl+A first. Delivery waits while any key is down. The app marks its own input so a recording
-does not take it for the user's.
+clipboard text put back 300 ms later), typed with SendInput one character at a time, 10 ms
+apart (WinUI text boxes, such as Windows 11 Notepad's, reorder the characters of one burst),
+set through UI Automation's value pattern, or copied, as the delivery says. A rewrite with
+nothing selected sends Ctrl+A first. Delivery waits while any key is down. The app marks its
+own input so a recording does not take it for the user's.
 
 Tests: none yet
 
@@ -80,8 +81,8 @@ On Windows, an action goes through the element's control pattern: invoke (or sel
 default action, or a click when it has none), value, toggle, selection, expand and collapse, and
 scroll into view. A click lands on the element's clickable point, or the middle of its bounds.
 Typing into an element focuses it first. Keys and text go to the window in front through
-SendInput. Bringing a window forward restores it when minimized. Elsewhere actions are not
-available.
+SendInput, text typed as delivery types it (R3). Bringing a window forward restores it when
+minimized. Elsewhere actions are not available.
 
 Tests: none yet
 
