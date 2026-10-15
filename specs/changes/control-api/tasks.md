@@ -23,7 +23,9 @@ Work happens on `spike/control-api`, cut from `dev`; it merges only when you ask
       with a recorded tree (headless, two processes): the headless client's desk answered
       `windows` with the recorded Slack window while connected.
 - [ ] On Windows: Claude Code in WSL reaches `127.0.0.1:8080` (mirrored networking), reads Slack
-      or Notepad, acts once approved, shows and asks in the bubble.
+      or Notepad, acts once approved, shows and asks in the bubble. Installed 2026-10-15 (a6ff5b4):
+      from WSL with the key, `status`, `windows`, `outline` and `xpath` answered over UI
+      Automation (Notepad: 30 elements); acting, showing and asking wait for a try at the desk.
 
 Known gaps of phase 1:
 
