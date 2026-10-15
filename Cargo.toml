@@ -90,6 +90,7 @@ tao = "0.37"
 tokio-tungstenite = "0.29"
 tray-icon = "0.25"
 uiautomation = "0.25"
+windows = "0.62"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

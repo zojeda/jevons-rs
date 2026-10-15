@@ -52,7 +52,7 @@ Tests: `a_missing_file_gives_defaults_and_unknown_fields_are_errors`, `the_examp
 
 | Section | Fields and defaults |
 | --- | --- |
-| `[dictation]` | `hotkey` (`Ctrl+Alt+Space`), `hotkey_mode` (`hold`), `live_hotkey` (`F9`), `live_hotkey_mode` (`hold`), `live_feedback` (true), `inspector_hotkey` (none), `branch_hotkeys` (none), `microphone` (the default device), `language` (detected), `decide` (true), `max_output_tokens` (1024) |
+| `[dictation]` | `hotkey` (`Ctrl+Alt+Space`), `hotkey_mode` (`hold`), `live_hotkey` (`F9`), `live_hotkey_mode` (`hold`), `headphones` (false), `live_feedback` (true), `inspector_hotkey` (none), `branch_hotkeys` (none), `microphone` (the default device), `language` (detected), `decide` (true), `max_output_tokens` (1024) |
 | `[voice]` | `speak` (true), `output` (the default device): [desk](../jevons-desktop-core/desk.md) R12 |
 | `[privacy]` | `max_context_chars` (2000), `read_clipboard` (false), `read_other_windows` (false), `readable_apps` (none) |
 | `[tools.<name>]`, `[mcp.<name>]` | the tools and MCP servers that run on this machine ([desk](../jevons-desktop-core/desk.md) R6) |
@@ -244,3 +244,10 @@ asks for voice answers in the bubble
 ([flows](../jevons-desktop-server/flows.md) R51).
 
 Tests: `a_take_may_speak_when_the_switch_is_on_and_there_is_a_speaker`, `the_voice_settings_and_route_load_back_each_from_its_own_file`
+
+### R23 The headphones are off until the settings turn them on
+
+`[dictation] headphones` is off when left out, and is written only when on. Turned on, it loads
+back on ([app](app.md) R32).
+
+Tests: `the_headphones_are_off_until_the_settings_turn_them_on`

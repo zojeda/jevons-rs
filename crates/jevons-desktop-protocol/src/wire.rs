@@ -687,6 +687,7 @@ mod tests {
             Update::Answering,
             Update::Stage(Stage::new(StageKind::Speaking, "voice")),
             Update::Speaking,
+            Update::StoppedListening,
             Update::State("research › search › results".into()),
             Update::Task { instance: 5 },
         ];

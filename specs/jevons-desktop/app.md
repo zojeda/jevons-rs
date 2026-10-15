@@ -378,3 +378,20 @@ A press while a take hears, decides or writes still changes nothing (R6). Once a
 and only its voice plays, a press starts a take as usual, which stops the voice (R30).
 
 Tests: `a_press_while_a_take_reads_its_answer_aloud_starts_the_next_take`, `a_take_started_over_one_that_speaks_works_once_that_one_has_ended`, `a_spoken_answer_stays_in_the_bubble_as_a_shown_one_does`
+
+### R32 A double-tap on the headphones starts live dictation
+
+With `[dictation] headphones` on, the app keeps a paused media session of its own on Windows
+([platform](platform.md) R11), and drops it when the setting goes off. A double-tap on the
+headphones (their Next button) works as a live dictation hotkey in toggle mode: it starts live
+dictation, a second double-tap ends the listening of the take it started, and it ends no take
+that a hotkey or the menu started. A take it starts also ends by itself at a quiet pause
+([pipeline](../jevons-desktop-server/pipeline.md) R22), since headphones send nothing while
+their own microphone is open; the bubble's first line says so. While a take reads its answer
+aloud, a double-tap starts the next take, as a hotkey does (R31).
+
+A single tap (play or pause) goes on to the last music app that was current, so the headphones
+still play and pause it, except while a take listens, when it does nothing. On other platforms
+the setting does nothing, and the log and the window say the buttons are unavailable.
+
+Tests: `a_double_tap_finishes_only_the_take_the_headphones_started`

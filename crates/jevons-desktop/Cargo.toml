@@ -58,6 +58,8 @@ device_query.workspace = true
 enigo.workspace = true
 sysinfo.workspace = true
 uiautomation = { workspace = true, features = ["pattern"] }
+# The headphones' buttons reach only a media session (see platform/media.rs).
+windows = { workspace = true, features = ["Foundation", "Foundation_Collections", "Media", "Media_Control", "Media_Playback"] }
 
 [dev-dependencies]
 # Real mouse events for the headless click tests.

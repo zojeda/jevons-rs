@@ -134,6 +134,10 @@ pub struct Dictation {
     #[serde(with = "empty_is_none")]
     pub live_hotkey: Option<String>,
     pub live_hotkey_mode: HotkeyMode,
+    /// A double-tap on Bluetooth headphones starts live dictation, which ends after a quiet
+    /// pause; a single tap goes on to the last music app. Windows only.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub headphones: bool,
     /// A bubble by the tray icon shows what dictation hears and does: the words as they are
     /// recognized, the route through the flow tree, and the text delivered.
     pub live_feedback: bool,
@@ -164,6 +168,7 @@ impl Default for Dictation {
             hotkey_mode: HotkeyMode::Hold,
             live_hotkey: Some("F9".into()),
             live_hotkey_mode: HotkeyMode::Hold,
+            headphones: false,
             live_feedback: true,
             inspector_hotkey: None,
             branch_hotkeys: BTreeMap::new(),
@@ -265,6 +270,17 @@ mod tests {
         assert_eq!(config.dictation.hotkey_mode, HotkeyMode::Hold);
         assert_eq!(config.dictation.live_hotkey_mode, HotkeyMode::Toggle);
         assert!(toml::from_str::<ClientConfig>("[dictation]\nhotkey_mode = \"tap\"\n").is_err());
+    }
+
+    #[test]
+    fn the_headphones_are_off_until_the_settings_turn_them_on() {
+        let default: ClientConfig = toml::from_str("").unwrap();
+        assert!(!default.dictation.headphones);
+        assert!(!toml::to_string(&default).unwrap().contains("headphones"));
+        let on: ClientConfig = toml::from_str("[dictation]\nheadphones = true\n").unwrap();
+        assert!(on.dictation.headphones);
+        let back: ClientConfig = toml::from_str(&toml::to_string(&on).unwrap()).unwrap();
+        assert_eq!(back, on);
     }
 
     #[test]

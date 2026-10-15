@@ -207,7 +207,8 @@ impl Session {
         pipeline::run_take(&self.env(flows), start, audio, finish, updates).await
     }
 
-    /// Live dictation: phrases as they are heard, then the whole text as a take.
+    /// Live dictation: phrases as they are heard, then the whole text as a take. One that
+    /// `ends_at_quiet` stops listening by itself after a long quiet.
     pub async fn live(
         &self,
         start: TakeStart,
@@ -215,8 +216,9 @@ impl Session {
         stop: oneshot::Receiver<()>,
         updates: &mpsc::UnboundedSender<Update>,
         flows: Option<Arc<FlowTree>>,
+        ends_at_quiet: bool,
     ) -> Trace {
-        pipeline::run_live(&self.env(flows), start, audio, stop, updates).await
+        pipeline::run_live(&self.env(flows), start, audio, stop, updates, ends_at_quiet).await
     }
 
     /// A take from text, as if it had been said.

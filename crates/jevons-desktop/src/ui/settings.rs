@@ -609,6 +609,15 @@ pub fn SettingsPage(rev: u64) -> Element {
                         onchange: move |on| draft.edit(|c| c.dictation.live_hotkey_mode = mode(on)) }
                 }
                 div { class: "field",
+                    div { class: "stack",
+                        span { class: "field-label", "Headphones" }
+                        span { class: "field-hint", "Windows · a tap still plays and pauses music" }
+                    }
+                    Switch { checked: d.dictation.headphones,
+                        label: "Double-tap Bluetooth headphones to start live dictation; it ends at a pause".to_string(),
+                        onchange: move |on| draft.edit(|c| c.dictation.headphones = on) }
+                }
+                div { class: "field",
                     span { class: "field-label", "Live feedback" }
                     Switch { checked: d.dictation.live_feedback,
                         label: "A bubble by the tray icon shows what dictation hears and does".to_string(),

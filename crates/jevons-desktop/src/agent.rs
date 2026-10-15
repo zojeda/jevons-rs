@@ -3,6 +3,7 @@
 //! workers so a slow generation never blocks the hotkey.
 
 use crate::config::{Capability, DesktopConfig, HotkeyMode};
+use crate::platform::{HeadphoneButton, Headphones};
 use crate::runtime::{Runtime, Status};
 use crate::settings;
 use crate::tray::Tray;
@@ -55,6 +56,10 @@ const HISTORY: usize = 50;
 #[derive(Debug)]
 pub enum Command {
     Hotkey(HotkeyEvent),
+    /// A headphone button, through the media session the settings turn on.
+    Headphones(HeadphoneButton),
+    /// The take with this id stopped listening by itself, at a quiet pause.
+    StoppedListening(u64),
     /// The hotkeys the tray registered, and those it could not.
     HotkeysRegistered {
         actions: Vec<(u32, HotkeyAction, String)>,
@@ -320,7 +325,8 @@ impl Feedback {
     /// Applies a progress update; returns whether it changed what the bubble shows.
     pub(crate) fn apply(&mut self, update: &Update) -> bool {
         match update {
-            Update::Level(_) => return false,
+            // The agent closes the microphone; the transcribing that follows shows.
+            Update::Level(_) | Update::StoppedListening => return false,
             Update::Delta(text) => self.partial.push_str(text),
             Update::Heard(text) => {
                 self.heard = text.clone();
@@ -702,12 +708,22 @@ pub fn window_key(snapshot: &ContextSnapshot) -> String {
     format!("{} · {}", snapshot.app.process_name, snapshot.window.title)
 }
 
+/// What starts and finishes a take: the same gesture again ends the listening.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Source {
+    /// The hotkey with this id.
+    Hotkey(u32),
+    /// A double-tap on the headphones. Its take ends at a quiet pause too, since the
+    /// headphones send nothing while their own microphone is open.
+    Headphones,
+}
+
 struct Active {
     id: u64,
     /// Live dictation rather than push-to-talk.
     live: bool,
-    /// The hotkey that started it.
-    source: Option<u32>,
+    /// What started it: a hotkey or the headphones.
+    source: Option<Source>,
     /// The hotkey is held while speaking: its release ends the take. Otherwise pressing it
     /// again does.
     held: bool,
@@ -771,12 +787,12 @@ enum Press {
     Ignore,
 }
 
-/// What a press of the dictation hotkey `id` does. `speaking` says whether a take is in its
-/// speaking stage.
-fn press(active: Option<&Active>, id: u32, speaking: impl FnOnce(u64) -> bool) -> Press {
+/// What a press of a dictation hotkey, or a double-tap on the headphones, does. `speaking`
+/// says whether a take is in its speaking stage.
+fn press(active: Option<&Active>, source: Source, speaking: impl FnOnce(u64) -> bool) -> Press {
     match active {
         None => Press::Start,
-        Some(a) if a.source == Some(id) && !a.held && a.capture.is_some() => Press::Finish,
+        Some(a) if a.source == Some(source) && !a.held && a.capture.is_some() => Press::Finish,
         Some(a) if speaking(a.id) => Press::Interrupt,
         Some(_) => Press::Ignore,
     }
@@ -860,6 +876,8 @@ pub struct Agent {
     /// The voice started or ended while a take listened: the hotkeys are registered anew,
     /// with or without Escape, once the microphone has closed.
     hotkeys_stale: bool,
+    /// The media session that hears the headphones' buttons, while the settings turn it on.
+    headphones: Option<Headphones>,
     /// The tools the settings register, the library's automations among them.
     tools: Arc<ToolHost>,
     /// The automations library, and what runs them.
@@ -1037,6 +1055,7 @@ impl Agent {
             audio: layers.audio,
             voice,
             hotkeys_stale: false,
+            headphones: None,
             hotkeys: std::collections::HashMap::new(),
             confirming: None,
             accelerators: std::collections::HashMap::new(),
@@ -1067,6 +1086,7 @@ impl Agent {
         if let Some(tray) = &agent.tray {
             tray.hotkeys(agent.bindings());
         }
+        agent.follow_headphones();
         agent.runtime.apply(&agent.config, &agent.config_file);
         agent.publish_menu();
         agent.list_tools();
@@ -1216,17 +1236,25 @@ impl Agent {
                 }
                 None => {}
             },
+            Command::Headphones(button) => self.headphones_pressed(button),
+            Command::StoppedListening(take) => {
+                if self
+                    .active
+                    .as_ref()
+                    .is_some_and(|a| a.id == take && a.capture.is_some())
+                {
+                    self.stop_take();
+                }
+            }
             Command::Hotkey(HotkeyEvent::Released(id))
                 if self.record_press.is_some_and(|(held, ..)| held == id) =>
             {
                 self.record_released();
             }
             Command::Hotkey(HotkeyEvent::Released(id)) => {
-                if self
-                    .active
-                    .as_ref()
-                    .is_some_and(|a| a.source == Some(id) && a.held && a.capture.is_some())
-                {
+                if self.active.as_ref().is_some_and(|a| {
+                    a.source == Some(Source::Hotkey(id)) && a.held && a.capture.is_some()
+                }) {
                     self.stop_take();
                 }
             }
@@ -1736,12 +1764,62 @@ impl Agent {
     /// mode. Key repeats and other hotkeys while a take runs change nothing, except while that
     /// take reads its answer aloud: the voice stops and the next take starts.
     fn hotkey_pressed(&mut self, id: u32, entry: Option<String>, live: bool, mode: HotkeyMode) {
-        match press(self.active.as_ref(), id, |take| self.speaks(take)) {
+        let source = Source::Hotkey(id);
+        match press(self.active.as_ref(), source, |take| self.speaks(take)) {
             Press::Start | Press::Interrupt => {
-                self.begin(entry, Some(id), live, mode == HotkeyMode::Hold, None)
+                self.begin(entry, Some(source), live, mode == HotkeyMode::Hold, None)
             }
             Press::Finish => self.stop_take(),
             Press::Ignore => {}
+        }
+    }
+
+    /// A headphone button: a double-tap starts live dictation or ends the listening of the
+    /// take it started, as a hotkey in toggle mode does. A tap goes on to the last music app,
+    /// unless a take listens.
+    fn headphones_pressed(&mut self, button: HeadphoneButton) {
+        match button {
+            HeadphoneButton::DoubleTap => {
+                match press(self.active.as_ref(), Source::Headphones, |take| {
+                    self.speaks(take)
+                }) {
+                    Press::Start | Press::Interrupt => {
+                        self.begin(None, Some(Source::Headphones), true, false, None)
+                    }
+                    Press::Finish => self.stop_take(),
+                    Press::Ignore => {}
+                }
+            }
+            HeadphoneButton::Tap if listens(self.active.as_ref()) => {}
+            HeadphoneButton::Tap => {
+                if let Some(headphones) = &self.headphones {
+                    headphones.pass_tap_on();
+                }
+            }
+        }
+    }
+
+    /// Holds the media session that hears the headphones while the settings turn it on, and
+    /// drops it when they turn it off.
+    fn follow_headphones(&mut self) {
+        let on = self.config.dictation.headphones;
+        if on == self.headphones.is_some() {
+            return;
+        }
+        self.headphones = None;
+        if !on {
+            return;
+        }
+        let commands = self.commands.clone();
+        let heard = Box::new(move |button| {
+            let _ = commands.send(Command::Headphones(button));
+        });
+        match crate::platform::headphones(heard) {
+            Ok(headphones) => self.headphones = Some(headphones),
+            Err(e) => {
+                tracing::warn!(error = %e, "The headphones' buttons are unavailable");
+                self.view().notice = Some(format!("The headphones' buttons are unavailable: {e}"));
+            }
         }
     }
 
@@ -2638,6 +2716,7 @@ impl Agent {
         if hotkeys_changed && let Some(tray) = &self.tray {
             tray.hotkeys(self.bindings());
         }
+        self.follow_headphones();
         if flows_changed {
             let dir = self.config.flows_dir(&self.config_file);
             let _ = std::fs::create_dir_all(&dir);
@@ -2847,7 +2926,7 @@ impl Agent {
     fn begin(
         &mut self,
         entry: Option<String>,
-        source: Option<u32>,
+        source: Option<Source>,
         live: bool,
         held: bool,
         flows: Option<Arc<FlowTree>>,
@@ -2904,6 +2983,9 @@ impl Agent {
                     "{}: {}",
                     if live { "Live dictation" } else { "Listening" },
                     match (source, held) {
+                        (Some(Source::Headphones), _) => {
+                            "it ends at a pause, or double-tap the headphones"
+                        }
                         (Some(_), true) => "release the hotkey to finish",
                         (Some(_), false) => "press the hotkey again to finish",
                         (None, _) => "stop it from the tray menu",
@@ -2927,7 +3009,10 @@ impl Agent {
             joins: joins.clone(),
         });
         // Keep the held hotkey's repeats out of the focused application while the take runs.
-        if held && let Some(accelerator) = source.and_then(|id| self.accelerators.get(&id)) {
+        if held
+            && let Some(Source::Hotkey(id)) = source
+            && let Some(accelerator) = self.accelerators.get(&id)
+        {
             crate::hold::hold(accelerator);
         }
         self.set_tray(TrayState::Listening { level: 0 });
@@ -2936,10 +3021,18 @@ impl Agent {
         let updates = self.watch_updates(id, joins);
         let commands = self.commands.clone();
         let session = self.session.clone();
+        let ends_at_quiet = source == Some(Source::Headphones);
         let work = async move {
             let trace = if live {
                 session
-                    .live(start, audio_events, finished, &updates, flows)
+                    .live(
+                        start,
+                        audio_events,
+                        finished,
+                        &updates,
+                        flows,
+                        ends_at_quiet,
+                    )
                     .await
             } else {
                 session
@@ -3016,6 +3109,10 @@ impl Agent {
                         }
                         Update::Heard(text) => {
                             view.live_transcript = text;
+                            None
+                        }
+                        Update::StoppedListening => {
+                            let _ = commands.send(Command::StoppedListening(id));
                             None
                         }
                         Update::Transcribing => Some(TrayState::Transcribing { frame: 0 }),
@@ -3631,7 +3728,7 @@ impl Agent {
             return;
         }
         let (id, held) = match source {
-            Some((id, held)) => (Some(id), held),
+            Some((id, held)) => (Some(Source::Hotkey(id)), held),
             None => (None, false),
         };
         self.automations.step_next_run(step_by_step);
@@ -3657,7 +3754,9 @@ impl Agent {
     fn automation_hotkey(&mut self, id: u32, name: String) {
         let held = self.config.dictation.hotkey_mode == HotkeyMode::Hold;
         match &self.active {
-            Some(a) if a.source == Some(id) && !a.held && a.capture.is_some() => self.stop_take(),
+            Some(a) if a.source == Some(Source::Hotkey(id)) && !a.held && a.capture.is_some() => {
+                self.stop_take()
+            }
             Some(_) => {}
             None => self.run_automation(&name, Some((id, held)), false),
         }
@@ -3841,7 +3940,7 @@ impl Agent {
         self.active = Some(Active {
             id,
             live: false,
-            source: Some(source),
+            source: Some(Source::Hotkey(source)),
             held: true,
             capture: Some(capture),
             finish: Some(finish),
@@ -4177,7 +4276,7 @@ mod tests {
         Active {
             id,
             live: false,
-            source,
+            source: source.map(Source::Hotkey),
             held,
             capture: listening.then(|| Box::new(Listening) as Box<dyn CaptureHandle>),
             finish: None,
@@ -4192,25 +4291,68 @@ mod tests {
     fn a_press_while_a_take_reads_its_answer_aloud_starts_the_next_take() {
         let silent = |_| false;
         // No take runs: a dictation hotkey starts one.
-        assert_eq!(press(None, 1, silent), Press::Start);
+        assert_eq!(press(None, Source::Hotkey(1), silent), Press::Start);
         // A take that listens: its own hotkey ends the listening in toggle mode, and another
         // hotkey or a held key's repeat changes nothing.
         let toggled = running(7, Some(1), false, true);
-        assert_eq!(press(Some(&toggled), 1, silent), Press::Finish);
-        assert_eq!(press(Some(&toggled), 2, silent), Press::Ignore);
+        assert_eq!(
+            press(Some(&toggled), Source::Hotkey(1), silent),
+            Press::Finish
+        );
+        assert_eq!(
+            press(Some(&toggled), Source::Hotkey(2), silent),
+            Press::Ignore
+        );
         let held = running(7, Some(1), true, true);
-        assert_eq!(press(Some(&held), 1, silent), Press::Ignore);
+        assert_eq!(press(Some(&held), Source::Hotkey(1), silent), Press::Ignore);
         // Transcribing, deciding or writing: a press does nothing.
         let working = running(7, Some(1), false, false);
-        assert_eq!(press(Some(&working), 1, silent), Press::Ignore);
+        assert_eq!(
+            press(Some(&working), Source::Hotkey(1), silent),
+            Press::Ignore
+        );
         // In its speaking stage the take gives way, to any dictation hotkey.
         let speaks = |take| take == 7;
-        assert_eq!(press(Some(&working), 1, speaks), Press::Interrupt);
-        assert_eq!(press(Some(&working), 2, speaks), Press::Interrupt);
+        assert_eq!(
+            press(Some(&working), Source::Hotkey(1), speaks),
+            Press::Interrupt
+        );
+        assert_eq!(
+            press(Some(&working), Source::Hotkey(2), speaks),
+            Press::Interrupt
+        );
         // The take that started over it listens: its hotkey still ends that.
         let next = running(8, Some(1), false, true);
-        assert_eq!(press(Some(&next), 1, speaks), Press::Finish);
-        assert_eq!(press(Some(&next), 2, speaks), Press::Ignore);
+        assert_eq!(press(Some(&next), Source::Hotkey(1), speaks), Press::Finish);
+        assert_eq!(press(Some(&next), Source::Hotkey(2), speaks), Press::Ignore);
+    }
+
+    #[test]
+    fn a_double_tap_finishes_only_the_take_the_headphones_started() {
+        let silent = |_| false;
+        assert_eq!(press(None, Source::Headphones, silent), Press::Start);
+        let mut tapped = running(7, None, false, true);
+        tapped.source = Some(Source::Headphones);
+        assert_eq!(
+            press(Some(&tapped), Source::Headphones, silent),
+            Press::Finish
+        );
+        assert_eq!(
+            press(Some(&tapped), Source::Hotkey(1), silent),
+            Press::Ignore
+        );
+        // A take a hotkey started is the hotkey's to end.
+        let keyed = running(7, Some(1), false, true);
+        assert_eq!(
+            press(Some(&keyed), Source::Headphones, silent),
+            Press::Ignore
+        );
+        // While a take reads its answer aloud, a double-tap starts the next one.
+        let working = running(7, Some(1), false, false);
+        assert_eq!(
+            press(Some(&working), Source::Headphones, |t| t == 7),
+            Press::Interrupt
+        );
     }
 
     #[test]
