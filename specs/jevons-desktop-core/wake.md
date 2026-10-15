@@ -20,7 +20,8 @@ Tests: `a_word_said_alone_is_a_clip_with_the_quiet_around_it`
 
 ### R2 Talk and clicks are never clips
 
-Speech that runs longer than 1.5 s, speech that follows other speech by less than 0.4 s of quiet,
+Speech that runs longer than 1.5 s from its first sound to its last, pauses included, speech that
+follows other speech by less than 0.4 s of quiet,
 speech shorter than 0.3 s, and speech at the start of the audio make no clip. After talk, a word
 said alone is a clip again once 0.4 s of quiet came between.
 

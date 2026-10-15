@@ -68,7 +68,10 @@ pub enum Command {
         listener: u64,
         heard: Result<String, String>,
     },
-    /// Asks for the wake word a few times and keeps how the speech model writes it.
+    /// The wake listener with this number lost its microphone.
+    WakeEnded(u64),
+    /// Asks for the wake word a few times and keeps how the speech model writes it; pressed
+    /// again while teaching, stops.
     TeachWakeWord,
     /// The hotkeys the tray registered, and those it could not.
     HotkeysRegistered {
@@ -1336,6 +1339,14 @@ impl Agent {
             Command::Headphones(button) => self.headphones_pressed(button),
             Command::WakeHeard { listener, heard } => self.wake_heard(listener, heard),
             Command::TeachWakeWord => self.teach_wake_word(),
+            Command::WakeEnded(listener) => {
+                if listener == self.wake_listener && self.wake.take().is_some() {
+                    tracing::warn!(
+                        "The wake word's microphone stopped; it listens again once the settings change"
+                    );
+                    self.wake_failed = true;
+                }
+            }
             Command::StoppedListening(take) => {
                 if self
                     .active
@@ -1973,6 +1984,7 @@ impl Agent {
                     let _ = commands.send(Command::WakeHeard { listener, heard });
                 }
             }
+            let _ = commands.send(Command::WakeEnded(listener));
         });
         self.wake = Some(Wake {
             capture: Some(capture),
@@ -2005,7 +2017,12 @@ impl Agent {
             self.teaching = None;
             let mut config = self.config.clone();
             config.dictation.wake_spellings = spellings.clone();
-            self.apply(config);
+            if let Err(e) = config.save(&self.config_file) {
+                self.message(&format!("Cannot save what was learned: {e}"), 8);
+                return;
+            }
+            self.commit(self.settings_files(), "Learn how the wake word is said");
+            self.adopt(config, false);
             self.message(
                 &format!(
                     "jevons learned how you say \u{201c}{word}\u{201d}: {}",
@@ -2032,6 +2049,10 @@ impl Agent {
             self.message("Set a wake word in Settings first", 5);
             return;
         };
+        if self.teaching.take().is_some() {
+            self.message("Stopped teaching the wake word", 4);
+            return;
+        }
         if self.active.is_some() {
             self.notice("Finish the current take first");
             return;
@@ -2041,7 +2062,9 @@ impl Agent {
         self.wake = None;
         self.wake_failed = false;
         self.message(
-            &format!("Say \u{201c}{word}\u{201d} alone, with a pause after (1 of {TEACH_TIMES})"),
+            &format!(
+                "Say \u{201c}{word}\u{201d} alone, with a pause after (1 of {TEACH_TIMES}); Teach it again stops"
+            ),
             30,
         );
     }

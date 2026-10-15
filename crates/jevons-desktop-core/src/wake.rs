@@ -79,10 +79,12 @@ impl Gate {
                 quiet_ms,
             } => {
                 clip.extend_from_slice(samples);
-                let quiet_ms = if speech { 0 } else { quiet_ms + ms };
+                // A pause inside the burst counts toward its length once speech resumes.
+                let paused_ms = quiet_ms;
+                let quiet_ms = if speech { 0 } else { paused_ms + ms };
                 let speech_ms = speech_ms + if speech { ms } else { 0 };
                 let burst_ms = if speech {
-                    burst_ms + quiet_ms + ms
+                    burst_ms + paused_ms + ms
                 } else {
                     burst_ms
                 };
@@ -267,6 +269,9 @@ mod tests {
         assert!(clips(&[(30, 10), (6000, 30), (30, 10)]).is_empty());
         // Words that follow other words with too little quiet are talk.
         assert!(clips(&[(30, 10), (6000, 20), (30, 2), (6000, 5), (30, 10)]).is_empty());
+        // Short words with short gaps make a sentence, however little of it is speech.
+        let words: Vec<(i16, usize)> = (0..12).flat_map(|_| [(6000, 1), (30, 1)]).collect();
+        assert!(clips(&[[(30, 10)].as_slice(), &words, &[(30, 10)]].concat()).is_empty());
         // A click is too short to be a word.
         assert!(clips(&[(30, 10), (6000, 2), (30, 10)]).is_empty());
         // At the very start nothing was heard before it.

@@ -412,6 +412,8 @@ logged or kept: the log says only that the wake word started dictation.
 
 **Teach it** in Settings asks in the bubble for the word five times, alone, showing what was heard
 each time (nothing heard asks again), then saves the spellings to `wake_spellings` and says what it
-learned. Cancelling the take stops teaching.
+learned, in a commit of its own. Pressing **Teach it** again, or cancelling the take, stops
+teaching. A listener whose microphone stops (a device that went away) closes and logs it, and
+listens again only after the settings change.
 
 Tests: `the_wake_word_listens_only_between_takes_with_the_voice_silent`, `teaching_keeps_five_spellings_each_once`
