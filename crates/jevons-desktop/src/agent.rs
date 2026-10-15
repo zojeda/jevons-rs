@@ -29,7 +29,9 @@ use jevons_desktop_core::platform::{
 use jevons_desktop_core::reader::Reader;
 use jevons_desktop_core::recorded::RecordedTree;
 use jevons_desktop_core::recording::{Session, bundle};
+use jevons_desktop_core::wake::{Gate, WakeWord};
 use jevons_desktop_core::xpath::selector::Candidate;
+use jevons_desktop_protocol::delivery::{AudioEvent, SAMPLE_RATE};
 use jevons_desktop_protocol::desk::Desk;
 use jevons_desktop_server::client::Routes;
 use jevons_desktop_server::flow::extract;
@@ -60,6 +62,14 @@ pub enum Command {
     Headphones(HeadphoneButton),
     /// The take with this id stopped listening by itself, at a quiet pause.
     StoppedListening(u64),
+    /// What the speech model heard in a word said alone, from the wake listener with this
+    /// number; or why it heard nothing.
+    WakeHeard {
+        listener: u64,
+        heard: Result<String, String>,
+    },
+    /// Asks for the wake word a few times and keeps how the speech model writes it.
+    TeachWakeWord,
     /// The hotkeys the tray registered, and those it could not.
     HotkeysRegistered {
         actions: Vec<(u32, HotkeyAction, String)>,
@@ -716,6 +726,26 @@ enum Source {
     /// A double-tap on the headphones. Its take ends at a quiet pause too, since the
     /// headphones send nothing while their own microphone is open.
     Headphones,
+    /// The wake word, said alone. Its take ends at a quiet pause.
+    Voice,
+}
+
+/// How many times teaching asks for the wake word.
+const TEACH_TIMES: usize = 5;
+
+/// The wake word's listener: dictation's microphone, open between takes, and what reads it.
+struct Wake {
+    capture: Option<Box<dyn CaptureHandle>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for Wake {
+    fn drop(&mut self) {
+        self.task.abort();
+        if let Some(capture) = self.capture.take() {
+            capture.stop();
+        }
+    }
 }
 
 struct Active {
@@ -798,6 +828,57 @@ fn press(active: Option<&Active>, source: Source, speaking: impl FnOnce(u64) -> 
     }
 }
 
+/// What would keep the wake listener from listening.
+#[derive(Clone, Copy, Debug, Default)]
+struct Busy {
+    /// A wake word is set, or being taught.
+    wanted: bool,
+    take: bool,
+    recording: bool,
+    automation: bool,
+    /// The voice reads an answer aloud: the listener would hear it.
+    speaking: bool,
+    /// The models are ready to transcribe.
+    ready: bool,
+}
+
+/// Whether the wake listener listens: only between takes, with the voice silent.
+fn wake_listens(busy: Busy) -> bool {
+    busy.wanted && busy.ready && !busy.take && !busy.recording && !busy.automation && !busy.speaking
+}
+
+/// Keeps one more spelling of the wake word while teaching it; returns them all, each once,
+/// once the word was heard [`TEACH_TIMES`] times. Nothing heard counts for nothing.
+fn learn(taught: &mut Vec<String>, heard: Result<String, String>) -> Option<Vec<String>> {
+    taught.extend(heard.ok());
+    (taught.len() >= TEACH_TIMES).then(|| {
+        let mut spellings = std::mem::take(taught);
+        spellings.sort();
+        spellings.dedup();
+        spellings
+    })
+}
+
+/// What the speech model heard in a clip, through the transcription route alone: no flow, no
+/// delivery, no trace.
+async fn transcribe_clip(session: &ServerSession, clip: Vec<i16>) -> Result<String, String> {
+    let (audio, received) = mpsc::unbounded_channel();
+    for chunk in clip.chunks(SAMPLE_RATE as usize / 10) {
+        let _ = audio.send(AudioEvent::Chunk(chunk.to_vec()));
+    }
+    let _ = audio.send(AudioEvent::Ended);
+    let (_finish, finished) = oneshot::channel();
+    let (updates, _seen) = mpsc::unbounded_channel();
+    let start = TakeStart {
+        id: 0,
+        context: ContextSnapshot::default(),
+        entry: None,
+    };
+    session
+        .transcribe(start, received, finished, &updates)
+        .await
+}
+
 /// Whether a take runs with its microphone open.
 fn listens(active: Option<&Active>) -> bool {
     active.is_some_and(|take| take.capture.is_some())
@@ -878,6 +959,14 @@ pub struct Agent {
     hotkeys_stale: bool,
     /// The media session that hears the headphones' buttons, while the settings turn it on.
     headphones: Option<Headphones>,
+    /// The wake word's listener, while it may listen.
+    wake: Option<Wake>,
+    /// The number of the latest wake listener: what an older one heard is stale.
+    wake_listener: u64,
+    /// The microphone would not open for the wake word: no retry until the settings change.
+    wake_failed: bool,
+    /// While teaching the wake word: how the speech model wrote it so far.
+    teaching: Option<Vec<String>>,
     /// The tools the settings register, the library's automations among them.
     tools: Arc<ToolHost>,
     /// The automations library, and what runs them.
@@ -1056,6 +1145,10 @@ impl Agent {
             voice,
             hotkeys_stale: false,
             headphones: None,
+            wake: None,
+            wake_listener: 0,
+            wake_failed: false,
+            teaching: None,
             hotkeys: std::collections::HashMap::new(),
             confirming: None,
             accelerators: std::collections::HashMap::new(),
@@ -1136,6 +1229,7 @@ impl Agent {
                     if !self.handle(command) {
                         break;
                     }
+                    self.follow_wake();
                 }
                 _ = watch.tick() => {
                     let watching = {
@@ -1146,7 +1240,10 @@ impl Agent {
                         self.refresh_context(false);
                     }
                 }
-                _ = voice.tick() => self.follow_voice(),
+                _ = voice.tick() => {
+                    self.follow_voice();
+                    self.follow_wake();
+                }
             }
         }
     }
@@ -1237,6 +1334,8 @@ impl Agent {
                 None => {}
             },
             Command::Headphones(button) => self.headphones_pressed(button),
+            Command::WakeHeard { listener, heard } => self.wake_heard(listener, heard),
+            Command::TeachWakeWord => self.teach_wake_word(),
             Command::StoppedListening(take) => {
                 if self
                     .active
@@ -1821,6 +1920,130 @@ impl Agent {
                 self.view().notice = Some(format!("The headphones' buttons are unavailable: {e}"));
             }
         }
+    }
+
+    /// Opens the wake word's listener when it may listen, and closes it when it may not: it
+    /// listens while a word is set (or being taught) and nothing else needs the microphone or
+    /// the speaker, with the models ready.
+    fn follow_wake(&mut self) {
+        let listens = wake_listens(Busy {
+            wanted: self.config.dictation.wake_word.is_some() || self.teaching.is_some(),
+            take: self.active.is_some(),
+            recording: self.recording.is_some(),
+            automation: self.running.is_some(),
+            speaking: self.voice.speaking().is_some(),
+            ready: self.session.ready(),
+        });
+        match (listens && !self.wake_failed, self.wake.is_some()) {
+            (true, false) => self.open_wake(),
+            (false, true) => self.wake = None,
+            _ => {}
+        }
+    }
+
+    /// Opens dictation's microphone for the wake word. Each word said alone goes to the speech
+    /// model; what it heard comes back as [`Command::WakeHeard`], and is never logged.
+    fn open_wake(&mut self) {
+        let (events, mut received) = mpsc::unbounded_channel();
+        let capture = match self
+            .audio
+            .start(self.config.dictation.microphone.as_deref(), events)
+        {
+            Ok(capture) => capture,
+            Err(e) => {
+                tracing::warn!(error = %e, "The wake word cannot open the microphone");
+                self.wake_failed = true;
+                return;
+            }
+        };
+        self.wake_listener += 1;
+        let listener = self.wake_listener;
+        let session = self.session.clone();
+        let commands = self.commands.clone();
+        let task = tokio::spawn(async move {
+            let mut gate = Gate::default();
+            while let Some(event) = received.recv().await {
+                let samples = match event {
+                    AudioEvent::Chunk(samples) => samples,
+                    AudioEvent::Level(_) => continue,
+                    AudioEvent::Ended | AudioEvent::Failed(_) => break,
+                };
+                if let Some(clip) = gate.push(&samples) {
+                    let heard = transcribe_clip(&session, clip).await;
+                    let _ = commands.send(Command::WakeHeard { listener, heard });
+                }
+            }
+        });
+        self.wake = Some(Wake {
+            capture: Some(capture),
+            task,
+        });
+    }
+
+    /// A word said alone was heard: while teaching, it is kept; otherwise live dictation
+    /// starts when it is the wake word.
+    fn wake_heard(&mut self, listener: u64, heard: Result<String, String>) {
+        if listener != self.wake_listener || self.wake.is_none() {
+            return;
+        }
+        let Some(word) = self.config.dictation.wake_word.clone() else {
+            return;
+        };
+        if let Some(taught) = &mut self.teaching {
+            let next = match &heard {
+                Ok(text) => format!("Heard \u{201c}{text}\u{201d}"),
+                Err(_) => "Nothing was heard".to_string(),
+            };
+            let Some(spellings) = learn(taught, heard) else {
+                let ask = format!(
+                    "{next}. Say \u{201c}{word}\u{201d} again, alone ({} of {TEACH_TIMES})",
+                    taught.len() + 1
+                );
+                self.message(&ask, 30);
+                return;
+            };
+            self.teaching = None;
+            let mut config = self.config.clone();
+            config.dictation.wake_spellings = spellings.clone();
+            self.apply(config);
+            self.message(
+                &format!(
+                    "jevons learned how you say \u{201c}{word}\u{201d}: {}",
+                    spellings.join(", ")
+                ),
+                8,
+            );
+            return;
+        }
+        let Ok(text) = heard else {
+            return;
+        };
+        if WakeWord::new(&word, &self.config.dictation.wake_spellings).heard(&text) {
+            tracing::info!("The wake word started live dictation");
+            self.begin(None, Some(Source::Voice), true, false, None);
+        } else {
+            tracing::debug!("A word said alone was not the wake word");
+        }
+    }
+
+    /// Asks for the wake word five times in the bubble and keeps how the speech model wrote it.
+    fn teach_wake_word(&mut self) {
+        let Some(word) = self.config.dictation.wake_word.clone() else {
+            self.message("Set a wake word in Settings first", 5);
+            return;
+        };
+        if self.active.is_some() {
+            self.notice("Finish the current take first");
+            return;
+        }
+        self.teaching = Some(Vec::new());
+        // A listener of its own: words heard before teaching are stale.
+        self.wake = None;
+        self.wake_failed = false;
+        self.message(
+            &format!("Say \u{201c}{word}\u{201d} alone, with a pause after (1 of {TEACH_TIMES})"),
+            30,
+        );
     }
 
     /// Whether the take `take` is in its speaking stage, as its bubble has it.
@@ -2717,6 +2940,9 @@ impl Agent {
             tray.hotkeys(self.bindings());
         }
         self.follow_headphones();
+        // Another microphone or word: the listener opens anew.
+        self.wake = None;
+        self.wake_failed = false;
         if flows_changed {
             let dir = self.config.flows_dir(&self.config_file);
             let _ = std::fs::create_dir_all(&dir);
@@ -2937,6 +3163,8 @@ impl Agent {
             self.set_tray(TrayState::Error);
             return;
         }
+        // The take's own capture replaces the wake word's.
+        self.wake = None;
         let id = self.next_take;
         self.next_take += 1;
         // Read the context first, before the user's focus can move.
@@ -2986,6 +3214,7 @@ impl Agent {
                         (Some(Source::Headphones), _) => {
                             "it ends at a pause, or double-tap the headphones"
                         }
+                        (Some(Source::Voice), _) => "it ends at a pause",
                         (Some(_), true) => "release the hotkey to finish",
                         (Some(_), false) => "press the hotkey again to finish",
                         (None, _) => "stop it from the tray menu",
@@ -3021,7 +3250,7 @@ impl Agent {
         let updates = self.watch_updates(id, joins);
         let commands = self.commands.clone();
         let session = self.session.clone();
-        let ends_at_quiet = source == Some(Source::Headphones);
+        let ends_at_quiet = matches!(source, Some(Source::Headphones | Source::Voice));
         let work = async move {
             let trace = if live {
                 session
@@ -3232,6 +3461,7 @@ impl Agent {
 
     fn cancel_take(&mut self) {
         crate::hold::release();
+        self.teaching = None;
         self.confirmed(false);
         self.view().feedback = None;
         if let Some(mut active) = self.active.take() {
@@ -4353,6 +4583,52 @@ mod tests {
             press(Some(&working), Source::Headphones, |t| t == 7),
             Press::Interrupt
         );
+    }
+
+    #[test]
+    fn the_wake_word_listens_only_between_takes_with_the_voice_silent() {
+        let idle = Busy {
+            wanted: true,
+            ready: true,
+            ..Busy::default()
+        };
+        assert!(wake_listens(idle));
+        assert!(!wake_listens(Busy {
+            wanted: false,
+            ..idle
+        }));
+        assert!(!wake_listens(Busy {
+            ready: false,
+            ..idle
+        }));
+        assert!(!wake_listens(Busy { take: true, ..idle }));
+        assert!(!wake_listens(Busy {
+            recording: true,
+            ..idle
+        }));
+        assert!(!wake_listens(Busy {
+            automation: true,
+            ..idle
+        }));
+        assert!(!wake_listens(Busy {
+            speaking: true,
+            ..idle
+        }));
+    }
+
+    #[test]
+    fn teaching_keeps_five_spellings_each_once() {
+        let mut taught = Vec::new();
+        assert_eq!(learn(&mut taught, Ok("Shabons".into())), None);
+        assert_eq!(learn(&mut taught, Err("no speech".into())), None);
+        for heard in ["Chavons", "Shabons", "Shevons"] {
+            assert_eq!(learn(&mut taught, Ok(heard.into())), None);
+        }
+        assert_eq!(
+            learn(&mut taught, Ok("Shevons".into())),
+            Some(vec!["Chavons".into(), "Shabons".into(), "Shevons".into()])
+        );
+        assert!(taught.is_empty());
     }
 
     #[test]

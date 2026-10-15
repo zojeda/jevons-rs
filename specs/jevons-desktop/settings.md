@@ -52,7 +52,7 @@ Tests: `a_missing_file_gives_defaults_and_unknown_fields_are_errors`, `the_examp
 
 | Section | Fields and defaults |
 | --- | --- |
-| `[dictation]` | `hotkey` (`Ctrl+Alt+Space`), `hotkey_mode` (`hold`), `live_hotkey` (`F9`), `live_hotkey_mode` (`hold`), `headphones` (false), `live_feedback` (true), `inspector_hotkey` (none), `branch_hotkeys` (none), `microphone` (the default device), `language` (detected), `decide` (true), `max_output_tokens` (1024) |
+| `[dictation]` | `hotkey` (`Ctrl+Alt+Space`), `hotkey_mode` (`hold`), `live_hotkey` (`F9`), `live_hotkey_mode` (`hold`), `headphones` (false), `wake_word` (none), `wake_spellings` (none), `live_feedback` (true), `inspector_hotkey` (none), `branch_hotkeys` (none), `microphone` (the default device), `language` (detected), `decide` (true), `max_output_tokens` (1024) |
 | `[voice]` | `speak` (true), `output` (the default device): [desk](../jevons-desktop-core/desk.md) R12 |
 | `[privacy]` | `max_context_chars` (2000), `read_clipboard` (false), `read_other_windows` (false), `readable_apps` (none) |
 | `[tools.<name>]`, `[mcp.<name>]` | the tools and MCP servers that run on this machine ([desk](../jevons-desktop-core/desk.md) R6) |
@@ -251,3 +251,11 @@ Tests: `a_take_may_speak_when_the_switch_is_on_and_there_is_a_speaker`, `the_voi
 back on ([app](app.md) R32).
 
 Tests: `the_headphones_are_off_until_the_settings_turn_them_on`
+
+### R24 The wake word is off until the settings name one
+
+`[dictation] wake_word` is off when left out, and `wake_spellings` empty; neither is written
+then. Set, they load back as saved ([app](app.md) R33). Only the app writes `wake_spellings`,
+when the user teaches the word.
+
+Tests: `the_wake_word_is_off_until_the_settings_name_one`

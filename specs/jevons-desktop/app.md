@@ -395,3 +395,23 @@ still play and pause it, except while a take listens, when it does nothing. On o
 the setting does nothing, and the log and the window say the buttons are unavailable.
 
 Tests: `a_double_tap_finishes_only_the_take_the_headphones_started`
+
+### R33 Saying the wake word alone starts live dictation
+
+With `[dictation] wake_word` set, the app keeps dictation's microphone open between takes: only
+while a word is set (or being taught), the models are ready, and no take, recording or automation
+runs and the voice is silent, so it never hears its own answers. It closes the microphone before
+a take opens its own, and opens it again once the take has ended and the voice is silent. If the
+microphone does not open, it tries again only after the settings change.
+
+Each word said alone ([wake](../jevons-desktop-core/wake.md) R1) goes to the transcription route
+by itself: nothing moves in the flow tree, nothing is delivered, no trace is kept. When what was
+heard is the wake word (R3 there), live dictation starts as a double-tap on the headphones starts
+it (R32): it ends at a quiet pause, and the bubble says so. What the microphone heard is never
+logged or kept: the log says only that the wake word started dictation.
+
+**Teach it** in Settings asks in the bubble for the word five times, alone, showing what was heard
+each time (nothing heard asks again), then saves the spellings to `wake_spellings` and says what it
+learned. Cancelling the take stops teaching.
+
+Tests: `the_wake_word_listens_only_between_takes_with_the_voice_silent`, `teaching_keeps_five_spellings_each_once`

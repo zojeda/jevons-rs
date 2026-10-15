@@ -138,6 +138,13 @@ pub struct Dictation {
     /// pause; a single tap goes on to the last music app. Windows only.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub headphones: bool,
+    /// A word that starts live dictation when said alone, such as `Jevons`; off when unset.
+    /// It ends after a quiet pause, as a take the headphones start does.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wake_word: Option<String>,
+    /// How the speech model wrote the wake word when the user taught it. Only the app writes it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub wake_spellings: Vec<String>,
     /// A bubble by the tray icon shows what dictation hears and does: the words as they are
     /// recognized, the route through the flow tree, and the text delivered.
     pub live_feedback: bool,
@@ -169,6 +176,8 @@ impl Default for Dictation {
             live_hotkey: Some("F9".into()),
             live_hotkey_mode: HotkeyMode::Hold,
             headphones: false,
+            wake_word: None,
+            wake_spellings: Vec::new(),
             live_feedback: true,
             inspector_hotkey: None,
             branch_hotkeys: BTreeMap::new(),
@@ -279,6 +288,21 @@ mod tests {
         assert!(!toml::to_string(&default).unwrap().contains("headphones"));
         let on: ClientConfig = toml::from_str("[dictation]\nheadphones = true\n").unwrap();
         assert!(on.dictation.headphones);
+        let back: ClientConfig = toml::from_str(&toml::to_string(&on).unwrap()).unwrap();
+        assert_eq!(back, on);
+    }
+
+    #[test]
+    fn the_wake_word_is_off_until_the_settings_name_one() {
+        let default: ClientConfig = toml::from_str("").unwrap();
+        assert_eq!(default.dictation.wake_word, None);
+        assert!(default.dictation.wake_spellings.is_empty());
+        let text = toml::to_string(&default).unwrap();
+        assert!(!text.contains("wake"), "{text}");
+        let on: ClientConfig =
+            toml::from_str("[dictation]\nwake_word = \"Jevons\"\nwake_spellings = [\"Shabons\"]\n")
+                .unwrap();
+        assert_eq!(on.dictation.wake_word.as_deref(), Some("Jevons"));
         let back: ClientConfig = toml::from_str(&toml::to_string(&on).unwrap()).unwrap();
         assert_eq!(back, on);
     }
