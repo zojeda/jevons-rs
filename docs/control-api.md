@@ -30,7 +30,9 @@ It is off until you turn it on, it needs a key, and it reads and acts only where
    bubble = true                         # it may show messages, ask, and read the bubble
    ```
 
-With no `apps`, an agent can use the bubble but sees no application.
+With no `apps`, an agent can use the bubble but sees no application. Reading the bubble includes
+what you dictated while a take shows there: set `bubble = false` to keep your words, and the
+bubble, out of its reach.
 
 ## Connecting Claude Code
 
@@ -99,6 +101,8 @@ windows or outline again.
   never sit beside a take's words: during a take they wait.
 - **A key, and no browsers.** Every request needs the key; a request a browser sends (with an
   `Origin` header) is refused, so a web page cannot drive your desk.
+- **Your words only through the bubble.** An agent reads what you dictated only through `bubble`,
+  while the take shows there, and only with `[control] bubble` on.
 - **Logs** name the operation and how it went, never what was read or typed.
 
 ## REST

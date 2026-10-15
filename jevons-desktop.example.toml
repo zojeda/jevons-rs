@@ -86,5 +86,6 @@ read_other_windows = false
 # [control]
 # apps = ["slack.exe", "notepad.exe"]   # process-name globs; none by default
 # confirm = "once"                      # once | every | never
-# bubble = true                         # it may show messages, ask, and read the bubble
+# bubble = true                         # it may show messages, ask, and read the bubble (and so
+#                                       # what you dictated while a take shows there)
 # max_chars = 20000                     # the most text one read returns

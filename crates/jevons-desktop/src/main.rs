@@ -951,11 +951,18 @@ fn headless_desk(
     } else {
         Arc::new(jevons_desktop_core::platform::Unsupported)
     };
-    let control = jevons_desktop_core::control::Control::new(
+    let sink: Option<Arc<Mutex<Box<dyn jevons_desktop_core::platform::TextSink>>>> = args
+        .deliver
+        .then(|| Arc::new(Mutex::new(platform::text_sink())));
+    let mut control = jevons_desktop_core::control::Control::new(
         inspector.clone(),
         actor,
         config.desk_control.clone(),
     );
+    // Typing and keys wait for the user's keys, as they do in the app.
+    if let Some(sink) = &sink {
+        control = control.with_keys(sink.clone());
+    }
     let looks =
         jevons_desktop_core::look::Looks::new(inspector, config.privacy.clone(), Arc::default());
     let mut desk = jevons_desktop_core::desk::LocalDesk::default()
@@ -968,8 +975,8 @@ fn headless_desk(
             &config.desk_mcp,
         )))
         .dry_run();
-    if args.deliver {
-        desk = desk.with_sink(Arc::new(Mutex::new(platform::text_sink())));
+    if let Some(sink) = sink {
+        desk = desk.with_sink(sink);
     }
     Ok(Arc::new(desk))
 }

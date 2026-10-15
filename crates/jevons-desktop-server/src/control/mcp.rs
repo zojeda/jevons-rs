@@ -25,7 +25,7 @@ interfaces of the applications the user listed, act on them, and talk to the use
 bubble by the tray.
 
 - Call `status` first: it says which applications you may read and act in (`apps`) and whether \
-actions ask first. Nothing else is visible to you.
+actions ask first. No other application is visible to you.
 - `windows` lists their windows as w1, w2…; `outline` shows the elements below a window or an \
 element with ids e1, e2…; `find` and `xpath` search; `read` returns all the text below an \
 element. When an id is not found, list or outline again.

@@ -230,7 +230,19 @@ fn platform(e: PlatformError) -> ControlError {
         PlatformError::Unsupported(what) => {
             ControlError::unavailable(format!("{what} is not supported on this platform yet"))
         }
-        PlatformError::Failed(why) => ControlError::failed(why),
+        PlatformError::Failed(why) => failure(why),
+    }
+}
+
+/// A failure of the platform. One that no longer knows the element (it closed, or the
+/// accessibility layer let go of it) is `not_found`, so the agent lists the windows again.
+fn failure(why: String) -> ControlError {
+    if why.starts_with("no element ") {
+        ControlError::not_found(format!(
+            "The element is gone ({why}): list the windows or outline again"
+        ))
+    } else {
+        ControlError::failed(why)
     }
 }
 
@@ -1051,7 +1063,7 @@ impl Control {
 fn hands_error(e: HandsError) -> ControlError {
     match e {
         HandsError::Denied(why) => ControlError::denied(why),
-        HandsError::Failed(why) => ControlError::failed(why),
+        HandsError::Failed(why) => failure(why),
     }
 }
 
@@ -1444,6 +1456,18 @@ mod tests {
             .unwrap_err();
         assert_eq!(read.kind, ErrorKind::Denied);
         assert_eq!(desk.replay.done(), 0);
+    }
+
+    #[test]
+    fn an_element_the_platform_let_go_of_is_not_found() {
+        let gone = platform(PlatformError::Failed(
+            "no element 7/42: list the windows again".into(),
+        ));
+        assert_eq!(gone.kind, ErrorKind::NotFound, "{gone}");
+        let gone = hands_error(HandsError::Failed("no element 7/42".into()));
+        assert_eq!(gone.kind, ErrorKind::NotFound, "{gone}");
+        let failed = platform(PlatformError::Failed("the call timed out".into()));
+        assert_eq!(failed.kind, ErrorKind::Failed);
     }
 
     #[tokio::test]

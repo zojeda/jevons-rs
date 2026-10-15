@@ -43,8 +43,9 @@ Tests: `the_first_action_in_an_application_asks_once_and_a_no_stops_it`, `every_
 
 ### R4 Nothing is done over the user
 
-While a take runs, or the user holds a key, an action is `busy` and does not happen, and a
-question is `busy` too. Keys and typed text go to the window in front only when its application is
+While a take runs (the bubble says so: a desk without one, such as a headless run, knows of no
+take), or the user holds a key (the desk's text sink says so), an action is `busy` and does not
+happen, and a question is `busy` too. Keys and typed text go to the window in front only when its application is
 listed; `window` brings a listed window forward first.
 
 Tests: `nothing_is_done_while_the_user_dictates_or_holds_a_key`
@@ -61,7 +62,7 @@ Tests: `text_never_goes_into_a_password_field_and_its_value_is_never_read`
 With `[control] bubble` on (the default) and a bubble at the desk, `show` gives the bubble an
 agent's Markdown message and says whether it waits for a take's bubble to close; `ask` asks yes or
 no and answers `{yes, answered}` (unanswered within its timeout, 5 to 300 s, 60 by default, is no);
-`bubble` reads what it shows. Off, each is `unavailable`. `status` says the backends, the listed
+`bubble` reads what it shows, a take's words among it. Off, each is `unavailable`. `status` says the backends, the listed
 applications, `confirm` and whether the bubble is available.
 
 Tests: `the_bubble_shows_asks_and_tells_what_it_shows_unless_it_is_off`
@@ -85,3 +86,11 @@ A call is logged with its operation, the agent's name and how it went (its error
 its arguments or what it read.
 
 Tests: none yet
+
+### R10 An element the platform let go of is not found
+
+When the accessibility layer no longer knows an element (it closed, or the layer dropped the
+references it kept), a read or an action on it is `not_found`, saying to list the windows or
+outline again, not `failed`.
+
+Tests: `an_element_the_platform_let_go_of_is_not_found`
