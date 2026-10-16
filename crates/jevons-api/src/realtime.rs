@@ -10,6 +10,7 @@ use crate::SpeechService;
 use crate::openai::{AudioFormat, Command, EventError, Session, TurnDetection};
 use crate::workers::speech::{Pass, Update};
 use axum::extract::ws::{Message, WebSocket};
+use axum::http::StatusCode;
 use jevons_audio::{Resampler, Vad, VadConfig, VadEvent, alaw, mulaw, pcm16_le};
 use jevons_core::{Error, Word};
 use std::collections::VecDeque;
@@ -340,11 +341,13 @@ impl Live {
                 true,
             ) {
                 Ok(updates) => self.active = Some((committed, updates)),
-                Err(_) => {
-                    out.push(self.session.failed(
-                        &committed.item_id,
-                        "The transcription queue is full. Retry later.",
-                    ));
+                Err(error) => {
+                    let message = if error.status == StatusCode::SERVICE_UNAVAILABLE {
+                        "The speech worker stopped."
+                    } else {
+                        "The transcription queue is full. Retry later."
+                    };
+                    out.push(self.session.failed(&committed.item_id, message));
                 }
             }
         }
@@ -550,10 +553,14 @@ mod tests {
 
     /// Serves a scripted speech model; returns the Realtime URL.
     async fn server(key: Option<&str>) -> String {
+        serve(scripted_service(20.0).await, key).await
+    }
+
+    async fn serve(speech: crate::SpeechService, key: Option<&str>) -> String {
         let app = router(AppState {
             generative: None,
             decision: None,
-            speech: Some(scripted_service(20.0).await),
+            speech: Some(speech),
             voice: None,
             api_key: key.map(Arc::from),
         });
@@ -749,6 +756,35 @@ mod tests {
             next(&mut socket).await["error"]["code"],
             "input_audio_buffer_commit_empty"
         );
+    }
+
+    #[tokio::test]
+    async fn a_turn_for_a_stopped_speech_worker_fails_as_stopped_not_full() {
+        let mut speech = scripted_service(20.0).await;
+        // Queues nobody reads any more: the worker is gone.
+        let (batch, _) = tokio::sync::mpsc::channel(1);
+        let (live, _) = tokio::sync::mpsc::channel(1);
+        speech.worker = crate::workers::speech::Client { batch, live };
+        let mut socket = connect(&serve(speech, None).await, "realtime")
+            .await
+            .unwrap();
+        next(&mut socket).await;
+        send(
+            &mut socket,
+            json!({"type": "session.update", "session": {"type": "transcription", "audio": {"input": {"turn_detection": null}}}}),
+        )
+        .await;
+        assert_eq!(next(&mut socket).await["type"], "session.updated");
+        append(&mut socket, &spoken(2, 24000)).await;
+        send(&mut socket, json!({"type": "input_audio_buffer.commit"})).await;
+        let events = until(
+            &mut socket,
+            "conversation.item.input_audio_transcription.failed",
+        )
+        .await;
+        let failed = events.last().unwrap();
+        assert_eq!(failed["error"]["code"], "transcription_failed");
+        assert_eq!(failed["error"]["message"], "The speech worker stopped.");
     }
 
     #[tokio::test]

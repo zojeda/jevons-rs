@@ -33,6 +33,12 @@ pub struct Workers {
 }
 
 impl Workers {
+    /// Whether a model thread has ended. While an [`AppState`] clone holds its queues, a worker
+    /// ends only when its model failed, such as by a panic on a GPU that stopped answering.
+    pub fn stopped(&self) -> bool {
+        self.threads.iter().any(JoinHandle::is_finished)
+    }
+
     /// Waits for the model threads to end; drop every [`AppState`] clone first. Every thread
     /// is waited for, also after one panicked: a caller that goes on to exit must not leave a
     /// model still being freed on the device.
@@ -431,6 +437,29 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::{mpsc, oneshot};
+
+    #[tokio::test]
+    async fn a_worker_that_ends_while_serving_shows_as_stopped() {
+        let (stop, stopped) = std::sync::mpsc::channel::<()>();
+        let workers = Workers {
+            threads: vec![
+                std::thread::spawn(move || {
+                    let _ = stopped.recv();
+                }),
+                std::thread::spawn(|| std::thread::sleep(std::time::Duration::from_secs(5))),
+            ],
+        };
+        assert!(!workers.stopped());
+        drop(stop);
+        let started = std::time::Instant::now();
+        while !workers.stopped() {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(2),
+                "a worker that ended still shows as running"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
 
     #[tokio::test]
     async fn joining_waits_for_every_worker_even_after_one_panicked() {

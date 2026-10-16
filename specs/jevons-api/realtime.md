@@ -157,10 +157,10 @@ Tests: `audio_commands_decode_and_items_follow_the_ga_order`
 A committed turn that cannot be transcribed gets
 `conversation.item.input_audio_transcription.failed` with `error.type` `transcription_error`,
 code `transcription_failed` and one of these messages: `The transcription queue is full. Retry
-later.`, `The audio could not be transcribed.` or `The speech worker stopped.` The session goes
-on.
+later.`, `The audio could not be transcribed.` or `The speech worker stopped.` A turn that a
+stopped worker can no longer take gets the last of these, never the first. The session goes on.
 
-Tests: none yet
+Tests: `a_turn_for_a_stopped_speech_worker_fails_as_stopped_not_full`
 
 ### R15 The session ends with the connection
 
