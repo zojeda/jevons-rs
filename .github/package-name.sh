@@ -3,12 +3,12 @@
 # release.yml.
 #
 #   <product>-<version>-<os>-<arch>-<backend>
-#   jevons-desktop-0.1.0-dev.57.g065def7-windows-x86_64-hip-rocm7.2.zip
-#     jevons-desktop-0.1.0-dev.57.g065def7-windows-x86_64-hip-rocm7.2.exe
-#   jevons-rs-0.1.88-linux-x86_64-hip-rocm7.2.tar.gz
+#   jevons-desktop-0.2.0-dev.57.g065def7-windows-x86_64-hip-rocm7.2.zip
+#     jevons-desktop-0.2.0-dev.57.g065def7-windows-x86_64-hip-rocm7.2.exe
+#   jevons-rs-0.2.88-linux-x86_64-hip-rocm7.2.tar.gz
 #
 # The fields run from the most to the least significant, so a folder of downloads groups by
-# product, then version, then platform and GPU backend. The version is a release's (0.1.<run>,
+# product, then version, then platform and GPU backend. The version is a release's (0.2.<run>,
 # its tag without the v) or a pre-release of the workspace version: the branch (pr<number> for
 # a pull request), the run number, which orders a branch's builds, and the commit, with git
 # describe's g so it never reads as a number. The backend is the GPU runtime compiled in and
