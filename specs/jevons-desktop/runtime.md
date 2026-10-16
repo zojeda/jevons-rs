@@ -178,3 +178,21 @@ desk, and under `--serve` over the desk of the client connected. Without a key i
 and the log says why. Changing the switch or the key moves the listener as R6 says.
 
 Tests: none yet
+
+### R15 Models that stop working are said
+
+The AMD driver can also drop the GPU under a process that already has it: HIP answers status 719
+to every call from then on, and the model workers and CubeCL's device thread panic. Such a
+process does not get the device back, since CubeCL keeps one device server per process.
+
+While the app's models are loaded, the runtime looks every two seconds whether a model worker has
+ended, and whether a panic on any thread reported HIP status 719 (the app's panic hook tells it).
+Either one changes the status to "The models stopped working: <why>", with how long they served,
+once: it does not look again until other settings load. A GPU failure during a load says the same
+when the load ends, whether or not the load failed. After a GPU failure the process loads no
+model again: later settings that route a capability to the app say the same. Capabilities on
+other providers stay served. The tray icon shows the error, and the tray app starts again
+([app](app.md) R34).
+
+Tests: `models_found_lost_between_settings_are_said_once_and_settings_still_apply`, `panics_that_report_hip_status_719_are_told_apart`
+

@@ -589,6 +589,11 @@ pub struct View {
     pub interface: Option<InterfaceView>,
     /// The automations library: name, description, and whether this version is approved.
     pub automations: Vec<(String, String, bool)>,
+    /// The times in a row the app started itself again after losing its models, before this
+    /// run.
+    pub restarts: u32,
+    /// Set as the app quits to start again: the count of restarts the new run gets.
+    pub restart: Option<u32>,
     pub quit: bool,
 }
 
@@ -1620,6 +1625,10 @@ impl Agent {
             Command::ReloadRuntime => self.runtime.apply(&self.config, &self.config_file),
             Command::RuntimeChanged => {
                 let status = self.runtime.status();
+                let lost = match &status {
+                    Status::Lost { served, .. } => Some(*served),
+                    _ => None,
+                };
                 self.session.set_routes(self.runtime.routes());
                 if self.session.ready() {
                     // The tasks kept the last time jevons ran: the first time, and nothing
@@ -1637,7 +1646,7 @@ impl Agent {
                 if self.active.is_none() {
                     let state = match status {
                         Status::Ready { .. } | Status::Remote { .. } => self.resting(),
-                        Status::Failed(_) => TrayState::Error,
+                        Status::Failed(_) | Status::Lost { .. } => TrayState::Error,
                         Status::Loading | Status::WaitingForGpu { .. } => TrayState::Loading,
                         _ => TrayState::Offline,
                     };
@@ -1651,6 +1660,9 @@ impl Agent {
                 view.voices = voices;
                 drop(view);
                 self.repaint();
+                if let Some(served) = lost {
+                    return self.models_lost(served);
+                }
             }
             Command::TakeFinished(trace) => self.finished(*trace),
             Command::ConfirmRequested(confirmation) => self.confirm_requested(confirmation),
@@ -1914,27 +1926,62 @@ impl Agent {
                     Command::ClearAnswered { kinds, yes }
                 });
             }
-            MenuCommand::Quit => {
-                self.cancel_take();
-                // The models unload before the process ends, which takes a moment, and a load
-                // in progress ends first: the icon stays until then, so the app is not started
-                // again over one still closing.
-                if matches!(
-                    self.runtime.status(),
-                    Status::Ready { .. } | Status::Loading
-                ) {
-                    self.message("Quitting once the models are unloaded…", 600);
-                }
-                self.runtime.shutdown();
-                if let Some(tray) = &self.tray {
-                    tray.quit();
-                }
-                self.view().quit = true;
-                self.repaint();
-                return false;
-            }
+            MenuCommand::Quit => return self.quit(),
         }
         true
+    }
+
+    /// Cancels the take, unloads the models, removes the tray icon and closes the window; false,
+    /// so the agent stops.
+    fn quit(&mut self) -> bool {
+        self.cancel_take();
+        // The models unload before the process ends, which takes a moment, and a load in
+        // progress ends first: the icon stays until then, so the app is not started again over
+        // one still closing.
+        if self.view().restart.is_some() {
+            self.message("The models stopped working: starting jevons again…", 600);
+        } else if matches!(
+            self.runtime.status(),
+            Status::Ready { .. } | Status::Loading
+        ) {
+            self.message("Quitting once the models are unloaded…", 600);
+        }
+        self.runtime.shutdown();
+        if let Some(tray) = &self.tray {
+            tray.quit();
+        }
+        self.view().quit = true;
+        self.repaint();
+        false
+    }
+
+    /// The app's models stopped working after serving for `served`. Only a new process gets the
+    /// GPU back, so the app quits and starts again, unless it has done so too often in a row;
+    /// then it stays, and the bubble says what the user can do. False when the agent stops.
+    fn models_lost(&mut self, served: Duration) -> bool {
+        let restarts = self.view().restarts;
+        match crate::runtime::restart_after_loss(restarts, served) {
+            Some(next) => {
+                tracing::warn!(
+                    restarts = next,
+                    "The models stopped working: starting again"
+                );
+                self.view().restart = Some(next);
+                self.quit()
+            }
+            None => {
+                tracing::error!(
+                    restarts,
+                    "The models stopped working again: not starting again"
+                );
+                self.message(
+                    "The models stopped working again. Restart the graphics driver \
+                     (Win+Ctrl+Shift+B on Windows), then quit and start jevons again.",
+                    60,
+                );
+                true
+            }
+        }
     }
 
     /// A dictation hotkey went down: it starts a take, or stops the one it started in toggle

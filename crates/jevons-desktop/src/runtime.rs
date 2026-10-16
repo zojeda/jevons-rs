@@ -38,6 +38,13 @@ pub enum Status {
         api: Option<String>,
     },
     Failed(String),
+    /// The app's models stopped working once loaded: `why`, after serving for `served`. A GPU
+    /// that failed under this process does not come back to it, so only a new process loads
+    /// them again.
+    Lost {
+        why: String,
+        served: std::time::Duration,
+    },
 }
 
 impl Status {
@@ -51,6 +58,7 @@ impl Status {
             Self::Ready { .. } => "Ready",
             Self::Remote { .. } => "Remote providers",
             Self::Failed(_) => "Failed",
+            Self::Lost { .. } => "Models lost",
         }
     }
 
@@ -77,6 +85,7 @@ impl Status {
             } => format!("Using {}; serving the API on {api}", providers.join(", ")),
             Self::Remote { providers, .. } => format!("Using {}", providers.join(", ")),
             Self::Failed(e) => format!("Failed: {e}"),
+            Self::Lost { why, .. } => format!("The models stopped working: {why}"),
         }
     }
 
@@ -378,6 +387,72 @@ const GPU_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
 /// driver has cleared by itself within about two minutes whenever it cleared at all.
 const GPU_PATIENCE: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// How often the runtime looks at the loaded models between settings.
+const WATCH_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether `text` reports HIP status 719, as the driver's errors and CubeCL's panics put it.
+fn reports_719(text: &str) -> bool {
+    text.contains("status: 719") || text.contains("status 719")
+}
+
+/// Set once a panic in this process reported HIP status 719: the GPU stopped answering it.
+static GPU_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Tells the runtime what a panic said, from the app's panic hook. One that reports HIP status
+/// 719 means the GPU stopped answering this process, whichever thread it was on.
+pub fn panicked(message: &str) {
+    if reports_719(message) {
+        GPU_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+fn gpu_failed() -> bool {
+    GPU_FAILED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Why the models stopped working.
+fn lost_why() -> String {
+    if gpu_failed() {
+        "the GPU stopped answering (HIP status 719)".into()
+    } else {
+        "a model's worker stopped".into()
+    }
+}
+
+/// How many times in a row the app starts itself again after losing its models.
+pub const MAX_RESTARTS: u32 = 3;
+
+/// Models that served this long before they were lost were not lost to the same failure as
+/// those before them: the count of restarts in a row starts again.
+const SERVED_LONG: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Whether the app starts again after losing models that served for `served`, given the
+/// `restarts` in a row before this run: the count the next run gets, or `None` to stop trying.
+pub fn restart_after_loss(restarts: u32, served: std::time::Duration) -> Option<u32> {
+    let restarts = if served >= SERVED_LONG { 0 } else { restarts };
+    (restarts < MAX_RESTARTS).then_some(restarts + 1)
+}
+
+/// Waits for the next settings. While `watching`, it calls `look` `every` so often, which says
+/// whether to go on watching. `None` once a shutdown is queued or nobody can queue one.
+fn wait_for_settings(
+    requests: &mpsc::Receiver<Option<Request>>,
+    watching: &mut bool,
+    every: std::time::Duration,
+    mut look: impl FnMut() -> bool,
+) -> Option<Request> {
+    loop {
+        if !*watching {
+            return requests.recv().ok().flatten();
+        }
+        match requests.recv_timeout(every) {
+            Ok(request) => return request,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return None,
+            Err(mpsc::RecvTimeoutError::Timeout) => *watching = look(),
+        }
+    }
+}
+
 /// How long one check of a GPU may take before it counts as no answer.
 const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -400,7 +475,7 @@ fn classify(success: bool, errors: &str) -> Probe {
     if success {
         return Probe::Ready;
     }
-    match errors.lines().find(|line| line.contains("status: 719")) {
+    match errors.lines().find(|line| reports_719(line)) {
         Some(line) => Probe::Busy(line.trim().to_string()),
         None => Probe::Unknown,
     }
@@ -652,13 +727,29 @@ fn run(requests: mpsc::Receiver<Option<Request>>, shared: Arc<Mutex<Shared>>, ch
     let mut gpu_answered = false;
     // Settings that arrived while the GPU was waited for.
     let mut next: Option<Request> = None;
+    // Whether the loaded models are looked at between settings: until they are found lost.
+    let mut watching = false;
     loop {
         let first = match next.take() {
             Some(request) => request,
-            None => match requests.recv() {
-                Ok(Some(request)) => request,
-                _ => break,
-            },
+            None => {
+                let look = || match embedded.lost() {
+                    Some(served) => {
+                        let (routes, voices) = {
+                            let shared = shared.lock().expect("the runtime lock");
+                            (shared.routes.clone(), shared.voices.clone())
+                        };
+                        let why = lost_why();
+                        set(Status::Lost { why, served }, routes, voices);
+                        false
+                    }
+                    None => true,
+                };
+                match wait_for_settings(&requests, &mut watching, WATCH_EVERY, look) {
+                    Some(request) => request,
+                    None => break,
+                }
+            }
         };
         let Some((config, file)) = latest(first, &requests) else {
             break;
@@ -691,6 +782,9 @@ fn run(requests: mpsc::Receiver<Option<Request>>, shared: Arc<Mutex<Shared>>, ch
             None
         };
         match settings {
+            // A GPU that failed under this process does not come back to it: nothing loads,
+            // and the status says why below.
+            Some(_) if gpu_failed() => {}
             Some(settings) => {
                 if embedded.needs_load(&settings) {
                     if !gpu_answered {
@@ -799,6 +893,22 @@ fn run(requests: mpsc::Receiver<Option<Request>>, shared: Arc<Mutex<Shared>>, ch
                 providers: elsewhere,
                 api,
             }
+        };
+        // Models that stopped while they loaded, or a GPU this process lost before.
+        let lost = if wanted.any() {
+            embedded
+                .lost()
+                .or_else(|| gpu_failed().then_some(std::time::Duration::ZERO))
+        } else {
+            None
+        };
+        watching = local && lost.is_none();
+        let status = match lost {
+            Some(served) => Status::Lost {
+                why: lost_why(),
+                served,
+            },
+            None => status,
         };
         set(status, routes, voices);
     }
@@ -910,6 +1020,8 @@ mod embedded {
         settings: String,
         state: AppState,
         workers: Workers,
+        /// When the models were loaded.
+        since: std::time::Instant,
         /// What did not load, of the services that may fail: said with every status until
         /// other settings are loaded.
         unserved: Vec<String>,
@@ -948,6 +1060,13 @@ mod embedded {
     impl Embedded {
         pub fn needs_load(&self, settings: &str) -> bool {
             self.loaded.as_ref().is_none_or(|l| l.settings != settings)
+        }
+
+        /// How long the loaded models served before they stopped working, once they have: a
+        /// worker ended, or the GPU stopped answering this process.
+        pub fn lost(&self) -> Option<std::time::Duration> {
+            let loaded = self.loaded.as_ref()?;
+            (loaded.workers.stopped() || super::gpu_failed()).then(|| loaded.since.elapsed())
         }
 
         async fn stop_listener(&mut self) {
@@ -990,6 +1109,7 @@ mod embedded {
                     settings: settings.to_string(),
                     state: loaded.state,
                     workers: loaded.workers,
+                    since: std::time::Instant::now(),
                     unserved: loaded
                         .unserved
                         .iter()
@@ -1070,6 +1190,10 @@ mod embedded {
     }
 
     impl Embedded {
+        pub fn lost(&self) -> Option<std::time::Duration> {
+            None
+        }
+
         pub fn needs_load(&self, _: &str) -> bool {
             false
         }
@@ -1246,6 +1370,74 @@ mod tests {
         assert_eq!(
             table["services"]["speech"]["realtime"].as_bool(),
             Some(false)
+        );
+    }
+
+    #[test]
+    fn models_found_lost_between_settings_are_said_once_and_settings_still_apply() {
+        let every = std::time::Duration::from_millis(10);
+        let request = |name: &str| Some((DesktopConfig::default(), PathBuf::from(name)));
+        let (apply, requests) = mpsc::channel();
+        // Looked at every so often until the first look finds them lost.
+        let mut looks = 0;
+        let mut watching = true;
+        let sender = apply.clone();
+        let later = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            sender.send(request("after")).unwrap();
+        });
+        let received = wait_for_settings(&requests, &mut watching, every, || {
+            looks += 1;
+            looks < 3
+        });
+        later.join().unwrap();
+        assert_eq!(received.map(|r| r.1), Some(PathBuf::from("after")));
+        assert_eq!(looks, 3, "looked again after the models were found lost");
+        assert!(!watching);
+        // Not watching, it only waits; a shutdown ends the wait while watching, too.
+        apply.send(None).unwrap();
+        assert!(wait_for_settings(&requests, &mut watching, every, || unreachable!()).is_none());
+        let mut watching = true;
+        apply.send(None).unwrap();
+        assert!(wait_for_settings(&requests, &mut watching, every, || true).is_none());
+        drop(apply);
+        assert!(wait_for_settings(&requests, &mut watching, every, || true).is_none());
+    }
+
+    #[test]
+    fn the_app_starts_again_a_few_times_in_a_row_then_stops_trying() {
+        let minute = std::time::Duration::from_secs(60);
+        assert_eq!(restart_after_loss(0, minute), Some(1));
+        assert_eq!(restart_after_loss(1, minute), Some(2));
+        assert_eq!(
+            restart_after_loss(MAX_RESTARTS - 1, minute),
+            Some(MAX_RESTARTS)
+        );
+        assert_eq!(restart_after_loss(MAX_RESTARTS, minute), None);
+        // Models that served a while were lost to something new: the count starts again.
+        assert_eq!(restart_after_loss(MAX_RESTARTS, 11 * minute), Some(1));
+    }
+
+    #[test]
+    fn panics_that_report_hip_status_719_are_told_apart() {
+        // As the speech worker's and CubeCL's device thread's panics said on 2026-10-16.
+        assert!(reports_719(
+            "bytes: host access failed: Read(\"An error happened during execution\\nCaused by:\\n  \
+             hipEventSynchronize failed with status 719\")"
+        ));
+        assert!(reports_719(
+            "the fence needs an event: DriverError { op: \"hipEventCreateWithFlags\", status: 719 }"
+        ));
+        assert!(!reports_719("failed to get surface texture: Other"));
+        let lost = Status::Lost {
+            why: "the GPU stopped answering (HIP status 719)".into(),
+            served: std::time::Duration::from_secs(5),
+        };
+        assert_eq!(lost.label(), "Models lost");
+        assert!(
+            lost.describe().contains("stopped working"),
+            "{}",
+            lost.describe()
         );
     }
 

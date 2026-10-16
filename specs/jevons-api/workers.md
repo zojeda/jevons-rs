@@ -174,3 +174,12 @@ kernels to compile. When the model fails to load, starting the worker fails with
 error, once the worker's thread has ended.
 
 Tests: `a_voice_model_that_fails_to_load_fails_the_start_once_its_thread_ended`
+
+### R19 A stopped worker shows
+
+`Workers::stopped` says whether any model thread has ended. While the state holds the queues, a
+worker ends only when its model failed, such as by a panic on a GPU that stopped answering, so a
+caller that keeps models loaded can look for it and say so, instead of serving a model that is
+gone.
+
+Tests: `a_worker_that_ends_while_serving_shows_as_stopped`
