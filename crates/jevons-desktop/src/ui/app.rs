@@ -57,7 +57,9 @@ pub fn App() -> Element {
         Some(status @ Status::Ready { .. }) | Some(status @ Status::Remote { .. }) => {
             (status.label(), status.describe(), "success")
         }
-        Some(status @ Status::Failed(_)) => (status.label(), status.describe(), "destructive"),
+        Some(status @ (Status::Failed(_) | Status::Lost { .. })) => {
+            (status.label(), status.describe(), "destructive")
+        }
         Some(status) => (status.label(), status.describe(), "warning"),
         None => ("Starting", "Starting…".to_string(), "warning"),
     };

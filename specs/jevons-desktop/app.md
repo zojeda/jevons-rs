@@ -417,3 +417,20 @@ teaching. A listener whose microphone stops (a device that went away) closes and
 listens again only after the settings change.
 
 Tests: `the_wake_word_listens_only_between_takes_with_the_voice_silent`, `teaching_keeps_five_spellings_each_once`
+
+### R34 The app starts again when its models stop working
+
+When the models stop working ([runtime](runtime.md) R15), the tray app quits as Quit does (R24),
+with "The models stopped working: starting jevons again…" in the bubble, and once the models are
+unloaded and the tray icon is gone it starts a new copy of itself with the same arguments. The
+copy waits for the run that started it to end, before it opens the log or shows the tray icon,
+then waits for the GPU as any start does ([runtime](runtime.md) R13): the tray shows loading
+until the driver lets it in.
+
+It does so at most three times in a row. A run whose models served ten minutes or more before
+they stopped starts the count again. Past the limit the app stays up with the error: the bubble
+says to restart the graphics driver (Win+Ctrl+Shift+B on Windows), then quit and start jevons
+again. The copy learns the count from the hidden `--restarts <count>` ([cli](cli.md) R19).
+
+Tests: `the_app_starts_again_a_few_times_in_a_row_then_stops_trying`, `a_restart_keeps_the_arguments_and_counts_the_restarts`
+

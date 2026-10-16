@@ -147,6 +147,10 @@ struct Args {
     /// with this before it first loads models, to wait for a GPU that does not answer yet.
     #[arg(long, value_name = "INDEX", hide = true)]
     probe_gpu: Option<usize>,
+    /// How many times in a row the app has started itself again after losing its models. The
+    /// app passes it to the copy it starts.
+    #[arg(long, value_name = "COUNT", hide = true, default_value_t = 0)]
+    restarts: u32,
 }
 
 /// What `--clear` clears.
@@ -197,6 +201,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(index) = args.probe_gpu {
         return runtime::probe_gpu(index);
     }
+    // A copy the app started again waits for the run that started it to end, before it takes
+    // the log, the tray icon and the hotkeys.
+    if args.restarts > 0 {
+        wait_for_parent();
+    }
     let filter = || {
         tracing_subscriber::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| "info,wgpu_hal=warn,wgpu_core=warn,naga=warn".into())
@@ -226,6 +235,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let thread = std::thread::current();
         let backtrace = std::backtrace::Backtrace::force_capture();
         tracing::error!(thread = thread.name().unwrap_or("unnamed"), %info, %backtrace, "Panic");
+        // One that says the GPU stopped answering means the models are lost.
+        runtime::panicked(&info.to_string());
     }));
     let config_file = args.config.clone().unwrap_or_else(default_config_file);
     // Before loading the settings: a reset also mends a file that does not load.
@@ -289,7 +300,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(text) = &args.say {
         return say(text, args.out.as_deref(), &config, &config_file);
     }
-    desktop(config, config_file)
+    desktop(config, config_file, args.restarts)
 }
 
 /// Prints what an expression selects: one line per element, or the value. It reads only the
@@ -783,7 +794,10 @@ fn served_routes(
             }
             status => match runtime.routes() {
                 Some(routes) => {
-                    if matches!(status, runtime::Status::Failed(_)) {
+                    if matches!(
+                        status,
+                        runtime::Status::Failed(_) | runtime::Status::Lost { .. }
+                    ) {
                         eprintln!("note: {}", status.describe());
                     }
                     return Ok(routes);
@@ -1237,6 +1251,10 @@ fn serve(config: DesktopConfig, config_file: PathBuf) -> Result<(), Box<dyn std:
         }
         let status = runtime.status();
         eprintln!("{}", status.describe());
+        // Models lost stay lost in this process: it ends, for whoever runs it to start again.
+        if matches!(status, runtime::Status::Lost { .. }) {
+            return Err(status.describe().into());
+        }
         session.set_routes(runtime.routes());
         // A client came before a provider answered: its tasks come back now.
         if session.ready() && met.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1265,21 +1283,30 @@ impl Drop for QuitOnDrop {
     }
 }
 
-/// The tray, the agent and the inspector window.
-fn desktop(config: DesktopConfig, config_file: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let view = Arc::new(Mutex::new(View::default()));
+/// The tray, the agent and the inspector window. `restarts` counts the times in a row the app
+/// started itself again after losing its models.
+fn desktop(
+    config: DesktopConfig,
+    config_file: PathBuf,
+    restarts: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let view = Arc::new(Mutex::new(View {
+        restarts,
+        ..View::default()
+    }));
     let (commands, received) = mpsc::unbounded_channel::<Command>();
     let runtime_commands = commands.clone();
     let runtime = runtime::Runtime::start(move || {
         let _ = runtime_commands.send(Command::RuntimeChanged);
     });
-    let _quit = QuitOnDrop {
+    let quit = QuitOnDrop {
         commands: commands.clone(),
         runtime: runtime.clone(),
     };
     let agent_view = view.clone();
     let agent_commands = commands.clone();
-    ui::run(view, commands, move || {
+    let shown = view.clone();
+    let ran = ui::run(view, commands, move || {
         let repaint: Arc<dyn Fn() + Send + Sync> = Arc::new(ui::wake);
         if let Err(e) = start_agent(
             config,
@@ -1292,7 +1319,67 @@ fn desktop(config: DesktopConfig, config_file: PathBuf) -> Result<(), Box<dyn st
         ) {
             tracing::error!(error = %e, "Cannot start the agent");
         }
-    })
+    });
+    let restart = shown.lock().expect("the view lock").restart;
+    if let Some(restarts) = restart {
+        // The last thing this run does: its models are unloaded and its tray icon is gone.
+        drop(quit);
+        start_again(restarts);
+    }
+    ran
+}
+
+/// Starts a new copy of the app with the arguments this one got, and `restarts` as the count of
+/// restarts in a row. Its standard input is a pipe this process never closes: the copy reads it
+/// until it closes, which is when this process has ended ([`wait_for_parent`]).
+fn start_again(restarts: u32) {
+    let program = match std::env::current_exe() {
+        Ok(program) => program,
+        Err(e) => {
+            tracing::error!(error = %e, "Cannot start the app again");
+            return;
+        }
+    };
+    let args = restart_args(std::env::args_os().skip(1), restarts);
+    match std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(mut child) => {
+            std::mem::forget(child.stdin.take());
+            tracing::info!(restarts, "Started the app again");
+        }
+        Err(e) => tracing::error!(error = %e, "Cannot start the app again"),
+    }
+}
+
+/// Waits until standard input closes, as it does when the run that started this one ends. A
+/// terminal is not waited for.
+fn wait_for_parent() {
+    use std::io::IsTerminal;
+    let stdin = std::io::stdin();
+    if !stdin.is_terminal() {
+        let _ = std::io::copy(&mut stdin.lock(), &mut std::io::sink());
+    }
+}
+
+/// The arguments of `given` with `--restarts` set to `restarts`.
+fn restart_args(
+    mut given: impl Iterator<Item = std::ffi::OsString>,
+    restarts: u32,
+) -> Vec<std::ffi::OsString> {
+    let mut args = Vec::new();
+    while let Some(arg) = given.next() {
+        if arg == "--restarts" {
+            given.next();
+        } else if !arg.to_string_lossy().starts_with("--restarts=") {
+            args.push(arg);
+        }
+    }
+    args.push("--restarts".into());
+    args.push(restarts.to_string().into());
+    args
 }
 
 fn start_agent(
@@ -1517,6 +1604,32 @@ mod tests {
         let played = speaker.played();
         assert_eq!(played[0].device.as_deref(), Some("Headphones"));
         assert_eq!(played[0].samples, vec![7; 1_200]);
+    }
+
+    #[test]
+    fn a_restart_keeps_the_arguments_and_counts_the_restarts() {
+        let args = |list: &[&str]| {
+            list.iter()
+                .map(std::ffi::OsString::from)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            restart_args(args(&["--config", "a.toml"]).into_iter(), 1),
+            args(&["--config", "a.toml", "--restarts", "1"])
+        );
+        assert_eq!(
+            restart_args(
+                args(&["--restarts", "1", "--config", "a.toml", "--restarts=2"]).into_iter(),
+                3
+            ),
+            args(&["--config", "a.toml", "--restarts", "3"])
+        );
+        // The copy reads what this one wrote.
+        let parsed = Args::try_parse_from(
+            std::iter::once("jevons-desktop".into()).chain(restart_args(std::iter::empty(), 2)),
+        )
+        .unwrap();
+        assert_eq!(parsed.restarts, 2);
     }
 
     #[test]

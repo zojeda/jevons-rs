@@ -148,7 +148,8 @@ is stopped. Ctrl+C stops it after the models are unloaded ([runtime](runtime.md)
 client's, listed once one connects. The flow tree is read again whenever a client says what tools
 it runs: until then a flow that names a client's tool has a problem. A flow tree with problems
 prints them, and the tree before it (the built-in one at first) runs until it is fixed. The API for other clients is served on the same address only when the
-settings expose it.
+settings expose it. When the models stop working ([runtime](runtime.md) R15) it ends with that
+status as its error, after the models are unloaded, for whatever runs it to start it again.
 
 The tasks that run are kept in `machines/machines.json` of the server's data folder, and come
 back once a client has said hello and a provider answers
@@ -196,3 +197,14 @@ never logged. `--say` cannot be combined with `--replay`, `--transcript`, `--ser
 `--server`.
 
 Tests: `say_speaks_text_and_out_names_a_wav_file_for_it`, `said_text_goes_to_the_voice_route_and_comes_back_as_a_wav_file`, `said_text_plays_through_a_speaker_until_it_was_heard`
+
+### R19 `--restarts <count>` says how many times the app started again
+
+`--restarts <count>` is how many times in a row the tray app has started itself again after
+losing its models ([app](app.md) R34); it is 0 when left out. The app passes it to the copy it
+starts, after the arguments it was started with, with a pipe for standard input that closes when
+the app ends. Above 0, the copy reads standard input until it closes before it does anything else,
+unless standard input is a terminal. It is hidden from `--help`.
+
+Tests: `a_restart_keeps_the_arguments_and_counts_the_restarts`
+
