@@ -18,6 +18,7 @@
 mod agent;
 mod audio;
 mod config;
+mod control;
 mod hold;
 mod platform;
 mod runtime;
@@ -124,7 +125,7 @@ struct Args {
     #[arg(long, conflicts_with_all = ["replay", "transcript", "server"])]
     serve: bool,
     /// With --replay or --transcript: run the take on the jevons server at this address, such
-    /// as `ws://127.0.0.1:8080/desktop`, instead of in this process. This side still reads
+    /// as `ws://127.0.0.1:5380/desktop`, instead of in this process. This side still reads
     /// the screen and, with --deliver, types.
     #[arg(long, value_name = "URL")]
     server: Option<String>,
@@ -943,19 +944,39 @@ fn headless_desk(
     };
     let reader =
         jevons_desktop_core::reader::Reader::new(inspector.clone(), config.privacy.clone());
+    // Outside agents read here within the client's `[control]`; they act only with --deliver,
+    // and there is no bubble to ask the user in.
+    let actor: Arc<dyn jevons_desktop_core::platform::UiActor> = if args.deliver {
+        platform::ui_actor()
+    } else {
+        Arc::new(jevons_desktop_core::platform::Unsupported)
+    };
+    let sink: Option<Arc<Mutex<Box<dyn jevons_desktop_core::platform::TextSink>>>> = args
+        .deliver
+        .then(|| Arc::new(Mutex::new(platform::text_sink())));
+    let mut control = jevons_desktop_core::control::Control::new(
+        inspector.clone(),
+        actor,
+        config.desk_control.clone(),
+    );
+    // Typing and keys wait for the user's keys, as they do in the app.
+    if let Some(sink) = &sink {
+        control = control.with_keys(sink.clone());
+    }
     let looks =
         jevons_desktop_core::look::Looks::new(inspector, config.privacy.clone(), Arc::default());
     let mut desk = jevons_desktop_core::desk::LocalDesk::default()
         .with_reader(Arc::new(reader))
         .with_looks(Arc::new(looks))
+        .with_control(Arc::new(control))
         .with_automations(automations)
         .with_tools(Arc::new(jevons_desktop_tools::ToolSet::new(
             &config.desk_tools,
             &config.desk_mcp,
         )))
         .dry_run();
-    if args.deliver {
-        desk = desk.with_sink(Arc::new(Mutex::new(platform::text_sink())));
+    if let Some(sink) = sink {
+        desk = desk.with_sink(sink);
     }
     Ok(Arc::new(desk))
 }
@@ -1190,11 +1211,18 @@ fn serve(config: DesktopConfig, config_file: PathBuf) -> Result<(), Box<dyn std:
             greeted.store(true, std::sync::atomic::Ordering::Relaxed);
         }));
         runtime.serve(host);
+        runtime.control(session.clone());
         session
     });
     runtime.apply(&config, &config_file);
     let address = std::net::SocketAddr::new(config.server.bind, config.server.port);
     eprintln!("Serving desktop clients on ws://{address}/desktop");
+    if config.control.enabled {
+        match config.exposed_key() {
+            Some(_) => eprintln!("Serving outside agents on http://{address}/mcp and /api/v1"),
+            None => eprintln!("note: {}", jevons_desktop_server::control::NO_KEY),
+        }
+    }
     // The routes follow the providers for as long as the server runs.
     loop {
         if interrupted.load(std::sync::atomic::Ordering::Relaxed) {

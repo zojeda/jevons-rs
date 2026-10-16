@@ -8,8 +8,10 @@
 
 use crate::config::{Capability, DesktopConfig, ModelRef, Models, Provider, ProviderKind};
 use jevons_desktop_server::client::{Client, Profile, Route, Routes};
+use jevons_desktop_server::control::ControlApi;
 use jevons_desktop_server::forward::{self, Forwarder};
 use jevons_desktop_server::serve::Host;
+use jevons_desktop_server::session::Session;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -241,40 +243,57 @@ impl Local {
     }
 }
 
-/// What listens on `bind:port`: the forwarder for other clients while the API is exposed, and
-/// the desktop endpoint while the app serves desktop clients.
+/// What listens on `bind:port`: the forwarder for other clients while the API is exposed, the
+/// desktop endpoint while the app serves desktop clients, and the control API while the
+/// settings turn it on.
 struct Exposed {
     address: SocketAddr,
     key: Option<String>,
     forwarder: Forwarder,
-    /// Whether the API is served, and whether desktop clients are.
-    serves: (bool, bool),
+    /// Whether the API is served, whether desktop clients are, and whether outside agents are.
+    serves: (bool, bool, bool),
     stop: tokio::sync::oneshot::Sender<()>,
     task: tokio::task::JoinHandle<std::io::Result<()>>,
 }
 
-/// Serves `routes` to other clients when the settings expose the API, and desktop clients when
-/// there is a `host` for them; stops listening when there is neither. A listener with the same
-/// address, key and purpose is kept, with the routes as they are now. Returns where the API is.
+/// Serves `routes` to other clients when the settings expose the API, desktop clients when
+/// there is a `host` for them, and outside agents the control API over `session` when the
+/// settings turn it on and there is a key; stops listening when there is none of these. A
+/// listener with the same address, key and purpose is kept, with the routes as they are now.
+/// Returns where the API is.
 fn expose(
     tokio: &tokio::runtime::Runtime,
     exposed: &mut Option<Exposed>,
     config: &DesktopConfig,
     routes: Option<&Routes>,
     host: Option<Arc<Host>>,
+    session: Option<Arc<Session>>,
 ) -> Result<Option<String>, String> {
     let address = SocketAddr::new(config.server.bind, config.server.port);
     let key = config.exposed_key();
     let routes = routes.filter(|_| config.server.expose);
-    let serves = (routes.is_some(), host.is_some());
+    let control = match session.filter(|_| config.control.enabled) {
+        Some(session) => match ControlApi::new(session, key.clone()) {
+            Ok(api) => Some(api),
+            Err(why) => {
+                tracing::warn!(%why, "The control API is not served");
+                None
+            }
+        },
+        None => None,
+    };
+    let serves = (routes.is_some(), host.is_some(), control.is_some());
     let keep = exposed.as_ref().is_some_and(|e| {
-        serves != (false, false) && e.address == address && e.key == key && e.serves == serves
+        serves != (false, false, false)
+            && e.address == address
+            && e.key == key
+            && e.serves == serves
     });
     if !keep && let Some(old) = exposed.take() {
         let _ = old.stop.send(());
         let _ = tokio.block_on(old.task);
     }
-    if serves == (false, false) {
+    if serves == (false, false, false) {
         return Ok(None);
     }
     if exposed.is_none() {
@@ -288,11 +307,18 @@ fn expose(
             listener,
             serves.0.then(|| forwarder.clone()),
             host,
+            control,
             async {
                 let _ = stopped.await;
             },
         ));
-        tracing::info!(%address, api = serves.0, desktop = serves.1, "Listening");
+        tracing::info!(
+            %address,
+            api = serves.0,
+            desktop = serves.1,
+            control = serves.2,
+            "Listening"
+        );
         *exposed = Some(Exposed {
             address,
             key,
@@ -317,6 +343,8 @@ struct Shared {
     voices: Option<Voices>,
     /// What serves desktop clients, when the app does.
     host: Option<Arc<Host>>,
+    /// The session outside agents reach through the control API, when the settings serve it.
+    control: Option<Arc<Session>>,
     /// The one capability whose model is loaded here, when a run needs no other.
     only: Option<Capability>,
 }
@@ -513,6 +541,7 @@ impl Runtime {
             routes: None,
             voices: None,
             host: None,
+            control: None,
             only: None,
         }));
         let (apply, requests) = mpsc::channel();
@@ -542,6 +571,12 @@ impl Runtime {
     /// settings are applied.
     pub fn serve(&self, host: Arc<Host>) {
         self.shared.lock().expect("the runtime lock").host = Some(host);
+    }
+
+    /// Serves outside agents the control API over `session` when the settings turn it on, from
+    /// the next time settings are applied.
+    pub fn control(&self, session: Arc<Session>) {
+        self.shared.lock().expect("the runtime lock").control = Some(session);
     }
 
     /// Loads the model of `capability` alone, from the next time settings are applied: a run
@@ -630,7 +665,7 @@ fn run(requests: mpsc::Receiver<Option<Request>>, shared: Arc<Mutex<Shared>>, ch
         };
         if let Err(e) = config.check_routes() {
             tokio.block_on(embedded.unload());
-            let _ = expose(&tokio, &mut exposed, &config, None, None);
+            let _ = expose(&tokio, &mut exposed, &config, None, None, None);
             set(Status::Failed(e), None, None);
             continue;
         }
@@ -737,12 +772,22 @@ fn run(requests: mpsc::Receiver<Option<Request>>, shared: Arc<Mutex<Shared>>, ch
             || routes.voice.is_some();
         let routes = any.then_some(routes);
         // Other clients get what the routes serve, on the address the settings expose.
-        let host = shared.lock().expect("the runtime lock").host.clone();
-        let api =
-            expose(&tokio, &mut exposed, &config, routes.as_ref(), host).unwrap_or_else(|e| {
-                failures.push(e);
-                None
-            });
+        let (host, control) = {
+            let shared = shared.lock().expect("the runtime lock");
+            (shared.host.clone(), shared.control.clone())
+        };
+        let api = expose(
+            &tokio,
+            &mut exposed,
+            &config,
+            routes.as_ref(),
+            host,
+            control,
+        )
+        .unwrap_or_else(|e| {
+            failures.push(e);
+            None
+        });
         let status = if !failures.is_empty() {
             Status::Failed(failures.join("; "))
         } else if !any {
@@ -757,7 +802,14 @@ fn run(requests: mpsc::Receiver<Option<Request>>, shared: Arc<Mutex<Shared>>, ch
         };
         set(status, routes, voices);
     }
-    let _ = expose(&tokio, &mut exposed, &DesktopConfig::default(), None, None);
+    let _ = expose(
+        &tokio,
+        &mut exposed,
+        &DesktopConfig::default(),
+        None,
+        None,
+        None,
+    );
     tokio.block_on(embedded.unload());
     tracing::info!("Runtime ended: the models are unloaded");
 }
@@ -1432,20 +1484,43 @@ generation = { provider = "box" }
         let mut exposed = None;
         // Private: nothing listens, and there is no address to give.
         config.server.expose = false;
-        let api = expose(&tokio, &mut exposed, &config, Some(&route("jev")), None).unwrap();
+        let api = expose(
+            &tokio,
+            &mut exposed,
+            &config,
+            Some(&route("jev")),
+            None,
+            None,
+        )
+        .unwrap();
         assert!(api.is_none() && exposed.is_none());
         // Exposed: other clients see what the routes serve.
         config.server.expose = true;
-        let api = expose(&tokio, &mut exposed, &config, Some(&route("jev")), None)
-            .unwrap()
-            .unwrap();
+        let api = expose(
+            &tokio,
+            &mut exposed,
+            &config,
+            Some(&route("jev")),
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(api, format!("http://127.0.0.1:{}", config.server.port));
         assert_eq!(
             health(&api).unwrap().services.decision.as_deref(),
             Some("jev")
         );
         // New routes are served by the same listener.
-        expose(&tokio, &mut exposed, &config, Some(&route("gemma")), None).unwrap();
+        expose(
+            &tokio,
+            &mut exposed,
+            &config,
+            Some(&route("gemma")),
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(
             health(&api).unwrap().services.decision.as_deref(),
             Some("gemma")
@@ -1453,9 +1528,16 @@ generation = { provider = "box" }
         // Another port moves it.
         let old = api;
         config.server.port = free();
-        let api = expose(&tokio, &mut exposed, &config, Some(&route("gemma")), None)
-            .unwrap()
-            .unwrap();
+        let api = expose(
+            &tokio,
+            &mut exposed,
+            &config,
+            Some(&route("gemma")),
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
         assert!(health(&old).is_err());
         assert!(health(&api).is_ok());
         // An address that is taken says so.
@@ -1463,10 +1545,21 @@ generation = { provider = "box" }
         let mut elsewhere = config.clone();
         elsewhere.server.port = taken.local_addr().unwrap().port();
         let mut second = None;
-        let error = expose(&tokio, &mut second, &elsewhere, Some(&route("jev")), None).unwrap_err();
+        let error = expose(
+            &tokio,
+            &mut second,
+            &elsewhere,
+            Some(&route("jev")),
+            None,
+            None,
+        )
+        .unwrap_err();
         assert!(error.starts_with("Cannot listen on 127.0.0.1:"), "{error}");
         // With nothing served, or turned off, it stops.
-        assert_eq!(expose(&tokio, &mut exposed, &config, None, None), Ok(None));
+        assert_eq!(
+            expose(&tokio, &mut exposed, &config, None, None, None),
+            Ok(None)
+        );
         assert!(exposed.is_none() && health(&api).is_err());
     }
 

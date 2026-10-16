@@ -29,7 +29,7 @@ The file has three sections, and every key outside this table is an error:
 
 | Section | Keys and defaults |
 | --- | --- |
-| `[server]` | `bind` (`127.0.0.1:8080`), `api_key` (none) |
+| `[server]` | `bind` (`127.0.0.1:5380`), `api_key` (none) |
 | `[models.<name>]` | `path` (required), `id` (the model's own), `main_gpu` (0), `queue_capacity` (8), `arch` (detected), `mmproj` (none), `context_size` (8192), `batch_size` (512), `prompt_cache` (true), `seed` (42), `decoding` (`diffusion`) |
 | `[services.generative]` | `model` |
 | `[services.decision]` | `model` |

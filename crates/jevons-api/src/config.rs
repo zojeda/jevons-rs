@@ -2,7 +2,7 @@
 //!
 //! ```toml
 //! [server]
-//! bind = "127.0.0.1:8080"
+//! bind = "127.0.0.1:5380"
 //!
 //! [models.gemma]                       # a model, loaded once
 //! path = "~/models/diffusiongemma/diffusiongemma-26B-A4B-it-Q4_K_M.gguf"
@@ -74,7 +74,7 @@ pub struct Server {
 }
 
 fn default_bind() -> SocketAddr {
-    "127.0.0.1:8080".parse().expect("a valid default address")
+    "127.0.0.1:5380".parse().expect("a valid default address")
 }
 
 /// A model to load. Options other than `path`, `id`, `main_gpu` and `queue_capacity` apply to

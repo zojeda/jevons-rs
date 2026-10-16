@@ -26,12 +26,12 @@ DiffusionGemma's full text generator refines a noisy canvas over multiple denois
 With the service running, in another terminal:
 
 ```bash
-curl http://127.0.0.1:8080/v1/systemone \
+curl http://127.0.0.1:5380/v1/systemone \
   -H "Content-Type: application/json" \
   --data-binary @examples/system-one.json
 ```
 
-The example asks three questions about a construction material. Set `TYPESAFE_API_KEY` on the server to enable bearer authentication, then add `-H "Authorization: Bearer $TYPESAFE_API_KEY"` to client calls. The default listener is `127.0.0.1:8080`.
+The example asks three questions about a construction material. Set `TYPESAFE_API_KEY` on the server to enable bearer authentication, then add `-H "Authorization: Bearer $TYPESAFE_API_KEY"` to client calls. The default listener is `127.0.0.1:5380`.
 
 ## Image example
 
@@ -63,7 +63,7 @@ Ask what’s in a photo and get structured answers:
 Probabilities are rounded from the example response below; model answers can vary.
 
 ```bash
-curl http://127.0.0.1:8080/v1/systemone \
+curl http://127.0.0.1:5380/v1/systemone \
   -H "Content-Type: application/json" \
   --data-binary @examples/hotdog.json
 ```

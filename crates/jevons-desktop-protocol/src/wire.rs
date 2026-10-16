@@ -11,6 +11,7 @@
 //! ([`in_process`]); between processes it is a WebSocket carrying them as JSON (`socket`).
 
 use crate::context::ContextSnapshot;
+use crate::control::{Call, Caller, ControlError};
 use crate::delivery::{AudioEvent, DeliveryOutcome};
 use crate::desk::{
     Ask, ClientTools, Delivery, Desk, Look, Looked, NO_INVESTIGATOR, Opened, Read, Speech, unread,
@@ -26,7 +27,7 @@ use std::sync::{Mutex, RwLock};
 use tokio::sync::{mpsc, oneshot};
 
 /// The version of these messages. A client and a server of different versions do not talk.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// Why an effect has no answer: the client went away before it gave one.
 pub const GONE: &str = "the client disconnected";
@@ -161,6 +162,11 @@ pub enum Effect {
         /// The server asks for a confirmation besides the client's own.
         confirm: bool,
     },
+    /// An outside agent's call of the control API.
+    Control {
+        caller: Caller,
+        call: Call,
+    },
 }
 
 /// The client's answer to an effect.
@@ -191,6 +197,9 @@ pub enum Reply {
     },
     Ran {
         result: Result<Value, String>,
+    },
+    Controlled {
+        result: Result<Value, ControlError>,
     },
 }
 
@@ -229,6 +238,9 @@ pub async fn carry_out(desk: &dyn Desk, effect: Effect) -> Reply {
             confirm,
         } => Reply::Ran {
             result: desk.run_tool(reference, arguments, node, confirm).await,
+        },
+        Effect::Control { caller, call } => Reply::Controlled {
+            result: desk.control(caller, call).await,
         },
     }
 }
@@ -460,6 +472,15 @@ impl Desk for RemoteDesk {
             match self.ask(effect).await {
                 Some(Reply::Ran { result }) => result,
                 _ => Err(GONE.into()),
+            }
+        })
+    }
+
+    fn control(&self, caller: Caller, call: Call) -> BoxFuture<'_, Result<Value, ControlError>> {
+        Box::pin(async move {
+            match self.ask(Effect::Control { caller, call }).await {
+                Some(Reply::Controlled { result }) => result,
+                _ => Err(ControlError::unavailable(GONE)),
             }
         })
     }
@@ -858,6 +879,14 @@ mod tests {
         ) -> BoxFuture<'_, Result<Value, String>> {
             Box::pin(async move { Ok(json!({"ran": reference, "with": arguments, "for": node})) })
         }
+
+        fn control(
+            &self,
+            caller: Caller,
+            call: Call,
+        ) -> BoxFuture<'_, Result<Value, ControlError>> {
+            Box::pin(async move { Ok(json!({"from": caller.name, "op": call.name()})) })
+        }
     }
 
     /// The server's desk over an in-process stream, with a client that attends to it.
@@ -920,6 +949,11 @@ mod tests {
                 .await,
             Ok(json!({"ran": "script:post", "with": {"a": 1}, "for": "run"}))
         );
+        // An outside agent's call crosses with who made it.
+        assert_eq!(
+            desk.control(Caller::new("claude-code"), Call::Bubble).await,
+            Ok(json!({"from": "claude-code", "op": "bubble"}))
+        );
         // The client's tools are what its hello said: no effect is sent for them.
         assert_eq!(desk.tools(), tools());
     }
@@ -979,6 +1013,13 @@ mod tests {
                 .await,
             Err(GONE.into())
         );
+        let control = desk
+            .control(Caller::new("claude-code"), Call::Windows)
+            .await;
+        assert_eq!(
+            control.map_err(|e| (e.kind, e.message)),
+            Err((crate::control::ErrorKind::Unavailable, GONE.into()))
+        );
         // An answer nobody waits for is dropped.
         desk.answer(99, Reply::Confirmed { yes: true });
         // The same holds with a desk nobody is at, which speaks to no one.
@@ -990,6 +1031,11 @@ mod tests {
                     arguments: json!({})
                 })
                 .await
+        );
+        let nobody = Nobody.control(Caller::new("a"), Call::Status).await;
+        assert_eq!(
+            nobody.unwrap_err().kind,
+            crate::control::ErrorKind::Unavailable
         );
     }
 }

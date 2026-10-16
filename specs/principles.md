@@ -40,6 +40,10 @@ Rules every crate follows. A spec may add to them, never relax them.
 - **P14 jevons speaks only when a leaf says so,** never while it listens, and it stops when you
   start a take. Others in the room hear a spoken answer, and an answer may quote your screen.
   The `speak` switch turns every leaf's voice off.
+- **P15 An outside agent reads and acts only where you list,** through the control API and its
+  key: in the applications `[control] apps` names, asking you in the bubble before it first acts
+  in each (unless `confirm = "never"`), never while you dictate or hold a key, and never in a
+  password field. Each of its actions shows in the bubble.
 
 ## Performance
 

@@ -334,11 +334,12 @@ pub fn router(host: Arc<Host>) -> axum::Router {
 }
 
 /// Serves on `listener` until `shutdown`: the API for other clients when a forwarder is given,
-/// and the desktop endpoint when a host is.
+/// the desktop endpoint when a host is, and the control API for outside agents when it is.
 pub async fn listen(
     listener: tokio::net::TcpListener,
     forwarder: Option<crate::forward::Forwarder>,
     host: Option<Arc<Host>>,
+    control: Option<Arc<crate::control::ControlApi>>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
     let mut app = axum::Router::new();
@@ -347,6 +348,9 @@ pub async fn listen(
     }
     if let Some(host) = host {
         app = app.merge(router(host));
+    }
+    if let Some(control) = control {
+        app = app.merge(control.router());
     }
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown)

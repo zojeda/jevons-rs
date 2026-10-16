@@ -7,6 +7,7 @@
 //! fails the take by itself.
 
 use crate::context::ContextSnapshot;
+use crate::control::{Call, Caller, ControlError, NO_DESK};
 use crate::delivery::{DeliveryOutcome, DeliveryRequest};
 use crate::extract::{Extract, ExtractSpec, Extracted};
 use futures_util::future::BoxFuture;
@@ -159,6 +160,19 @@ pub trait Desk: Send + Sync {
         node: String,
         confirm: bool,
     ) -> BoxFuture<'_, Result<Value, String>>;
+
+    /// One call of the control API from an outside agent: the client checks it against its own
+    /// `[control]` settings, asks the user when they say so, and answers with the call's output
+    /// as JSON. A desk that takes no such calls answers `unavailable`.
+    fn control(&self, caller: Caller, call: Call) -> BoxFuture<'_, Result<Value, ControlError>> {
+        let _ = caller;
+        Box::pin(async move {
+            Err(ControlError::unavailable(format!(
+                "This desk does not take {:?} calls",
+                call.name()
+            )))
+        })
+    }
 }
 
 /// Why a tool did not run: the user did not let it.
@@ -229,6 +243,10 @@ impl Desk for Nobody {
         _: bool,
     ) -> BoxFuture<'_, Result<Value, String>> {
         Box::pin(async move { Err(format!("no tool {reference:?} is registered")) })
+    }
+
+    fn control(&self, _: Caller, _: Call) -> BoxFuture<'_, Result<Value, ControlError>> {
+        Box::pin(async { Err(ControlError::unavailable(NO_DESK)) })
     }
 }
 
@@ -304,5 +322,10 @@ impl Desk for Seat {
     ) -> BoxFuture<'_, Result<Value, String>> {
         let desk = self.now();
         Box::pin(async move { desk.run_tool(reference, arguments, node, confirm).await })
+    }
+
+    fn control(&self, caller: Caller, call: Call) -> BoxFuture<'_, Result<Value, ControlError>> {
+        let desk = self.now();
+        Box::pin(async move { desk.control(caller, call).await })
     }
 }

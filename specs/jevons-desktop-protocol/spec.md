@@ -24,8 +24,10 @@ It owns:
   the client attending to it, and the stream within one process; and the stream between
   processes, a WebSocket (`socket`, behind the `client` and `server` features);
 - the `Desk` trait, what the server asks of the client: deliver text, speak an answer, confirm a
-  tool, read an extract, the steps of an investigation, and the client's tools (`desk`). `Nobody`
-  is the desk with no one at it.
+  tool, read an extract, the steps of an investigation, the client's tools, and an outside agent's
+  calls of the control API (`desk`). `Nobody` is the desk with no one at it.
+- the control API's calls at the desk (`control`): their inputs and outputs, who calls, and why a
+  call is refused.
 
 It leaves:
 
@@ -61,6 +63,7 @@ Tests: `paths_predicates_and_functions_parse`, `mistakes_are_errors_at_their_col
 | `read` | read an `[extract]` from the interface | its answer, how many matched, and a note |
 | `look`, `look_step`, `look_end` | open an investigation of the screen, take one navigation step, and end it | what it may read and a remembered text; what the step showed and what may be named next; the path it remembered |
 | `tools`, `run_tool` | list the tools it runs itself, and run one for a flow node, asking the user when its own settings or the server say so | the kinds it serves and its tools; a tool's result, or "it was not confirmed" |
+| `control` | carry out an outside agent's call of the control API (R11), checked against its own settings | the call's output as JSON, or why not |
 
 The client decides how each is carried out and applies its own safety rules; the server never
 reaches the platform. A client that cannot do something says so in its answer, and nothing in the
@@ -73,7 +76,8 @@ Tests: `each_capability_goes_to_its_own_provider`, `a_tool_node_fills_its_argume
 `Nobody` is the desk of headless checks and of the server's own tests: it delivers nothing,
 speaks no take, denies every confirmation, reads every extract as empty in its shape with "No
 interface reader is available here", opens no investigation ("No context investigator is
-available here"), offers no tools and runs none.
+available here"), offers no tools and runs none, and answers every control call `unavailable`
+("Nobody is at the desk").
 
 Tests: `a_desk_that_cannot_look_answers_empty_with_its_note`, `a_desk_speaks_through_its_speaker_and_one_without_is_silent`
 
@@ -91,7 +95,7 @@ quiet stopped listening by itself), `trace` (a finished take), `transcribed`, `t
 `machines` (where the machines are) and `closed` (with why). Each is JSON with its name in `type`,
 and every message, effect, reply and update reads back as it was written.
 
-The messages carry one version, 2 since the desk speaks. A client and a server of different
+The messages carry one version, 3 since outside agents' calls cross to the desk. A client and a server of different
 versions do not talk: the server closes with "the client speaks version N, the server M".
 
 Tests: `every_message_survives_the_wire`
@@ -160,3 +164,16 @@ took the first of its speech, and the stage that makes and hands over the speech
 it says otherwise).
 
 Tests: `every_message_survives_the_wire`, `an_answer_is_read_aloud_a_stretch_at_a_time_and_shown_too`
+
+### R11 An outside agent's calls cross to the desk with who made them
+
+A control call is one of `status`, `windows`, `focused`, `outline`, `find`, `xpath`, `read`, `act`,
+`press`, `type_text`, `activate`, `show`, `ask` and `bubble`, as JSON tagged with its `op`; its
+inputs refuse fields they do not have. It travels as the effect `control` with the caller's name,
+and its answer as `controlled`: the output, or an error with its kind (`invalid`, `unauthorized`,
+`denied`, `not_found`, `busy`, `failed`, `unavailable`, `timeout`) and a message. A caller without
+a name is `agent`. A question waits 5 to 300 seconds, 60 unless it says. A desk that takes no
+control calls answers `unavailable`, and a client that is gone answers it with "the client
+disconnected".
+
+Tests: `calls_travel_as_tagged_json_and_come_back_the_same`, `inputs_refuse_unknown_fields_and_questions_wait_within_bounds`, `a_caller_without_a_name_is_an_agent`, `the_server_s_desk_reaches_the_client_s_over_the_stream`, `a_client_that_goes_away_leaves_every_effect_refused`

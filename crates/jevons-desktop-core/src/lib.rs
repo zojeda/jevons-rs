@@ -19,6 +19,8 @@
 //! - [`xpath`]: XPath queries over the accessibility trees of the user's applications.
 //! - [`interface`]: the inspector's browser of a window's accessibility tree, with selectors.
 //! - [`automation`]: scripts that act on those applications, and the checks on every action.
+//! - [`control`]: the control API at this desk: what an outside agent may read and do, and the
+//!   bubble it talks to the user through.
 //! - [`recording`]: recording a demonstration of a task, to write its automation from.
 //! - [`settings`] and [`git`]: the settings folder, filled with the defaults and kept in a git
 //!   repository of its own, and its reset.
@@ -29,6 +31,7 @@ pub mod automation;
 pub mod catalog;
 pub mod config;
 pub mod confirm;
+pub mod control;
 pub use jevons_desktop_protocol::context;
 pub mod delivery;
 pub mod desk;

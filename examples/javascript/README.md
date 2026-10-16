@@ -38,7 +38,7 @@ Or use `just js-install`, followed by `just js-example models`, `just js-example
 
 | Variable | Default |
 | --- | --- |
-| `TYPESAFE_BASE_URL` | `http://127.0.0.1:8080` (API root, without `/v1`) |
+| `TYPESAFE_BASE_URL` | `http://127.0.0.1:5380` (API root, without `/v1`) |
 | `TYPESAFE_DEFAULT_MODEL` | `gemmadiffusion-latest` |
 | `TYPESAFE_API_KEY` | `local-no-auth`, a placeholder for a server with authentication disabled |
 

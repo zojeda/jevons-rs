@@ -10,7 +10,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::sync::mpsc;
 
-/// Connects to a server's desktop endpoint, such as `ws://127.0.0.1:8080/desktop`.
+/// Connects to a server's desktop endpoint, such as `ws://127.0.0.1:5380/desktop`.
 #[cfg(feature = "client")]
 pub async fn connect(url: &str) -> Result<crate::wire::ClientLink, String> {
     use tokio_tungstenite::tungstenite::Message;

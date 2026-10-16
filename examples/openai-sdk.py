@@ -4,7 +4,7 @@
 # ///
 """Every OpenAI-compatible jevons-rs API through the official OpenAI Python SDK.
 
-    uv run examples/openai-sdk.py [--url http://127.0.0.1:8080/v1]
+    uv run examples/openai-sdk.py [--url http://127.0.0.1:5380/v1]
 
 Needs a server with the generative, speech and voice services enabled (see
 jevons.example.toml); sections for a missing service are skipped. Set TYPESAFE_API_KEY when the
@@ -19,7 +19,7 @@ from pathlib import Path
 from openai import OpenAI
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--url", default="http://127.0.0.1:8080/v1")
+parser.add_argument("--url", default="http://127.0.0.1:5380/v1")
 args = parser.parse_args()
 client = OpenAI(base_url=args.url, api_key=os.environ.get("TYPESAFE_API_KEY", "unused"))
 examples = Path(__file__).resolve().parent

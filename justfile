@@ -82,7 +82,7 @@ model-test:
 
 # Exercise a running service; honors TYPESAFE_API_KEY.
 [group('Tests')]
-smoke url="http://127.0.0.1:8080":
+smoke url="http://127.0.0.1:5380":
     python3 scripts/smoke-test.py --url "$1"
 
 # Install the pinned JavaScript SDK example dependency (requires Node.js 20+).

@@ -184,7 +184,7 @@ fn step_of(element: &UiElement, index: usize) -> Step {
     }
 }
 
-fn short_text(text: &str, max: usize) -> String {
+pub(crate) fn short_text(text: &str, max: usize) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= max {
         flat
@@ -551,7 +551,7 @@ impl Nav {
 }
 
 /// The first texts below an element, joined, for an unnamed row.
-fn summary(elements: &[RecordedElement]) -> String {
+pub(crate) fn summary(elements: &[RecordedElement]) -> String {
     fn collect(elements: &[RecordedElement], out: &mut Vec<String>) {
         for recorded in elements {
             if out.len() >= 4 {

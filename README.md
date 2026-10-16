@@ -26,6 +26,7 @@ Everything runs locally. The speech, decision and language models run inside the
 - **Live feedback and answers.** A bubble above the tray icon shows the words as they are recognized, then the route taken, the text written and whether it was inserted. Questions are answered there instead of being typed. It never takes the focus. Turn it off from the tray menu.
 - **Safe delivery.** Text goes only into the window the take started in, once every key is released. It is pasted with your clipboard restored, typed, set through the accessibility API, or left on the clipboard, as the flow says. If the focus moved, the text waits on the clipboard.
 - **An inspector for everything.** The window shows the live context and the route it takes through the tree, with every guard checked; every take with its decision probabilities, prompt and timings; the flow tree and its problems; the settings and the models. **New branch from the current context** writes a folder whose guard matches what you are looking at.
+- **A door for outside agents.** Claude Code, or any MCP or HTTP client with the key, can read the interfaces of the applications you list, act on them and talk to you in the bubble, through the control API (`/mcp` and `/api/v1`). Its first action in each application asks you first, and it never acts while you dictate. Off until you turn it on: see [Control API](docs/control-api.md).
 - **Private by default.** The models run in the app, and its API listens on a loopback port with a random key. You can expose it on a port for other clients, or send each capability (speech, decisions, generation) to another provider: a jevons server on another machine, OpenRouter, or any server with OpenAI's API. Logs never contain your text; full traces stay in `~/jevons/traces`.
 
 ### From speech to a leaf
@@ -302,7 +303,7 @@ The desktop app embeds the runtime, so this is only needed to serve other client
 
 ```toml
 [server]
-bind = "127.0.0.1:8080"
+bind = "127.0.0.1:5380"
 
 [models.nemotron]                  # loaded once
 path = "~/models/nemotron-labs-diffusion-3b"
@@ -339,14 +340,14 @@ Run these from the repository root against the server above. [examples/openai-sd
 #### Generative: Chat Completions
 
 ```bash
-curl http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" \
+curl http://127.0.0.1:5380/v1/chat/completions -H "Content-Type: application/json" \
   --data-binary @examples/chat-completions.json
 ```
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="unused-without-a-key")
+client = OpenAI(base_url="http://127.0.0.1:5380/v1", api_key="unused-without-a-key")
 reply = client.chat.completions.create(
     model="jev-latest",
     messages=[{"role": "user", "content": "What is 15% of 240?"}],
@@ -359,9 +360,9 @@ Add `"stream": true` for server-sent events. `reasoning_effort` lets the model t
 #### Generative: Responses and Completions
 
 ```bash
-curl http://127.0.0.1:8080/v1/responses -H "Content-Type: application/json" \
+curl http://127.0.0.1:5380/v1/responses -H "Content-Type: application/json" \
   --data-binary @examples/responses.json
-curl http://127.0.0.1:8080/v1/completions -H "Content-Type: application/json" \
+curl http://127.0.0.1:5380/v1/completions -H "Content-Type: application/json" \
   --data-binary @examples/completions.json
 ```
 
@@ -370,9 +371,9 @@ Responses takes `instructions`, text `input` or messages, and `reasoning.effort`
 #### Speech: transcriptions
 
 ```bash
-curl http://127.0.0.1:8080/v1/audio/transcriptions \
+curl http://127.0.0.1:5380/v1/audio/transcriptions \
   -F file=@examples/speech-es.flac -F model=parakeet-latest -F language=es
-curl http://127.0.0.1:8080/v1/audio/transcriptions \
+curl http://127.0.0.1:5380/v1/audio/transcriptions \
   -F file=@examples/speech-en.flac -F model=parakeet-latest -F response_format=srt
 ```
 
@@ -386,7 +387,7 @@ The server accepts WAV, FLAC, MP3, OGG Vorbis or Opus, WebM/Opus (what browsers 
 #### Speech: Realtime transcription
 
 ```bash
-uv run examples/realtime.py examples/speech-es.flac --url ws://127.0.0.1:8080/v1/realtime --language es
+uv run examples/realtime.py examples/speech-es.flac --url ws://127.0.0.1:5380/v1/realtime --language es
 ```
 
 `GET /v1/realtime` speaks the OpenAI Realtime protocol for transcription sessions (the GA events and the beta `transcription_session.*` ones). Clients stream PCM16 (or G.711) audio. A server-side turn detector commits each turn at a pause, or the client commits it. Words agreed by consecutive passes arrive as deltas while the user speaks, and the final transcript follows each turn. The example script streams a file at real-time pace; the OpenAI SDK's `client.realtime.connect(...)` works too.
@@ -394,7 +395,7 @@ uv run examples/realtime.py examples/speech-es.flac --url ws://127.0.0.1:8080/v1
 #### Voice: speech
 
 ```bash
-curl http://127.0.0.1:8080/v1/audio/speech -H "Content-Type: application/json" \
+curl http://127.0.0.1:5380/v1/audio/speech -H "Content-Type: application/json" \
   --data-binary @examples/audio-speech.json --output speech.wav
 ```
 
@@ -410,7 +411,7 @@ The body streams as the model speaks, one sentence at a time: `wav` (the default
 #### Decision: System One
 
 ```bash
-curl http://127.0.0.1:8080/v1/systemone -H "Content-Type: application/json" \
+curl http://127.0.0.1:5380/v1/systemone -H "Content-Type: application/json" \
   --data-binary @examples/system-one.json
 ```
 
@@ -431,10 +432,10 @@ The [example](examples/system-one.json) asks three question types about a constr
 
 ### Clients
 
-- **OpenAI SDKs** (Python, JavaScript and others): set `base_url` to `http://127.0.0.1:8080/v1`. Chat, Responses, Completions, transcriptions, speech and Realtime transcription sessions all parse into the SDKs' own types.
+- **OpenAI SDKs** (Python, JavaScript and others): set `base_url` to `http://127.0.0.1:5380/v1`. Chat, Responses, Completions, transcriptions, speech and Realtime transcription sessions all parse into the SDKs' own types.
 - **Open WebUI:** add an OpenAI connection with the base URL above for chat. For dictation and voice calls, set Admin Panel → Settings → Audio → Speech-to-Text to the *OpenAI* engine with the same URL and model `parakeet-tdt-0.6b-v3`, and use *Web API* for text to speech. The model selector picks the chat model; dictation always uses the Audio setting.
 - **jevons-desktop:** tray dictation and automation in any application, routed by a flow tree per app, page and field (see [Desktop app](docs/desktop.md)).
-- **TypeSafe SDKs:** set `TYPESAFE_BASE_URL=http://127.0.0.1:8080` and use `jev-latest`. No connection to TypeSafe or Codiv infrastructure is needed.
+- **TypeSafe SDKs:** set `TYPESAFE_BASE_URL=http://127.0.0.1:5380` and use `jev-latest`. No connection to TypeSafe or Codiv infrastructure is needed.
 
 ### Performance
 
@@ -454,6 +455,7 @@ See [benchmarks](benchmarks/README.md) for methods, per-case results and compari
 | Guide | Contents |
 | --- | --- |
 | [Desktop app](docs/desktop.md) | The tray app: the flow tree, the context inspector, settings, model downloads, platform status |
+| [Control API](docs/control-api.md) | Outside agents such as Claude Code: turning it on, connecting, the operations, what keeps it safe |
 | [HTTP API](docs/api.md) | Routes, settings, OpenAI-compatible generation, speech to text, Realtime, text to speech, limits, errors |
 | [System One](docs/system-one.md) | The masked canvas, text and image examples, extensions |
 | [Build and hardware](docs/build.md) | ROCm/WSL setup, hardware, runtime options, image input |

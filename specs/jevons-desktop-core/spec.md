@@ -20,6 +20,8 @@ It owns:
   voice that plays an answer's speech (`voice`), confirmations (`confirm`), and the
   investigations' elements and remembered paths (`look`);
 - automations (`automation/`) and recorded demonstrations (`recording/`);
+- the desk's side of the control API (`control`): what an outside agent may read and do here,
+  and the bubble it talks to the user through;
 - the client's settings (`config`), the settings folder's git repository (`git`), the guides
   jevons keeps in a folder (`guarded`) and history clears (`history`);
 - the model catalog and downloads (`catalog`, `download`), the microphone meter (`levels`) and
@@ -41,6 +43,7 @@ It leaves:
 | --- | --- |
 | [desk](desk.md) | What the server asks of the client, carried out with the platform layers: delivery, speech and its rules, confirmation, reading, investigations, the client's tools |
 | [extract](extract.md) | The XPath subset and its evaluation, `[extract]` reads, the workbench, selectors and the interface browser |
+| [control](control.md) | What an outside agent may read and do at this desk through the control API: listed applications, short ids, asking once, never over the user, the bubble |
 | [automations](automations.md) | The automations library, the sandboxed engine, checks, dry runs, approval and authoring |
 | [recording](recording.md) | Recording a demonstration of a task, and recorded interfaces |
 | [models](models.md) | The model catalog and downloads, tray icon frames |

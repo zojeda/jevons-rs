@@ -72,7 +72,7 @@ def speak(url, headers, health):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", default="http://127.0.0.1:8080")
+    parser.add_argument("--url", default="http://127.0.0.1:5380")
     args = parser.parse_args()
     headers = {"Content-Type": "application/json"}
     if os.environ.get("TYPESAFE_API_KEY"):

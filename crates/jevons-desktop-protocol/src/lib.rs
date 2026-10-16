@@ -5,6 +5,8 @@
 //! server asks. Neither depends on the other: both speak in the types here.
 //!
 //! - [`context`]: the snapshot of the focused application a take starts with.
+//! - [`control`]: the control API's calls at the desk: an outside agent's screen reads,
+//!   actions and bubble.
 //! - [`delivery`]: the audio of a take, and how text reaches the application.
 //! - [`extract`] and [`xpath`]: the expressions the client reads from the interface, checked
 //!   on both sides with the same grammar.
@@ -17,6 +19,7 @@
 #![forbid(unsafe_code)]
 
 pub mod context;
+pub mod control;
 pub mod delivery;
 pub mod desk;
 pub mod extract;
